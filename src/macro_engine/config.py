@@ -1017,6 +1017,63 @@ class BlockedSeries(BaseModel):
     opened_in: str = "OPEN_ISSUES.md"
 
 
+class ReleaseCalendar(BaseModel):
+    """The Section 6 release-date lookup, declared in config not code.
+
+    Section 6 names four timestamps that are NOT interchangeable —
+    ``observation_date``, ``release_datetime``, ``vintage_datetime`` and
+    ``retrieved_at`` — and only the first and last are always available. This
+    block is the route for the second.
+
+    **Why it exists at all.** ``ObservationPoint.release_datetime`` was modelled
+    and left ``None`` on the finding that no reachable route returns it. That
+    finding was half wrong: ``economy.calendar`` was tried with ``provider=fred``
+    only (which times out), when the endpoint accepts four providers and
+    ``nasdaq`` works. See ``config/series_registry.yaml``'s ``release_calendar``
+    comment for the full evidence.
+
+    **Why it is opt-in and honest about failure.** The working route is
+    INTERMITTENT (measured 2026-09-20: 2 of 4 identical calls succeeded). So the
+    contract is: read it, retry it, and when it cannot be read leave
+    ``release_datetime`` as ``None``. A scheduled date is never written in place
+    of a released one, because those are different facts and Section 6's whole
+    point is that a consumer can tell them apart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Off by default. Enabling it makes every snapshot build issue a "
+            "calendar request, whose route is intermittent — so a caller opts in "
+            "rather than having the flakiness imposed."
+        ),
+    )
+    provider: str = "nasdaq"
+    endpoint: str = "economy.calendar"
+    max_attempts: int = Field(
+        default=5,
+        gt=0,
+        description=(
+            "Attempts for THIS route, separate from the series client's retry "
+            "budget. Its failure mode is a fast empty response, not a timeout, "
+            "so more attempts at a shorter backoff is the right shape."
+        ),
+    )
+    backoff_seconds: float = Field(default=1.5, ge=0.0)
+    window_days_back: int = Field(default=400, gt=0)
+    window_days_forward: int = Field(default=45, ge=0)
+    event_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Provider event name -> registry series key. The provider publishes "
+            "HUMAN-READABLE names ('Core PCE Price Index'), not FRED symbols, so "
+            "this join cannot be derived and must be declared."
+        ),
+    )
+
+
 class SeriesRegistry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1024,6 +1081,7 @@ class SeriesRegistry(BaseModel):
     defaults: dict[str, Any]
     series: dict[str, RegistrySeries]
     blocked: list[BlockedSeries] = Field(default_factory=list)
+    release_calendar: ReleaseCalendar = Field(default_factory=ReleaseCalendar)
 
     @model_validator(mode="after")
     def _apply_defaults_to_series(self) -> SeriesRegistry:

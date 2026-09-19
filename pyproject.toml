@@ -104,6 +104,15 @@ ignore = [
 # by hand, never imported, and excluded from the default test run.
 "scripts/*.py" = ["T20"]
 "src/macro_engine/api_layer/*.py" = []
+# `test_release_calendar.py` asserts NAIVE datetimes on purpose. The provider's
+# wire format is a naive ISO string ("2026-08-13T08:30:00") and
+# `release_calendar._parse_event_datetime` returns it unlocalised by design:
+# inventing an offset would be an inference the module has no basis for and
+# could move a release across a day boundary relative to `as_of`. The test's job
+# is to pin that exact behaviour, so a tz-aware literal would assert something
+# the code does not do. Scoping the exemption to the file (rather than a
+# `# noqa` per line) keeps the rule live everywhere else (D-067).
+"tests/data_layer/test_release_calendar.py" = ["DTZ001"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

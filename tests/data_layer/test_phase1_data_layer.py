@@ -1428,14 +1428,26 @@ def test_live_snapshot_build_produces_a_coherent_economic_picture() -> None:
         assert field in snapshot.field_sources, f"{field} has no recorded source"
 
     # --- the expected flags are the documented INFO-severity conditions -----
-    # Two are legitimate and both are INFO, never ERROR:
+    # Three are legitimate and all three are INFO, never ERROR:
     #   FORWARD_LOOKING_HORIZON      — CBO GDPPOT carries ~10y of projections
     #   SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK — a daily series FRED published for
     #     the current UTC day while the clock is still on the previous one
     #     (D-030; `iorb`). Both are declared per-series in the registry, so a
     #     series that should NOT lead still raises ERROR. Anything else in the
     #     flag list is a genuine fault and must fail this test.
-    expected_info = ("FORWARD_LOOKING_HORIZON", "SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK")
+    #   RELEASE_TIMING_UNKNOWN — the Section 6 release calendar could not be
+    #     read, so `release_datetime` is None for every point. This is an
+    #     AVAILABILITY condition of an opt-in enrichment, not a fault in the
+    #     snapshot's own data, and the route is documented as intermittent and
+    #     currently edge-blocked (see `release_calendar.py`). It is asserted
+    #     here as TOLERATED, and asserted separately below to have left
+    #     `release_datetime` None rather than a substituted date — tolerating
+    #     the flag must not mean tolerating a fabricated value.
+    expected_info = (
+        "FORWARD_LOOKING_HORIZON",
+        "SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK",
+        "RELEASE_TIMING_UNKNOWN",
+    )
     unexpected = [f for f in snapshot.data_quality_flags if not any(e in f for e in expected_info)]
     assert unexpected == [], f"unexpected data-quality flags: {unexpected}"
 
@@ -1444,6 +1456,23 @@ def test_live_snapshot_build_produces_a_coherent_economic_picture() -> None:
     assert not any("[ERROR]" in f and "iorb" in f for f in snapshot.data_quality_flags), (
         "iorb raised an ERROR flag; the declared tolerance is not being applied"
     )
+
+    # Section 6: whether or not the calendar answered, no point may carry a
+    # release date that was invented when the calendar did not supply one. The
+    # two states must be consistent: known dates only when the read succeeded,
+    # and None everywhere when it did not.
+    if report.release_calendar_read is not True:
+        offenders = [
+            p.series_id
+            for field in ("cpi_headline", "sofr", "on_rrp_rate")
+            for p in getattr(snapshot, field, [])
+            if p.release_datetime is not None
+        ]
+        assert offenders == [], (
+            f"release_datetime was populated for {offenders} even though the "
+            "release calendar could not be read — a release date was fabricated"
+        )
+        assert any("RELEASE_TIMING_UNKNOWN" in f for f in snapshot.data_quality_flags)
 
 
 @pytest.mark.live

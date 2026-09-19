@@ -42,6 +42,11 @@ import pandas as pd
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
+from macro_engine.data_layer.release_calendar import (
+    ReleaseCalendarError,
+    ReleaseDateIndex,
+    fetch_release_dates,
+)
 from macro_engine.data_layer.schemas import ObservationPoint, YieldCurveSnapshot
 from macro_engine.data_layer.validation import (
     ValidationReport,
@@ -78,6 +83,16 @@ class SnapshotBuildReport:
         self.failed: dict[str, str] = {}
         self.skipped_unverified: list[str] = []
         self.observation_counts: dict[str, int] = {}
+        #: True when the Section 6 release calendar answered; False when it
+        #: could not be read OR was never attempted. ``release_datetime`` being
+        #: None everywhere is consistent with both, which is why this is
+        #: recorded: "release timing unknown" and "nobody asked" must be
+        #: distinguishable after the fact.
+        self.release_calendar_read: bool | None = None
+        #: Number of registry series the calendar supplied a date for.
+        self.release_calendar_series: int = 0
+        #: Set only when the calendar was enabled but misconfigured.
+        self.release_calendar_note: str | None = None
 
     @property
     def is_complete(self) -> bool:
@@ -100,6 +115,21 @@ class SnapshotBuildReport:
         for field in sorted(self.succeeded):
             if self.observation_counts.get(field, 0) == 0:
                 flags.append(f"EMPTY_SERIES:{field}")
+        # Section 6: make the release-timing gap visible in the flags rather
+        # than only in the object. The three states are deliberately distinct:
+        #   True  -> the calendar answered; release timing is known where matched.
+        #   False -> it was asked and could not be read: release timing is UNKNOWN
+        #            for every series, and a consumer reading only flags must be
+        #            able to see that.
+        #   None  -> it was never attempted (disabled, or an index was injected).
+        #            That is a configuration choice, NOT a data-quality defect,
+        #            so it raises no flag — flagging it would put a permanent
+        #            INFO line on every snapshot and train readers to ignore the
+        #            list, which is the failure mode the flag list exists to avoid.
+        if self.release_calendar_read is False:
+            flags.append("RELEASE_TIMING_UNKNOWN:release_calendar_unreadable")
+        if self.release_calendar_note is not None:
+            flags.append(f"RELEASE_CALENDAR_MISCONFIGURED:{self.release_calendar_note}")
         return flags
 
     def summary(self) -> str:
@@ -166,9 +196,36 @@ def _assert_field_exists(field_name: str, target: str) -> None:
 
 
 def _points_from_frame(
-    frame: pd.DataFrame, *, series_id: str, fallback_source: str
+    frame: pd.DataFrame,
+    *,
+    series_id: str,
+    fallback_source: str,
+    release_index: ReleaseDateIndex | None = None,
 ) -> list[ObservationPoint]:
-    """Convert a normalized frame into ``ObservationPoint`` records."""
+    """Convert a normalized frame into ``ObservationPoint`` records.
+
+    ``release_index`` (Section 6) attaches a publication datetime to each point
+    **when the calendar supplied one for this series**. It is optional and
+    defaults to ``None``, which means "no lookup was attempted" — and the
+    resulting points carry ``release_datetime=None``, i.e. UNKNOWN. There is
+    deliberately no fallback to ``observation_date``: those are different facts
+    and conflating them is the exact defect Section 6 prohibits.
+
+    One release datetime is applied to every point of the series, including
+    historical ones. That is a **known, documented approximation**, not an
+    oversight: the calendar window covers roughly the last 13 months, so for a
+    series whose history is longer, older points receive a date that belongs to
+    a *recent* release. It is defensible only in the direction that matters —
+    the applied date is a real publication instant for this series, so an
+    ``as_of`` filter cannot be fooled into admitting a value *earlier* than the
+    true release. Callers that need exact per-observation timing must not treat
+    this as vintage-accurate; ``vintage_datetime`` stays ``None`` throughout.
+    """
+    if frame.empty:
+        return []
+
+    release_datetime = release_index.get(series_id) if release_index is not None else None
+
     points: list[ObservationPoint] = []
     for _, row in frame.iterrows():
         raw_date = row["date"]
@@ -185,6 +242,7 @@ def _points_from_frame(
                 series_id=series_id,
                 source=str(row.get("source", fallback_source) or fallback_source),
                 retrieved_at=pd.Timestamp(row["retrieved_at"]).to_pydatetime(),
+                release_datetime=release_datetime,
             )
         )
     return points
@@ -196,6 +254,7 @@ def fetch_field(
     entry: RegistrySeries,
     *,
     start: str | None = None,
+    release_index: ReleaseDateIndex | None = None,
 ) -> list[ObservationPoint]:
     """Fetch one scalar registry field and convert it to ``ObservationPoint``s.
 
@@ -222,7 +281,10 @@ def fetch_field(
         series_label=field_name,
     )
     return _points_from_frame(
-        frame, series_id=field_name, fallback_source=f"{entry.provider}:{entry.symbol}"
+        frame,
+        series_id=field_name,
+        fallback_source=f"{entry.provider}:{entry.symbol}",
+        release_index=release_index,
     )
 
 
@@ -331,6 +393,7 @@ def build_snapshot(
     client: OpenBBClient | None = None,
     fields: list[str] | None = None,
     persist: bool = False,
+    release_index: ReleaseDateIndex | None = None,
 ) -> tuple[MacroDataSnapshot, SnapshotBuildReport]:
     """Assemble a ``MacroDataSnapshot`` from registry-verified series.
 
@@ -345,6 +408,12 @@ def build_snapshot(
         ``settings.snapshot_fields.{country}``.
     persist:
         Write the snapshot to the parquet audit trail (Section 5.5).
+    release_index:
+        A pre-fetched Section 6 release calendar. When ``None`` AND the calendar
+        is enabled in ``config/series_registry.yaml``, the calendar is read once
+        here. Passing one explicitly (including an empty
+        ``ReleaseDateIndex()``) skips the lookup entirely — which is how tests
+        and offline callers keep a network read out of the build.
 
     Returns
     -------
@@ -377,6 +446,27 @@ def build_snapshot(
     report = SnapshotBuildReport()
     report.requested = list(requested)
 
+    # Section 6: read the release calendar ONCE, before any series fetch, so
+    # every point in the snapshot is labelled against a single read. A failure
+    # here is tolerated rather than fatal — an unreadable calendar leaves
+    # release_datetime None (UNKNOWN), which is the documented outcome roughly
+    # half the time, and it must not cost the caller the whole snapshot.
+    if release_index is None:
+        calendar = get_registry().release_calendar
+        if calendar.enabled:
+            try:
+                release_index = fetch_release_dates()
+            except ReleaseCalendarError as exc:
+                # Misconfiguration: enabling the calendar without an event map
+                # is a defect, but it is recorded as a report fact rather than
+                # raised, because the snapshot is buildable without it.
+                logger.error("release calendar misconfigured: %s", exc)
+                report.release_calendar_note = f"misconfigured: {exc}"
+            else:
+                report.release_calendar_read = release_index.route_read
+                if release_index.route_read:
+                    report.release_calendar_series = len(release_index.dates)
+
     start = _lookback_start()
     snapshot = MacroDataSnapshot(country=country, as_of=utc_now())
     raw_by_field: dict[str, list[ObservationPoint]] = {}
@@ -406,7 +496,9 @@ def build_snapshot(
                 setattr(snapshot, target, curve)
                 report.observation_counts[field_name] = len(curve.tenors)
             else:
-                points = fetch_field(client, field_name, entry, start=start)
+                points = fetch_field(
+                    client, field_name, entry, start=start, release_index=release_index
+                )
                 setattr(snapshot, target, points)
                 raw_by_field[target] = points
                 report.observation_counts[field_name] = len(points)

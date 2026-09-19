@@ -63,20 +63,27 @@ class ObservationPoint(BaseModel):
 
     ``observation_date`` and ``retrieved_at`` are always present. The two
     release-side fields are **optional and default to ``None``, which means
-    UNKNOWN — never "same as observation_date"**. They are modelled but not
-    populated, because no route reachable from this installation returns them
-    (measured 2026-09-19: ``economy.fred_series`` returns only date + value;
-    ``economy.fred_release_table`` returns a table of contents with no dates;
-    ``economy.calendar`` raises ``TimeoutError`` on the FRED route and needs
-    credentials it does not have on the ``fmp``/``tradingeconomics`` routes).
+    UNKNOWN — never "same as observation_date"**.
 
-    The distinction matters: ``as_of`` filtering uses ``observation_date``
+    ``release_datetime`` IS populated when the release calendar can be read.
+    An earlier audit concluded no reachable route returned it and left the
+    field permanently ``None``; that finding was half wrong. ``economy.calendar``
+    accepts four providers, only ``fred`` was tried (it times out), and
+    ``nasdaq`` works — it returns dated US releases including the CPI/PCE/PPI
+    prints this system consumes. See ``release_calendar.py``.
+
+    The route is INTERMITTENT, so ``release_datetime`` is best understood as
+    "known when the calendar answered this build, ``None`` otherwise". The
+    distinction matters: ``as_of`` filtering uses ``observation_date``
     (Section 6's O-7), which is a *sufficient but not sound* point-in-time
     proxy. A month's CPI print is knowable only around mid-*following*-month,
     so an ``as_of`` of the observation date itself admits data that had not
-    been published yet. Until ``release_datetime`` is populated, consumers must
-    treat any observation dated within one reporting lag of the cutoff
-    as **possibly not yet public** — see ``has_known_release_timing``.
+    been published yet. Consumers must treat any observation dated within one
+    reporting lag of the cutoff as **possibly not yet public** unless
+    ``has_known_release_timing`` says otherwise — see that property.
+
+    ``vintage_datetime`` remains unpopulated: no route reachable from this
+    installation returns ALFRED-style revision timing, so it stays ``None``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -91,14 +98,17 @@ class ObservationPoint(BaseModel):
         default=None,
         description=(
             "When the value became public. None = UNKNOWN (not 'equal to "
-            "observation_date'). No reachable route populates this yet (Section 6)."
+            "observation_date'). Populated from the release calendar when that "
+            "route can be read; the route is intermittent, so None also covers "
+            "'the calendar did not answer this build' (Section 6)."
         ),
     )
     vintage_datetime: datetime | None = Field(
         default=None,
         description=(
             "Which revision of the value this is (ALFRED-style realtime_start). "
-            "None = UNKNOWN, i.e. the value is treated as the latest vintage only."
+            "None = UNKNOWN, i.e. the value is treated as the latest vintage only. "
+            "No reachable route returns this, so it is always None today."
         ),
     )
 
@@ -106,9 +116,12 @@ class ObservationPoint(BaseModel):
     def has_known_release_timing(self) -> bool:
         """Whether this point's publication time is actually known.
 
-        False for every point today. Exists so a consumer can *ask* rather than
-        assume — the failure mode Section 6 prohibits is a system that silently
-        treats ``observation_date`` as the release date.
+        True when the release calendar supplied a datetime for this series, and
+        False otherwise — including when the calendar was unreadable. Exists so
+        a consumer can *ask* rather than assume: the failure mode Section 6
+        prohibits is a system that silently treats ``observation_date`` as the
+        release date, and a bare ``release_datetime`` check invites exactly
+        that inference at each call site.
         """
         return self.release_datetime is not None
 

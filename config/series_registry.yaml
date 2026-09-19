@@ -1180,3 +1180,98 @@ blocked:
       — per the lesson recorded above, an unrecorded block is the one that
       cannot be caught.
     opened_in: OPEN_ISSUES.md
+
+# ---------------------------------------------------------------------------
+# release_calendar — Section 6 point-in-time provenance
+# ---------------------------------------------------------------------------
+#
+# CORRECTED 2026-09-20 (audit continuation). The previous finding, recorded in
+# `ObservationPoint`'s docstring and in the 2026-09-19 report, was that release
+# dates are unreachable from this installation. That was HALF RIGHT and the
+# wrong half mattered:
+#
+#   CONFIRMED: `economy.calendar` with provider=fred raises TimeoutError
+#              consistently (many retries, not a transient limit), and
+#              `economy.fred_release_table` returns a table of contents with no
+#              date field at all.
+#
+#   MISSED:    `economy.calendar` accepts FOUR providers. Only `fred` was tried.
+#              `fmp` and `tradingeconomics` fail on MISSING CREDENTIALS (a
+#              config gap, not a dead end). **`nasdaq` works** and returns dated
+#              US releases — including the CPI, PCE and PPI prints this system
+#              actually consumes (verified live 2026-09-20: Core CPI 2026-08-13,
+#              Core PCE 2026-08-27, PPI 2026-09-11, JOLTS 2026-09-02).
+#
+# So release dates ARE obtainable. What made the earlier reading defensible was
+# that it extrapolated from one provider to "no reachable route exists" without
+# enumerating the provider list — the same overstatement class the audit exists
+# to find, committed inside the audit.
+#
+# HONEST LIMITATION, and the reason this is opt-in: the nasdaq route is
+# INTERMITTENT and can be BLOCKED.
+#
+#   * Intermittency: four identical calls on 2026-09-20 returned 2 success and
+#     2 failures ("Nasdaq Error -> Economic Events Calendar: No record found."),
+#     with a fresh response `id` each time so there is no caching to mask it.
+#   * Blocking: later in the same session the upstream host began returning
+#     HTTP 403 (text/html) for EVERY nasdaq route, including the unrelated
+#     equity/calendar/earnings. That is an upstream IP-level block, not a code
+#     fault. The successful reads above are real; they are not reliably
+#     reproducible, and whether the route works today depends on a third
+#     party's rate limiting.
+#
+# The mitigation is retry-with-backoff plus a hard rule: when the calendar
+# cannot be read, `release_datetime` stays None and the consumption point
+# treats timing as UNKNOWN. A scheduled date is never substituted for a
+# released one — see `has_known_release_timing`.
+#
+# `enabled: false` would be the conservative choice given the block. It is left
+# `true` so the route is exercised and its health is observable rather than
+# silently dormant — and the consequence is made explicit in the snapshot: a
+# build in which the read fails carries
+#   RELEASE_TIMING_UNKNOWN:release_calendar_unreadable
+# in `data_quality_flags`. That flag is a TOLERATED INFO condition (asserted as
+# such in `tests/data_layer/test_phase1_data_layer.py`), because it describes the
+# availability of an optional enrichment rather than a fault in the snapshot's
+# own data. Setting `enabled: false` raises no flag at all — "we did not ask" is
+# a configuration choice, not a data-quality fact.
+release_calendar:
+  enabled: true
+  provider: nasdaq
+  endpoint: economy.calendar
+  # The provider's own retry budget, separate from the series client's: this
+  # route's failure mode is a quick empty response rather than a timeout, so
+  # more attempts at a shorter backoff is the right shape.
+  max_attempts: 5
+  backoff_seconds: 1.5
+  # Lookback/lookahead for the calendar query. The window must cover the
+  # observation lag we are trying to close (a month's print lands mid-following
+  # month) plus room for the newest observation.
+  window_days_back: 400
+  window_days_forward: 45
+  # Event name (as the provider publishes it, matched case-insensitively) ->
+  # registry series key. The provider publishes HUMAN-READABLE event names, not
+  # FRED symbols, so this mapping is the join and CANNOT be derived.
+  #
+  # Several names map to one series because the provider publishes the same
+  # release more than once at the same timestamp with different units (CPI YoY
+  # and CPI MoM both appear as "CPI"). That is fine for a DATE lookup — the
+  # timestamp is what is taken — but it is why the event name alone is not a
+  # sufficient key for anything but a date.
+  event_map:
+    "CPI": cpi_headline
+    "Core CPI": cpi_core
+    "Core PCE Price Index": pce_core
+    "PPI": ppi
+    "Core PPI": ppi_core
+    "JOLTS Job Openings": jolts_openings
+    "JOLTS Job Quits": jolts_quits
+    "Unemployment Rate": unemployment_rate
+    "Nonfarm Payrolls": nfp
+    "Initial Jobless Claims": initial_claims
+    "Continuing Jobless Claims": continuing_claims
+    "GDP": gdp_real
+    "GDP Price Index": gdp_deflator
+    "Retail Sales": retail_sales
+    "Durable Goods Orders": durable_goods_orders
+    "Industrial Production": industrial_production

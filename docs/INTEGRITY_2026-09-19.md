@@ -249,22 +249,82 @@ NO TRADE in preference to a fabricated edge.
 - Point-in-time filtering by `observation_date` is real and well-built
   (`as_of.py`, O-7): the live snapshot withheld **42 forward-dated CBO projections**
   and named the horizon.
-- **`release_datetime`, `vintage_datetime`, `decision_cutoff` are now MODELLED but
-  NOT POPULATED — and the data is genuinely unreachable, not merely unimplemented.**
-  Measured 2026-09-19: the FRED `economy.fred_series` payload returns only `date` +
-  value plus descriptive metadata — **no `realtime_start`/`realtime_end`**;
-  `economy.fred_release_table` returns a **table of contents with no date field at
-  all** (keys are `element_id`, `element_type`, `level`, `line`, `name`, `parent_id`,
-  `symbol` — verified, zero date-like fields); `economy.calendar` raises
-  `TimeoutError` on the FRED route and demands credentials on `fmp`/
-  `tradingeconomics`. Those two endpoints are the *only* release-related routes in
-  the platform's OpenAPI spec. So the schema now lets the system **name** the gap
-  while keeping it **visible**: `release_datetime=None` means UNKNOWN and is never
-  back-filled from `observation_date`. The consequence is written into
-  `as_of.py`'s module docstring in bold: **the point-in-time filter is sufficient
-  but not sound** — an `as_of` inside one reporting lag of the newest observation
-  may admit not-yet-public data, so the honest use today is backtesting at or after
-  the release, not replaying a decision made before it.
+- **`release_datetime` is now POPULATED when the calendar can be read;
+  `vintage_datetime` and `decision_cutoff` remain modelled-but-not-populated.**
+  `vintage_datetime` is a genuine dead end: the FRED `economy.fred_series` payload
+  returns only `date` + value plus descriptive metadata — **no
+  `realtime_start`/`realtime_end`** — and `economy.fred_release_table` returns a
+  **table of contents with no date field at all** (keys are `element_id`,
+  `element_type`, `level`, `line`, `name`, `parent_id`, `symbol` — verified, zero
+  date-like fields), so no reachable route supplies revision timing.
+
+  > **CORRECTED 2026-09-20.** The original entry here claimed release dates were
+  > *also* unreachable, on the evidence that "`economy.calendar` raises
+  > `TimeoutError` on the FRED route and demands credentials on `fmp` /
+  > `tradingeconomics`". **That reasoning was incomplete and the conclusion was
+  > wrong.** The endpoint accepts **four** providers; only `fred` was tried. The
+  > audit enumerated two failures and generalised to "no reachable route exists"
+  > without enumerating the provider list — the same overstatement class this
+  > audit exists to find, committed by the audit itself.
+  >
+  > **`provider=nasdaq` works.** Verified live 2026-09-20: it returns dated US
+  > releases, including the exact prints this system consumes — Core CPI
+  > 2026-08-13, Core PCE 2026-08-27, PPI 2026-09-11, JOLTS 2026-09-02, across 36
+  > US events. `release_calendar.py` now implements the lookup and
+  > `snapshot_builder` attaches the result to every `ObservationPoint`, so
+  > `has_known_release_timing` is no longer unconditionally False.
+  >
+  > **Honest limitation retained — and the cause is now established directly.**
+  > The route is INTERMITTENT: measured 2 of 4 identical calls succeeded, the
+  > failures returning a well-formed
+  > `{"detail": "Nasdaq Error -> ... No record found."}` with a fresh response
+  > `id` each time (so no caching masks it). Later the same session, after that
+  > testing volume, the upstream host began refusing every read. A direct probe
+  > identifies why:
+  >
+  > ```
+  > $ curl -D- 'https://api.nasdaq.com/api/calendar/economicevents?date=2026-09-18'
+  > HTTP/1.1 403 Forbidden
+  > Server: AkamaiGHost
+  > Content-Type: text/html
+  > X-Reference-Error: 18.cc055a68.1789850159.1cdedae4
+  > <HTML><HEAD><TITLE>Access Denied</TITLE>...
+  > ```
+  >
+  > `AkamaiGHost` is Akamai's edge server and `X-Reference-Error` is its own
+  > incident reference, so this is an infrastructure-level decision about this
+  > client — not a code fault and not a Nasdaq data problem. The block is
+  > **host-wide, not endpoint-specific**: `equity/calendar/earnings`, unrelated
+  > to the calendar, fails identically.
+  >
+  > **Three failure signatures reach the module, and all three are handled.**
+  > This matters because only the first is obvious: (1) the 200-with-`detail`
+  > body above, which passes `raise_for_status()`; (2) an **HTTP 500** from the
+  > local OpenBB server whose JSON body names the real cause —
+  > `{"detail": "Unexpected Error -> ContentTypeError -> 403, message='Attempt
+  > to decode JSON with unexpected mimetype: text/html', ..."}` — i.e. the 403
+  > surfacing through OpenBB, which would send anyone debugging the status code
+  > alone chasing an OpenBB fault; (3) a plain transport error. So the reads
+  > above are real but not reliably reproducible, and whether the route works
+  > today depends on a third party's edge rules.
+  >
+  > The module retries, and on exhaustion returns an EMPTY index flagged
+  > `route_read=False`; it never substitutes `observation_date` for a release
+  > date. A build in which the calendar could not be read carries
+  > `RELEASE_TIMING_UNKNOWN:release_calendar_unreadable` in
+  > `data_quality_flags` — a TOLERATED INFO condition describing the
+  > availability of an opt-in enrichment, so the gap stays visible rather than
+  > looking like a quiet calendar. No flag is raised when the calendar is
+  > simply disabled: "we did not ask" is a configuration choice, not a
+  > data-quality fact.
+
+  The consequence in `as_of.py` is only *partly* relieved: where a release date
+  is known the filter can be sound, but because availability is intermittent the
+  **point-in-time filter remains sufficient-but-not-sound by default** — an
+  `as_of` inside one reporting lag of the newest observation may still admit
+  not-yet-public data whenever the calendar did not answer, so the honest use
+  remains backtesting at or after the release rather than replaying a decision
+  made before it.
 
 ### L. Live-data fact sheet (snapshot `2026-09-19 16:28Z`)
 
@@ -651,19 +711,24 @@ their own nature, which is why the reasoning object carries the statement.
    `tests/models/test_reasoning_contract.py`, all proven RED by planting
    regressions.
 
-2. **§6 release/vintage modelling — MODELLED, NOT POPULATED (measured dead end).**
-   `ObservationPoint` now carries optional `release_datetime` / `vintage_datetime`
+2. **§6 release timing — IMPLEMENTED for release dates; vintage timing remains a
+   measured dead end.**
+   `ObservationPoint` carries optional `release_datetime` / `vintage_datetime`
    and a `has_known_release_timing` predicate; `MacroDataSnapshot` carries
-   `decision_cutoff`; `as_of.py`'s docstring now states the sufficiency-not-soundness
-   limitation in bold. **Measured 2026-09-19, the data is genuinely unreachable:**
-   `economy.fred_series` returns only date + value; `economy.fred_release_table`
-   returns a table of contents with **no date field at all** (verified: keys are
-   `element_id`, `element_type`, `level`, `line`, `name`, `parent_id`, `symbol`);
-   `economy.calendar` raises `TimeoutError` on the FRED route and demands
-   credentials on the `fmp`/`tradingeconomics` routes. Only those two endpoints
-   exist in the platform's OpenAPI spec. **So the fields are modelled so the gap
-   is *nameable*, and left `None` so it stays *visible*.** Recommend revisiting
-   when a credentialed calendar provider is available.
+   `decision_cutoff`; `as_of.py`'s docstring states the sufficiency-not-soundness
+   limitation in bold. **`release_datetime` is now populated** — see the
+   CORRECTED note in §K. The original conclusion that release data was
+   *unreachable* rested on trying a single provider of the four that
+   `economy.calendar` accepts; `provider=nasdaq` returns dated US releases and is
+   wired in. **`vintage_datetime` is a genuine dead end:** `economy.fred_series`
+   returns only date + value, and `economy.fred_release_table` returns a table of
+   contents with **no date field at all** (verified: keys are `element_id`,
+   `element_type`, `level`, `line`, `name`, `parent_id`, `symbol`), so it stays
+   modelled-but-`None`. The calendar route is intermittent (and was 403-blocked
+   upstream at last measurement), so the field is populated opportunistically and
+   its absence is flagged rather than hidden. Recommend revisiting
+   `vintage_datetime` when a credentialed revision-history provider (ALFRED-shaped)
+   is available.
 
 3. **DEF-001 remains the largest item** — 59 unwired Tier 1–4 functions (7 of them
    Phase 4+ by endpoint). Unchanged by this increment, and correctly so: the directive
