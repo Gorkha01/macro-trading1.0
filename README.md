@@ -1,0 +1,161 @@
+# Global Macro Reasoning Engine
+
+A **reasoning layer**, not a trading system.
+
+This service ingests macro and market data via OpenBB, runs a suite of
+quantitative macro models (policy rules, regime detection, inflation and GDP
+nowcasting, yield-curve decomposition, FX parity/carry, commodity and equity
+macro frameworks, volatility models), and synthesizes their outputs into a
+structured, machine-readable **`MacroThesis`** — the codified form of the
+institutional trade-construction discipline:
+
+> *"I think [policy variable] will move by more than the market has priced, on
+> this timeframe, expressed through this instrument, sized according to my
+> conviction and the asymmetry of the payoff, with this stop and this catalyst
+> calendar."*
+
+It does **not** place orders. It does **not** manage live positions. Execution
+remains a human (or a separate, deliberately-scoped system) reading its output.
+
+The authoritative specification is [`AGENTS.md`](./AGENTS.md).
+
+---
+
+## Scope, stated honestly
+
+**Phases 0–4 build a US-only system.** `country: str = "us"` is not a
+generalization — it is a label on a system that currently works for exactly one
+value of it. Multi-country support (`de`, `jp`, `gb`) is Phase 5+, and requires
+for *each* new country:
+
+- its own verified data sources,
+- its own central-bank reaction function (the ECB's 20-country compromise
+  dynamic, the BoJ's deflation-scar-tissue bias, and the PBoC's non-Western
+  reaction function each need genuinely distinct logic — none is "the Fed's
+  Taylor Rule with a different country label"),
+- its own instrument set.
+
+No function may claim country-genericity it has not earned.
+
+## Phase status
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 21/21 routes verified |
+| 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — live-validated |
+| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **Tiers 1–4 complete (85/98)** — the outstanding 13 are all Tier 5, deferred by the US-only scope |
+| 3 | Thesis builder + API layer | **complete** — `build_us_macro_thesis` runs end to end; the §8 service exposes five surfaces |
+| 4 | Risk basics (VaR) + risk-budget hook | pending |
+| 5+ | Markov regime, Bayesian updating, FX/commodity/equity build-out, GARCH, multi-country | deferred |
+
+**Run the API:**
+```bash
+uv run uvicorn macro_engine.api_layer.app:app --host 127.0.0.1 --port 8000
+# /health · /thesis/us · /dashboard_data · /query · /thesis/us/stream (SSE)
+```
+
+### Quality gates (measured)
+
+```bash
+uv run ruff check src/ tools/ tests/   # All checks passed!
+uv run ruff format --check             # 31 files already formatted
+uv run mypy                            # Success: 31 source files, no issues
+uv run pytest -m "not live"            # 42 passed
+uv run pytest -m live                  #  4 passed  (~7 min, makes real network calls)
+```
+
+## Setup
+
+This project uses **`uv` exclusively**. Do not use pip, poetry, or conda.
+
+```bash
+uv sync --extra dev        # create .venv, install locked dependencies
+uv run pytest              # offline suite (fast, no network)
+uv run pytest -m live      # live suite (real OpenBB/FRED calls, ~7 min)
+uv run ruff check .        # lint
+uv run ruff format --check .
+uv run mypy                # strict type check
+```
+
+### Why two test suites
+
+Unit tests prove the **arithmetic**; live execution proves the **wiring** — the
+units, the nulls, the frequency, the sign conventions. They are not substitutes
+(Section 21.0 rule 1). Of the eleven defects found so far, **seven were invisible
+to synthetic tests**, and four of those returned a *plausible-looking* value
+rather than an error. The `live` marker is therefore excluded from the default
+run (a network dependency in the default suite is how a suite becomes something
+people ignore) and runs explicitly and on a CI schedule.
+
+## Configuration
+
+- `config/settings.yaml` — model parameters and thresholds. Every parameter
+  carries an explicit `calibration_status`, and that status feeds
+  `compute_confidence()`, so marking a parameter uncalibrated mechanically
+  lowers the confidence of every model that uses it.
+- `config/series_registry.yaml` — internal field name → provider route. Every
+  LIVE input resolves through this file, and **no provider, symbol or endpoint
+  literal appears in application code**. An entry cannot be marked `verified`
+  without recording the observed value and retrieval date; an unverified entry
+  cannot reach a model.
+- `.env` — secrets only. Never committed.
+
+## Governing principles
+
+1. **Flag, don't fix.** Anomalies are recorded in
+   `MacroDataSnapshot.data_quality_flags`, never silently dropped and never
+   silently corrected. Build-report flags (`FETCH_FAILED`, `EMPTY_SERIES`,
+   `UNVERIFIED_SERIES_SKIPPED`) are kept distinct from validation findings,
+   because "bad number" and "no number" are different problems.
+2. **No model returns a bare number.** Every output is a `ModelResult` carrying
+   its interpretation, context, inputs, and warnings.
+3. **Confidence is computed, never asserted.** `compute_confidence()` derives it
+   from stated factors. No hardcoded `confidence=0.X` literals.
+4. **Nothing is guessed.** An input whose source is not defined is `BLOCKED`
+   and raises — it is never filled with a "reasonable default". Blocked items
+   are tracked in the Loophole Ledger and surfaced in every affected thesis's
+   `warnings`.
+5. **Aggregation discards information.** The three policy rules are never
+   averaged; their divergence *is* the signal. Source families are counted for
+   genuine independence, so five sub-measures of one release are one vote.
+6. **A partial snapshot is visibly partial.** One failed series does not abort
+   the build, but every omission is reported and flagged. `build_snapshot()`
+   returns a report that is not optional to read.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the layers fit, the four contracts, where boundaries are enforced |
+| [`docs/BUILD_STATE.md`](./docs/BUILD_STATE.md) | Per-function completion and real-data validation records |
+| [`docs/DECISIONS.md`](./docs/DECISIONS.md) | Every deviation from the spec, with its evidence |
+| [`docs/OPEN_ISSUES.md`](./docs/OPEN_ISSUES.md) | The Loophole Ledger: blocked inputs, inherent limits, deferred work |
+| [`docs/SERIES_VERIFICATION.md`](./docs/SERIES_VERIFICATION.md) | Phase 0 evidence — all 21 verified routes and their values |
+| [`docs/CHANGELOG.md`](./docs/CHANGELOG.md) | What changed |
+
+## Layout
+
+```
+config/                 settings.yaml, series_registry.yaml, logging.yaml
+src/macro_engine/
+  config.py             typed settings loader + registry enforcement
+  data_layer/           openbb_client, schemas, validation, snapshot_builder, persistence
+  models/               contracts (ModelResult, compute_confidence) + Modules 4-11, 17
+  thesis_layer/         MacroThesis schema + build_us_macro_thesis()
+  portfolio/            risk budgeting (Riskfolio-Lib hook)
+  api_layer/            FastAPI service
+  extensions/           Phase 5+ stubs, signatures only
+tests/                  mirrors src/
+tools/                  manual_series_check, probe_money_market, record_verification
+docs/                   architecture, build state, decisions, open issues, verification
+```
+
+## Contributing
+
+Implementation follows the Section 21.2 process, one function at a time, never
+in batch — read the spec, confirm every input's source, implement, unit-test with
+hand-verified values, test the warning paths, execute against real data, assess
+plausibility, run the gates, record it, then **report and wait for approval**
+before starting the next function.
+
+# macro

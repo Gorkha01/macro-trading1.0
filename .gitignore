@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Secrets — NEVER commit. See .env.example for the variable list.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Python / uv
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ---------------------------------------------------------------------------
+# Tool caches — machine-specific, regenerated on every run
+# ---------------------------------------------------------------------------
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.pytest_tmp/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---------------------------------------------------------------------------
+# Probe scratch tree — untracked by design (see O-44 / O-63).
+# These scripts are exploratory and are NOT part of the project's gate scope
+# (`src tests tools scripts`). Keeping them out of the repo is what makes a
+# bare `ruff check` misfire visible rather than invisible.
+# ---------------------------------------------------------------------------
+.probe/
+
+# ---------------------------------------------------------------------------
+# Raw data store — 131 parquet files pulled from OpenBB/FRED.
+# Regenerable from the series registry; pinning market data in git would make
+# every snapshot a multi-MB blob and would let a stale vintage masquerade as
+# current. The registry (config/series_registry.yaml) IS committed.
+# ---------------------------------------------------------------------------
+data/raw/
+data/cache/
+*.parquet
+
+# ---------------------------------------------------------------------------
+# WorkBuddy local state — agent memory is useful but is not source.
+# Uncomment the second line if you would rather keep project notes local.
+# ---------------------------------------------------------------------------
+.workbuddy-ai/memory/*.md
+# .workbuddy-ai/
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~

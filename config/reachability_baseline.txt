@@ -1,0 +1,79 @@
+# config/reachability_baseline.txt
+#
+# The Tier 1-4 model functions known to have no pipeline caller, as
+# measured by tools/reachability_audit.py. Regenerate with:
+#
+#     uv run python tools/reachability_audit.py --write-baseline
+#
+# WHY A BASELINE AND NOT A HARD FAIL. Every entry here is a known,
+# triaged finding: either Phase 4+ by endpoint (the risk/portfolio
+# suite) or blocked on data that no reachable route supplies (the FCI's
+# three missing series). Failing CI on all of them would make the gate
+# something people learn to ignore within a week. What the gate DOES
+# fail on is a REGRESSION — a function that was reachable and stopped
+# being — and an entry that leaves this file without being wired, which
+# is how a decision to drop a function gets recorded rather than
+# silently absorbed by a baseline refresh.
+#
+# Removing a line from this file is a claim that the function is now
+# reachable. The audit checks that claim.
+
+ahe_composition_flag
+auction_demand_signal
+bayesian_update
+beveridge_curve_position
+beveridge_shift_tolerance
+check_trilemma_tension
+claims_corroboration
+claims_trend_signal
+compute_fci
+construct_breakeven_trade
+construct_cross_market_rv
+construct_duration_weighted_curve_trade
+convexity
+count_independent_families
+credit_spread_attribution
+cross_asset_transmission
+decompose_yield
+expected_shortfall
+expected_value
+fisher_index
+four_pillar_scorecard
+gdp_deflator
+growth_accounting_decomposition
+historical_var
+inflation_convergence_classifier
+inversion_probability_adjustment
+laspeyres_index
+latest_observation
+leading_indicator_proxy
+macaulay_duration
+marginal_risk_contributions
+minsky_composition_drift
+modified_duration
+nfp_revision_adjusted_read
+observation_on_or_before
+openings_to_unemployed_ratio
+output_gap
+paasche_index
+parametric_var
+phillips_curve_inflation
+policy_mix_classifier
+portfolio_volatility_n_asset
+portfolio_volatility_two_asset
+potential_gdp_cobb_douglas
+ppi_pipeline_signal
+price_bond
+price_change_with_convexity
+project_inflation_trajectory
+project_shelter_cpi
+qe_qt_stance
+quantity_theory_implied_inflation
+real_policy_rate
+realized_vol_simple
+repo_stress_check
+savings_investment_identity
+simple_gdp_nowcast
+tag_evidence_source
+two_survey_divergence
+z_score_for_confidence

@@ -1,0 +1,37 @@
+# config/logging.yaml
+#
+# AGENTS.md Section 10.3 — structured JSON logging.
+# Emitted as one JSON object per line so logs are machine-parseable by any
+# standard aggregator without a custom parser.
+
+version: 1
+
+formatters:
+  json:
+    format: "%(message)s"
+    class: "macro_engine.data_layer.logging_json.JsonFormatter"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: json
+    stream: "ext://sys.stdout"
+
+root:
+  level: INFO
+  handlers: [console]
+
+loggers:
+  macro_engine:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+  # httpx logs every request at INFO, which drowns the data-layer signal
+  # during a 20-series snapshot fetch. Warnings still surface.
+  httpx:
+    level: WARNING
+
+  openbb:
+    level: WARNING

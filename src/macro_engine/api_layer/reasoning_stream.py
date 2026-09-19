@@ -1,0 +1,280 @@
+"""``/thesis/{country}/stream`` — the reasoning trace, with real numbers (Section 8.3).
+
+What the spec's sample does, and why it cannot ship
+---------------------------------------------------
+Section 8.3 writes the steps as a literal list::
+
+    {"step": "fetch_data", "status": "done", "detail": "Snapshot retrieved, 14 series"}
+    {"step": "compute_gap", "status": "done", "detail": "... gap = -140bp"}
+    {"step": "classify_convergence", "status": "done", "detail": "HIGH convergence ..."}
+    {"step": "build_thesis", "status": "done", "detail": "Thesis assembled: long UST 2yr, ..."}
+
+Every one of those four details is a number the models produce, typed into a
+string. The stream would therefore **emitted identical text on every run** — a
+live "thinking" trace that says the gap is -140bp on a day it is +38bp, and
+"HIGH convergence" on a day the builder stood the sentence down.
+
+This is the same defect class as the literals ``live_builder_check.py`` carried
+(``0.2 / 0.3 / 0.1 / -0.4``): a plausible, precise, fabricated number that no
+type checker and no schema can catch, because a string is a valid string. The
+difference is that a streaming trace is *designed* to look live, which makes the
+fabrication worse — the format itself asserts that these values were just
+measured.
+
+So the generator here runs the real chain and emits what it measured. Where the
+spec's sample states a value, this states the same **kind** of value, computed:
+
+==================================  ==============================================
+spec's sample                       emitted here
+==================================  ==============================================
+``"14 series"``                     the real requested/succeeded/failed counts
+``"9 models completed"``            the real count of reads + rules
+``"gap = -140bp"``                  ``gap.raw_gap`` and the ensemble, in bp
+``"HIGH convergence"``              the real ``ConvergenceClassification``
+``"long UST 2yr"``                  the real instrument and direction
+==================================  ==============================================
+
+The event shape is unchanged — ``{"step", "status", "detail"}`` — because that is
+what OpenBB's AI SDK consumes, and the contract is the format, not the numbers.
+
+Two additions the sample needs
+------------------------------
+* **A terminal ``error`` event.** The sample has no failure path at all; its
+  generator cannot fail because it does nothing. A real generator that raised
+  mid-stream would leave the client with a truncated trace and no way to tell
+  truncation from completion, so every failure becomes a final event with
+  ``status="error"`` followed by ``[DONE]``.
+* **``[DONE]``.** An SSE client needs a terminator to distinguish "the stream
+  ended" from "the connection dropped". Every event list ends with it.
+
+Section 16.3 applies here too: a stand-down emits ``status="ok"`` steps
+describing the gate that fired. It is not an error event, because "the models
+agree there is no edge" is a completed analysis, not a failure.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
+
+from macro_engine.api_layer.orchestration import (
+    OrchestrationError,
+    snapshot_to_thesis_inputs,
+)
+from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError, get_snapshot
+from macro_engine.thesis_layer.builder import build_policy_gap, build_us_macro_thesis
+from macro_engine.thesis_layer.no_trade import NO_TRADE_TRIGGER_LABELS, NoTradeTrigger
+
+router = APIRouter(tags=["streaming"])
+
+_TRIGGERS: tuple[NoTradeTrigger, ...] = (
+    "gap_below_dispersion",
+    "conflicted_signals",
+    "no_falsifier",
+)
+
+
+def _event(step: str, status: str, detail: str) -> str:
+    """One SSE frame. ``data: <json>\\n\\n`` — the format the spec fixes."""
+    return f"data: {json.dumps({'step': step, 'status': status, 'detail': detail})}\n\n"
+
+
+def _fired(thesis_warnings: list[str]) -> list[NoTradeTrigger]:
+    """Which stand-down gate fired, read off the published warnings.
+
+    Read from the thesis rather than recomputed from the gate objects, so the
+    trace cannot disagree with the thesis it is describing: if the builder said
+    Q7, the trace says Q7. A second computation would be a second definition of
+    the same fact, which is the D-067 attribution defect in the trace position.
+    """
+    return [
+        trigger
+        for trigger in _TRIGGERS
+        if any(NO_TRADE_TRIGGER_LABELS[trigger] in w for w in thesis_warnings)
+    ]
+
+
+async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
+    """Run the real chain, emitting what each stage actually measured.
+
+    The steps are yielded as the work happens rather than pre-computed and
+    replayed: ``build_snapshot`` is synchronous and slow (measured 9.5s
+    in-process, 223.6s over the local OpenBB API), so the ``fetch_data``
+    ``started`` event is emitted *before* the call and the client sees motion
+    during the wait. Pre-computing would make the trace an animation over a
+    frozen result — the same fabrication as the hardcoded literals, one layer up.
+    """
+    yield _event("fetch_data", "started", f"Loading the {country} macro snapshot via OpenBB")
+
+    try:
+        snapshot, provenance = get_snapshot(country)
+    except NotImplementedError as exc:
+        yield _event("fetch_data", "error", f"country '{country}' is not implemented: {exc}")
+        yield "data: [DONE]\n\n"
+        return
+    except SnapshotUnavailableError as exc:
+        yield _event("fetch_data", "error", f"the snapshot could not be built: {exc}")
+        yield "data: [DONE]\n\n"
+        return
+
+    if provenance.from_cache:
+        detail = (
+            f"Snapshot reused from cache, {provenance.age_hours:.1f}h old "
+            f"({len(provenance.succeeded_fields)} fields)"
+        )
+    else:
+        seconds = provenance.build_seconds or 0.0
+        detail = (
+            f"Snapshot built in {seconds:.1f}s — "
+            f"{len(provenance.succeeded_fields)} field(s) fetched, "
+            f"{len(provenance.failed_fields)} failed"
+        )
+    yield _event("fetch_data", "done", detail)
+
+    if provenance.failed_fields:
+        yield _event(
+            "fetch_data",
+            "warning",
+            f"{len(provenance.failed_fields)} field(s) unavailable: "
+            f"{sorted(provenance.failed_fields)} — models reading them will refuse "
+            f"rather than substitute",
+        )
+    if provenance.age_exceeds_max:
+        yield _event(
+            "fetch_data",
+            "warning",
+            f"Snapshot is STALE: {provenance.age_hours:.1f}h old, beyond the "
+            f"{provenance.max_age_hours:.1f}h limit",
+        )
+
+    yield _event(
+        "derive_inputs",
+        "started",
+        "Deriving the builder's inputs from the snapshot (no literals)",
+    )
+    try:
+        inputs = snapshot_to_thesis_inputs(snapshot)
+    except OrchestrationError as exc:
+        yield _event(
+            "derive_inputs",
+            "error",
+            f"a required series could not be read (fields={list(exc.fields)}): {exc}",
+        )
+        yield "data: [DONE]\n\n"
+        return
+    yield _event(
+        "derive_inputs",
+        "done",
+        f"{len(inputs.notes)} input(s) derived: "
+        + ", ".join(
+            f"{n.name}={n.value}"
+            for n in inputs.notes
+            if n.name
+            in {
+                "short_yield",
+                "pi_current",
+                "initial_claims_4wk_avg_change_pct",
+                "jolts_openings_yoy_pct",
+                "jolts_quits_level_percentile",
+            }
+        ),
+    )
+
+    yield _event("run_models", "started", "Running the policy rules and the gap")
+    gap, rules, _ensemble, market_path = build_policy_gap(
+        inputs.taylor_inputs,
+        inputs.first_difference_inputs,
+        short_yield=inputs.short_yield,
+        short_tenor_term_premium=None,
+    )
+    rule_values = {rule.model_name: rule.value for rule in rules}
+    yield _event(
+        "run_models",
+        "done",
+        f"{len(rules)} policy rule(s) evaluated: "
+        + ", ".join(f"{name}={value}" for name, value in rule_values.items()),
+    )
+    yield _event(
+        "compute_gap",
+        "done",
+        f"Model-implied {market_path.value!r} vs market-implied policy path: "
+        f"gap = {gap.raw_gap:+.4f}pp ({gap.raw_gap * 100:+.1f}bp), "
+        f"dispersion {gap.dispersion:.4f}pp, meaningful={gap.is_meaningful}",
+    )
+
+    yield _event("build_thesis", "started", "Running the gate chain and building the thesis")
+    try:
+        thesis = build_us_macro_thesis(
+            inputs.reads,
+            inputs.taylor_inputs,
+            inputs.first_difference_inputs,
+            thesis_type=inputs.thesis_type,
+            universe=inputs.universe,
+            short_yield=inputs.short_yield,
+            regime=inputs.regime,
+        )
+    except Exception as exc:
+        yield _event("build_thesis", "error", f"the builder raised {type(exc).__name__}: {exc}")
+        yield "data: [DONE]\n\n"
+        return
+
+    fired = _fired(thesis.warnings)
+    if fired:
+        # A stand-down is a COMPLETED analysis, so its steps are ok/`done` with
+        # the gate named — never an error event (Section 16.3).
+        yield _event(
+            "classify_convergence",
+            "done",
+            f"convergence={thesis.convergence_classification.value}",
+        )
+        yield _event(
+            "build_thesis",
+            "done",
+            f"Thesis stood down by {', '.join(fired)}: status={thesis.status.value}, "
+            f"instrument={thesis.trade_idea.instrument!r}, "
+            f"{len(thesis.warnings)} warning(s) carried",
+        )
+    else:
+        yield _event(
+            "classify_convergence",
+            "done",
+            f"convergence={thesis.convergence_classification.value}",
+        )
+        yield _event(
+            "build_thesis",
+            "done",
+            f"Thesis assembled: status={thesis.status.value}, "
+            f"instrument={thesis.trade_idea.instrument!r}, "
+            f"direction={thesis.trade_idea.direction!r}, "
+            f"timeframe={thesis.trade_idea.timeframe!r}, "
+            f"thesis_id={thesis.thesis_id}",
+        )
+
+    yield "data: [DONE]\n\n"
+
+
+@router.get("/{country}/stream")
+async def stream_thesis_reasoning(country: str) -> StreamingResponse:
+    """The reasoning trace as SSE, running the real chain.
+
+    Country validation happens **before** the stream starts, so an unimplemented
+    country gets a 501 rather than a 200 whose body contains one error event. A
+    client that has already opened a stream and is parsing frames cannot be told
+    "you asked for the wrong thing" — by then it has committed to reading events.
+    """
+    if country != "us":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"country '{country}' is not implemented (Section 22.3); the system is "
+                f"US-only through Phase 4. Validated before the stream opens so the "
+                f"caller gets a status code rather than an error frame."
+            ),
+        )
+    return StreamingResponse(
+        reasoning_step_generator(country),
+        media_type="text/event-stream",
+    )
