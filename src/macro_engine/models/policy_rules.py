@@ -461,6 +461,92 @@ def policy_rule_ensemble(
         context=reading,
         inputs_used=["taylor_rule", "balanced_approach_rule", "first_difference_rule"],
         warnings=[] if agreement == "CONVERGED" else [reading],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent (each rule's prescribed rate; dispersion in percentage points)",
+        direction=(
+            f"{'CONVERGED' if agreement == 'CONVERGED' else 'DISPERSED'}: the three "
+            f"rules prescribe rates spanning "
+            f"{dispersion_pp:.2f}pp — this is the model's OWN uncertainty, not a "
+            f"market signal"
+        ),
+        assumptions=[
+            "AVERAGING/SUMMARY IS LEGITIMATE ONLY BECAUSE Section 22.4 names the "
+            "median of the three rules as the canonical model-implied value. The "
+            "median is not a vote: it is the middle of three numbers, so a single "
+            "outlier rule cannot drag it.",
+            "DISPERSION IS THE NOISE FLOOR. The spread among the three rules is "
+            "treated as the model's own uncertainty, and the significance test "
+            "compares the model-vs-market gap against it. That is a modelling "
+            "choice: three rules sharing a target and a functional form is a "
+            "NARROW disagreement set, so the floor is likely understated relative "
+            "to true model uncertainty (the possibility that the correct reaction "
+            "function is not in the family at all).",
+            "The three rules are treated as comparable quantities: each prescribes "
+            "a policy rate in percent on the same basis. Mixing a rule that "
+            "prescribes a LEVEL with one that prescribes a CHANGE would make the "
+            "dispersion meaningless.",
+            "Confidence is the MINIMUM of the three inputs', on the principle that "
+            "a summary cannot be more trustworthy than what it summarises.",
+        ],
+        data_provenance=[
+            "taylor_rule — Taylor Rule prescribed rate, from "
+            "TaylorRuleInputs(r_star, pi_current, output_gap)",
+            "balanced_approach_rule — the balanced-approach rule, same inputs",
+            "first_difference_rule — the first-difference rule, from "
+            "FirstDifferenceInputs(i_prev, pi_current, output_gap_change)",
+            "r_star is config-sourced (settings, CBO/HLW estimate) and is itself "
+            "UNOBSERVABLE; both rules inherit that. The market leg is NOT part of "
+            "this result — it is derived separately and combined in "
+            "canonical_policy_gap.",
+        ],
+        limitations=[
+            "THE DISPERSION IS THE POINT, NOT AN ERROR BAR. Three rules that "
+            "disagree by 80bp cannot support a claim about a 50bp gap. Reading "
+            "the ensemble as a single 'model view' and its dispersion as noise to "
+            "be averaged away inverts the model's design — the dispersion IS the "
+            "noise floor, and Section 16.2 Q6 uses it as the significance "
+            "threshold.",
+            "ALL THREE RULES SHARE A TARGET AND A FUNCTIONAL FORM, so agreement "
+            "among them is weak evidence of correctness. They are not three "
+            "independent methodologies; they are three parameterisations of one "
+            "family. Genuine model uncertainty — that the right reaction function "
+            "is not in the family — is NOT represented here.",
+            "r_star IS UNOBSERVABLE (Section 21.4 item 13) and enters the Taylor "
+            "and balanced-approach rules directly. A wrong r_star shifts those "
+            "two rules together and can leave the dispersion narrow while the "
+            "level is wrong.",
+            "The rules are prescribed RATES, not forecasts. Nothing here says the "
+            "Fed will set such a rate, or when.",
+            "Points-in-time: the inputs are read from the snapshot at one as_of, "
+            "and no release or vintage datetime is available (Section 6, "
+            "measured 2026-09-19). The output_gap term is revision-dependent, so "
+            "the ensemble is too.",
+        ],
+        decision_relevance=(
+            "The MODEL side of Section 16.2's Q6 gap — the median of these three "
+            "rules is what the market-implied path is compared against, and the "
+            "dispersion is the threshold that comparison uses. So this result "
+            "supplies BOTH quantities in the significance test, which is why it "
+            "is carried on the thesis rather than folded away."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a single 'model view' with the dispersion as "
+            "noise to be averaged away. Section 22.4 makes the dispersion the "
+            "noise floor itself; treating it as an error bar around a central "
+            "estimate — the reading this prohibition exists for — would "
+            "manufacture confidence the model does not have.",
+            "MUST NOT be used to claim the model has THREE independent "
+            "confirmations. The three rules share a target and a functional form, "
+            "so agreement among them is much weaker than three disjoint "
+            "methodologies agreeing, and Section 12's independence discipline "
+            "applies.",
+            "MUST NOT be compared against a market-implied value produced by a "
+            "DIFFERENT market leg than the one canonical_policy_gap uses — the "
+            "gap is only the gap under Section 22.4's single definition.",
+            "MUST NOT be read as a forecast of the policy rate, and MUST NOT be "
+            "consumed without its dispersion: a bare median rate is "
+            "uninterpretable without the spread it summarises.",
+        ],
     )
 
 

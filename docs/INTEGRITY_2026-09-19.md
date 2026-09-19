@@ -548,6 +548,59 @@ matching the pre-existing figure, now measured more accurately.
 
 ---
 
+### Increment 6 — the three functions the hand trace missed, and the sentinel
+
+This increment was forced by a *finding about the previous increment's own
+claim*, which is why it is written up here rather than folded into Increment 5.
+
+Increment 5 reported *"9 of 76 sites — every result the live thesis consumes"*.
+That claim was constructed by **reading** the builder and following the objects
+it appeared to read. An **AST inventory** of construction sites contradicted it:
+three live-path functions were unpopulated, and one of them
+(`select_instrument`) had two result sites rather than one. The claim was an
+overstatement produced by the same mechanism this whole audit targets — a
+confident assertion that a closer reading does not support.
+
+**The four sites now populated:**
+
+| Function | File | The load-bearing content |
+|---|---|---|
+| `policy_rule_ensemble` | `policy_rules.py` | Dispersion is the **noise floor itself**, not an error bar to average away; the three rules share a target *and a functional form*, so agreement is weak evidence and *"the right reaction function is not in the family"* is unrepresented |
+| `classify_convergence` | `convergence.py` | The verdict is statement about **evidence diversity, not a probability**; independence is **declared, not verified**; `non_neutral_signals` bounds what a HIGH verdict can mean |
+| `select_instrument` (executable) | `instrument_selection.py` | It selects an **expression, not edge**; a clean instrument for a sub-noise gap is still a sub-noise gap |
+| `_sentinel_result` | `instrument_selection.py` | Confidence is a **confident negative**, not a degree of belief; the independence credit is a **true zero** identical to the executable branch's — a difference of *no factors* |
+
+**A real defect the tests found in the source (not the test).** The first run of
+`test_ensemble_says_the_dispersion_is_the_point_not_an_error_bar` failed. The
+cause was not the test: `policy_rule_ensemble`'s `limitations` said *"NOT AN
+ERROR BAR"* while its `decision_prohibition` — the field a consumer is expected
+to **act on** — said only "noise" and never named the error-bar misreading it
+exists to forbid. The two fields disagreed, and the field that carries the
+instruction was the weaker one. Fixed by naming the error-bar reading explicitly
+in the prohibition. A test that had asserted only on `limitations` would have
+passed and missed this entirely.
+
+**Tests:** 22 new, in `TestGapProducersAndRoutingArePopulated`. Four regressions
+were planted and each was caught **by its intended test**: reverting the sentinel
+confidence to the literal `0.0` the specification originally suggested; calling a
+sentinel's `unit` an instrument name; deleting the `non_neutral_signals`
+requirement; and removing the noise-floor clause while leaving the error-bar
+clause. The last is the important one — it is the two-clause **AND** that an
+earlier weak assertion in this file had failed to enforce.
+
+**Gates after:** `ruff` clean · `ruff format` clean (206 files) · `mypy` clean
+(76 source files) · **pytest 2178 passed, 1 skipped, 0 failed** (was 2156) ·
+baseline gate PASS (59 = 59) · live thesis unchanged (`WATCH`, gap `+0.2600pp` vs
+dispersion `0.8600pp`, `meaningful=False`).
+
+**The two `confidence=1.0` literals remain** on the live path
+(`scorecard.py:271`, `builder.py:496`). They are the documented census carriers
+for `count_independent_families`, and the prose that says so is now attached to
+`_as_signal`. They are not defects to remove; they are values that cannot state
+their own nature, which is why the reasoning object carries the statement.
+
+---
+
 ## Open items for your decision — and the honest scope of what remains
 
 1. **§3/§4 contract widening — SCHEMA DONE, LIVE PATH POPULATED.** `ModelResult`
@@ -561,21 +614,40 @@ matching the pre-existing figure, now measured more accurately.
    **The schema was not the whole requirement.** Schematising the fields made them
    safe to add but left them empty everywhere, and that gap is invisible from the
    outside: `limitations=[]` and `limitations=[...three real caveats...]` are both
-   valid, both serialize, and both pass any test that checks only the schema. The
-   **two functions the live thesis actually reads are now POPULATED**:
-   `classify_regime_rule_based` (Q1's fourth read) carries 5 limitations, 4
-   prohibitions, 4 assumptions and 4 provenance entries; `_as_signal` (Q6's
-   significance carrier) declares that its `confidence=1.0` is a census **carrier
-   and not a measurement** — a fact the number itself cannot state, so only the
-   prose can carry it.
+   valid, both serialize, and both pass any test that checks only the schema.
+   **The results the live thesis reads are now POPULATED**: `classify_regime_rule_based`
+   (Q1's fourth read) carries 5 limitations, 4 prohibitions, 4 assumptions and 4
+   provenance entries; `_as_signal` (Q6's significance carrier) declares that its
+   `confidence=1.0` is a census **carrier and not a measurement** — a fact the
+   number itself cannot state, so only the prose can carry it.
 
-   What remains is the other ~67 models, in `ModelResult` construction-site terms
-   (76 sites total, **9 populated** — every result the live thesis consumes: the
-   regime, the gap carrier, Q1's three reads, the two curve reads, and the two
-   results that form the gap itself). This is per-model work whose correctness
+   **A coverage claim in this report was wrong, and the correction is the point.**
+   An earlier draft of this section said *9 of 76 sites populated — every result
+   the live thesis consumes*, and named the set as "the regime, the gap carrier,
+   Q1's three reads, the two curve reads, and the two results that form the gap".
+   That was an overstatement. Tracing the live path **by hand** had followed the
+   objects it happened to read; an **AST inventory** of every `ModelResult(...)`
+   construction site then found three further live-path functions that the hand
+   trace missed — `policy_rule_ensemble` and `classify_convergence` in the builder,
+   and `select_instrument` — and that `select_instrument` has **two** result sites
+   (an executable branch and a sentinel branch), not one. So the honest number is
+   **not 9 and the named set was incomplete**, which is the same defect class this
+   whole audit exists to find: a confident claim that closer inspection does not
+   support.
+
+   The corrected figures are **measured, not recalled**: the AST inventory over
+   `src/**/*.py` finds **78** `ModelResult`/`PolicyRuleResult` construction sites,
+   of which exactly **13** set `unit=` — and because every populated site was
+   populated with all six fields at once, `unit=` is a faithful proxy for "this
+   site carries the reasoning object". This is worth stating plainly because my
+   first attempt at the correction said *15*, which was itself an unverified
+   number; the AST said 13. Replacing one recalled figure with another recalled
+   figure is the failure mode, not the fix.
+
+   What remains is the other 65 sites. This is per-model work whose correctness
    cannot be checked in one pass, so it is deliberately left incremental:
    **populate field-by-field as each model is next touched.** The pattern is now
-   demonstrated rather than proposed — see the four test classes in
+   demonstrated rather than proposed — see the test classes in
    `tests/models/test_reasoning_contract.py`, all proven RED by planting
    regressions.
 
@@ -616,8 +688,9 @@ series, cannot present a single-axis regime read as a joint one without saying s
 and correctly refuses to trade on a sub-noise gap.
 
 What remains is honest and named: (a) **populating** — not schematising — the
-reasoning fields across the remaining models (9 of 76 construction sites done,
-which is **every result the live thesis consumes**); (b) release/vintage
+reasoning fields across the remaining models (**13 of 78 construction sites
+done**, AST-counted, which is every result the live thesis consumes *as verified
+by an AST trace rather than by reading*); (b) release/vintage
 **data**, which is unreachable on this installation rather than unimplemented;
 and (c) the standing capability gap DEF-001. None is an integrity failure.
 **No Phase 4 work was started.**

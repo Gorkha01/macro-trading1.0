@@ -359,6 +359,95 @@ def _sentinel_result(
         context=context,
         inputs_used=["thesis_type"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit=(
+            "categorical (a sentinel value naming WHY there is no production "
+            "instrument — not an instrument name)"
+        ),
+        direction=(
+            "NO DIRECTION: a sentinel names the absence of an expression, so "
+            "there is no trade side to state. `direction_word` is deliberately "
+            "absent from this branch (see decision_prohibition)."
+        ),
+        assumptions=[
+            "THERE IS NO PRODUCTION INSTRUMENT FOR THIS THESIS. The branch is "
+            "reached only by a routing decision — a blocked multi-country thesis "
+            "or an analytical (non-tradable) case — so the absence of an "
+            "instrument is a STRUCTURAL FACT about the thesis, not a failure of "
+            "this function to find one.",
+            "The reason for the absence is correctly attributed. `value` names "
+            "WHY (the sentinel), so a consumer can distinguish 'not tradable as "
+            "constructed' from 'tradable in principle but outside this book'. "
+            "The two call for different follow-ups.",
+            "The routing decision that produced this sentinel is itself sound: "
+            "this function trusts the caller's thesis_type rather than "
+            "re-deriving it, so a mis-typed thesis yields a confidently-reported "
+            "wrong sentinel rather than an error here.",
+        ],
+        data_provenance=[
+            "thesis_type — resolved by the orchestrator from the caller or "
+            "settings.api.default_thesis_type; it is the ONLY input, which is "
+            "why `inputs_used` records just this one field",
+            "`value`/`interpretation`/`context`/`warnings` — supplied by the "
+            "call site that decided no production instrument exists, so this "
+            "function does not itself inspect the universe on this branch",
+            "Confidence is COMPUTED like every other branch, not hand-set. "
+            "`independence_count` is a config leaf whose value on this branch is "
+            "a TRUE ZERO (a routing decision carries no corroboration), and "
+            "`depends_on_unobservable` is False because nothing here rests on "
+            "r*, u* or potential GDP.",
+        ],
+        limitations=[
+            "CONFIDENCE ON A SENTINEL IS A CONFIDENT NEGATIVE, NOT A DEGREE OF "
+            "BELIEF. Reporting it at 0.0 would state the opposite of the truth: "
+            "the claim 'this thesis has no production expression' is known, not "
+            "unknown. So a high confidence here means the ABSENCE is "
+            "well-established — it does NOT mean an instrument was found, and "
+            "it does NOT mean the thesis is tradable.",
+            "THE INDEPENDENCE CREDIT IS A TRUE ZERO FOR BOTH SENTINEL CASES, and "
+            "that zero is the SAME zero the executable branches receive. The "
+            "confidence difference between a sentinel and an instrument is "
+            "therefore a difference of NO factors — not a hand-set penalty "
+            "applied to sentinels. A reader who treats the two confidence values "
+            "as different kinds of quantity will misread one of them.",
+            "NO ALTERNATIVE EXPRESSION IS CONSIDERED. The function reports that "
+            "the thesis has no instrument in THIS universe under SECTION 15's "
+            "table; it does not search for a substitute, and it does not say "
+            "whether a differently-constructed thesis on the same view would be "
+            "expressible.",
+            "THE SENTINEL VALUE IS NOT AN INSTRUMENT NAME despite sharing a "
+            "field with one. Any consumer that reads `value` as a ticker without "
+            "checking `is_production`/the sentinel set will route a "
+            "non-existent instrument downstream.",
+            "Points-in-time: a routing decision is deterministic in its inputs "
+            "and carries no vintage risk of its own; the confidence inherits the "
+            "config leaves' vintage, not a data vintage (Section 6).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q9 — the instrument — where the answer is NONE. Its "
+            "`value` becomes the thesis's `trade_idea.instrument`, and a "
+            "sentinel is what makes a thesis honestly expressible as NO TRADE "
+            "rather than as a fabricated expression. This is the branch that "
+            "lets the system decline to trade."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a recommendation, a weak recommendation, or a "
+            "trade at confidence 0. It is a statement that there is no trade to "
+            "express, and the confidence describes how well-established that "
+            "absence is.",
+            "MUST NOT have its `value` consumed as an instrument name. The field "
+            "is SHARED with the executable branch by schema, not by meaning; a "
+            "consumer must branch on whether the result is a sentinel before "
+            "treating `value` as a ticker.",
+            "MUST NOT be reported with `direction_word`, which exists only on "
+            "the executable branch. A position side attached to a sentinel would "
+            "imply an expression that this result explicitly denies.",
+            "MUST NOT be read as evidence about the thesis's correctness. The "
+            "same sentinel would be returned for this thesis_type regardless of "
+            "whether the underlying view is right — and, symmetrically, MUST NOT "
+            "be taken to mean the view was judged WRONG. It was judged "
+            "inexpressible in this book, which is a different claim.",
+        ],
     )
 
 
@@ -516,6 +605,73 @@ def select_instrument(
         interpretation=f"Selected: {instrument}",
         context=rationale,
         inputs_used=["thesis_type", "gap_direction"],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="categorical (an instrument name from the production universe)",
+        direction=(f"{direction_word}: the thesis's gap direction, expressed through {instrument}"),
+        assumptions=[
+            "The instrument named by Section 15's selection table for this "
+            "(thesis_type, gap_direction) pair is the correct expression of the "
+            "view. The table is a curated mapping, not an optimisation: it "
+            "encodes which instrument a desk would use, not which has the best "
+            "expected payoff.",
+            "The chosen instrument is a member of the supplied `universe`. This "
+            "was CHECKED before returning rather than assumed — a template edited "
+            "to name something outside FX/rates/equity indices fails at this "
+            "function rather than at the desk (Section 22.12).",
+            "`gap_direction` was read from the gap's own sign, not inferred here. "
+            "The selection consumes a direction someone else established.",
+        ],
+        data_provenance=[
+            "thesis_type — resolved by the orchestrator from the caller or "
+            "settings.api.default_thesis_type",
+            "gap_direction — from _gap_direction(gap), i.e. the sign of the "
+            "canonical model-vs-market gap (Section 22.4)",
+            "universe — a ProductionUniverse, validated for membership; the "
+            "observed category is echoed as `universe_category`",
+            "Selection templates are config-sourced "
+            "(settings.instrument_selection), including the "
+            "heuristic_not_calibrated and independence_count leaves that feed "
+            "the confidence",
+        ],
+        limitations=[
+            "IT SELECTS AN EXPRESSION, NOT EDGE. That a clean instrument exists "
+            "for this view says nothing about whether the view is right, and "
+            "nothing about whether it is worth trading — the significance test "
+            "(Q6) already ran and is separate.",
+            "THE MAPPING IS CURATED, NOT OPTIMISED: the table is a desk "
+            "convention. A different desk might express the same view with a "
+            "different instrument, and nothing here establishes that this is the "
+            "best available expression.",
+            "NO SIZING, NO COST, NO LIQUIDITY. The function names an instrument "
+            "and stops; it does not consider transaction costs, market impact, "
+            "or whether the instrument is actually tradable at the size the "
+            "thesis would imply.",
+            "The confidence is heuristic by construction "
+            "(heuristic_not_calibrated is a config leaf), so it states the "
+            "quality of a lookup rather than of a measurement.",
+            "Points-in-time: the selection is deterministic in its inputs, so it "
+            "carries no vintage risk of its own — but the gap_direction it "
+            "consumes inherits the gap's revision exposure (Section 6, measured "
+            "2026-09-19).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q9 — the instrument. Its `instrument` value becomes "
+            "the thesis's `trade_idea.instrument`, so this result is what makes a "
+            "thesis expressible as a trade at all."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a recommendation to trade. Instrument selection "
+            "is one gate among many, and the significance test that decides "
+            "whether any trade is warranted has already run separately.",
+            "MUST NOT be used to justify a trade whose gap was not significant. "
+            "A clean, executable instrument for a sub-noise gap is still a "
+            "sub-noise gap (Section 16.3).",
+            "MUST NOT be treated as evidence about the thesis's correctness: the "
+            "same instrument would be selected for the same view regardless of "
+            "whether the view is right.",
+            "MUST NOT be consumed without `direction_word`: the instrument alone "
+            "does not say which way the position is taken.",
+        ],
     )
 
 

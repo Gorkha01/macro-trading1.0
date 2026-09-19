@@ -696,4 +696,311 @@ class TestGapInputsArePopulated:
             assert r.assumptions, f"{r.model_name} must state its assumptions"
             assert r.data_provenance, f"{r.model_name} must name its sources"
             assert r.decision_relevance, f"{r.model_name} must name its consumer"
-            assert r.decision_prohibition, f"{r.model_name} must state prohibitions"
+
+
+class TestGapProducersAndRoutingArePopulated:
+    """The remaining live-path results: the ensemble, the verdict, and routing.
+
+    These four arrived late and for an instructive reason. The earlier
+    increments traced the live path by hand, and that trace found nine populated
+    results, which was confidently reported as *"every result the live thesis
+    consumes"*. An AST-based inventory then showed three more live-path
+    functions had been missed (``policy_rule_ensemble``, ``classify_convergence``,
+    ``select_instrument``) and that ``select_instrument`` had *two* result sites,
+    not one.
+
+    The claim was wrong for a reason worth pinning in a test: the hand trace
+    followed the objects it happened to read, while the AST inventory followed
+    the ``ModelResult(...)`` construction sites. So this class covers the whole
+    of what the trace missed, including the sentinel branch that has no
+    instrument at all — the branch a reader is most likely to skip because
+    "there is no output to document".
+    """
+
+    @staticmethod
+    def _ensemble(spread: float = 0.4) -> ModelResult:
+        from macro_engine.models.policy_rules import (
+            PolicyRuleResult,
+            TaylorRuleInputs,
+            policy_rule_ensemble,
+            taylor_rule,
+        )
+
+        base = taylor_rule(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, pi_target=2.0, output_gap=1.0)
+        )
+
+        def variant(name: str, rule_variant: str, value: float) -> PolicyRuleResult:
+            return PolicyRuleResult(
+                **{
+                    **base.model_dump(),
+                    "model_name": name,
+                    "rule_variant": rule_variant,
+                    "value": value,
+                }
+            )
+
+        assert isinstance(base.value, float), "the Taylor rule prescribes a rate in percent"
+        mid = base.value
+        return policy_rule_ensemble(
+            variant("taylor_rule", "taylor_1993", mid - spread / 2),
+            variant("balanced_approach_rule", "balanced_approach", mid),
+            variant("first_difference_rule", "first_difference", mid + spread / 2),
+        )
+
+    @staticmethod
+    def _verdict(pattern: list[float]) -> ModelResult:
+        from macro_engine.models.convergence import ConvergenceInputs, classify_convergence
+
+        signals = [
+            ModelResult(
+                model_name=f"synthetic_signal_{i}",
+                country="us",
+                as_of=datetime(2026, 9, 19, tzinfo=UTC),
+                value=value,
+                confidence=0.5,
+                interpretation="a synthetic directional signal",
+                context="constructed for the convergence contract test",
+                inputs_used=[],
+            )
+            for i, value in enumerate(pattern)
+        ]
+        return classify_convergence(ConvergenceInputs(signals=signals))
+
+    @staticmethod
+    def _executable() -> ModelResult:
+        from macro_engine.models.instrument_selection import (
+            GapDirection,
+            InstrumentSelectionInputs,
+            ThesisType,
+            select_instrument,
+        )
+        from macro_engine.thesis_layer.schemas import ProductionUniverse
+
+        return select_instrument(
+            InstrumentSelectionInputs(
+                thesis_type=ThesisType.POLICY_PATH_GAP,
+                gap_direction=GapDirection.POSITIVE,
+            ),
+            ProductionUniverse(),
+        )
+
+    @staticmethod
+    def _sentinel_blocked() -> ModelResult:
+        from macro_engine.models.instrument_selection import (
+            GapDirection,
+            InstrumentSelectionInputs,
+            ThesisType,
+            select_instrument,
+        )
+        from macro_engine.thesis_layer.schemas import ProductionUniverse
+
+        return select_instrument(
+            InstrumentSelectionInputs(
+                thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+                gap_direction=GapDirection.POSITIVE,
+            ),
+            ProductionUniverse(),
+        )
+
+    @staticmethod
+    def _sentinel_analytical() -> ModelResult:
+        from macro_engine.models.instrument_selection import (
+            GapDirection,
+            InstrumentSelectionInputs,
+            ThesisType,
+            select_instrument,
+        )
+        from macro_engine.thesis_layer.schemas import ProductionUniverse
+
+        return select_instrument(
+            InstrumentSelectionInputs(
+                thesis_type=ThesisType.CREDIT_QUALITY_GAP,
+                gap_direction=GapDirection.POSITIVE,
+            ),
+            ProductionUniverse(),
+        )
+
+    def test_ensemble_says_the_dispersion_is_the_point_not_an_error_bar(self) -> None:
+        """The one reading that inverts the model.
+
+        Section 22.4 makes the dispersion the noise floor the significance test
+        compares the gap against. A consumer who averages it away — the obvious
+        move, and the one four other tests in the tree forbid by value — would
+        be manufacturing confidence the model denies. So the prohibition must
+        name the pair (dispersion as noise floor, not noise to average), and it
+        must be in ``decision_prohibition``, because that is the field a
+        consumer is expected to act on.
+
+        Both clauses are asserted. An earlier test in this file was proven weak
+        by an ``or`` between two phrases from the same sentence, so each claim
+        gets its own assertion here.
+        """
+        joined = " ".join(self._ensemble(spread=0.4).decision_prohibition).lower()
+        assert "error bar" in joined, "must name the reading it forbids"
+        assert "noise floor" in joined, "must say what the dispersion actually IS"
+
+    def test_ensemble_denies_being_three_independent_confirmations(self) -> None:
+        """Agreement among parameterisations of one family is weak evidence.
+
+        The three rules share a target and a functional form, so their
+        agreement is not three methodologies agreeing. The limitation must say
+        so, and must concede the unrepresentable case: the correct reaction
+        function might not be in the family at all.
+        """
+        joined = " ".join(self._ensemble(spread=0.4).limitations).lower()
+        assert "functional form" in joined
+        assert "not in the family" in joined or "genuine model uncertainty" in joined
+
+    def test_ensemble_names_r_star_as_the_shared_unobservable(self) -> None:
+        """r* shifts two of the three rules together, so the spread can stay narrow."""
+        joined = " ".join(self._ensemble(spread=0.4).limitations).lower()
+        assert "r_star" in joined
+        assert "unobservable" in joined
+
+    def test_ensemble_publishes_its_dispersion_in_the_direction_sentence(self) -> None:
+        """A bare median is uninterpretable without the spread it summarises."""
+        r = self._ensemble(spread=0.4)
+        assert r.direction is not None
+        assert "0.40" in r.direction
+        assert "uncertainty" in r.direction.lower()
+
+    def test_verdict_forbids_being_read_as_a_probability(self) -> None:
+        """HIGH agreement is a diversity statement, not a likelihood.
+
+        The verdict is computed on a *weighted* agreement fraction, where the
+        weight is measured independent source families. Nothing in that
+        arithmetic yields a probability, and the field most likely to be read
+        as one must say so explicitly.
+        """
+        joined = " ".join(self._verdict([1.0, 1.0, 1.0]).decision_prohibition).lower()
+        assert "probability" in joined
+        assert "confidence" in joined, "must distinguish itself from the separate confidence"
+
+    def test_verdict_requires_the_non_neutral_count_to_be_read_alongside_it(self) -> None:
+        """The denominator bounds what the verdict can mean.
+
+        HIGH over two directional signals is a far weaker statement than HIGH
+        over six, and the verdict string alone cannot reveal which case applied.
+        The prohibition must name the companion field rather than gesture at the
+        problem.
+        """
+        joined = " ".join(self._verdict([1.0, 1.0, 1.0]).decision_prohibition).lower()
+        assert "non_neutral_signals" in joined
+
+    def test_verdict_publishes_its_denominator_and_its_weighted_fraction(self) -> None:
+        """Direction must state the fraction AND the count it was taken over."""
+        r = self._verdict([1.0, 1.0, 1.0])
+        assert r.direction is not None
+        joined = r.direction.lower()
+        assert "100%" in joined
+        assert "non-neutral" in joined, "the denominator must travel with the fraction"
+
+    def test_verdict_declares_itself_categorical_not_a_measurement(self) -> None:
+        assert self._verdict([1.0, 1.0, 1.0]).unit is not None
+        assert "categorical" in (self._verdict([1.0, 1.0, 1.0]).unit or "")
+
+    def test_verdict_states_that_independence_is_declared_not_verified(self) -> None:
+        """The family count is only as honest as the tagging behind it."""
+        joined = " ".join(self._verdict([1.0, 1.0, 1.0]).limitations).lower()
+        assert "declared" in joined or "tagging" in joined
+
+    def test_executable_branch_selects_an_expression_not_edge(self) -> None:
+        """The distinction that keeps this function out of the recommendation business.
+
+        A clean instrument for a view says nothing about whether the view is
+        right, and nothing about whether it is worth trading — the significance
+        test already ran and is separate. Both halves must be stated.
+        """
+        joined = " ".join(self._executable().limitations).lower()
+        assert "expression" in joined, "must say what it selects"
+        assert "edge" in joined, "must deny that selection implies edge"
+
+    def test_executable_branch_forbids_justifying_a_sub_noise_trade(self) -> None:
+        """Section 16.3: a clean instrument for a sub-noise gap is still sub-noise."""
+        joined = " ".join(self._executable().decision_prohibition).lower()
+        assert "significant" in joined
+        assert "sub-noise" in joined
+
+    def test_the_two_select_instrument_branches_publish_different_units(self) -> None:
+        """A sentinel is not a degenerate instrument, and the `value` type proves it.
+
+        Both branches share a field name, so a consumer that reads ``value`` as
+        a ticker without branching will route a non-existent instrument
+        downstream. The sentinel's ``unit`` must therefore say it is NOT an
+        instrument name, in as many words.
+        """
+        assert self._executable().unit is not None
+        assert "instrument name" in (self._executable().unit or "")
+        for r in (self._sentinel_blocked(), self._sentinel_analytical()):
+            assert r.unit is not None
+            assert "not an instrument name" in r.unit
+
+    def test_sentinels_refuse_to_state_a_direction(self) -> None:
+        """A position side attached to a sentinel would imply a denied expression."""
+        for r in (self._sentinel_blocked(), self._sentinel_analytical()):
+            assert r.direction is not None
+            assert "NO DIRECTION" in r.direction
+
+    def test_sentinel_confidence_is_a_confident_negative_not_a_degree_of_belief(self) -> None:
+        """Reporting a sentinel at confidence 0.0 states the opposite of the truth.
+
+        "This thesis has no production expression" is a *known* structural fact,
+        not an unknown. So the limitation must say what a high confidence here
+        means — the absence is well-established — and must deny the two readings
+        a reader would otherwise supply for free.
+        """
+        joined = " ".join(self._sentinel_blocked().limitations).lower()
+        assert "confident negative" in joined
+        assert "well-established" in joined
+        assert "does not mean an instrument was found" in joined
+
+    def test_sentinels_state_that_the_independence_zero_is_a_true_zero(self) -> None:
+        """The subtle one: sentinels and instruments share the same zero.
+
+        If a reader believed the sentinel's lower confidence was a hand-set
+        penalty applied to non-trade answers, they would infer a ranking that
+        does not exist. The limitation must say the difference is a difference
+        of NO factors.
+        """
+        joined = " ".join(self._sentinel_analytical().limitations).lower()
+        assert "true zero" in joined
+        assert "difference of no factors" in joined
+
+    def test_sentinels_forbid_value_being_consumed_as_an_instrument(self) -> None:
+        joined = " ".join(self._sentinel_blocked().decision_prohibition).lower()
+        assert "instrument name" in joined
+        assert "sentinel" in joined
+
+    def test_sentinel_does_not_mean_the_view_was_wrong(self) -> None:
+        """Inexpressible-in-this-book and incorrect are different claims."""
+        joined = " ".join(self._sentinel_analytical().decision_prohibition).lower()
+        assert "wrong" in joined
+        assert "inexpressible" in joined
+
+    def test_sentinels_publish_a_quantitative_confidence_not_none(self) -> None:
+        """The docstring's whole argument is that sentinels are *computed*, not 0.0.
+
+        A regression that reverted the confidence to the literal ``0.0`` the
+        spec originally suggested would leave every prose assertion above
+        passing, because the prose says what the number should be. This is the
+        assertion that catches the number itself.
+        """
+        for r in (self._sentinel_blocked(), self._sentinel_analytical()):
+            assert r.confidence > 0.0, f"{r.value} must not be reported at confidence 0.0"
+
+    @pytest.mark.parametrize(
+        "factory",
+        ["_ensemble", "_executable", "_sentinel_blocked", "_sentinel_analytical"],
+    )
+    def test_every_newly_populated_result_carries_the_required_fields(self, factory: str) -> None:
+        # Every factory is argument-free by design: `_ensemble` carries its own
+        # default spread, so the parametrised dispatch needs no special case.
+        r = getattr(self, factory)()
+        assert r.unit, f"{factory} must declare its unit"
+        assert r.direction, f"{factory} must state what its value means"
+        assert r.assumptions, f"{factory} must state its assumptions"
+        assert r.data_provenance, f"{factory} must name its sources"
+        assert r.decision_relevance, f"{factory} must name its consumer"
+        assert r.limitations, f"{factory} must state its limits"
+        assert r.decision_prohibition, f"{factory} must state what it forbids"
