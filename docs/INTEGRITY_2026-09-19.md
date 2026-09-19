@@ -491,6 +491,47 @@ breakeven an "above target" direction, which the guard caught and named.
 (76 source files) · **pytest 2146 passed, 1 skipped, 0 failed** (was 2138) ·
 baseline gate PASS (59 = 59) · live thesis unchanged.
 
+### Increment 5 — the two results that form the gap (commit `1f4581e`)
+
+| File | Change |
+|---|---|
+| `src/macro_engine/models/policy_rules.py` | `derive_market_implied_policy_path` populates §3/§4 |
+| `src/macro_engine/models/gdp_nowcast.py` | `gdp_gdi_divergence` populates §3/§4 + **NEW** `_divergence_direction_sentence()` |
+| `tests/models/test_reasoning_contract.py` | **+10** `TestGapInputsArePopulated` |
+
+**Nine live-path results now carry reasoning** (was 7). `derive_market_implied_policy_path`
+is the **market side of Q6's significance test** — the number the model-implied
+path is compared against to decide whether the thesis trades at all.
+
+**Why this one is the highest-stakes reasoning object yet.** On the live path no
+term-premium series is wired, so the no-premium branch runs and the returned
+value is the **raw short yield with the premium still in it**. At the front end
+that premium has been large enough to **invert the reading of the same data**.
+The value from that branch is numerically **indistinguishable** from the adjusted
+branch, so a consumer reading only `value` cannot know the gap's sign was
+computed against a contaminated market leg. The limitations say exactly that and
+name the consequence as being about the **sign**.
+
+**A third shape for `direction`.** The divergence's field states the sign AND
+disclaims it in the same sentence, because GDP leads GDI 47.8% of the time over
+314 quarters — a coin flip. Reporting "GDP leads by 0.4pp" without the disclaimer
+would invite precisely the reading the model's own warning forbids. Its `unit`
+also names the **growth-vs-level trap**: in growth terms the divergence is
+mean-zero; in level terms the wedge averages −0.459% and is negative in seven of
+nine decades, and two anonymous floats cannot reveal which was passed.
+
+**A weak assertion of my own, found and fixed by the RED test.** Planting a
+regression exposed that `test_divergence_direction_disclaims_itself` used
+`"not a finding" in joined **or** "coin flip" in joined` — so stripping only the
+`NOT a finding` clause left "coin flip" behind and **the test still passed even
+though the disclaimer had been removed**. Changed to assert **both** clauses,
+re-planted, and confirmed the strengthened test now fails on the strip. A test
+that passes for the wrong reason is the defect class this audit exists to find.
+
+**Gates after:** `ruff` clean · `ruff format` clean (206 files) · `mypy` clean
+(76 source files) · **pytest 2156 passed, 1 skipped, 0 failed** (was 2146) ·
+baseline gate PASS (59 = 59) · live thesis unchanged.
+
 ---
 
 **Tool correction made while re-measuring.** Re-running the reachability audit
@@ -528,14 +569,15 @@ matching the pre-existing figure, now measured more accurately.
    and not a measurement** — a fact the number itself cannot state, so only the
    prose can carry it.
 
-   What remains is the other ~69 models, in `ModelResult` construction-site terms
-   (76 sites total, **7 populated** — the two live-path decision results, Q1's
-   three reads, and the two curve reads). This is per-model work whose correctness
+   What remains is the other ~67 models, in `ModelResult` construction-site terms
+   (76 sites total, **9 populated** — every result the live thesis consumes: the
+   regime, the gap carrier, Q1's three reads, the two curve reads, and the two
+   results that form the gap itself). This is per-model work whose correctness
    cannot be checked in one pass, so it is deliberately left incremental:
    **populate field-by-field as each model is next touched.** The pattern is now
-   demonstrated rather than proposed — see `TestLivePathReasoningIsPopulated`,
-   `TestAllThreeLiveReadsArePopulated` and `TestCurveReadsArePopulated`, all
-   proven RED by planting regressions.
+   demonstrated rather than proposed — see the four test classes in
+   `tests/models/test_reasoning_contract.py`, all proven RED by planting
+   regressions.
 
 2. **§6 release/vintage modelling — MODELLED, NOT POPULATED (measured dead end).**
    `ObservationPoint` now carries optional `release_datetime` / `vintage_datetime`
@@ -574,8 +616,8 @@ series, cannot present a single-axis regime read as a joint one without saying s
 and correctly refuses to trade on a sub-noise gap.
 
 What remains is honest and named: (a) **populating** — not schematising — the
-reasoning fields across the remaining models (7 of 76 construction sites done:
-both live-path decision results, Q1's three economy reads, and the two curve
-reads); (b) release/vintage **data**, which is unreachable on this installation
-rather than unimplemented; and (c) the standing capability gap DEF-001. None is
-an integrity failure. **No Phase 4 work was started.**
+reasoning fields across the remaining models (9 of 76 construction sites done,
+which is **every result the live thesis consumes**); (b) release/vintage
+**data**, which is unreachable on this installation rather than unimplemented;
+and (c) the standing capability gap DEF-001. None is an integrity failure.
+**No Phase 4 work was started.**
