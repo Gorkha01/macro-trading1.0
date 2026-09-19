@@ -444,6 +444,32 @@ def _rule_number(result: PolicyRuleResult) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _gap_direction_sentence(raw_gap: float) -> str:
+    """The gap's sign, in words, for the §3 `direction` field.
+
+    A named function rather than an inline conditional for the same reason
+    `_as_signal` is one: the sign convention here is load-bearing and easy to
+    invert. A **positive** ``raw_gap`` means the model-implied path is above the
+    market-implied path — policy is more restrictive than priced — which is the
+    opposite of the naive reading of "the gap is positive, so policy is loose".
+
+    Note the field's own semantics (Section 3): `direction` describes what the
+    value MEANS, not the sign of the number. For a gap these coincide, but the
+    sentence is what a reader consumes, so it is written explicitly rather than
+    left to be re-derived.
+
+    The exact-zero case is separated because "flat" is a third state, not a
+    rounding of either direction. The comparison is on ``!= 0`` rather than on
+    ``> 0`` / ``< 0`` with a fallthrough, so a zero cannot be mislabelled by
+    whichever branch's `else` caught it (the D-040 class of defect).
+    """
+    if raw_gap == 0:
+        return "flat: model-implied and market-implied paths coincide"
+    if raw_gap > 0:
+        return "policy is more restrictive than priced (model path above market path)"
+    return "policy is less restrictive than priced (model path below market path)"
+
+
 def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
     """The gap, as the ``ModelResult`` that ``classify_convergence`` can read.
 
@@ -481,6 +507,62 @@ def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
         ),
         inputs_used=["model_implied_value", "market_implied_value", "dispersion"],
         warnings=[],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percentage points",
+        direction=_gap_direction_sentence(gap.raw_gap),
+        assumptions=[
+            "The model-implied policy path (the median of the three rules, "
+            "Section 22.4) is the correct benchmark for 'what policy SHOULD be'. A "
+            "reader who rejects the rules' structural assumptions rejects the "
+            "sign of this gap with them.",
+            "The market-implied path, term-premium-adjusted, represents what is "
+            "PRICED. If the adjustment is wrong the gap measures the adjustment "
+            "error rather than a policy surprise.",
+            "Dispersion across the three rules is treated as the noise floor for "
+            "significance (Section 16.2 Q6). Three rules over one target is a "
+            "narrow disagreement set, so the floor is likely understated.",
+        ],
+        data_provenance=[
+            "model_implied_value — median of the three policy rules, computed "
+            "upstream by build_policy_gap",
+            "market_implied_value — derive_market_implied_policy_path, "
+            "term-premium-adjusted, from the nominal curve in the snapshot",
+            "dispersion — cross-rule disagreement, from the same three rule results",
+        ],
+        limitations=[
+            "THIS IS A SIGNIFICANCE VERDICT CARRIER, NOT A MEASUREMENT. The "
+            "`confidence` on this result is a carrier value for "
+            "`count_independent_families` and is NOT a measurement confidence: a "
+            "gap carries a significance verdict (is_meaningful), not a "
+            "measurement error, and converting one into the other would be the "
+            "D-046 'scored by its own subject matter' failure.",
+            "The gap is EX-POST in the sense that both sides are read from the "
+            "same curve at the same instant. It is not a forecast; it is a "
+            "difference of two opinions about the same future path.",
+            "The dispersion floor is computed from three rules that share a "
+            "target and a functional form. Genuine model uncertainty — the "
+            "possibility that the correct reaction function is not in the family "
+            "at all — is NOT in the dispersion and therefore NOT in the floor.",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q6 (the significance test that stands a thesis down) "
+            "and Q7's convergence input. The SIGN drives `_direction`, so this "
+            "result decides which way the thesis would trade if it traded; the "
+            "magnitude versus dispersion decides whether it trades at all."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a measured disagreement with an error band. A "
+            "gap of +0.26pp against a 0.86pp dispersion is NOT 'policy is 26bp "
+            "too tight' — it is 'the rules and the market differ by an amount "
+            "smaller than the rules differ from each other' (Section 16.2 Q6).",
+            "MUST NOT be consumed without `dispersion`. A bare raw_gap has no "
+            "scale: the same +0.26pp is decisive under a 0.05pp dispersion and "
+            "meaningless under a 0.86pp one.",
+            "MUST NOT be used to select an instrument or size a position on its "
+            "own: the Q6 verdict is a precondition, and when it is not "
+            "meaningful the pipeline stands down rather than sizing "
+            "(Section 16.3).",
+        ],
     )
 
 

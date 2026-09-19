@@ -182,3 +182,126 @@ class TestContractDiscipline:
             assert ModelResult.model_fields[name].is_required() is False, (
                 f"{name} must be optional so existing call sites do not break"
             )
+
+
+class TestLivePathReasoningIsPopulated:
+    """The two results on the live decision path must carry a reason, not just a number.
+
+    Schematising the reasoning fields is not the same as populating them, and the
+    gap between the two is invisible from the outside: a result with
+    ``limitations=[]`` and one with ``limitations=["..."]`` are both valid, both
+    serialize, and both pass every test that only checks the schema. These tests
+    exist because that is exactly how the fields could be added, documented, and
+    then silently never used.
+
+    The two functions chosen are the ones the live thesis actually reads:
+    ``classify_regime_rule_based`` (Q1's fourth read) and ``_as_signal`` (Q6's
+    significance carrier). If reasoning is populated anywhere, it must be here —
+    a field nobody on the live path fills is a field nobody consumes.
+    """
+
+    @staticmethod
+    def _regime_result() -> ModelResult:
+        from macro_engine.models.regime import RegimeInputs, classify_regime_rule_based
+
+        return classify_regime_rule_based(
+            RegimeInputs(
+                output_gap=-0.25,
+                inflation_yoy=2.9,
+                inflation_trend_3m=0.4,
+                unemployment_gap=0.15,
+                output_gap_change=-0.05,
+            )
+        )
+
+    @staticmethod
+    def _gap_signal() -> ModelResult:
+        from datetime import UTC, datetime
+
+        from macro_engine.models.policy_rules import MarketPricingGap
+        from macro_engine.thesis_layer.builder import _as_signal
+
+        gap = MarketPricingGap(
+            model_implied_value=4.25,
+            market_implied_value=4.00,
+            raw_gap=0.25,
+            dispersion=0.86,
+            is_meaningful=False,
+            interpretation="test gap",
+        )
+        return _as_signal(gap, as_of=datetime(2026, 9, 19, tzinfo=UTC))
+
+    def test_regime_declares_its_unit_and_direction(self) -> None:
+        r = self._regime_result()
+        assert r.unit is not None, "a categorical label must still declare what it is"
+        assert "categorical" in r.unit
+        assert r.direction is not None
+        # The direction sentence must name BOTH axes, because the state is their
+        # joint read and a single-axis restatement is the §21 defect in words.
+        assert "growth" in r.direction
+        assert "inflation" in r.direction
+
+    def test_regime_states_its_standing_limitations(self) -> None:
+        """`limitations` are the caveats that hold even when the run succeeded.
+
+        They are the field a reader needs most and is least likely to be given:
+        `warnings` fires only on a condition of THIS run, so on a quiet run the
+        result would look unqualified without these.
+        """
+        r = self._regime_result()
+        joined = " ".join(r.limitations).lower()
+        assert r.limitations, "a rule-based label must declare that it is not a probability"
+        assert "rule-based" in joined
+        assert "momentum" in joined, "the inflation axis is momentum, and that is a trap"
+        assert len(r.limitations) >= 4
+
+    def test_regime_prohibits_being_read_as_a_probability(self) -> None:
+        r = self._regime_result()
+        joined = " ".join(r.decision_prohibition).lower()
+        assert r.decision_prohibition
+        assert "probability" in joined
+        assert "stand a thesis down" in joined, "the read must not be used as the gate"
+
+    def test_regime_names_its_downstream_consumer(self) -> None:
+        r = self._regime_result()
+        assert r.decision_relevance is not None
+        assert "16.2" in r.decision_relevance, "Q1 is the gate this feeds"
+
+    def test_gap_carrier_admits_it_is_not_a_measurement(self) -> None:
+        """The highest-risk field on the live path.
+
+        `_as_signal` carries `confidence=1.0` as a census carrier. Populated
+        reasoning is what stops that carrier value from being read as a
+        measurement — the prohibition has to say so in words, because the number
+        itself cannot.
+        """
+        r = self._gap_signal()
+        joined = " ".join(r.limitations).lower()
+        assert "carrier" in joined
+        assert "not a measurement" in joined or "not a" in joined
+
+    def test_gap_declares_its_unit_and_both_readings(self) -> None:
+        r = self._gap_signal()
+        assert r.unit == "percentage points"
+        assert r.direction is not None
+        # A positive gap is policy MORE restrictive than priced — the inverse of
+        # the naive reading of "the gap is positive".
+        assert "more restrictive" in r.direction
+
+    def test_gap_requires_dispersion_to_be_interpretable(self) -> None:
+        r = self._gap_signal()
+        joined = " ".join(r.decision_prohibition).lower()
+        assert "dispersion" in joined, "a bare gap has no scale and must say so"
+
+    def test_gap_direction_sentence_handles_the_exact_zero_case(self) -> None:
+        """Zero is a third state, not a rounding of either direction.
+
+        Asserted through the helper rather than through `_as_signal` because
+        building a zero gap through the model would exercise the model's own
+        validation, not this function's branch.
+        """
+        from macro_engine.thesis_layer.builder import _gap_direction_sentence
+
+        assert "flat" in _gap_direction_sentence(0.0)
+        assert "more restrictive" in _gap_direction_sentence(0.01)
+        assert "less restrictive" in _gap_direction_sentence(-0.01)

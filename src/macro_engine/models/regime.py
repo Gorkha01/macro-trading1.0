@@ -786,6 +786,93 @@ def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
             "unemployment_gap",
         ],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="categorical (regime state label)",
+        direction=(
+            f"growth axis: {growth}; inflation momentum axis: {inflation} "
+            f"(the state '{state}' is the joint read of the two)"
+        ),
+        assumptions=[
+            "The two axes are a SUFFICIENT summary of the macro state: the state "
+            "grid partitions growth x inflation momentum and nothing else enters "
+            "the label. An economy distinguished by a third dimension (credit, "
+            "fiscal, external) is not expressible in this grid.",
+            "The output gap is computed against POTENTIAL, which is unobservable "
+            "by nature (Section 21.4 item 13); the label inherits whatever error "
+            "the potential estimate carries.",
+            "u* is unobservable (Section 21.4 item 13). It is taken from "
+            "settings.phillips.nairu.value, CBO's published estimate, and is "
+            "treated as a constant rather than as an estimate with its own error "
+            "band.",
+            "Thresholds are Section 6.2's illustrative literals, not estimated "
+            "from data (see `limitations`).",
+        ],
+        data_provenance=[
+            "output_gap — computed upstream by output_gap_from_snapshot and passed "
+            "in; not re-derived here (passing it is what keeps one implementation)",
+            "inflation_yoy — CPIAUCSL (BLS headline CPI via FRED) year-over-year percent",
+            "inflation_trend_3m — CPIAUCSL 3-month annualized momentum, "
+            "computed upstream by the orchestrator's _inflation_momentum_3m",
+            "unemployment_gap — UNRATE (BLS) minus u* from settings.phillips.nairu.value",
+        ],
+        # Empty because this function receives floats, not dated observations.
+        # Stated here rather than left to be inferred from the empty dict: the
+        # vintage of each input is knowable one layer up, in the orchestrator,
+        # which holds the ObservationPoints. Leaving it empty is a consequence
+        # of the signature, and a consumer should read it that way.
+        limitations=[
+            "RULE-BASED, NOT PROBABILISTIC: this partitions two thresholds; it "
+            "does not estimate a regime probability. Section 6.2 defers the "
+            "Markov-switching model (statsmodels.tsa.regime_switching) to Phase "
+            "5+, and until it replaces this the output is a label, not a "
+            "likelihood.",
+            "The inflation axis is MOMENTUM (3-month annualized change), NOT the "
+            "level: 'disinflation' means inflation is DECELERATING — possibly "
+            "from 8% toward 6% — not that inflation is low. Reading the label as "
+            "a level inverts its meaning.",
+            "`output_gap_change` is optional and, when absent, `recovery` is "
+            "unreachable: the three states `slowdown`, `recovery` and "
+            "`reflation` were declared by Section 6.2 but its logic could never "
+            "produce all three. A caller that omits the argument cannot receive "
+            "`recovery`, by construction rather than by data.",
+            "The inflation axis is defined on the SIGN of a 3-month annualized "
+            "change, a month-over-month measure. The price level falls in only a "
+            "small minority of months, so 'rising' is closer to a constant than "
+            "to a finding, and every state requiring a non-rising axis is rare "
+            "BY CONSTRUCTION rather than by economic fact (see OPEN_ISSUES "
+            "O-23). The measured axis base rate is published in `value`.",
+            "Points-in-time: observation dates are NOT supplied by this "
+            "function's inputs (it receives floats). The point-in-time filter "
+            "upstream is SUFFICIENT BUT NOT SOUND (see models/as_of.py), and no "
+            "release or vintage datetime is available on this installation "
+            "(Section 6, measured 2026-09-19) — so an as-of-correct run cannot "
+            "prove it did not use a revision.",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q1 fourth read (Module 3) and Section 16.4's "
+            "`regime` field on the published MacroThesis. Read by `_regime_view` "
+            "in the builder; carried into the thesis as the `state` label plus "
+            "its base rate. Downstream it qualifies how a reader should weight "
+            "every other view on the thesis — it is context, not a signal that "
+            "selects an instrument."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a probability, a likelihood, or a forecast. It "
+            "is a deterministic partition of two thresholds (Section 6.2).",
+            "MUST NOT be treated as a two-axis classification when "
+            "`value['regime_tension'] == 'REGIME_TENSION'`: in that case ONE "
+            "axis decided the label (Section 21) and the published reasons say "
+            "which. Consuming it as if both axes agreed is the error the flag "
+            "exists to prevent.",
+            "MUST NOT be used alone to stand a thesis down. The significance "
+            "test is Q6 (Section 16.3), and Section 16.3's order puts the reads "
+            "before it. A missing or surprising regime is information, not a "
+            "gate.",
+            "MUST NOT be consumed without the state base rate when it is "
+            "available: a regime that fires in 80% of periods is not a regime, "
+            "and the label cannot be judged unusual without its frequency "
+            "(D-029).",
+        ],
     )
 
 
