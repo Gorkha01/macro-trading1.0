@@ -400,6 +400,50 @@ regression was then reverted.
 (76 source files) · **pytest 2127 passed, 1 skipped, 0 failed** (was 2119) ·
 baseline gate PASS (59 = 59).
 
+### Increment 3 — Q1's three economy reads populated (commit `50928a5`)
+
+| File | Change |
+|---|---|
+| `src/macro_engine/models/gdp_nowcast.py` | `output_gap` populates §3/§4 + **NEW** `_gap_direction_sentence()` |
+| `src/macro_engine/models/labor_synthesis.py` | `inflation_breadth_score` and `labor_tightness_score` populate §3/§4 + **NEW** `_breadth_direction_sentence()`, `_tightness_direction_sentence()` |
+| `tests/models/test_reasoning_contract.py` | **+11** `TestAllThreeLiveReadsArePopulated` |
+
+**Five live-path results now carry reasoning** (was 2): the regime, the gap
+carrier, and Q1's three reads. **Each of the three reads has a different
+load-bearing limitation**, which is why all three were done rather than
+generalising one exemplar:
+
+- **`output_gap` is REVISION-DEPENDENT.** Both inputs are revised, so the gap
+  for a past quarter is not the number that was available at the time. This is
+  the limitation a reader using the gap historically is most exposed to and
+  least likely to be told.
+- **`inflation_breadth_score` is WEAK because a sign test is weak** — three
+  measures at +0.001% read as "convergent" exactly as three at +5.0% do. Its
+  prohibition forbids quoting `value` as an inflation *rate*: it is an average of
+  m/m changes, neither a level nor annualised.
+- **`labor_tightness_score` is an uncalibrated LEVEL** on this model's own
+  scale, so it must not be compared to any published tightness index. Its
+  limitation also discloses that **NFP is absent from the snapshot** and the live
+  score redistributes its weight — meaning the live estimator differs from the
+  four-input one the unit tests exercise.
+
+**Three extracted helpers, not inlined conditionals.** All three first drafts
+were nested inline conditionals that were both over the line limit and
+unreadable; the linter's complaint was fair. Each now separates the **exact-zero
+case as a third state** rather than letting a branch's `else` catch it (the D-040
+class). The breadth helper's third state is different *in kind* — `CONFLICTED`
+is not a direction and not its negation — which is exactly what a boolean would
+have destroyed.
+
+**Tests proven RED by planting two regressions at once** (emptying
+`output_gap`'s limitations, setting the labour unit to `None`): three tests
+failed, the parametrised one **naming which read broke**. The parametrised
+assertion means a *new* live read can be covered by adding one line.
+
+**Gates after:** `ruff` clean · `ruff format` clean (206 files) · `mypy` clean
+(76 source files) · **pytest 2138 passed, 1 skipped, 0 failed** (was 2127) ·
+baseline gate PASS (59 = 59) · live thesis unchanged.
+
 ---
 
 **Tool correction made while re-measuring.** Re-running the reachability audit
@@ -437,13 +481,13 @@ matching the pre-existing figure, now measured more accurately.
    and not a measurement** — a fact the number itself cannot state, so only the
    prose can carry it.
 
-   What remains is the other ~75 models, in `ModelResult` construction-site terms
-   (76 sites total, 2 populated). This is per-model work whose correctness cannot
-   be checked in one pass, so it is deliberately left incremental:
-   **populate field-by-field as each model is next touched.** The pattern is now
-   demonstrated rather than proposed — see `TestLivePathReasoningIsPopulated`,
-   which pins the two live-path results and was proven RED by emptying one back to
-   `[]`.
+   What remains is the other ~71 models, in `ModelResult` construction-site terms
+   (76 sites total, **5 populated** — the two on the live decision path plus Q1's
+   three reads). This is per-model work whose correctness cannot be checked in one
+   pass, so it is deliberately left incremental: **populate field-by-field as each
+   model is next touched.** The pattern is now demonstrated rather than proposed —
+   see `TestLivePathReasoningIsPopulated` and `TestAllThreeLiveReadsArePopulated`,
+   both proven RED by planting regressions.
 
 2. **§6 release/vintage modelling — MODELLED, NOT POPULATED (measured dead end).**
    `ObservationPoint` now carries optional `release_datetime` / `vintage_datetime`
@@ -482,8 +526,8 @@ series, cannot present a single-axis regime read as a joint one without saying s
 and correctly refuses to trade on a sub-noise gap.
 
 What remains is honest and named: (a) **populating** — not schematising — the
-reasoning fields across the remaining models (2 of 76 construction sites done,
-the two on the live decision path); (b) release/vintage **data**, which is
-unreachable on this installation rather than unimplemented; and (c) the standing
-capability gap DEF-001. None is an integrity failure. **No Phase 4 work was
-started.**
+reasoning fields across the remaining models (5 of 76 construction sites done:
+both live-path decision results plus Q1's three economy reads); (b)
+release/vintage **data**, which is unreachable on this installation rather than
+unimplemented; and (c) the standing capability gap DEF-001. None is an integrity
+failure. **No Phase 4 work was started.**
