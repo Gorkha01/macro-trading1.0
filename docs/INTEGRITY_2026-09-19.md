@@ -355,6 +355,53 @@ clean (67 source files) · **pytest 2113 passed, 1 skipped, 0 failed** (full sui
 live tests included) · reachability Tier 1–4 gap unchanged at 59 (no new wiring
 this increment).
 
+### Increment 2 — the live-path reasoning object is now populated (commit `2a13b69`)
+
+| File | Change |
+|---|---|
+| `src/macro_engine/models/regime.py` | `classify_regime_rule_based` now populates §3/§4: `unit` (categorical), `direction` (both axes), 4 `assumptions`, 4 `data_provenance`, 5 `limitations`, `decision_relevance`, 4 `decision_prohibition` |
+| `src/macro_engine/thesis_layer/builder.py` | `_as_signal` populates the same set, and declares its `confidence=1.0` to be a census **carrier, not a measurement**; **NEW** `_gap_direction_sentence()` |
+| `tests/models/test_reasoning_contract.py` | **+8** `TestLivePathReasoningIsPopulated` |
+
+**Why the schema being done was not the requirement.** A result with
+`limitations=[]` and one with three real limitations are both valid, both
+serialize, and both pass a schema-only test. The field could therefore be added,
+documented, and never used — which is the failure mode the increment closes.
+
+**The regime's load-bearing limitation** is that it is *rule-based, so it
+partitions but does not estimate*: §6.2 defers Markov-switching to Phase 5+, so
+until then the output is a **label, not a likelihood**, and the prohibition says
+so in words. Second: the inflation axis is **momentum**, so `disinflation` means
+*decelerating* — possibly from 8% toward 6%. Third: the axis rests on the *sign*
+of a month-over-month measure, so every state needing a non-rising axis is rare
+**by construction** (O-23).
+
+**The gap carrier's limitation is the highest-risk text on the live path.**
+`_as_signal` carries `confidence=1.0` purely as a carrier for
+`count_independent_families`. Populated `limitations` is what stops that number
+from being read as a measurement — the number cannot say "I am not a
+measurement"; only the prose can.
+
+**One extraction, not just text.** `_gap_direction_sentence()` was pulled out
+because the sign convention is load-bearing and easy to invert: a **positive**
+`raw_gap` means policy is *more* restrictive than priced, the opposite of the
+naive reading. The exact-zero case is a **third state**, separated so a flat gap
+cannot be mislabelled by whichever branch's `else` catches it (the D-040 class).
+
+**`observation_dates` is left empty and declared as such** — the signature
+receives floats, not dated observations, so the vintage is knowable one layer up
+in the orchestrator and not here.
+
+**Tests proven RED, not merely written.** Emptying `limitations` back to `[]` in
+`_as_signal` failed `test_gap_carrier_admits_it_is_not_a_measurement`; the
+regression was then reverted.
+
+**Gates after:** `ruff` clean · `ruff format` clean (206 files) · `mypy` clean
+(76 source files) · **pytest 2127 passed, 1 skipped, 0 failed** (was 2119) ·
+baseline gate PASS (59 = 59).
+
+---
+
 **Tool correction made while re-measuring.** Re-running the reachability audit
 after adding `regime_tension` reported the gap as **60**, with the new function
 listed as a *true orphan*. It is not one: `regime_tension` is called at
@@ -371,17 +418,32 @@ matching the pre-existing figure, now measured more accurately.
 
 ## Open items for your decision — and the honest scope of what remains
 
-1. **§3/§4 contract widening — DONE (additively).** `ModelResult` now carries the
-   full reasoning-object field set: `unit`, `direction`, `assumptions`,
+1. **§3/§4 contract widening — SCHEMA DONE, LIVE PATH POPULATED.** `ModelResult`
+   carries the full reasoning-object field set: `unit`, `direction`, `assumptions`,
    `data_provenance`, `observation_dates`, `release_dates`, `vintage_dates`,
    `retrieved_at`, `source_families`, `limitations`, `decision_relevance`,
    `decision_prohibition`. **Every field is optional and defaults to an honest
    "not supplied"** — `unit=None` means *unknown*, not *dimensionless* — so no
-   existing construction site broke (2113 passed). What is **not** done is
-   *populating* them across all 77 models: that is per-model work, and doing it
-   wholesale would be a large mechanical edit whose correctness could not be
-   checked in one pass. **Recommend: populate field-by-field as each model is
-   next touched**, starting with the models on the live decision path.
+   existing construction site broke.
+
+   **The schema was not the whole requirement.** Schematising the fields made them
+   safe to add but left them empty everywhere, and that gap is invisible from the
+   outside: `limitations=[]` and `limitations=[...three real caveats...]` are both
+   valid, both serialize, and both pass any test that checks only the schema. The
+   **two functions the live thesis actually reads are now POPULATED**:
+   `classify_regime_rule_based` (Q1's fourth read) carries 5 limitations, 4
+   prohibitions, 4 assumptions and 4 provenance entries; `_as_signal` (Q6's
+   significance carrier) declares that its `confidence=1.0` is a census **carrier
+   and not a measurement** — a fact the number itself cannot state, so only the
+   prose can carry it.
+
+   What remains is the other ~75 models, in `ModelResult` construction-site terms
+   (76 sites total, 2 populated). This is per-model work whose correctness cannot
+   be checked in one pass, so it is deliberately left incremental:
+   **populate field-by-field as each model is next touched.** The pattern is now
+   demonstrated rather than proposed — see `TestLivePathReasoningIsPopulated`,
+   which pins the two live-path results and was proven RED by emptying one back to
+   `[]`.
 
 2. **§6 release/vintage modelling — MODELLED, NOT POPULATED (measured dead end).**
    `ObservationPoint` now carries optional `release_datetime` / `vintage_datetime`
@@ -420,7 +482,8 @@ series, cannot present a single-axis regime read as a joint one without saying s
 and correctly refuses to trade on a sub-noise gap.
 
 What remains is honest and named: (a) **populating** — not schematising — the
-reasoning fields across all 77 models; (b) release/vintage **data**, which is
+reasoning fields across the remaining models (2 of 76 construction sites done,
+the two on the live decision path); (b) release/vintage **data**, which is
 unreachable on this installation rather than unimplemented; and (c) the standing
 capability gap DEF-001. None is an integrity failure. **No Phase 4 work was
 started.**
