@@ -566,3 +566,134 @@ class TestCurveReadsArePopulated:
             assert r.data_provenance, f"{r.model_name} must name its sources"
             assert r.decision_relevance, f"{r.model_name} must name its consumer"
             assert r.limitations, f"{r.model_name} must state its limits"
+
+
+class TestGapInputsArePopulated:
+    """The two results that produce the SIGNIFICANCE GAP itself.
+
+    `derive_market_implied_policy_path` is the market side of Q6's gap and
+    `gdp_gdi_divergence` is the corroborating read about the growth read's
+    quality. Both are on the live path, and both have a property that makes the
+    reasoning object load-bearing rather than decorative:
+
+    * the market path's live branch is a CONTAMINATED proxy — the raw short
+      yield, with no term premium stripped — and the returned VALUE looks
+      identical to the adjusted branch. Only the prose can say which ran, so a
+      consumer reading `value` alone cannot know whether the gap's sign is
+      trustworthy.
+    * the divergence's SIGN is a coin flip, so a `direction` that reported the
+      sign without disclaiming it would invite exactly the reading the model
+      forbids.
+    """
+
+    @staticmethod
+    def _market_path(premium: float | None) -> ModelResult:
+        from macro_engine.models.policy_rules import derive_market_implied_policy_path
+
+        return derive_market_implied_policy_path(4.25, premium)
+
+    @staticmethod
+    def _divergence(gdp: float, gdi: float) -> ModelResult:
+        from macro_engine.models.gdp_nowcast import GdpGdiInputs, gdp_gdi_divergence
+
+        return gdp_gdi_divergence(GdpGdiInputs(gdp_growth_pct=gdp, gdi_growth_pct=gdi))
+
+    def test_market_path_declares_percent_and_branch_dependent_direction(self) -> None:
+        adjusted = self._market_path(0.35)
+        unadjusted = self._market_path(None)
+        assert adjusted.unit == "percent"
+        assert "expectations component" in (adjusted.direction or "")
+        # The NO-PREMIUM branch must say the premium was NOT removed, in those terms.
+        assert "RAW" in (unadjusted.direction or "") or "not" in (unadjusted.direction or "")
+
+    def test_market_path_distinguishes_the_two_branches_in_prose(self) -> None:
+        """The values are indistinguishable; the warnings must not be.
+
+        Both branches return a float in the same range. If the reasoning object
+        did not distinguish them, a consumer could not tell a contaminated
+        reading from an adjusted one — which is precisely what Section 22.5
+        requires to be impossible.
+        """
+        adjusted = self._market_path(0.35)
+        unadjusted = self._market_path(None)
+        assert adjusted.warnings != unadjusted.warnings
+        assert any("NO TERM PREMIUM" in w for w in unadjusted.warnings)
+        assert not any("NO TERM PREMIUM" in w for w in adjusted.warnings)
+
+    def test_market_path_forbids_probability_readings(self) -> None:
+        """A single yield cannot support a likelihood statement about policy."""
+        joined = " ".join(self._market_path(None).decision_prohibition).lower()
+        assert "probability" in joined or "likelihood" in joined
+        assert "rate" in joined, "must forbid being read as a policy RATE"
+
+    def test_market_path_marks_the_live_branch_as_contaminating_the_gap(self) -> None:
+        """The strongest claim in this class: the live gap's sign inherits it.
+
+        On the live path no term premium is wired, so the raw-yield branch runs.
+        That means the gap the thesis reports is computed against a market leg
+        that still contains the premium, and at the front end that premium has
+        been large enough to invert the reading. A consumer has to be told.
+        """
+        joined = " ".join(self._market_path(None).limitations).lower()
+        assert "contaminat" in joined
+        assert "sign" in joined, "the consequence is about the gap's SIGN"
+
+    def test_divergence_direction_disclaims_itself(self) -> None:
+        """The sign is reported AND disclaimed in the same field.
+
+        GDP leads GDI ~47.8% of the time, so the sign carries no information.
+        Putting the disclaimer in `direction` rather than only in `warnings`
+        means a consumer that reads one field cannot miss it.
+
+        **Asserted as an AND, not an OR.** The first version of this test used
+        ``"not a finding" in joined or "coin flip" in joined`` and was proven
+        WEAK by planting a regression: stripping only the "NOT a finding" clause
+        left "coin flip" behind, so the test still passed even though the
+        disclaimer had been removed from the sentence. Both clauses are asserted
+        now, because either alone can survive the removal of the other.
+        """
+        r = self._divergence(gdp=2.5, gdi=2.1)
+        assert r.direction is not None
+        joined = r.direction.lower()
+        assert "not a finding" in joined
+        assert "coin flip" in joined
+        assert "residual" in joined
+
+    def test_divergence_forbids_reading_its_sign_as_a_finding(self) -> None:
+        joined = " ".join(self._divergence(gdp=2.5, gdi=2.1).decision_prohibition).lower()
+        assert "sign" in joined
+        assert "coin flip" in joined or "47.8" in joined or "finding" in joined
+
+    def test_divergence_states_the_growth_vs_level_unit_trap(self) -> None:
+        """Growth basis is load-bearing: the level wedge is systematically negative.
+
+        In growth terms the divergence is mean-zero; in level terms the wedge
+        averages -0.459% and is negative in seven of nine decades. A caller
+        passing levels would compute a different quantity entirely, and two
+        anonymous floats cannot reveal which happened.
+        """
+        joined = " ".join(self._divergence(gdp=2.5, gdi=2.1).assumptions).lower()
+        assert "year-over-year" in joined or "growth rates" in joined
+        assert "level" in joined
+
+    def test_divergence_flags_revision_exposure_as_unrepairable(self) -> None:
+        """BEA revises the two sides on different schedules, and vintages are gone."""
+        joined = " ".join(self._divergence(gdp=2.5, gdi=2.1).limitations).lower()
+        assert "revision" in joined or "revise" in joined
+        assert "vintage" in joined
+
+    def test_divergence_reports_its_own_base_rate(self) -> None:
+        """A one-in-five event must travel with its frequency."""
+        r = self._divergence(gdp=2.5, gdi=2.1)
+        assert isinstance(r.value, dict)
+        assert "divergence_base_rate" in r.value
+        assert 0.0 < float(r.value["divergence_base_rate"]) < 1.0
+
+    def test_both_gap_inputs_declare_the_required_fields(self) -> None:
+        for r in (self._market_path(None), self._divergence(gdp=2.5, gdi=2.1)):
+            assert r.unit, f"{r.model_name} must declare its unit"
+            assert r.direction, f"{r.model_name} must state what its value means"
+            assert r.assumptions, f"{r.model_name} must state its assumptions"
+            assert r.data_provenance, f"{r.model_name} must name its sources"
+            assert r.decision_relevance, f"{r.model_name} must name its consumer"
+            assert r.decision_prohibition, f"{r.model_name} must state prohibitions"

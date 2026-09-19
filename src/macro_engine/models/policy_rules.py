@@ -601,6 +601,89 @@ def derive_market_implied_policy_path(
         context=context,
         inputs_used=["short_yield", "short_tenor_term_premium"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent",
+        direction=(
+            "an expectations component of the short yield, with the term premium removed"
+            if short_tenor_term_premium is not None
+            else "the RAW short yield, term premium NOT removed — not an "
+            "expectations component at all"
+        ),
+        assumptions=[
+            "The short yield decomposes additively into an expectations component "
+            "and a term premium, so subtracting a tenor-matched premium isolates "
+            "the first. That is an accounting identity under a particular "
+            "decomposition, not a measured fact.",
+            "A single point on the short end represents the market's whole "
+            "policy-path view. A yield is a single number discounting a whole "
+            "future path, so the mapping from one to the other requires an "
+            "assumption about the path's shape that this model does not state.",
+            "A Fed-funds-futures-implied distribution and a term-premium-adjusted "
+            "short yield are treated as interchangeable proxies for 'what the "
+            "market implies'. They are not the same object; the futures-implied "
+            "one is what Phase 5+ replaces this with (Section 22.5).",
+        ],
+        data_provenance=[
+            "short_yield — the snapshot's nominal curve at "
+            "settings.api.short_yield_tenor, resolved by _short_yield_from_curve "
+            "and read in PERCENT (not basis points)",
+            "short_tenor_term_premium — supplied by the CALLER, not fetched. "
+            "There is no term-premium series wired (Section 22.5 defers ACM to "
+            "Phase 5+), so on the live path this is None and the raw-yield branch "
+            "runs",
+            "Confidence is read from config "
+            "(policy.market_implied.term_premium_available_confidence_value / "
+            "no_term_premium_confidence_value) and is NOT produced by "
+            "compute_confidence(): the two branches are deliberately different "
+            "qualities, not two settings of one factor.",
+        ],
+        limitations=[
+            "IT IS A PROXY, AND ON THE LIVE PATH IT IS A CONTAMINATED ONE. No "
+            "term-premium series is wired, so the no-premium branch runs and the "
+            "returned value is the RAW YIELD — which contains the premium. At the "
+            "front end that premium has been large enough to INVERT the reading "
+            "of the same data, so the sign of the resulting gap can be wrong for "
+            "reasons the model cannot detect.",
+            "THE VALUE LOOKS THE SAME IN BOTH BRANCHES. A consumer reading only "
+            "`value` cannot tell whether the adjustment was applied; only the "
+            "warnings and the confidence distinguish them. This is the disclosure "
+            "Section 22.5 requires, and it is a warning rather than a field by "
+            "design.",
+            "The adjusted branch is only as good as the term-premium model, which "
+            "is itself model output with its own revision history and its own "
+            "estimation error.",
+            "NOT A DISTRIBUTION: even the adjusted value is a single number, not a "
+            "probability distribution over future policy rates, so it cannot "
+            "support any statement about how likely a given policy path is.",
+            "One tenor stands in for the whole path: the model reads one point on "
+            "the curve, so it cannot represent a market pricing cuts then hikes, "
+            "or a path with a shape.",
+            "Points-in-time: the yield carries one observation timestamp and no "
+            "release or vintage datetime (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "The MARKET side of Section 16.2's Q6 gap — the quantity the "
+            "model-implied path is compared against, and therefore a direct input "
+            "to the significance test that decides whether the thesis trades at "
+            "all. It also feeds Q3/Q4's market read."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a market-implied policy RATE. It is a short "
+            "yield (adjusted or not), and the mapping from a yield to a policy "
+            "path needs an assumption this model does not make explicit.",
+            "MUST NOT be compared against a value produced by the OTHER branch "
+            "without checking which branch ran. The adjusted and unadjusted "
+            "values are different quantities and the difference is the term "
+            "premium.",
+            "MUST NOT be treated as a probability distribution or used to make a "
+            "likelihood statement about a future policy decision. Phase 5+ "
+            "replaces this with a genuine futures-implied distribution precisely "
+            "because the proxy cannot do that.",
+            "MUST NOT be consumed without noticing that on the live path the "
+            "NO-TERM-PREMIUM branch runs: the gap whose sign the thesis reports "
+            "is computed against a contaminated market leg, and any conclusion "
+            "about the gap's direction inherits that.",
+        ],
     )
 
 

@@ -661,6 +661,34 @@ class GdpGdiInputs(BaseModel):
     )
 
 
+def _divergence_direction_sentence(diff: float, gdp_led_rate: float) -> str:
+    """The GDP/GDI divergence's sign, in words, for the Section 3 ``direction`` field.
+
+    **States the sign and immediately disclaims it**, which is not the usual shape
+    for this field. The reason is that this model's own evidence says the sign is
+    not information: GDP leads GDI 47.8% of the time over 314 quarters, which is a
+    coin flip. A `direction` that reported "GDP leads by 0.4pp" and stopped there
+    would invite exactly the reading the model's warning forbids — so the
+    disclaimer travels in the same field as the sign, where a consumer that reads
+    only `direction` cannot miss it.
+
+    The lead rate is passed in rather than recomputed so the sentence cannot
+    disagree with the warning list, which quotes the same config value.
+
+    Exact zero is a third state: two independent estimates of one aggregate
+    agreeing exactly is itself unusual, and folding it into either direction
+    would misreport it.
+    """
+    if diff == 0:
+        return "the two estimates agree exactly, which is itself unusual for a statistical residual"
+    leader = "GDP-side" if diff > 0 else "GDI-side"
+    return (
+        f"{leader} estimate leads by {abs(diff):.2f}pp — NOT a finding: GDP leads "
+        f"GDI {gdp_led_rate * 100:.1f}% of the time, which is a coin flip and is "
+        f"what a residual looks like"
+    )
+
+
 def gdp_gdi_divergence(inputs: GdpGdiInputs) -> ModelResult:
     """Measure how far the income- and expenditure-side estimates disagree.
 
@@ -810,6 +838,89 @@ def gdp_gdi_divergence(inputs: GdpGdiInputs) -> ModelResult:
         ),
         inputs_used=["gdp_growth_pct", "gdi_growth_pct"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit=(
+            "percentage points (the divergence between two year-over-year GROWTH "
+            "RATES, not the level wedge)"
+        ),
+        direction=_divergence_direction_sentence(diff, gdp_led_rate),
+        assumptions=[
+            "Both inputs are YEAR-OVER-YEAR GROWTH RATES in percent, not levels. "
+            "This is enforced by the input contract and stated here because the "
+            "distinction is invisible in two anonymous floats: in growth terms "
+            "the divergence is mean-zero (measured over 314 quarters, mean "
+            "-0.009pp), while in LEVEL terms the wedge is systematically negative "
+            "(-0.459% mean, negative in seven of nine decades). A caller passing "
+            "levels would compute a quantity dominated by BEA's construction "
+            "asymmetry while these warnings describe the mean-zero residual.",
+            "Both sides use the same basis: GDP and GDI are the NOMINAL pair. "
+            "Mixing one with a real series would make the difference measure the "
+            "deflator as much as the discrepancy.",
+            "The two growth rates are measured over the SAME quarter. A "
+            "divergence computed across mismatched periods is a divergence plus "
+            "one period of growth (Section 20.7's pairing requirement).",
+            "The significance threshold is ILLUSTRATIVE, not calibrated. "
+            "'Not flagged' therefore means 'typical', not 'no discrepancy'.",
+        ],
+        data_provenance=[
+            "gdp_growth_pct — BEA gross domestic product (nominal) year-over-year "
+            "percent, computed by the orchestrator's _national_accounts_leg from "
+            "FRED GDP",
+            "gdi_growth_pct — BEA gross domestic income (nominal) year-over-year "
+            "percent, same leg, from FRED GDI",
+            "The pair is formed on a COMMON quarter via _value_on_or_before, not "
+            "by taking each series' own latest point — a BEA vintage gap would "
+            "otherwise become part of the divergence",
+            "Measured base rate is config-sourced: |divergence| > threshold in "
+            "21.7% of 314 usable quarters",
+        ],
+        limitations=[
+            "THE DIRECTION IS NOT INFORMATION. GDP leads GDI 47.8% of the time "
+            "over 314 quarters — a coin flip. Only the MAGNITUDE carries "
+            "information, and a reader who reports the sign as a finding has "
+            "reported noise.",
+            "IT IS A RESIDUAL BY CONSTRUCTION. GDP and GDI estimate the same "
+            "aggregate from opposite sides, so a non-zero difference is expected "
+            "and a zero difference would be the anomaly. The model cannot tell a "
+            "genuine measurement problem from the ordinary statistical "
+            "discrepancy.",
+            "REVISION-EXPOSED AND THE ARITHMETIC CANNOT DETECT IT: BEA revises "
+            "GDP and GDI on different schedules, so a divergence measured across "
+            "vintages older than the configured staleness window compares two "
+            "reporting vintages rather than one period. Section 21.4 item 14: "
+            "pre-launch vintages are unrecoverable, so this cannot be repaired "
+            "after the fact on this installation.",
+            "A ROUTINE EVENT, NOT AN ANOMALY: the flag fires in 21.7% of "
+            "quarters — roughly one in five — and the base rate is published in "
+            "`value` precisely so the frequency cannot be mistaken for rarity.",
+            "NEITHER INPUT IS ADJUSTED. Section 5.4's 'flag, don't fix' rule "
+            "applies: a divergence is recorded, not corrected, and no substitution "
+            "is made for either series. So this output reports a problem without "
+            "resolving which side is the outlier.",
+            "Points-in-time: the inputs carry no release or vintage datetime "
+            "(Section 6, measured 2026-09-19), which is what makes the "
+            "vintage-comparison caveat unrepairable rather than merely noted.",
+        ],
+        decision_relevance=(
+            "Module 7.1's corroborating signal about the QUALITY of the growth "
+            "read — it is not one of Section 16.2's three economy reads. The "
+            "builder carries it beside `reads` and Section 20.7 asks for it to be "
+            "investigated when flagged, not averaged away."
+        ),
+        decision_prohibition=[
+            "MUST NOT have its SIGN read as a finding. The 47.8% lead rate is a "
+            "coin flip, and the model's own warning says so; reporting 'GDP is "
+            "running ahead of GDI' as information is the error this names.",
+            "MUST NOT be used to adjust or override either growth series. It "
+            "reports a discrepancy; it does not arbitrate which side is correct, "
+            "and Section 5.4 forbids the silent correction.",
+            "MUST NOT be treated as 'no discrepancy' when the flag does not "
+            "fire. The threshold is illustrative, so an unflagged reading is "
+            "typical rather than clean.",
+            "MUST NOT be consumed without its base rate when the magnitude is "
+            "reported: a one-in-five event presented without its frequency reads "
+            "as unusual.",
+        ],
     )
 
 
