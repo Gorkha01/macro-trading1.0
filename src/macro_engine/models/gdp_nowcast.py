@@ -126,6 +126,27 @@ class OutputGapInputs(BaseModel):
     )
 
 
+def _gap_direction_sentence(gap_pct: float) -> str:
+    """The output gap's sign, in words, for the Section 3 ``direction`` field.
+
+    A named function for the same reason the builder has one: the sign is
+    load-bearing and trivially invertible. A POSITIVE output gap means the
+    economy is running ABOVE sustainable capacity — which is expansionary in
+    activity terms but *inflationary*, and is the sense the Taylor Rule's
+    (y-y*) term expects. Writing "positive = good" would be a reading the
+    model does not support.
+
+    Exact zero is separated as a THIRD state rather than left to a branch's
+    ``else`` (the D-040 defect class), because "at potential" is a real
+    reading and not a rounding of either direction.
+    """
+    if gap_pct == 0:
+        return "neutral: at potential"
+    if gap_pct > 0:
+        return "expansionary: economy above sustainable capacity (inflationary pressure)"
+    return "slack: economy below sustainable capacity (disinflationary pressure)"
+
+
 def output_gap(inputs: OutputGapInputs) -> ModelResult:
     """Output gap in percent of potential (AGENTS.md Section 6.5, Module 7).
 
@@ -216,6 +237,73 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
         ),
         inputs_used=["actual_gdp", "potential_gdp"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent of potential",
+        direction=_gap_direction_sentence(gap_pct),
+        assumptions=[
+            "Potential GDP is a Cobb-Douglas production-function ESTIMATE, not an "
+            "observation. The gap inherits whatever error that estimate carries, "
+            "and the estimate is REVISED — so the gap for a past quarter changes "
+            "as the estimate is updated.",
+            "The two series are declared in identical units in the registry "
+            "(billions of chained 2017 USD), but they are not identically "
+            "seasonally adjusted: GDPC1 is SAAR while GDPPOT is NSA. The ratio is "
+            "unit-free so the gap remains computable, but a seasonal wedge is not "
+            "removed by it.",
+            "A positive gap is treated as 'above sustainable capacity', which is "
+            "the sign the Taylor Rule's (y-y*) term expects. A reader who uses "
+            "the gap for a purpose with the opposite sign convention (a Phillips "
+            "curve in the unemployment direction) must invert it.",
+        ],
+        data_provenance=[
+            "actual_gdp — GDPC1 (BEA real GDP, chained 2017 USD, SAAR) via FRED, "
+            "filtered to observation_date <= snapshot.as_of (O-7 horizon filter)",
+            "potential_gdp — GDPPOT (CBO potential real GDP) via FRED, same "
+            "filter; CBO publishes projections, so this series carries "
+            "forward-dated points that the O-7 filter withholds",
+            "Both series paired on their LATEST COMMON quarter (D-009); taking "
+            "each series' own latest point would subtract Q2 actual from Q3 "
+            "capacity and invert the sign of the gap",
+        ],
+        limitations=[
+            "NOT A MEASUREMENT OF SLACK. This is a ratio of two model outputs, "
+            "one of which (potential) is unobservable by nature (Section 21.4 "
+            "item 13). It is an estimate whose error is dominated by the "
+            "potential-output methodology, not by the arithmetic.",
+            "REVISION-DEPENDENT: both inputs are subject to BEA and CBO "
+            "revisions, so the gap for a given quarter is not stable over time. "
+            "A backtest that reads today's vintage of a past gap is reading a "
+            "number that was not available at the time.",
+            "The one-quarter change in this gap is what makes `recovery` "
+            "reachable in the regime classifier, and that change is computed "
+            "across two vintages that may each have been revised — so a "
+            "direction of travel can be an artifact of revision rather than of "
+            "the economy.",
+            "Points-in-time: the O-7 filter is applied on "
+            "``observation_date <= as_of``, which is SUFFICIENT BUT NOT SOUND "
+            "(see models/as_of.py) — a revised vintage of an old observation "
+            "passes the filter. No release or vintage datetime is available on "
+            "this installation (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q1 growth read, and the input to the Module 3 regime "
+            "classifier's growth axis. Also the (y-y*) term of the Taylor-rule "
+            "family, so it enters the model-implied policy path and therefore the "
+            "gap the significance test (Q6) compares against market pricing."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a measured quantity with an error band: it is "
+            "the ratio of an observation to an ESTIMATE. Reporting it to two "
+            "decimals does not make the second decimal meaningful.",
+            "MUST NOT be used alone to call a recession. The Module 3 classifier "
+            "combines this with the unemployment gap for corroboration, and "
+            "Section 12 requires the disagreement between the two slack measures "
+            "to be investigated rather than averaged away.",
+            "MUST NOT be compared across snapshots of different vintage without "
+            "recording both vintages. A gap that moved 0.2pp may have moved "
+            "because the economy changed or because CBO revised potential, and "
+            "this field cannot distinguish them.",
+        ],
     )
 
 

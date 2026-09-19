@@ -305,3 +305,156 @@ class TestLivePathReasoningIsPopulated:
         assert "flat" in _gap_direction_sentence(0.0)
         assert "more restrictive" in _gap_direction_sentence(0.01)
         assert "less restrictive" in _gap_direction_sentence(-0.01)
+
+
+class TestAllThreeLiveReadsArePopulated:
+    """Q1's three economy reads must each carry reasoning, not just a value.
+
+    The previous class pins the regime (a derived read) and the gap (the
+    significance carrier). These three are the reads the regime and the thesis
+    are computed FROM, so a reasoning gap here propagates: a reader who cannot
+    see that the output gap is revision-dependent, or that the labour score's
+    weights are illustrative, has no way to weigh any conclusion built on them.
+
+    Each of the three has a different load-bearing limitation, which is the
+    reason all three are asserted rather than one exemplar being generalised:
+    the growth read is REVISION-DEPENDENT, the inflation read is WEAK because a
+    sign test is weak, and the labour read is a LEVEL with one input missing on
+    the live path.
+    """
+
+    @staticmethod
+    def _growth() -> ModelResult:
+        from macro_engine.models.gdp_nowcast import OutputGapInputs, output_gap
+
+        return output_gap(OutputGapInputs(actual_gdp=20_000.0, potential_gdp=20_300.0))
+
+    @staticmethod
+    def _inflation() -> ModelResult:
+        from macro_engine.models.labor_synthesis import (
+            InflationSubMeasures,
+            inflation_breadth_score,
+        )
+
+        return inflation_breadth_score(
+            InflationSubMeasures(cpi_headline_mom=0.2, cpi_core_mom=0.3, pce_core_mom=0.1)
+        )
+
+    @staticmethod
+    def _labor() -> ModelResult:
+        from macro_engine.models.labor_synthesis import LaborInputs, labor_tightness_score
+
+        return labor_tightness_score(
+            LaborInputs(
+                initial_claims_4wk_avg_change_pct=-0.4,
+                jolts_openings_yoy_pct=3.0,
+                jolts_quits_level_percentile=60.0,
+                nfp_3m_avg=180.0,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "factory",
+        ["_growth", "_inflation", "_labor"],
+    )
+    def test_each_read_declares_unit_direction_and_reasoning(self, factory: str) -> None:
+        """The four fields every §3 result must carry, asserted uniformly.
+
+        Parametrised rather than written three times so a NEW live read added to
+        the pipeline can be added here in one line, and so the failure names the
+        read rather than a method.
+        """
+        r = getattr(self, factory)()
+        assert r.unit, f"{factory} must declare its unit (None means UNKNOWN, not dimensionless)"
+        assert r.direction, f"{factory} must state what its value means, in words"
+        assert r.limitations, f"{factory} must state what it cannot tell you"
+        assert r.decision_relevance, f"{factory} must name its downstream consumer"
+        assert r.assumptions, f"{factory} must state what it depends on"
+        assert r.data_provenance, f"{factory} must name where its inputs came from"
+
+    def test_growth_read_flags_revision_dependence(self) -> None:
+        """The output gap's dominant real-world risk is that it is a revision artifact.
+
+        Both inputs (BEA GDP, CBO potential) are revised, so a gap read today is
+        not the gap that was available at the time. A reader using this for a
+        backtest must be told; the field says it in those terms.
+        """
+        joined = " ".join(self._growth().limitations).lower()
+        assert "revision" in joined
+        assert "unobservable" in joined or "not a measurement" in joined
+
+    def test_growth_read_separates_the_zero_case(self) -> None:
+        """A gap of exactly zero is 'at potential', a third state."""
+        from macro_engine.models.gdp_nowcast import _gap_direction_sentence
+
+        assert "at potential" in _gap_direction_sentence(0.0)
+        assert "above" in _gap_direction_sentence(0.5)
+        assert "below" in _gap_direction_sentence(-0.5)
+
+    def test_inflation_read_admits_the_sign_test_is_weak(self) -> None:
+        """Breadth is a sign test, so convergence says nothing about magnitude.
+
+        This is the limitation a consumer is most likely to skip, and skipping it
+        is how "inflation is broad" gets asserted from three readings of +0.01%.
+        """
+        joined = " ".join(self._inflation().limitations).lower()
+        assert "sign test" in joined
+        assert "three" in joined, "counting only 3 measures is the proxy's whole caveat"
+
+    def test_inflation_read_forbids_being_quoted_as_a_rate(self) -> None:
+        """The value is an average of m/m changes — not a level, not an annual rate."""
+        joined = " ".join(self._inflation().decision_prohibition).lower()
+        assert "rate" in joined
+        assert "average" in joined or "mean" in joined
+
+    def test_inflation_divergent_read_has_no_direction(self) -> None:
+        """On a divergent read there IS no direction, and the field must say so.
+
+        Three states are not a boolean: all-rising, all-falling, and CONFLICTED.
+        Collapsing the third into either of the others is the defect the helper
+        exists to prevent.
+        """
+        from macro_engine.models.labor_synthesis import (
+            InflationSubMeasures,
+            _breadth_direction_sentence,
+            inflation_breadth_score,
+        )
+
+        r = inflation_breadth_score(
+            InflationSubMeasures(cpi_headline_mom=0.5, cpi_core_mom=-0.4, pce_core_mom=0.1)
+        )
+        assert r.direction is not None
+        assert "CONFLICTED" in r.direction
+        # And the standalone helper must agree with the branch that produced it.
+        assert "CONFLICTED" in _breadth_direction_sentence(False, False)
+        assert "rising" in _breadth_direction_sentence(True, False)
+        assert "falling" in _breadth_direction_sentence(False, True)
+
+    def test_labor_read_admits_it_is_an_uncalibrated_level(self) -> None:
+        """The score's scale is this model's own, so it cannot be compared outward."""
+        r = self._labor()
+        joined = " ".join(r.limitations).lower()
+        assert "heuristic" in joined or "not calibrated" in joined
+        assert "level" in joined
+        prohibited = " ".join(r.decision_prohibition).lower()
+        assert "index" in prohibited, "must forbid comparison to an external tightness index"
+
+    def test_labor_read_discloses_the_missing_nfp_on_the_live_path(self) -> None:
+        """NFP is not in the snapshot, so the LIVE score uses three components.
+
+        The unit test above passes all four, so this asserts the disclosure
+        exists in `limitations` rather than asserting the live value — the
+        orchestrator owns redistribution, and the model must still say that a
+        live run differs from the tested one.
+        """
+        joined = " ".join(self._labor().limitations).lower()
+        assert "nfp" in joined or "payrolls" in joined
+        assert "absent" in joined or "redistribut" in joined
+
+    def test_labor_read_separates_the_balanced_case(self) -> None:
+        """A score of exactly zero is 'balanced', not a rounding."""
+        from macro_engine.models.labor_synthesis import _tightness_direction_sentence
+
+        assert "balanced" in _tightness_direction_sentence(0.0)
+        assert "tightening" in _tightness_direction_sentence(0.5)
+        assert "loosening" in _tightness_direction_sentence(-0.5)
