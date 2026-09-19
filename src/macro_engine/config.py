@@ -2212,6 +2212,24 @@ class LaborSettings(BaseModel):
     two_survey: TwoSurveySettings
     ahe_distortion: AHEDistortionThresholds
     revisions: RevisionThresholds
+    quits_percentile_window_months: CalibratedValue = CalibratedValue(
+        value=36.0,
+        calibration_status="institutional_convention",
+        note=(
+            "Trailing window for jolts_quits_level_percentile. Section 6.4 says "
+            "'its trailing 3-year range'; three years is 36 months and the "
+            "convention is the specification's own. It is config rather than a "
+            "literal because the snapshot may carry less history than the window "
+            "asks for (the API layer reports the window it actually used), and a "
+            "narrowed window makes an ordinary reading look extreme — so moving "
+            "it must not require editing Python."
+        ),
+    )
+
+    @property
+    def quits_percentile_window(self) -> int:
+        """The quits-percentile window in whole months (default 36)."""
+        return int(self.quits_percentile_window_months.value)
 
     @property
     def neutral_nfp_pace(self) -> float:
@@ -3709,6 +3727,204 @@ class TransmissionSettings(BaseModel):
         return self
 
 
+class ApiSettings(BaseModel):
+    """The HTTP service's own parameters (Section 8, D-070).
+
+    Section 8.4 states the security posture as prose — "bind to 127.0.0.1, no
+    authentication, permissive CORS for the local Workspace only" — and prose is
+    the wrong home for a bind address. A host or port written into
+    ``uvicorn.run(...)`` is a deployment decision made in a code review of a
+    Python file; here it is a config value with its rationale beside it, and the
+    no-auth posture is a **statement in config** rather than an absence of code
+    that a reader has to infer.
+
+    Every field is stated, none inferred. The two that matter:
+
+    * **``host`` defaults to the loopback address and the validator refuses
+      ``0.0.0.0``.** Section 8.4 pairs a permissive CORS policy with a
+      loopback-only bind, and those two decisions are only safe *together*:
+      ``allow_origins=["*"]`` on a wildcard-bound socket is an open relay to
+      every endpoint, including ``/thesis/{country}`` which runs a live snapshot
+      build. The validator makes the pair inseparable rather than leaving the
+      safety of one to the memory of whoever edits the other.
+    * **``default_thesis_type`` is a config value, not a function default.**
+      The API layer must name a ``ThesisType`` to call the builder (measured:
+      it is a required keyword) and the honest representation of "the API has a
+      Phase-1 default" is a config leaf a reviewer can see, not a keyword
+      argument buried in a call site.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    host_value: CalibratedValue = CalibratedValue(
+        value="127.0.0.1",
+        calibration_status="institutional_fact",
+        note="Bind address. Loopback only — Section 8.4.",
+    )
+    port_value: CalibratedValue = CalibratedValue(
+        value=8000.0,
+        calibration_status="institutional_convention",
+    )
+    cors_origins_value: CalibratedValue = CalibratedValue(
+        value=["http://127.0.0.1:8000", "http://localhost:8000"],
+        calibration_status="institutional_convention",
+        note=(
+            "Permitted browser origins. Section 8.4 permits a permissive policy "
+            "BECAUSE the bind is loopback-only; the validator below enforces that "
+            "the two travel together."
+        ),
+    )
+    dashboard_series_limit_value: CalibratedValue = CalibratedValue(
+        value=12.0,
+        calibration_status="uncalibrated_illustrative",
+        note=(
+            "How many series /dashboard_data returns per family. A cap rather "
+            "than everything, because the endpoint's payload is the snapshot's "
+            "full history and an unbounded response is a denial of service "
+            "against the caller's own browser."
+        ),
+    )
+    snapshot_max_age_hours_value: CalibratedValue = CalibratedValue(
+        value=24.0,
+        calibration_status="uncalibrated_illustrative",
+        note=(
+            "Beyond this, a memoized snapshot is reported as STALE in the "
+            "response's disclosure rather than silently served. A served "
+            "snapshot must be distinguishable from a fresh one — the D-069 "
+            "lesson that a cached answer with no age attached is a claim about "
+            "the present made from the past."
+        ),
+    )
+    memoize_snapshots_value: CalibratedValue = CalibratedValue(
+        value=True,
+        calibration_status="institutional_convention",
+        note=(
+            "Reuse the last built snapshot within snapshot_max_age_hours. "
+            "MEASURED context: a full live snapshot build took 223.6s over the "
+            "local OpenBB API and 9.5s in-process (settings.openbb."
+            "use_local_api_first), so a request-per-build design makes the "
+            "endpoint unusable for a Workspace UI that polls. The cache is "
+            "disclosed on every response, never silent."
+        ),
+    )
+    short_yield_tenor_value: CalibratedValue = CalibratedValue(
+        value="2yr",
+        calibration_status="institutional_convention",
+        note=(
+            "Curve tenor used as the short yield (the policy-expectations "
+            "point). Config rather than a literal because a curve-trade thesis "
+            "wants a different leg and the orchestration should not change for it."
+        ),
+    )
+    default_thesis_type_value: CalibratedValue = CalibratedValue(
+        value="policy_path_gap",
+        calibration_status="uncalibrated_illustrative",
+        note=(
+            "The family the API assumes when the caller names none. Stated in "
+            "config because the orchestration must pass SOMETHING — the builder "
+            "requires it — and an assumption a caller cannot see is exactly the "
+            "'manufacturing a claim' failure the builder's divergence 1 warns "
+            "about."
+        ),
+    )
+    yoy_match_tolerance_days_value: CalibratedValue = CalibratedValue(
+        value=5.0,
+        calibration_status="institutional_convention",
+        note=(
+            "How many days off the one-year anniversary a year-over-year prior "
+            "point may be. Measured reason for the guard: a 20-point JTSJOL "
+            "series was accepted and its ratio reported as 'year-over-year' "
+            "against a point that was not one year back (D-070 probe case 2). "
+            "Five days covers a weekly series whose anniversary falls between "
+            "publications and EXCLUDES a monthly series' neighbouring month "
+            "(28-31 days away) — that exclusion is the whole point, because "
+            "admitting the adjacent month silently converts a 29-day comparison "
+            "into an annual one."
+        ),
+    )
+
+    @property
+    def host(self) -> str:
+        """The bind address (loopback by default; see the validator below)."""
+        return str(self.host_value.value)
+
+    @property
+    def port(self) -> int:
+        return int(self.port_value.value)
+
+    @property
+    def cors_origins(self) -> list[str]:
+        raw = self.cors_origins_value.value
+        if not isinstance(raw, list):  # pragma: no cover - a YAML shape fault
+            raise TypeError(
+                f"api.cors_origins must be a list of origin strings; got "
+                f"{type(raw).__name__}. A bare string would be iterated "
+                f"character-by-character by Starlette's CORS middleware."
+            )
+        return [str(origin) for origin in raw]
+
+    @property
+    def dashboard_series_limit(self) -> int:
+        return int(self.dashboard_series_limit_value.value)
+
+    @property
+    def snapshot_max_age_hours(self) -> float:
+        return float(self.snapshot_max_age_hours_value.value)
+
+    @property
+    def memoize_snapshots(self) -> bool:
+        return bool(self.memoize_snapshots_value.value)
+
+    @property
+    def short_yield_tenor(self) -> str:
+        return str(self.short_yield_tenor_value.value)
+
+    @property
+    def default_thesis_type(self) -> str:
+        return str(self.default_thesis_type_value.value)
+
+    @property
+    def yoy_match_tolerance_days(self) -> int:
+        """Days off the one-year anniversary a YoY prior point may be (default 5)."""
+        return int(self.yoy_match_tolerance_days_value.value)
+
+    @model_validator(mode="after")
+    def _permissive_cors_requires_loopback_bind(self) -> ApiSettings:
+        """A permissive CORS policy is only safe on a loopback bind (Section 8.4).
+
+        Not a style check. ``/thesis/{country}`` triggers a snapshot build and a
+        full model chain; with no authentication anywhere in the service, the
+        bind address **is** the access control. A wildcard bind plus a permissive
+        origin list means any page the user visits can drive this service and
+        read its output — and the failure is invisible, because the service works
+        perfectly while it is happening.
+        """
+        if self.host not in {"127.0.0.1", "localhost", "::1"}:
+            permissive = "*" in self.cors_origins or len(self.cors_origins) > 4
+            if permissive:
+                raise ValueError(
+                    f"api.host is '{self.host}' (not loopback) while "
+                    f"api.cors_origins is permissive ({self.cors_origins}). "
+                    "Section 8.4 pairs a permissive CORS policy with a "
+                    "loopback-only bind, and the service has NO authentication — "
+                    "the bind address is the access control. Either bind to "
+                    "127.0.0.1 or narrow cors_origins to the exact origins that "
+                    "may reach it."
+                )
+        return self
+
+    @property
+    def loopback_only(self) -> bool:
+        """Whether the configured bind keeps the service off the network.
+
+        Published because a caller reading a response should be able to tell
+        whether the service it is talking to is reachable by anything other than
+        this machine — the safety property Section 8.4 relies on, exposed as a
+        value rather than left to be inferred from the host string.
+        """
+        return self.host in {"127.0.0.1", "localhost", "::1"}
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -3748,6 +3964,7 @@ class Settings(BaseModel):
     data: DataSettings
     validation: ValidationSettings
     confidence: ConfidenceSettings
+    api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 
     def scalar(self, path: str) -> float:

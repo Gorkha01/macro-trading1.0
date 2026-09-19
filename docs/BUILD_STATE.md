@@ -598,7 +598,7 @@ live execution as non-substitutable.
 | `bayesian.likelihoods` table is empty                                               | `bayesian_update` raises by design | OPEN_ISSUES Part 3 |
 | 4 inputs BLOCKED (risky credit, iron ore, PPP, supercore)                           | credit/commodity/FX-PPP legs       | OPEN_ISSUES Part 1 |
 | Consensus estimates unavailable                                                     | economic-surprise calculation      | O-8                |
-| `api_layer/` is empty                                                               | Phase 2                            | —                  |
+| ~~`api_layer/` is empty~~ — **BUILT in D-070** (8 modules, Phase 3 complete)        | —                                  | D-070              |
 | `models/` contains only `contracts.py`                                              | Phase 2                            | —                  |
 | FX spot / commodity / equity mappings are declared but unpopulated                  | Phase 2 Modules 9–11               | —                  |
 
@@ -5345,6 +5345,87 @@ the writing. `config.py` gained two module constants (`_MIN_DRAWDOWN_TIER_PCT`,
 `RiskSettings.drawdown_tiers` docstring stating the percent convention and naming
 the one conversion boundary.
 
+### The live check found three defects — all three were in the check
+
+`scripts/live_api_check.py` is the increment's proof that the *wiring* works, and
+its first three runs failed. Every failure looked like a defect in the service.
+None of them was. They are recorded here because the **diagnostic shape** — a
+misleading symptom on a correct component — is the reusable part.
+
+**1. `GET /health?deep=true` returned `404 {"detail": "Not Found"}` from a
+registered route.**
+
+The route was correct (`@router.get("/health")` with `deep: bool = Query(...)`)
+and correctly mounted (`app.include_router(routes_health.router)`, no prefix). It
+returned **200 to `TestClient`**. And a standalone probe returned **200** too, so
+it presented as *intermittent*.
+
+The cause was found by tapping the socket and printing the **request line**:
+
+```
+wire 0: b'GET /health HTTP/1.1'
+wire 1: b'GET http://127.0.0.1:55264/health HTTP/1.1'    <-- absolute URI
+```
+
+This environment exports `HTTP_PROXY`/`HTTPS_PROXY`, `httpx` honours them by
+default (`trust_env=True`), and **a forward proxy must receive the absolute-URI
+request form** (RFC 7230 §5.3.2). The proxy forwarded that URI to the origin,
+uvicorn unquoted the whole thing into the path, and no route matched.
+
+The intermittency was the trap: the *first* request on a fresh connection went
+out as origin-form and survived; a **reused keep-alive** connection went out as
+absolute-URI and 404'd. Isolated by measuring all four combinations — reuse alone
+flips the form, `params` is irrelevant — and proven by `trust_env=False` sending
+origin-form on both requests.
+
+Three wrong hypotheses were tested and discarded first: the query-param encoding,
+a route/prefix mismatch, and h11's 16 KiB request-header limit. The last one is
+instructive — an oversized header block genuinely does produce a protocol error
+(h11 raises `RemoteProtocolError`, hint 431), but the *fresh-connection* case
+returned a clean `431`, so it was a different failure with a superficially
+similar shape. **The lesson is the general one: a routing-shaped symptom can have
+a transport-shaped cause, and the status code cannot tell them apart. The request
+line can.**
+
+**2. The CORS preflight returned `400 Disallowed CORS origin`.**
+
+The check had hardcoded `http://localhost:3000`; `config/settings.yaml` allows
+`:8000`. **Starlette was right and the check was wrong.** Fixed by deriving the
+origin from `settings.api.cors_origins` — which is the stronger test anyway,
+because it asserts the property that matters ("an origin the service was
+configured to accept is accepted") rather than a constant.
+
+**3. The stream assertion failed on a *correct* stream.**
+
+The assertion searched for `"gap = +26.0bp"`. The stream emits:
+
+```
+Model-implied 4.67 vs market-implied policy path: gap = +0.2600pp (+26.0bp), dispersion 0.8600pp, meaningful=False
+```
+
+The value was exactly right; the check had baked in a **spacing** the stream never
+promised. This is lesson 5bf applied to a check — **pin the value, not the
+spelling** — and it now requires **both** renderings (`+0.2600pp` and `(+26.0bp)`),
+because a stream that hardcoded one unit while deriving the other would pass a
+single-unit check.
+
+**Guard added.** `test_the_live_check_does_not_route_its_loopback_traffic_through
+_a_proxy` reads `scripts/live_api_check.py` with `ast` and requires every
+`httpx.Client(...)` to set `trust_env=False`; a companion test requires the proxy
+variables to be *printed* so the run stays reproducible. Verified red by planting
+the regression (removed `trust_env`) — the guard failed and named the line — then
+restored. It cannot be behavioural: the unit suite drives `TestClient`, which
+never opens a socket.
+
+**Production exposure recorded.** The same root cause affects two production
+clients — `openbb_client.py:91` and `catalysts.py:213` both default to
+`trust_env=True`, and the OpenBB client's mounts against
+`http://127.0.0.1:6900` are `{http://: HTTPProxy, https://: HTTPProxy}`. The
+provider *works* here (21/21 fields, 62.4–66.1s measured), so this environment's
+proxy is transparently forwarding loopback. Filed as **O-92** rather than fixed:
+it changes data-layer network behaviour, which this increment did not touch, and
+altering the provider's transport would have invalidated the sweep certifying it.
+
 ### Carry-overs opened
 
 | ID | Item |
@@ -7411,3 +7492,142 @@ no-op. Both caught by `check_anchor_landings` / inspection.
 | **O-81** | **Partly discharged.** The mechanism the builder was created to wire is now wired; what remains is that the builder does not walk the registry itself (deliberately, lesson 99) — so the §8 API layer must populate the argument. |
 | **O-85** | **Reduced.** The builder derives the trigger from the gate it actually observed, so the one existing call site cannot misdescribe a stand-down. `no_trade_thesis` itself still accepts a caller-supplied trigger. |
 | **O-83** | **Remedy still not implemented.** The whole-tree `if False:` / `if True:` scan is still a manual Step-0 grep. At this close it reports **nothing**. |
+
+---
+
+## Module 16 — the §8 API layer (`api_layer/`, D-070) — PHASE 3 COMPLETE
+
+**Files:** eight new modules under `src/macro_engine/api_layer/` — 3383 lines
+total. `orchestration.py` (1043), `snapshot_provider.py` (369),
+`reasoning_stream.py` (279), `routes_query.py` (269), `routes_thesis.py` (245),
+`routes_dashboard.py` (226), `routes_health.py` (169), `app.py` (92).
+
+**Spec:** §8.1–§8.4, §22.2, §22.3, §16.3.
+**Config:** the `api:` block in `config/settings.yaml` — 9 leaves, every one a
+`{value, calibration_status, note}` envelope.
+
+### The orchestration gap — why this increment needed a new module
+
+`build_us_macro_thesis` takes **six required arguments**, and §8.2's sample calls
+it with a snapshot alone:
+
+```
+TypeError: build_us_macro_thesis() missing 6 required positional argument(s)
+```
+
+| Argument | Kind | Why it cannot be defaulted |
+|---|---|---|
+| `reads` | positional | `EconomyReads` — the three economy scores §16.2's Q1 needs, which **no snapshot-fed helper computes** (D-069 measured the census as `[]`) |
+| `taylor_inputs` | positional | Module 4's own input object |
+| `first_difference_inputs` | positional | Module 4's change-form input object |
+| `thesis_type` | kw-only | an **analytical choice among seven families**; a gap says nothing about which |
+| `universe` | kw-only | the instrument universe to select from |
+| `short_yield` | kw-only | a `ModelResult`, not a float |
+
+The derivation lives in **`orchestration.py` alone** (the user's decision), so the
+API layer stays thin and the gap becomes one auditable file. The strictness suite
+asserts this structurally: **no router may read a guarded snapshot field directly**,
+because the three labor-leg unit traps would then be re-opened one endpoint at a
+time.
+
+### The status contract
+
+| Condition | Status | Why |
+|---|---|---|
+| Completed analysis, stand-down | **200** | §16.3: a no-trade is a *result*, not a failure. A fabricated `WATCH` would be indistinguishable from a genuine "no edge" verdict. |
+| Unimplemented country | **501** | `NotImplementedError`, the same class every US-only function raises (§22.3). A 502 would suggest a retry might succeed. |
+| Missing/unusable data | **502** | `OrchestrationError` — **refusal, not defaulting**. Names the fields that failed. |
+| Bad `thesis_type` | **422** | A malformed *request*, not a data problem. |
+| Real bug | **500** | Reserved; deliberately not used for any of the above. |
+
+### Three measured unit traps, all in the labor leg
+
+| Series | Real value | Naive reading | What the model needs |
+|---|---|---|---|
+| `jolts_openings` | `7271.0` | a level in **thousands** | a **YoY percent** |
+| `jolts_quits` | `1.9` | a **rate in percent** — **accepted by `ge=0, le=100`** | a **percentile** of its trailing range |
+| `initial_claims` | persons | a level | a **4-week-average percent change**, POSITIVE = loosening |
+
+The middle row is the dangerous one: the wrong number **passes the model's own
+validator**, so nothing downstream can notice. D-064's lesson (a value inside the
+valid range and outside the true range) in a new position.
+
+### The increment's own defect — a lookup that succeeded when it should have failed
+
+`_yoy_percent` took "the latest observation at or before the anniversary". That
+lookup **succeeds** for a point **31 days away** — the adjacent month — and the
+ratio was published under the words **"year-over-year"**. Repaired with
+`api.yoy_match_tolerance_days` (default **5**), and the **exclusion of the
+adjacent month is the entire purpose of the value**: a tolerance of 28 would admit
+the neighbouring month and silently restore the defect. The sweep mutates both the
+tolerance (M2.1) and the config read (M2.2).
+
+### §8.4 — the pairing, enforced rather than documented
+
+`ApiSettings._permissive_cors_requires_loopback_bind` **refuses the object** when a
+permissive `cors_origins` list meets a non-loopback host, and `loopback_only`
+**publishes** the posture as a value. The service has no authentication anywhere,
+so the bind address *is* the access control. The shipped config enumerates two
+origins rather than using `["*"]`, so the wildcard is a deliberate edit that trips
+the validator rather than a default nobody looked at.
+
+### Verification
+
+| Gate | Result |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` | **196 files already formatted** |
+| `mypy --strict` | **no issues in 196 source files** |
+| `pytest -q` | **2043 passed / 1 skipped / 1 failed** — the failure is **O-84** (the data-layer `iorb` decision), not a D-070 defect |
+| `tests/api_layer/` | **127 passed** (was 125 before the two proxy guards were added) |
+| `scripts/mutation_api_layer.py` | **42 applied / 39 killed / 3 survived** — 2 measured-inert (`M1.5`, `M4.3`), 1 control (`M10.1`); **certifies** |
+| `scripts/live_api_check.py` | **PASSED (exit 0)** — a real uvicorn server, all five surfaces, after three defects were found and fixed *in the check itself* (see below) |
+| `tools/sweep_health.py` | **38 sweeps, 0 failures, 0 leftovers, 0 mutant shapes on disk** (O-83's remedy, verified live) |
+| O-83 whole-tree probe | **clean** |
+
+**Tests:** 127 — 49 orchestration, 43 routes, 15 provider, 17 strictness, **2 proxy
+guards in `test_strictness.py`**, 1 other added by this increment.
+
+### The sweep refused to certify three times
+
+**First run: 42 applied / 31 killed / 11 survived**, ten with no proof. Every
+survivor was diagnosed by **applying it and measuring the behaviour** (O-42),
+never by labelling it:
+
+| Survivor | Class | Resolution |
+|---|---|---|
+| **M8.6** | **a real lie the tests missed** — the stream named three gates when one fired | Test strengthened to assert the **fired set exactly** |
+| **M10.2** | an **independent source** was needed — the guard compared the constant to itself | Re-pinned against `pyproject.toml` |
+| **M9.5** | a **tautology** — the shipped host is loopback, so `True == True` | A legal **non-loopback** bind that requires `False` |
+| **M9.1 / M9.2 / M9.3** | **genuine coverage gaps** — the route tests seeded `_CACHE` by hand | `test_snapshot_provider.py`, 15 tests |
+| **M7.1** | the default is **unreachable**, but its *value* is a safety property | Guard reads `QueryResponse.model_fields` |
+| **M7.3** | **my own malformed mutant** — a comment-only edit | Replaced with `if not matched:` → `if False:` |
+| **M1.5** | **a second, overlapping guard** returns the same `0.0` with an equally honest note | `inert_proof`, mechanism named |
+| **M4.3** | **a second, independent guard** — traced to `gdp_nowcast.py:442` | `inert_proof`, site and message named |
+
+**Second run: 42 applied / 36 killed / 6 survived — M9.1/M9.2/M9.3 survived AGAIN**,
+on a tree where each is measurably killed by hand. **The contradiction was the
+defect:**
+
+> `PYTEST_TARGETS` declared **four** test files. `run_pytest` ran **three**.
+> `check_tests_collect` validated the declaration the run never used.
+
+The three provider mutants' tests live in `test_snapshot_provider.py`, the file
+that was declared and **never selected**. **A green gate certified a selection
+nobody executed**, and the resulting survivors were indistinguishable from inert
+mutants. Fixed structurally: both functions now splat **one** constant, and a new
+gate (`check_the_run_and_the_declaration_agree`) parses the source and refuses to
+run if either re-inlines a literal path — verified by planting the regression.
+
+### Carry-overs
+
+| Issue | Status |
+|---|---|
+| **O-90** | **NEW (severity 2).** `snapshot_provider._CACHE` is **process-global**, so `--workers N` silently multiplies the build cost (measured **223.6s** live vs **9.5s** in-process) while the response still discloses a correct age. Needs a `workers=1` contract or a shared store. |
+| **O-91** | **NEW (severity 2).** The SSE generator is `async` but awaits a **synchronous** build, so it blocks the event loop and `/health` goes unanswered during a slow build. Needs `to_thread`/executor. Not fixed here — it would invalidate the provider mutants that certify the current behaviour. |
+| **O-81** | **DISCHARGED at the API layer.** `EconomyReads` now has a producer. |
+| **O-83** | **Remedy IMPLEMENTED.** `sweep_health.py` scans the whole tree for mutant shapes with no catalogue; verified live against an in-flight `# MUTANT`. Known limit recorded: a deletion mutation carries no shape. |
+| **O-84** | **Unmoved.** The `iorb` future-date tolerance is a **data-layer** decision; the pre-existing live test still fails. |
+| **O-92** | **NEW (severity 2).** Both production HTTP clients default to `trust_env=True`, so loopback OpenBB traffic and FRED calls honour `HTTP_PROXY`. The provider works here (21/21 fields) but that is the proxy forwarding loopback, not design. Mitigated **for the live check only** (`trust_env=False` + the new guard); the data-layer fix is deferred. |
+| **O-87** | Unmoved (a `select_instrument` contract question). |
+| **O-85 / O-86** | Unmoved, with D-069's reductions still in force. |

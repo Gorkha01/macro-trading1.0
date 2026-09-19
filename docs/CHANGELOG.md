@@ -10,7 +10,141 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
-### D-069 - The seam function, and the defect only a live run could see
+### D-070 - The API layer, and a mutation sweep that certified a selection it never ran
+
+**Phase 3 - 0/2 -> 2/2. PHASE 3 IS COMPLETE.** Eight new modules under
+`src/macro_engine/api_layer/` (3383 lines total) implement the whole of Section 8:
+`/health`, `/thesis/{country}`, `/dashboard_data`, `/query`, and an SSE reasoning
+stream. Per the user's decision the snapshot-to-builder derivation lives in its own
+module so the API layer stays thin and the gap is **one auditable file**.
+
+**The orchestration gap is what this increment exists to close.**
+`build_us_macro_thesis` takes **six required arguments** - three positional
+(`reads`, `taylor_inputs`, `first_difference_inputs`) and three keyword-only
+(`thesis_type`, `universe`, `short_yield`). Section 8.2's sample calls it with a
+snapshot alone and gets `TypeError: missing 6 required argument(s)`. None of the six
+can be defaulted: `thesis_type` is an **analytical choice among seven families**, and
+a gap says nothing about which one the thesis is.
+
+**Refusal, not defaulting.** Section 16.3 forbids mapping missing data onto a
+`WATCH` thesis, because a fabricated stand-down is indistinguishable from a genuine
+"no edge" verdict. Missing data is a **502**; a real stand-down is **200**.
+
+**Three measured unit traps, all in the labor leg** - and the second is the
+dangerous one, because the wrong number **passes the model's own validator**:
+`jolts_openings` is in thousands needing a YoY percent; `jolts_quits` is a rate in
+percent (`1.9`) that `ge=0, le=100` **accepts**, needing a percentile of its
+trailing range; `initial_claims` is persons needing a 4-week-average percent change
+with POSITIVE meaning loosening.
+
+**The increment's own defect: the YoY anniversary tolerance.** `_yoy_percent`
+accepted "the latest observation at or before the anniversary" - which succeeds for
+a point **31 days away**, and published the ratio under the words "year-over-year".
+Now a config-driven tolerance (`api.yoy_match_tolerance_days`, default 5), and the
+**exclusion of the adjacent month is the entire point** of the value.
+
+**Section 8.4's pairing is enforced, not documented.** A permissive `cors_origins`
+list combined with a non-loopback host is **refused at load time**, and
+`loopback_only` publishes the posture as a value. The service has no authentication,
+so the bind address IS the access control.
+
+**THE SWEEP REFUSED TO CERTIFY THREE TIMES, AND THE THIRD TIME FOUND THE REAL
+DEFECT.** First run: 42 applied / 31 killed / **11 survived** - ten with no proof,
+each diagnosed by applying it rather than labelling it. Three were **real lies the
+tests missed** (M8.6: the stream named three gates when one fired; M10.2: a
+self-referential version check; M9.5: a tautological loopback guard). Five were
+**genuine coverage gaps** closed by writing `test_snapshot_provider.py`. Two were
+**proven inert with a measured mechanism**. Second run: **36 killed / 6 survived** -
+and M9.1/M9.2/M9.3 survived *again*, on a tree where each is measurably killed.
+
+> **That contradiction was the defect.** `PYTEST_TARGETS` declared four test files;
+> `run_pytest` ran three; `check_tests_collect` validated the declaration the run
+> never used. The three provider mutants' tests lived in the file that was declared
+> and never selected - so a **green gate certified a selection nobody executed**, and
+> the resulting survivors looked exactly like inert mutants.
+
+The fix is structural: both functions now splat the **one** constant, and a new gate
+(`check_the_run_and_the_declaration_agree`) parses the source and refuses to run if
+either re-inlines a literal path. Verified by planting the regression.
+
+**O-83's remedy is implemented.** `tools/sweep_health.py` gained a whole-tree
+mutant-shape scan that consults **no catalogue** - closing the class where a mutant
+left in a shared file is invisible because the per-sweep leftover check is scoped.
+Verified live: it caught an in-flight `# MUTANT` during the sweep run.
+
+Third run: **42 applied / 39 killed / 3 survived - CERTIFIES**: two mutants proven
+inert with a traced mechanism (`M1.5`'s second overlapping guard; `M4.3`'s second
+independent guard, traced to `gdp_nowcast.py:442`) and the honesty control.
+
+### The live check found three defects, and all three were in the check
+
+The live check is the increment's proof that the *wiring* works. Its first three
+runs failed, and every failure looked like a defect in the service while the service
+was correct. The diagnostic shape - **a misleading symptom on a correct component** -
+is the reusable part.
+
+**1. `GET /health?deep=true` returned `404 {"detail": "Not Found"}` from a route that
+exists.** The route was correct and correctly mounted, returned **200** to
+`TestClient`, and returned 200 to a standalone probe - so it presented as
+*intermittent*. Tapping the socket and printing the **request line** (not the status
+code) found it:
+
+```
+wire 0: b'GET /health HTTP/1.1'
+wire 1: b'GET http://127.0.0.1:55264/health HTTP/1.1'    <-- absolute URI
+```
+
+This environment exports `HTTP_PROXY`/`HTTPS_PROXY`, `httpx` honours them by default
+(`trust_env=True`), and a forward proxy **must** receive the absolute-URI request form
+(RFC 7230 Section 5.3.2). The proxy forwarded that URI to the origin, uvicorn
+unquoted it into the *path*, and no route matched. The intermittency was the trap:
+the **first** request on a fresh connection went out origin-form and survived, while
+a **reused keep-alive** connection went out absolute-URI and 404'd. Isolated by
+measuring all four combinations - reuse alone flips the form, `params` is irrelevant -
+and proven by `trust_env=False` sending origin-form on both.
+
+Three hypotheses were tested and discarded first: the `params` encoding, a
+router-prefix mismatch, and h11's 16 KiB request-header limit. The last is a
+near-miss worth recording: an oversized header block **does** produce a protocol
+error (`RemoteProtocolError`, hint 431), but the fresh-connection case returned a
+clean `431`, so it was a *different* failure with a superficially similar shape.
+**A routing-shaped symptom can have a transport-shaped cause, and the status code
+cannot distinguish them. The request line can.**
+
+**2. The CORS preflight returned `400 Disallowed CORS origin`.** The check hardcoded
+`http://localhost:3000`; the config allows `:8000`. **Starlette was right and the
+check was wrong.** Now derived from `settings.api.cors_origins`, which is the
+stronger assertion anyway.
+
+**3. The stream assertion failed on a correct stream.** It searched for
+`"gap = +26.0bp"`; the stream emits
+`"...: gap = +0.2600pp (+26.0bp), dispersion ..."`. The value was exactly right and
+the check had baked in a **spacing** the stream never promised - lesson 5bf applied
+to the check itself. It now requires **both** renderings, because a stream that
+hardcoded one unit while deriving the other would pass a single-unit check.
+
+**Guard.** `test_the_live_check_does_not_route_its_loopback_traffic_through_a_proxy`
+reads the script with `ast` and requires every `httpx.Client(...)` to set
+`trust_env=False`; a companion test requires the proxy variables to be *printed* so a
+run stays reproducible. Verified red by planting the regression, then restored. It
+cannot be behavioural - the unit suite drives `TestClient`, which never opens a
+socket - which is exactly why the defect survived 125 green unit tests.
+
+**Production exposure - O-92.** The same root cause is in two production clients:
+`openbb_client.py:91` and `catalysts.py:213` both default to `trust_env=True`, and
+the OpenBB client's mounts against `http://127.0.0.1:6900` are
+`{http://: HTTPProxy, https://: HTTPProxy}`. The provider **works** here (21/21
+fields, 62.4-66.1s) - so this environment's proxy is transparently forwarding
+loopback, **luck rather than design**. Filed rather than fixed: it changes
+data-layer network behaviour this increment did not touch, and altering the
+provider's transport would have invalidated the sweep that certifies it.
+
+**Tests:** 125 new (49 orchestration + 43 routes + 15 provider + 17 strictness + 2
+added by the live-check guards), a 42-mutation sweep certifying
+**39 killed / 2 measured-inert / 1 control**, and a live check driving a real
+uvicorn server that now **passes end to end at exit 0**.
+
+### D-069 - The seam function, and the defect only a live run could see, and the defect only a live run could see
 
 **Tier 4 - 10/11 -> 11/11. TIER 4 IS COMPLETE.** One function,
 `build_us_macro_thesis` (Section 7.2 / 16.2), shipped in a new

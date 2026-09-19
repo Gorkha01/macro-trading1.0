@@ -10481,3 +10481,265 @@ A guard that fails on an equivalent rewrite is asserting the spelling of an
 expression rather than its meaning — and it would reject a correct refactor. The
 fix was to pin the **order and structure** by AST, and leave the behaviour to the
 test that drives the function.
+
+---
+
+## D-070 — the §8 API layer (`api_layer/`) — **PHASE 3 COMPLETE**, and a mutation sweep that certified a test selection it never ran
+
+**Date:** 2026-09-19 · **Increment:** Phase 3, the whole of §8 ·
+**Module:** 16 (API / service layer) · **Spec:** §8.1–§8.4, §22.2, §22.3, §16.3 ·
+**Depends on:** D-069 (the builder whose six required arguments this layer must
+supply), D-063 (the invalidation assessment the thesis carries), D-064 (the gap),
+D-068 (no-trade as a first-class outcome) ·
+**Closes:** **O-81** (the builder's `EconomyReads` argument now has a
+caller), **and the O-83 remedy is now implemented in `tools/sweep_health.py`** ·
+**Opens:** **O-90**, **O-91** ·
+**Bears on:** O-84 (unmoved — a data-layer decision)
+
+### What the specification asked for
+
+§8.1 defines a FastAPI service with five surfaces: `/health`, `/thesis/{country}`,
+`/dashboard_data`, `/query`, and an SSE reasoning stream at
+`/thesis/{country}/stream`. §8.2 gives a sample call. §8.3 gives the stream's
+step vocabulary. §8.4 gives the security posture — and §8.4 is the part that
+matters most, because it pairs a **permissive CORS policy** with a **loopback
+bind** and states that the two are only safe *together*:
+
+> the service has no authentication anywhere, so the bind address IS the access
+> control.
+
+### The probe, before any code was written
+
+`.probe/p_d070_1.py` (offline: the six required arguments and the three labor-leg
+unit traps) and `.probe/p_d070_2.py` (live: a real snapshot through the real
+chain). The offline probe found the increment's reason for existing; the live
+probe found a defect that no offline test could.
+
+### The orchestration gap — the increment's reason for existing
+
+`build_us_macro_thesis` takes **six required arguments**:
+
+| Argument | Kind | Why it cannot be defaulted |
+|---|---|---|
+| `reads` | positional | `EconomyReads`, a frozen dataclass — §16.2's Q1 needs three economy scores that **no snapshot-fed helper computes** (D-069 measured the census as `[]`) |
+| `taylor_inputs` | positional | `TaylorRuleInputs` — Module 4's own input object |
+| `first_difference_inputs` | positional | `FirstDifferenceInputs` — Module 4's change-form input object |
+| `thesis_type` | **kw-only** | one of seven families; an **analytical choice**, not derivable from a gap |
+| `universe` | **kw-only** | the instrument universe to select from |
+| `short_yield` | **kw-only** | a `ModelResult`, not a float |
+
+§8.2's sample calls it with a snapshot alone. Measured:
+
+```
+TypeError: build_us_macro_thesis() missing 6 required positional argument(s)
+```
+
+**The derivation is the increment's substantive work**, and per the user's
+decision it lives in its own module (`api_layer/orchestration.py`, 1043 lines) so
+the API layer stays thin and the gap becomes **one auditable file**.
+
+### Refusal, not defaulting
+
+Section 16.3 forbids mapping missing data onto a `WATCH` (no-trade) thesis. A
+snapshot that cannot produce a thesis is a **502**, not an empty stand-down — and
+that distinction is load-bearing, because a fabricated `WATCH` would be
+indistinguishable from a genuine "no edge" verdict. The stand-down path is a
+**completed analysis** and returns **200**.
+
+### Three measured unit traps, all in the labor leg
+
+The live probe measured all three against real FRED values:
+
+| Series | Real value | Naive reading | What the model needs |
+|---|---|---|---|
+| `jolts_openings` | `7271.0` | a level in **thousands** | a **YoY percent** |
+| `jolts_quits` | `1.9` | a **rate in percent** — and it **silently passes** the model's `ge=0, le=100` validator | a **percentile** of its trailing range |
+| `initial_claims` | persons | a level | a **4-week-average percent change**, with POSITIVE = loosening |
+
+The `jolts_quits` trap is the dangerous one: the wrong number is **accepted by
+the validator**, so nothing downstream can notice. This is the D-064 lesson (a
+default that is inside the valid range and outside the true range) in a new
+position.
+
+### The defect this increment found — the YoY anniversary tolerance
+
+`_yoy_percent` looked up "the latest observation at or before the anniversary".
+That lookup **succeeds** for an observation a month off the anniversary, and the
+resulting ratio was published under the words **"year-over-year"**.
+
+Measured on the real snapshot: the anniversary comparison landed on a point
+**31 days away** — the adjacent month. The repair reads a tolerance from config:
+
+```yaml
+api:
+  yoy_match_tolerance_days_value:
+    value: 5
+```
+
+**The exclusion of the adjacent month is the entire point of the value.** A
+tolerance of 28 would admit the neighbouring month and silently restore the
+defect, which is why the sweep mutates the tolerance *and* the config read
+(M2.1/M2.2).
+
+### The §8.4 pairing, enforced rather than documented
+
+`ApiSettings._permissive_cors_requires_loopback_bind` **refuses the object** when
+a permissive `cors_origins` list (`["*"]`) is combined with a non-loopback host.
+`loopback_only` then **publishes** the posture as a value, so a caller can see it.
+
+The shipped config is loopback-only with an enumerated origin list — deliberately
+**not** `["*"]`, so that the wildcard case is a deliberate edit that trips the
+validator rather than a default nobody looked at.
+
+### The sweep refused to certify — three times, for three different reasons
+
+**First run: 42 applied / 31 killed / 11 survived.** Ten survivors with no proof.
+Each was diagnosed by **applying it and measuring the behaviour**, never by
+labelling it (O-42):
+
+| Survivor | Diagnosis | Resolution |
+|---|---|---|
+| **M8.6** — every gate reported as fired | A **real lie the tests missed**. Measured live: the stream emitted `stood down by gap_below_dispersion, conflicted_signals, no_falsifier` when **one** fired. The test named for the gate asserted only the convergence label | Test strengthened to assert the **fired set exactly**, derived from the thesis's own warnings |
+| **M10.2** — the version disagrees | The guard asserted `app.version == SERVICE_VERSION` — **both sides read the same constant**, so the comparison is self-referential and cannot fail | Re-pinned against `pyproject.toml`'s declared version, an **independent** source |
+| **M9.5** — `loopback_only` hardcoded | The guard was a **tautology**: the shipped host is loopback, so `True == True` | Replaced with a **legal non-loopback bind** that requires `False` |
+| **M9.1 / M9.2 / M9.3** — provider age/floor/empty-build | **Genuine coverage gaps**: the route tests seed `_CACHE` by hand, so no test exercised the provider's own logic | `test_snapshot_provider.py` written (567 lines, 15 tests) |
+| **M7.1** — the routing flag defaults to `False` | The default is **unreachable** (both call sites pass it explicitly) — but the default's *value* is still a safety property | Guard extended to read the field's default off `QueryResponse.model_fields` |
+| **M7.3** — malformed | **My own bad mutant**: it appended `# MUTANT` to a line and mutated nothing | Replaced with a real mutation (`if not matched:` → `if False:`) |
+| **M1.5** — the gap-change branch removed | **A second, overlapping guard** fires and returns the same `0.0` with an equally honest note | `inert_proof` with the measured argument |
+| **M4.3** — a foreign snapshot accepted | **A second, independent guard**: traced the raise to `gdp_nowcast.py:442` | `inert_proof` naming the site and the message |
+
+**Second run: 42 applied / 36 killed / 6 survived — and M9.1/M9.2/M9.3 survived
+AGAIN, with no proof, on a tree where each is measurably killed.** That
+contradiction was the increment's second real defect:
+
+> **`PYTEST_TARGETS` declared four test files. `run_pytest` ran three.
+> `check_tests_collect` validated the declaration the run did not use.**
+
+The three provider mutants' tests live in `test_snapshot_provider.py` — the file
+that was declared and **never selected**. A green `check_tests_collect` certified
+a list the run never touched. **This is lesson 5be in its purest form: the target
+list is a claim, and a claim is only true where it is consumed.**
+
+The fix is structural, not documentary: both functions now splat the **one**
+`PYTEST_TARGETS` constant, and a new gate
+(`check_the_run_and_the_declaration_agree`) parses the source and refuses to run
+if either function re-inlines a literal path. Verified by planting the regression
+— the gate refuses and names it.
+
+### Files
+
+- `src/macro_engine/api_layer/orchestration.py` — NEW, 1043 lines (the derivation)
+- `src/macro_engine/api_layer/snapshot_provider.py` — NEW, 369 lines (memoized build + disclosed age)
+- `src/macro_engine/api_layer/app.py` — NEW, 92 lines
+- `src/macro_engine/api_layer/routes_health.py` — NEW, 169 lines
+- `src/macro_engine/api_layer/routes_thesis.py` — NEW, 245 lines
+- `src/macro_engine/api_layer/routes_dashboard.py` — NEW, 226 lines
+- `src/macro_engine/api_layer/routes_query.py` — NEW, 269 lines
+- `src/macro_engine/api_layer/reasoning_stream.py` — NEW, 279 lines
+- `config/settings.yaml` — the `api:` block added (9 leaves, all `CalibratedValue` envelopes)
+- `src/macro_engine/config.py` — `ApiSettings` + the §8.4 pairing validator
+- `tests/api_layer/test_orchestration.py` — NEW, 1086 lines, 49 tests
+- `tests/api_layer/test_routes.py` — NEW, 703 lines, 43 tests
+- `tests/api_layer/test_snapshot_provider.py` — NEW, 567 lines, 15 tests
+- `tests/api_layer/test_strictness.py` — NEW, 711 lines, 17 tests
+- `scripts/mutation_api_layer.py` — NEW, 1666 lines, 42 mutations, 10 groups
+- `scripts/live_api_check.py` — NEW, ~640 lines (grown by the three fixes below)
+- `tools/sweep_health.py` — **O-83's remedy implemented**: a whole-tree mutant-shape scan
+
+### The live check's three defects, and the one that reaches production
+
+The live check is the increment's proof that the *wiring* works. Its first three
+runs failed, and **every failure looked like a defect in the service while the
+service was correct every time.** The failures are recorded here because the
+diagnostic shape — *a misleading symptom on a correct component* — is the part
+worth carrying forward.
+
+**1. `GET /health?deep=true` → `404 {"detail": "Not Found"}`, from a route that
+exists.** The route was correct, correctly mounted, returned **200** to
+`TestClient`, and returned 200 to a standalone probe. It therefore presented as
+*intermittent*.
+
+Cause, found by tapping the socket and printing the **request line** rather than
+the status code:
+
+```
+wire 0: b'GET /health HTTP/1.1'
+wire 1: b'GET http://127.0.0.1:55264/health HTTP/1.1'    <-- absolute URI
+```
+
+This environment exports `HTTP_PROXY`/`HTTPS_PROXY`; `httpx` honours them by
+default (`trust_env=True`); and a forward proxy **must** receive the absolute-URI
+request form (RFC 7230 §5.3.2). The proxy forwarded that URI to the origin,
+uvicorn unquoted it into the *path*, and no route matched.
+
+The intermittency was the trap and cost the most time: the **first** request on a
+fresh connection went out origin-form and survived, while a **reused keep-alive**
+connection went out absolute-URI and 404'd. Isolated by measuring all four
+combinations (reuse x params) — reuse alone flips the form; `params` is
+irrelevant — and proven by `trust_env=False` sending origin-form on both.
+
+Three hypotheses were tested and **discarded**: the `params` encoding (correct),
+a router-prefix mismatch (no prefix, correct), and h11's 16 KiB
+`MAX_INCOMPLETE_EVENT_SIZE`. The last is worth recording as a near-miss: an
+oversized header block **does** produce a protocol error — h11 raises
+`RemoteProtocolError` with `error_status_hint=431` — but the fresh-connection
+case returned a clean `431`, so it was a *different* failure with a superficially
+similar shape. **The general lesson: a routing-shaped symptom can have a
+transport-shaped cause, and the status code cannot distinguish them. The request
+line can.**
+
+**2. The CORS preflight → `400 Disallowed CORS origin`.** The check hardcoded
+`http://localhost:3000`; `config/settings.yaml` allows `:8000`. **Starlette was
+right and the check was wrong.** Fixed by deriving the origin from
+`settings.api.cors_origins`, which is the stronger assertion: it tests "an origin
+the service was configured to accept is accepted" rather than a constant.
+
+**3. The stream assertion failed on a correct stream.** It searched for
+`"gap = +26.0bp"`; the stream emits
+`"...: gap = +0.2600pp (+26.0bp), dispersion ..."`. The value was exactly right
+and the check had baked in a **spacing** the stream never promised — lesson 5bf
+applied to the check itself. It now requires **both** renderings, because a
+stream that hardcoded one unit while deriving the other would pass a single-unit
+check.
+
+**Guards.** `test_the_live_check_does_not_route_its_loopback_traffic_through_a_proxy`
+reads the script with `ast` and requires every `httpx.Client(...)` to set
+`trust_env=False`; a companion test requires the proxy variables to be *printed*
+so a run stays reproducible. Verified red by planting the regression, then
+restored. It **cannot** be behavioural — the unit suite drives `TestClient`,
+which never opens a socket — which is precisely why the defect survived 125
+green unit tests.
+
+**The production exposure (O-92).** The same root cause is present in two
+production clients: `openbb_client.py:91` and `catalysts.py:213` both default to
+`trust_env=True`, and the OpenBB client's mounts against `http://127.0.0.1:6900`
+are `{http://: HTTPProxy, https://: HTTPProxy}`. The provider **works** here
+(21/21 fields, 62.4–66.1s), so this environment's proxy is transparently
+forwarding loopback — **luck, not design**. Filed rather than fixed: it changes
+data-layer network behaviour, the increment did not touch the data layer, and
+altering the provider's transport would have invalidated the mutation sweep that
+certifies it.
+
+### Lessons
+
+**Lesson 5be (re-confirmed, now with teeth).** A sweep's `PYTEST_TARGETS` is a
+claim about where a defect's refutation lives. D-069 learned this when a mutant's
+only regression test sat in a deselected file. **D-070 is the more dangerous
+variant**: the file was *declared* in the constant and *omitted* from the run, so
+the sweep's own gate certified a selection nobody executed — and the resulting
+survivors looked exactly like inert mutants. **The remedy is not to check the
+claim, but to make the claim and the consumption the same object.** Two
+hand-repeated lists drifted; one shared constant cannot.
+
+**Lesson 80 (in the guards).** Three of this increment's survivors were guards
+that *manufactured a green*: a self-referential equality (the version), a
+tautology against the shipped config (the loopback check), and a structural guard
+that validated a list no run consumed (the targets). **A guard that cannot fail
+on the tree it guards is worse than no guard**, because it converts "untested"
+into "verified".
+
+**Lesson O-42 (re-confirmed).** Every survivor is either killed, or carries a
+**measured** argument. `M1.5` and `M4.3` are recorded with the *site* that makes
+them redundant (`orchestration.py:867` → `gdp_nowcast.py:442`) and the *value*
+that proves it (the same `0.0`; the same `NotImplementedError`). An exemption
+that cannot name the mechanism is a label.

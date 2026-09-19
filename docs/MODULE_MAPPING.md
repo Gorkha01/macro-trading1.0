@@ -833,14 +833,99 @@ the fallback's **literal source text** rather than its meaning — a test pinnin
 | `settings_store.py` | Bitemporal, append-only revisions | `test_infrastructure.py` |
 | `audit.py` | Append-only ledgers; inputs stored by value | `test_infrastructure.py` |
 | `thesis_layer/schemas.py` | `MacroThesis` and its gates | `thesis_layer/` |
-| `api_layer/` | Phase 4 — empty | `api_layer/` |
+| `api_layer/orchestration.py` | **The derivation** — snapshot → the builder's six required arguments | `test_orchestration.py` |
+| `api_layer/snapshot_provider.py` | The memoized build, its disclosed age, and its `SnapshotUnavailableError` | `test_snapshot_provider.py` |
+| `api_layer/app.py` | The app factory; CORS from config; `SERVICE_VERSION` | `test_routes.py` |
+| `api_layer/routes_health.py` | `/health` (shallow + `?deep=true`) | `test_routes.py` |
+| `api_layer/routes_thesis.py` | `/thesis/{country}` — the status contract | `test_routes.py` |
+| `api_layer/routes_dashboard.py` | `/dashboard_data` — panels, capping, withheld counts | `test_routes.py` |
+| `api_layer/routes_query.py` | `/query` — keyword routing, and the admission that it is | `test_routes.py` |
+| `api_layer/reasoning_stream.py` | The SSE stream — each frame reports what was measured | `test_routes.py`, `test_strictness.py` |
+
+---
+
+### `api_layer/` — the derivation gap, and a sweep that certified a selection it never ran (D-070)
+
+Section 8. **Phase 3 is complete.** Eight modules under `api_layer/` (3383 lines)
+implement all five surfaces.
+
+**Why the layer needed a new module at all.** `build_us_macro_thesis` takes **six
+required arguments**, and Section 8.2's sample calls it with a snapshot alone —
+`TypeError: missing 6 required argument(s)`. The derivation of those six is the
+increment's actual work, and it lives in **`orchestration.py` alone** so that the
+gap is one auditable file and every router obtains its arguments from the same
+place. The strictness file asserts this structurally: a router that reads a guarded
+snapshot field directly is a failure, because the three labor-leg **unit traps**
+(thousands vs percent; rate vs percentile; persons vs 4-week percent change) would
+be re-opened one endpoint at a time.
+
+**The boundary the router must not cross.** `snapshot_to_thesis_inputs` **refuses**
+rather than defaults: `OrchestrationError` maps to **502**, `NotImplementedError`
+(an unimplemented country) to **501**, a bad `thesis_type` to **422**, and **500 is
+reserved for real bugs**. A stand-down is a **completed analysis** and returns
+**200** — because Section 16.3 forbids mapping missing data onto `WATCH`, and a
+fabricated stand-down is indistinguishable from a genuine "no edge" verdict.
+
+**The increment's own defect was a lookup that succeeded when it should have
+failed.** `_yoy_percent` took "the latest observation at or before the anniversary",
+which happily returns a point **31 days away** and publishes the ratio under the
+words *"year-over-year"*. Fixed by a **config-driven tolerance**
+(`api.yoy_match_tolerance_days`, default 5) whose whole purpose is that it
+**excludes the adjacent month** — a tolerance of 28 would silently restore the
+defect.
+
+**The mapping-level lesson, and it is the same shape as D-069's.** D-069 found a
+defect invisible to a fixture suite because it was an **interaction**. D-070 found
+one invisible to a *sweep* because it was in **the harness**: `PYTEST_TARGETS`
+declared four test files, `run_pytest` ran three, and `check_tests_collect`
+validated the declaration the run never used. **A green gate certified a selection
+nobody executed**, and the three mutants whose tests lived in the unselected file
+survived looking exactly like inert mutants. The remedy is structural — both
+functions splat **one** constant, and a new gate refuses to run if either re-inlines
+a path. **Lesson 5be, and the stronger form of it: a target list is a claim, and a
+claim is only true where it is consumed.**
+
+Three further guards **manufactured a green** and were replaced: the version check
+compared `app.version` to the constant the app itself reads (self-referential); the
+`loopback_only` guard compared a constant to a computation that agreed with it
+under the shipped loopback config (a tautology); and the M7.1 guard validated a
+list no run consumed. **A guard that cannot fail on the tree it guards converts
+"untested" into "verified" (lesson 80).**
+
+**And a third lesson, from the live check rather than the sweep.** The check's first
+three runs failed, and **every failure looked like a defect in the service while the
+service was correct.** The reusable part is the diagnostic shape:
+
+* a **routing-shaped symptom with a transport-shaped cause** — a 404 from a
+  registered route, because a proxy rewrote the request line. The status code cannot
+  tell the two apart; **the request line can**, and finding it required tapping the
+  socket rather than re-reading the route;
+* **a check that supplies the wrong input** — a hardcoded `:3000` origin against a
+  config that allows `:8000`. The service was right and the check was wrong, and the
+  fix (derive the origin from config) is the stronger assertion;
+* **a check that pins a rendering rather than a value** — searching for a spacing the
+  stream never promised. Lesson 5bf applies to checks, not only to tests.
+
+Every one was invisible to the 125 green unit tests, because those drive
+`TestClient`, which **never opens a socket**. A check that exercises the transport is
+the only thing that can see a transport defect.
+
+| Issue | Bears on | State |
+|---|---|---|
+| **O-90** | the memoized snapshot's **scope** | `_CACHE` is process-global, so `--workers N` silently multiplies the build cost (measured **223.6s** live). The response discloses the age but not *whose* cache. Needs a `workers=1` contract or a shared store — a deployment decision. |
+| **O-91** | the stream's execution model | The async generator awaits a **synchronous** build, blocking the event loop so `/health` goes unanswered during a slow build. Needs `to_thread`/executor. Not fixed here because it would invalidate the provider mutants that certify the current behaviour. |
+| **O-81** | §21.4's blocked-input obligation | **DISCHARGED at the API layer** — `EconomyReads` now has a producer. |
+| **O-83** | the scoped leftover scan | **Remedy IMPLEMENTED.** `sweep_health.py` now scans the whole tree for mutant **shapes** with no catalogue; verified live by catching an in-flight `# MUTANT`. |
+| **O-84** | the `iorb` live failure | Unmoved — a **data-layer** decision (see the D-069 block above). |
+| **O-92** | the **live check's transport**, and the production clients it mirrors | **Found by the live check and mitigated for the check only.** `httpx` defaults to `trust_env=True`, so the check's loopback traffic went through the environment's `HTTP_PROXY`. A forward proxy must use the **absolute-URI** request form (RFC 7230 §5.3.2); the proxy forwarded that URI to uvicorn, which read it as the *path*, and `/health` returned a **404 from a route that is registered and correct**. The intermittency — the first request on a fresh connection survived, a reused keep-alive one did not — is what made it read as a routing bug. Fixed in the check (`trust_env=False` on every client, with the proxy variables printed so runs stay reproducible) and guarded by an `ast` read of the script. **The same root cause is present in two production clients** (`openbb_client.py:91`, `catalysts.py:213`), where the OpenBB client's mounts against `http://127.0.0.1:6900` are `{http://: HTTPProxy, https://: HTTPProxy}`. The provider works here (21/21 fields) — which is the environment's proxy forwarding loopback, not design. **Filed rather than fixed**, because it changes data-layer network behaviour this increment did not touch and would have invalidated the sweep that certifies the provider. |
 
 ---
 
 ## Gaps this mapping exposes
 
-1. **`api_layer/` contains no implementation; `thesis_layer/` is now a full
-   layer.** `api_layer/` is Phase 4 by §22.3 and is correctly empty.
+1. **`api_layer/` is now implemented (D-070); `thesis_layer/` and `api_layer/`
+   are both full layers.** Phase 3 is complete. The gap that remains is the
+   service's **execution model** (O-90, O-91) rather than a missing surface.
    `thesis_layer/` gained `invalidation.py` in **D-063**, `scenarios.py` in
    **D-064**, `catalysts.py` in **D-065**, `signals.py` in **D-066**,
    `warnings.py` in **D-067**, `no_trade.py` in **D-068**, and finally

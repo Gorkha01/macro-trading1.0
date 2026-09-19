@@ -41,6 +41,19 @@ the three things that break *without* mutating anything:
    takes the *pattern-not-found* path and records a **survivor** — so a
    corrupted file reads as *weak tests*.
 
+**O-83: the leftover scan above is SCOPED, and a scoped gate's green result is
+conditional on the scope being complete.** The per-sweep scan iterates each
+sweep's own catalogue, so a mutant left behind by sweep *X* in a file that sweep
+*Y* also targets is invisible unless *Y* happens to declare the same replacement
+text. Measured live during D-067: D-064's ``M6.3`` mutant (``if False:``
+replacing ``abs(total - 1.0) > tolerance`` in ``config.py``) was **still on
+disk** while this tool reported **0 leftovers** — because ``config.py`` is a
+target of the *scenario* sweep, which was target-clean *only because the
+mutation had already fired*. The corrupted state was invisible **precisely
+because it had succeeded.**
+
+The remedy is step 5 below, and it does not consult a catalogue at all.
+
 Coverage gaps are reported, not failed: seven older sweeps predate
 ``check_targets`` (O-29), and failing on that would make this gate red on a tree
 that is behaving as designed. A sweep with **no** gate is reported as
@@ -275,6 +288,37 @@ def _call_gate(gate: Any, native: list[Any]) -> list[str]:
     return list(result)
 
 
+def _whole_tree_mutant_scan() -> list[str]:
+    """O-83's remedy: find mutant SHAPES anywhere, with no catalogue.
+
+    The per-sweep leftover check is scoped to each sweep's own declarations, so
+    a mutant left in a shared file by a *different* sweep is invisible. This
+    scan does not care which sweep wrote it, or whether its catalogue still
+    exists — it looks for the two shapes every sweep in this project uses:
+
+    * ``if False:`` / ``if True:`` — the branch-inversion form.
+    * ``# MUTANT`` — the comment every replacement text carries, which is how a
+      mutation that is not a branch inversion is recognised.
+
+    ``if True:`` is a mutant shape here because the project's sweeps use
+    ``if not deep and True:`` style identities as **controls**, and a control
+    left applied is exactly as invisible as a defect left applied.
+
+    Scanned: ``src/`` only. The sweeps themselves necessarily contain these
+    strings (they are the mutant text), and the tests legitimately reference
+    them, so scanning those trees would report the catalogue rather than the
+    tree. ``src/`` is where a mutation is applied, so it is the only place the
+    answer is meaningful.
+    """
+    hits: list[str] = []
+    for path in sorted((REPO / "src").rglob("*.py")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if "MUTANT" in line or stripped.startswith(("if False:", "if True:")):
+                hits.append(f"{path.relative_to(REPO)}:{lineno}: {stripped}")
+    return hits
+
+
 def main() -> int:
     print("=" * 78)
     print("SWEEP HEALTH — every mutation sweep, without running one")
@@ -288,6 +332,12 @@ def main() -> int:
     failures: list[str] = []
     ungated: list[str] = []
     leftovers: list[str] = []
+
+    # O-83's remedy, run BEFORE the per-sweep scan so a shape left anywhere is
+    # reported even if no catalogue declares it.
+    shape_hits = _whole_tree_mutant_scan()
+    for hit in shape_hits:
+        failures.append(f"mutant shape on disk: {hit}")
 
     for path in sweeps:
         module, error = _load(path)
@@ -373,6 +423,9 @@ def main() -> int:
     print(f"leftover mutations:        {len(leftovers)}")
     for item in leftovers:
         print(f"  STILL APPLIED -> {item}")
+    print(f"mutant shapes on disk (O-83, whole tree): {len(shape_hits)}")
+    for item in shape_hits:
+        print(f"  SHAPE FOUND   -> {item}")
     print(f"failures:                  {len(failures)}")
     for item in failures:
         print(f"  !! {item}")
