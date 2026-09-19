@@ -444,6 +444,53 @@ assertion means a *new* live read can be covered by adding one line.
 (76 source files) · **pytest 2138 passed, 1 skipped, 0 failed** (was 2127) ·
 baseline gate PASS (59 = 59) · live thesis unchanged.
 
+### Increment 4 — the live-path curve reads populated (commit `ef2f1b3`)
+
+| File | Change |
+|---|---|
+| `src/macro_engine/models/yield_curve.py` | `curve_slope` and `breakeven_inflation` populate §3/§4 + **NEW** `_slope_direction_sentence()`, `_breakeven_direction_sentence()` |
+| `tests/models/test_reasoning_contract.py` | **+8** `TestCurveReadsArePopulated` |
+
+**Seven live-path results now carry reasoning** (was 5): the regime, the gap
+carrier, Q1's three reads, and the two curve reads (`_curve_leg` calls both).
+
+**The two curve reads needed OPPOSITE treatment on `direction`, and that is the
+substance of this increment:**
+
+- **`curve_slope` HAS a meaningful direction** (normal / flat / inverted), so it
+  states one — with exact-zero separated as a third state.
+- **`breakeven_inflation` DELIBERATELY REFUSES to state one.** A breakeven is a
+  compensation level in percent, and this model has **no target, no equilibrium
+  and no neutral band** against which "high" could be defined. Calling 2.4%
+  "above target" would import the Fed's 2% objective into a market-determined
+  compensation level — two different quantities. So the sentence states the
+  LEVEL and the only comparison the model can support (against zero, below which
+  nominal < real would indicate a data error or a TIPS-liquidity distortion
+  rather than a market inflation view). **A test asserts the ABSENCE of the
+  claim**, because a later "helpful" edit adding one would look like an
+  improvement.
+
+**Load-bearing limitations recorded.** `curve_slope`: two points only, so it
+measures slope and nothing about level or curvature — +100bp at 1%/2% and at
+5%/6% are different regimes and the same number; forbids use as a dated timing
+signal. `breakeven_inflation`: contains an inflation risk premium **and** a TIPS
+liquidity premium, so it is compensation, not expected inflation — the prohibited
+"the market expects X% inflation" phrasing is written **verbatim**, because it is
+the reading most likely to be published.
+
+**Process note, recorded rather than hidden.** I hit the nested-conditional
+pattern a **fourth** time here, on `curve_slope` — the same pattern I extracted
+three helpers for in the previous increment and explicitly noted to avoid. The
+lesson was recorded and then not applied immediately; both helpers were extracted
+on the second pass.
+
+**Tests proven RED** by simulating the "helpful improvement" — giving the
+breakeven an "above target" direction, which the guard caught and named.
+
+**Gates after:** `ruff` clean · `ruff format` clean (206 files) · `mypy` clean
+(76 source files) · **pytest 2146 passed, 1 skipped, 0 failed** (was 2138) ·
+baseline gate PASS (59 = 59) · live thesis unchanged.
+
 ---
 
 **Tool correction made while re-measuring.** Re-running the reachability audit
@@ -481,13 +528,14 @@ matching the pre-existing figure, now measured more accurately.
    and not a measurement** — a fact the number itself cannot state, so only the
    prose can carry it.
 
-   What remains is the other ~71 models, in `ModelResult` construction-site terms
-   (76 sites total, **5 populated** — the two on the live decision path plus Q1's
-   three reads). This is per-model work whose correctness cannot be checked in one
-   pass, so it is deliberately left incremental: **populate field-by-field as each
-   model is next touched.** The pattern is now demonstrated rather than proposed —
-   see `TestLivePathReasoningIsPopulated` and `TestAllThreeLiveReadsArePopulated`,
-   both proven RED by planting regressions.
+   What remains is the other ~69 models, in `ModelResult` construction-site terms
+   (76 sites total, **7 populated** — the two live-path decision results, Q1's
+   three reads, and the two curve reads). This is per-model work whose correctness
+   cannot be checked in one pass, so it is deliberately left incremental:
+   **populate field-by-field as each model is next touched.** The pattern is now
+   demonstrated rather than proposed — see `TestLivePathReasoningIsPopulated`,
+   `TestAllThreeLiveReadsArePopulated` and `TestCurveReadsArePopulated`, all
+   proven RED by planting regressions.
 
 2. **§6 release/vintage modelling — MODELLED, NOT POPULATED (measured dead end).**
    `ObservationPoint` now carries optional `release_datetime` / `vintage_datetime`
@@ -526,8 +574,8 @@ series, cannot present a single-axis regime read as a joint one without saying s
 and correctly refuses to trade on a sub-noise gap.
 
 What remains is honest and named: (a) **populating** — not schematising — the
-reasoning fields across the remaining models (5 of 76 construction sites done:
-both live-path decision results plus Q1's three economy reads); (b)
-release/vintage **data**, which is unreachable on this installation rather than
-unimplemented; and (c) the standing capability gap DEF-001. None is an integrity
-failure. **No Phase 4 work was started.**
+reasoning fields across the remaining models (7 of 76 construction sites done:
+both live-path decision results, Q1's three economy reads, and the two curve
+reads); (b) release/vintage **data**, which is unreachable on this installation
+rather than unimplemented; and (c) the standing capability gap DEF-001. None is
+an integrity failure. **No Phase 4 work was started.**
