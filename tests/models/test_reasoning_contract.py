@@ -458,3 +458,111 @@ class TestAllThreeLiveReadsArePopulated:
         assert "balanced" in _tightness_direction_sentence(0.0)
         assert "tightening" in _tightness_direction_sentence(0.5)
         assert "loosening" in _tightness_direction_sentence(-0.5)
+
+
+class TestCurveReadsArePopulated:
+    """The curve reads on the live path: slope and breakevens.
+
+    Both are pure arithmetic on observed yields, which is what makes them the
+    easiest results in the tree to *look* self-explanatory and therefore the
+    easiest to leave undocumented. The reasoning is not in the subtraction — it
+    is in what the subtraction cannot separate, and that is what these pin.
+
+    The two differ in an important way. `curve_slope` HAS a meaningful direction
+    (normal / flat / inverted). `breakeven_inflation` deliberately does NOT: it is
+    a compensation level in percent with no target or equilibrium in the model to
+    compare against. Asserting both properties is the point — a future edit that
+    "helpfully" gives the breakeven a direction would be wrong, and only a test
+    that asserts its absence would catch that.
+    """
+
+    @staticmethod
+    def _slope(spread: float) -> ModelResult:
+        from macro_engine.models.yield_curve import CurveSlopeInputs, curve_slope
+
+        return curve_slope(
+            CurveSlopeInputs(
+                tenors={"2yr": 4.0, "10yr": 4.0 + spread / 100}, short="2yr", long="10yr"
+            )
+        )
+
+    @staticmethod
+    def _breakeven(nominal: float, real: float) -> ModelResult:
+        from macro_engine.models.yield_curve import BreakevenInputs, breakeven_inflation
+
+        return breakeven_inflation(BreakevenInputs(nominal=nominal, tips_real=real, tenor="10yr"))
+
+    def test_slope_declares_basis_points_and_a_three_state_direction(self) -> None:
+        assert self._slope(+120.0).unit == "basis points"
+        assert "normal" in (self._slope(+120.0).direction or "")
+        assert "inverted" in (self._slope(-50.0).direction or "")
+        assert "flat" in (self._slope(0.0).direction or "")
+
+    def test_slope_forbids_being_read_as_a_timing_signal(self) -> None:
+        """The 6-24 month variable lead is the model's most misused property.
+
+        An inversion that precedes a recession by two years is, in real time,
+        indistinguishable from one that precedes nothing — and that is the
+        sentence a consumer must have before treating the spread as dated.
+        """
+        r = self._slope(-50.0)
+        joined = " ".join(r.decision_prohibition).lower()
+        assert "timing" in joined or "forecast" in joined
+        limitations = " ".join(r.limitations).lower()
+        assert "6-24" in limitations or "variable" in limitations
+
+    def test_slope_says_it_cannot_separate_level_from_shape(self) -> None:
+        """+100bp at 1%/2% and at 5%/6% are different regimes, same number."""
+        joined = " ".join(self._slope(+120.0).limitations).lower()
+        assert "level" in joined
+        assert "two" in joined or "curvature" in joined
+
+    def test_breakeven_refuses_to_state_a_direction(self) -> None:
+        """The breakeven must say it is a LEVEL with no target to compare against.
+
+        A model that has no equilibrium, no target and no neutral band cannot
+        legitimately say a breakeven is 'high' or 'rising is hawkish'. Asserting
+        the ABSENCE of a directional claim is the only way to stop a later edit
+        from adding one, because adding one would look like an improvement.
+        """
+        r = self._breakeven(nominal=4.25, real=1.85)
+        assert r.direction is not None
+        joined = r.direction.lower()
+        assert "level" in joined
+        assert "not a direction" in joined or "no target" in joined
+
+    def test_breakeven_distinguishes_the_impossible_from_the_unusual(self) -> None:
+        """A negative breakeven is a liquidity signal, not a market inflation view.
+
+        Nominal below real at the same tenor would make the implied real yield
+        exceed the nominal, which cannot reflect an inflation expectation. The
+        sentence must name it as a distortion rather than fold it into a
+        generic 'below' state.
+        """
+        r = self._breakeven(nominal=4.00, real=4.10)
+        assert r.direction is not None
+        joined = r.direction.lower()
+        assert "negative" in joined
+        assert "liquidity" in joined or "distortion" in joined
+
+    def test_breakeven_forbids_the_market_expects_phrasing(self) -> None:
+        """'The market expects X% inflation' is the reading most likely to be published."""
+        joined = " ".join(self._breakeven(nominal=4.25, real=1.85).decision_prohibition).lower()
+        assert "expect" in joined
+        assert (
+            "compensation" in " ".join(self._breakeven(nominal=4.25, real=1.85).limitations).lower()
+        )
+
+    def test_breakeven_forbids_being_fed_to_the_policy_path(self) -> None:
+        """derive_market_implied_policy_path consumes the NOMINAL curve, not a breakeven."""
+        joined = " ".join(self._breakeven(nominal=4.25, real=1.85).decision_prohibition).lower()
+        assert "nominal" in joined
+        assert "policy path" in joined
+
+    def test_both_curve_reads_declare_unit_assumptions_and_provenance(self) -> None:
+        for r in (self._slope(+120.0), self._breakeven(nominal=4.25, real=1.85)):
+            assert r.unit, f"{r.model_name} must declare its unit"
+            assert r.assumptions, f"{r.model_name} must state its assumptions"
+            assert r.data_provenance, f"{r.model_name} must name its sources"
+            assert r.decision_relevance, f"{r.model_name} must name its consumer"
+            assert r.limitations, f"{r.model_name} must state its limits"

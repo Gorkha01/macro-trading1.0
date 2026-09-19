@@ -105,6 +105,26 @@ class CurveDecompositionInputs(BaseModel):
     tenor: str = Field(description="Tenor label of `nominal_yield`.")
 
 
+def _slope_direction_sentence(slope_bp: float) -> str:
+    """The curve slope's sign, in words, for the Section 3 ``direction`` field.
+
+    Three states, and the middle one is real: a spread of exactly zero is a FLAT
+    curve, neither normal nor inverted, and the branch that computes it already
+    distinguishes ``shape == "flat"``. Consuming the same three states here keeps
+    the sentence and the interpretation from disagreeing.
+
+    Note the field's semantics (Section 3): ``direction`` says what the value
+    MEANS, not the sign of the number. "Normal / flat / inverted" is the meaning
+    a reader wants; "positive / zero / negative" would restate the arithmetic
+    without interpreting it.
+    """
+    if slope_bp > 0:
+        return "normal: upward-sloping (long above short)"
+    if slope_bp == 0:
+        return "flat: long and short coincide"
+    return "inverted: downward-sloping (short above long)"
+
+
 def curve_slope(inputs: CurveSlopeInputs) -> ModelResult:
     """Long-minus-short spread, the primary curve-shape measure.
 
@@ -159,6 +179,109 @@ def curve_slope(inputs: CurveSlopeInputs) -> ModelResult:
             "and an inversion that precedes a recession by two years is "
             "indistinguishable in real time from one that precedes none."
         ],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="basis points",
+        direction=_slope_direction_sentence(slope_bp),
+        assumptions=[
+            "Two points on the observed curve are sufficient to characterise its "
+            "SHAPE. A slope is a two-point statistic by definition; it cannot "
+            "distinguish a parallel shift from a twist, and a single slope says "
+            "nothing about curvature.",
+            "The tenors supplied are the ones the caller names, and the spread is "
+            "computed at exactly those maturities. A slope between two different "
+            "tenors is a different quantity, not a rescaling of this one.",
+            "The curve is read from a single observation timestamp. The nominal "
+            "curve is a snapshot, so it carries whatever intraday and "
+            "quote-timing effects the source has — this model applies no "
+            "smoothing or fitting.",
+            "An inverted curve is read as the market pricing future cuts. That is "
+            "an interpretation of a spread, not something the arithmetic "
+            "establishes.",
+        ],
+        data_provenance=[
+            "yield_curve — the snapshot's nominal treasury curve, an "
+            "11-tenor set on a live 2026-09-17 snapshot (1mo 3.97 .. 30yr 5.29) "
+            "as observed by the data layer",
+            "Tenors are selected by config "
+            "(instrument_selection.default_short_tenor / default_long_tenor) and "
+            "resolved against the curve's actual keys; an unresolvable tenor "
+            "abstains rather than substituting a different maturity",
+        ],
+        limitations=[
+            "NOT A PROBABILITY AND NOT A TIMING SIGNAL. The historical lead over "
+            "recessions is 6-24 months AND VARIABLE, so an inversion that "
+            "precedes a recession by two years is, in real time, "
+            "indistinguishable from one that precedes none. The lead is a "
+            "statistical regularity, not a forecast horizon.",
+            "TWO POINTS ONLY: this measures slope and nothing about curvature or "
+            "level. A steep curve at a low level and a steep curve at a high "
+            "level are the same number here, and they are different regimes.",
+            "No decomposition: this is the raw spread, so it contains inflation "
+            "expectations, a term premium and a real-rate component. There is no "
+            "term-premium series wired (Section 22.5 defers ACM to Phase 5+), so "
+            "the spread cannot be attributed among them.",
+            "The curve is not adjusted for the market's own conventions around "
+            "on-the-run versus off-the-run issues or bills versus coupons; the "
+            "source curve is taken as given.",
+            "Points-in-time: the curve carries one observation timestamp and no "
+            "release or vintage datetime (Section 6, measured 2026-09-19). A "
+            "backtest reading a stored curve cannot prove which revision of it "
+            "it holds.",
+        ],
+        decision_relevance=(
+            "Module 8.1's curve-shape read, carried on the thesis beside the "
+            "breakevens. It is the market-shape context for an outright or "
+            "curve-expression thesis, and it informs Section 16.2's Q3/Q4 market "
+            "read — but it is not itself a gate."
+        ),
+        decision_prohibition=[
+            "MUST NOT be used as a recession forecast or a timing trigger. The "
+            "6-24 month, variable lead is stated in the model's own warning and "
+            "in `limitations`; treating the spread as a dated signal is the "
+            "error this prohibition names.",
+            "MUST NOT be read as evidence about the LEVEL of rates. A slope of "
+            "+100bp is consistent with a 1%/2% curve and with a 5%/6% curve, "
+            "and those are different policy environments.",
+            "MUST NOT be attributed to yield-curve control, QE, or any policy "
+            "instrument on its own. Attributing a spread change to a cause "
+            "requires the decomposition this model does not perform.",
+        ],
+    )
+
+
+def _breakeven_direction_sentence(breakeven: float) -> str:
+    """The breakeven's direction, in words, for the Section 3 ``direction`` field.
+
+    **Deliberately refuses to state a direction.** A breakeven is an inflation
+    *compensation* level in percent, and there is no target, no equilibrium and
+    no neutral band in this model against which "high" or "low" could be
+    defined. Calling 2.4% "above target" would import the Fed's 2% objective
+    into a market-determined compensation level — two different quantities — and
+    calling a rise "hawkish" would assume the move came from expectations rather
+    than from the risk premium this model explicitly cannot strip out.
+
+    So the sentence states the LEVEL and the one comparison the model can
+    actually support: against zero, which is the point below which the implied
+    real yield exceeds the nominal — an economic impossibility that would
+    indicate a data error rather than a market view. That is a sanity statement,
+    not a directional one, and saying so is more honest than manufacturing a
+    direction the model has no basis for.
+
+    A negative breakeven is not impossible in principle (it has happened in
+    stressed markets, where TIPS demand distorts the real leg), but it is
+    unusual enough to be worth naming rather than folding into "below average".
+    """
+    if breakeven > 0:
+        return (
+            f"{breakeven:.2f}% inflation compensation — a LEVEL, not a direction; "
+            f"this model has no target or neutral band to compare it against"
+        )
+    if breakeven == 0:
+        return "0.00% compensation — nominal and real yields coincide at this tenor"
+    return (
+        f"{breakeven:.2f}% NEGATIVE inflation compensation — nominal below real at "
+        f"this tenor, which indicates a TIPS-liquidity distortion rather than a "
+        f"market inflation view"
     )
 
 
@@ -191,6 +314,71 @@ def breakeven_inflation(inputs: BreakevenInputs) -> ModelResult:
             "premium — it is not pure expected inflation (Module 8.2). A rising "
             "breakeven can reflect rising uncertainty rather than rising "
             "expectations, and the two imply different policy readings."
+        ],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent",
+        direction=_breakeven_direction_sentence(breakeven),
+        assumptions=[
+            "Subtracting a TIPS real yield from a nominal yield of the SAME "
+            "maturity isolates inflation compensation. At mismatched maturities "
+            "the difference prices the curve's slope as well, which is why the "
+            "orchestrator forms breakevens only at tenors present in BOTH curves.",
+            "Both legs are observed market yields with no estimation step, and "
+            "both are quoted on comparable conventions. A liquidity or "
+            "indexation mismatch between the nominal and TIPS legs would enter "
+            "the result as a bias, not as noise.",
+            "The result is read as COMPENSATION, not expectation. That "
+            "distinction is the model's central caveat, restated in "
+            "`limitations` so a consumer that only reads this field still sees "
+            "it.",
+        ],
+        data_provenance=[
+            "yield_curve — the snapshot's nominal treasury curve at this tenor",
+            "tips_yields — the snapshot's TIPS real curve, a 5-tenor set on a "
+            "live 2026-09-17 snapshot (5yr 2.46 .. 30yr 3.04)",
+            "The tenor is the intersection of the two curves, resolved by the "
+            "orchestrator's _curve_leg; no tenor is substituted to force a match",
+        ],
+        limitations=[
+            "NOT PURE EXPECTED INFLATION. The difference contains an inflation "
+            "risk premium AND a TIPS liquidity premium. A rising breakeven can "
+            "mean the market expects more inflation or that it demands more "
+            "compensation for uncertainty, and the two imply OPPOSITE policy "
+            "readings. This single number cannot separate them.",
+            "No term-premium series is wired (Section 22.5 defers ACM to Phase "
+            "5+), so the premium component cannot be quantified or removed — only "
+            "named.",
+            "TIPS liquidity is structurally worse than nominal Treasury "
+            "liquidity, and the gap widens under stress. The breakeven therefore "
+            "moves for reasons unrelated to inflation, most sharply in exactly "
+            "the episodes when it would be most consulted.",
+            "A single-tenor breakeven is a point on the compensation curve, not "
+            "the curve. The orchestrator emits one per common tenor precisely so "
+            "a reader can see the term structure rather than one number.",
+            "Points-in-time: both legs carry one observation timestamp and no "
+            "release or vintage datetime (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "Module 8.2's inflation-compensation read, carried beside the curve "
+            "slope on the thesis. It is the market's own inflation view, which "
+            "Section 16.2's market read (Q3/Q4) and the model-versus-market gap "
+            "draw on as context."
+        ),
+        decision_prohibition=[
+            "MUST NOT be quoted as 'the market expects X% inflation'. The value "
+            "is compensation, which includes two premia; the prohibited phrasing "
+            "is stated verbatim because it is the reading a consumer is most "
+            "likely to publish.",
+            "MUST NOT be attributed to policy expectations alone. A breakeven "
+            "move during a liquidity event is more likely a TIPS liquidity "
+            "effect than a change in expected inflation.",
+            "MUST NOT be compared across tenors as if the differences were pure "
+            "inflation-expectations term structure: the premia vary by tenor, so "
+            "the differences confound expectation and compensation.",
+            "MUST NOT be used as an input to the model-implied policy path. "
+            "derive_market_implied_policy_path consumes the NOMINAL curve; "
+            "feeding it a breakeven would substitute an inflation-compensation "
+            "measure for a nominal rate.",
         ],
     )
 
