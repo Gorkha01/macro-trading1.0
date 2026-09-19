@@ -204,6 +204,7 @@ async def get_thesis(
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
             short_yield=inputs.short_yield,
+            regime=inputs.regime,
         )
     except Exception as exc:
         # The builder's own failures are a bug here, not a data condition, so

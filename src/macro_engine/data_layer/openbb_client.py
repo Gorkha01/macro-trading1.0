@@ -88,10 +88,38 @@ class OpenBBClient:
 
     def __init__(self, config: OpenBBClientConfig | None = None) -> None:
         self.config = config or OpenBBClientConfig()
+        # Keep-alive is DISABLED on purpose. Measured 2026-09-19 against the live
+        # local OpenBB Platform API: a client that reuses its connection gets
+        # 200 on the first request and **404 on every subsequent one**, for
+        # every route including ``/openapi.json`` (whose own 278-path body was
+        # returned 200 the first time). The server does not close the socket and
+        # does not error; it serves ``{"detail":"Not Found"}`` from a reused
+        # connection.
+        #
+        # Proven by isolation, three requests to ``/openapi.json`` each:
+        #
+        #     default client (keep-alive on)   [200, 404, 404]
+        #     ``Connection: close`` header     [200, 200, 200]
+        #     ``max_keepalive_connections=0``  [200, 200, 200]
+        #
+        # Consequence before this fix: ``is_local_api_available()`` returned
+        # True, then False, then False, so ``/health`` reported the local server
+        # as down from the second call onward; and every local-first fetch burned
+        # three retries (~4.5s at the configured 1.5s backoff) before falling
+        # back to the in-process package. That masking is why the 23x local-first
+        # slowdown recorded in ``settings.yaml`` is *partly* this defect rather
+        # than provider latency -- the measurement stands (the package path is
+        # still faster), but a local-first run was paying retry cost on top of
+        # it that a working connection would not have paid.
+        #
+        # One connection per request is the cost. For a 21-field snapshot that
+        # is 21 TCP handshakes to localhost, which is negligible next to the
+        # seconds the retry path was costing.
         self._http = httpx.Client(
             base_url=self.config.local_api_base_url.rstrip("/"),
             timeout=self.config.timeout_seconds,
             verify=self.config.verify_ssl,
+            limits=httpx.Limits(max_keepalive_connections=0),
         )
         # Lazy-imported only if the local API path fails. Importing `openbb`
         # eagerly costs seconds of startup time for a path that may never run.

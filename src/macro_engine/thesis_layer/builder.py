@@ -142,6 +142,7 @@ from macro_engine.models.policy_rules import (
     policy_rule_ensemble,
     taylor_rule,
 )
+from macro_engine.models.probability import scenario_distribution_status
 from macro_engine.thesis_layer.catalysts import CatalystSourceError, next_catalyst_calendar
 from macro_engine.thesis_layer.invalidation import (
     InvalidationAssessment,
@@ -155,7 +156,10 @@ from macro_engine.thesis_layer.no_trade import (
     no_trade_thesis,
     render_no_trade_thesis,
 )
-from macro_engine.thesis_layer.scenarios import build_scenario_distribution
+from macro_engine.thesis_layer.scenarios import (
+    build_scenario_distribution,
+    scenario_probabilities_are_calibrated,
+)
 from macro_engine.thesis_layer.schemas import (
     ConvergenceClassification,
     MacroThesis,
@@ -243,23 +247,56 @@ class EconomyReads:
     the snapshot-fed helper census is ``[]`` for ``inflation_nowcast``,
     ``labor_synthesis``, ``regime`` and ``national_accounts`` alike).
 
-    So "run every Phase-1 model against the snapshot" (§7.2 step 1) requires a
-    **plumbing layer that does not exist yet** — one that turns
-    ``MacroDataSnapshot`` fields into each model's input record, with unit
-    conventions, yoy/mom transformation, and release-lag handling per series.
-    That layer is Phase 3's own work item and is *not* a side effect of shipping
-    the builder.
+    The transforms live in the caller, not here
+    -------------------------------------------
+    ``api_layer/orchestration.py`` is the plumbing layer for this signature. It
+    turns ``MacroDataSnapshot`` fields into each model's input record, including
+    the unit conventions, the yoy/mom transforms and the per-series release-lag
+    handling (``_yoy_percent``, ``_mom_percent``, ``_trailing_percentile``,
+    ``_claims_4wk_change``, ``_inflation_leg``, ``_labor_leg``,
+    ``_output_gap_change``). An earlier version of this docstring said that layer
+    *"does not exist yet"*; it exists, and leaving that sentence in place made the
+    remaining wiring gap read as a known-and-accepted limitation rather than as
+    outstanding work (DEF-006).
 
-    The honest resolution is the one this project has used before (D-045's
-    ``MANUAL`` route, D-036): **take what only the caller can supply as a
-    parameter, and say so in the return.** A builder that reached into the
-    snapshot and invented the transforms would produce a thesis whose numbers
-    cannot be reproduced from a stated input, which is worse than a builder with
-    a wider signature.
+    What the builder keeps out of scope — and why it still matters
+    -------------------------------------------------------------
+    This function takes its inputs as parameters rather than reaching into the
+    snapshot for three reasons that remain correct:
 
-    A caller holding a snapshot and no plumbing layer still gets a fully-formed,
-    fully-disclosed thesis; a caller holding a wired pipeline passes real reads.
-    **Neither is silently preferred.**
+    1. **Reproducibility.** A builder that invented its own transforms would
+       produce a thesis whose numbers cannot be reproduced from a stated input.
+    2. **The ``NOT_COMPUTED`` pattern.** A caller that cannot supply a record
+       still gets a fully-formed, fully-disclosed thesis; the disclosure names
+       what was not computed instead of guessing (D-043/D-045).
+    3. **Signature stability.** Adding a third rule record to the signature is a
+       visible, reviewable change; silently deriving one would not be.
+
+    The open item is therefore **not** this signature. It is that
+    ``orchestration.py`` feeds the **policy axis**, the regime read, Module
+    7.1's national-accounts divergence **and** Module 8's curve reads (slope and
+    breakevens) — and not yet an FCI or a risk input. Measured by
+    ``tools/reachability_audit.py``: 59 of the 77 model functions in
+    ``models/`` have no pipeline caller, of which 34 are live-checked in
+    ``scripts/`` and 25 have no caller of any kind.
+
+    **That 59 is not 59 Phase 0-3 obligations, and the distinction matters.**
+    ``AGENTS.md`` line 1787's Module-to-Phase-to-Endpoint table assigns the
+    Risk/Portfolio modules (``historical_var``, ``expected_shortfall``,
+    ``parametric_var``, ``realized_vol_simple``, ``portfolio_volatility_*``,
+    ``marginal_risk_contributions``) the endpoint **"(Phase 4+)"**, and §9.2/§9.3
+    defer ``compute_risk_parity_weights`` and ``translate_thesis_to_position``
+    to Phase 4. §16.2's own algorithm marks Q11 *"Phase 1: human-determined;
+    Phase 4+: fractional_kelly"* and Q12 *"Phase 4+ hook"*. So wiring the risk
+    axis now would not close a Phase 0-3 gap — it would build a Phase 4 layer
+    early, which is a different decision from this one.
+
+    Extending the orchestrator to the curve axis is **done**; the FCI and risk
+    axes are the remaining candidates, and the risk half is Phase 4 by the
+    spec's own endpoint assignment. See ``docs/DEFECTS_2026-09-19.md``.
+
+    **Neither** a snapshot-only caller **nor** a fully-wired one is silently
+    preferred.
 
     The three results are kept as ``ModelResult``s rather than floats because
     every downstream consumer — the regime classifier, the convergence
@@ -407,6 +444,32 @@ def _rule_number(result: PolicyRuleResult) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _gap_direction_sentence(raw_gap: float) -> str:
+    """The gap's sign, in words, for the §3 `direction` field.
+
+    A named function rather than an inline conditional for the same reason
+    `_as_signal` is one: the sign convention here is load-bearing and easy to
+    invert. A **positive** ``raw_gap`` means the model-implied path is above the
+    market-implied path — policy is more restrictive than priced — which is the
+    opposite of the naive reading of "the gap is positive, so policy is loose".
+
+    Note the field's own semantics (Section 3): `direction` describes what the
+    value MEANS, not the sign of the number. For a gap these coincide, but the
+    sentence is what a reader consumes, so it is written explicitly rather than
+    left to be re-derived.
+
+    The exact-zero case is separated because "flat" is a third state, not a
+    rounding of either direction. The comparison is on ``!= 0`` rather than on
+    ``> 0`` / ``< 0`` with a fallthrough, so a zero cannot be mislabelled by
+    whichever branch's `else` caught it (the D-040 class of defect).
+    """
+    if raw_gap == 0:
+        return "flat: model-implied and market-implied paths coincide"
+    if raw_gap > 0:
+        return "policy is more restrictive than priced (model path above market path)"
+    return "policy is less restrictive than priced (model path below market path)"
+
+
 def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
     """The gap, as the ``ModelResult`` that ``classify_convergence`` can read.
 
@@ -444,6 +507,62 @@ def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
         ),
         inputs_used=["model_implied_value", "market_implied_value", "dispersion"],
         warnings=[],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percentage points",
+        direction=_gap_direction_sentence(gap.raw_gap),
+        assumptions=[
+            "The model-implied policy path (the median of the three rules, "
+            "Section 22.4) is the correct benchmark for 'what policy SHOULD be'. A "
+            "reader who rejects the rules' structural assumptions rejects the "
+            "sign of this gap with them.",
+            "The market-implied path, term-premium-adjusted, represents what is "
+            "PRICED. If the adjustment is wrong the gap measures the adjustment "
+            "error rather than a policy surprise.",
+            "Dispersion across the three rules is treated as the noise floor for "
+            "significance (Section 16.2 Q6). Three rules over one target is a "
+            "narrow disagreement set, so the floor is likely understated.",
+        ],
+        data_provenance=[
+            "model_implied_value — median of the three policy rules, computed "
+            "upstream by build_policy_gap",
+            "market_implied_value — derive_market_implied_policy_path, "
+            "term-premium-adjusted, from the nominal curve in the snapshot",
+            "dispersion — cross-rule disagreement, from the same three rule results",
+        ],
+        limitations=[
+            "THIS IS A SIGNIFICANCE VERDICT CARRIER, NOT A MEASUREMENT. The "
+            "`confidence` on this result is a carrier value for "
+            "`count_independent_families` and is NOT a measurement confidence: a "
+            "gap carries a significance verdict (is_meaningful), not a "
+            "measurement error, and converting one into the other would be the "
+            "D-046 'scored by its own subject matter' failure.",
+            "The gap is EX-POST in the sense that both sides are read from the "
+            "same curve at the same instant. It is not a forecast; it is a "
+            "difference of two opinions about the same future path.",
+            "The dispersion floor is computed from three rules that share a "
+            "target and a functional form. Genuine model uncertainty — the "
+            "possibility that the correct reaction function is not in the family "
+            "at all — is NOT in the dispersion and therefore NOT in the floor.",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q6 (the significance test that stands a thesis down) "
+            "and Q7's convergence input. The SIGN drives `_direction`, so this "
+            "result decides which way the thesis would trade if it traded; the "
+            "magnitude versus dispersion decides whether it trades at all."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a measured disagreement with an error band. A "
+            "gap of +0.26pp against a 0.86pp dispersion is NOT 'policy is 26bp "
+            "too tight' — it is 'the rules and the market differ by an amount "
+            "smaller than the rules differ from each other' (Section 16.2 Q6).",
+            "MUST NOT be consumed without `dispersion`. A bare raw_gap has no "
+            "scale: the same +0.26pp is decisive under a 0.05pp dispersion and "
+            "meaningless under a 0.86pp one.",
+            "MUST NOT be used to select an instrument or size a position on its "
+            "own: the Q6 verdict is a precondition, and when it is not "
+            "meaningful the pipeline stands down rather than sizing "
+            "(Section 16.3).",
+        ],
     )
 
 
@@ -598,6 +717,7 @@ def build_us_macro_thesis(
     as_of: datetime | None = None,
     unattributed: Sequence[UnattributedWarning] = (),
     catalyst_calendar: Sequence[str] | None = None,
+    regime: ModelResult | None = None,
 ) -> MacroThesis:
     """Section 7.2 / 16.2: build the US macro thesis, or stand down.
 
@@ -637,6 +757,16 @@ def build_us_macro_thesis(
         An explicit ``[]`` means "the caller has a calendar and it is empty",
         which is a different claim from "nothing was fetched" — and the two must
         not be the same input (D-066's defect 4 in the parameter position).
+    regime:
+        Q1's **fourth** read: ``classify_regime_rule_based``'s result, computed
+        by the orchestration layer (``_regime_leg``) because it needs
+        ``RegimeInputs`` — output gap, inflation level, inflation momentum and
+        unemployment gap — which only a snapshot holder can derive. ``None``
+        (the default) is the honest input for a caller that has no regime
+        record, and ``_regime_view`` then publishes its ``NOT_COMPUTED`` shape
+        (D-043/D-045) rather than a guessed state. The default pipeline supplies
+        it; before this parameter existed, ``regime.state`` was ``None`` on
+        every thesis ever produced (``docs/DEFECTS_2026-09-19.md``, DEF-003).
 
     Returns
     -------
@@ -678,6 +808,7 @@ def build_us_macro_thesis(
             as_of=stamp,
             unattributed=unattributed,
             stamp=stamp,
+            regime=regime,
         )
 
     # -- Q7.
@@ -718,6 +849,7 @@ def build_us_macro_thesis(
             convergence_result=convergence_result,
             signals=signals,
             invalidation=invalidation,
+            regime=regime,
         )
 
     # -- Q9. The instrument. `gap_direction` comes from the gap's own sign and
@@ -737,6 +869,13 @@ def build_us_macro_thesis(
     #    sub-noise-floor gap, so the function's raise path is unreachable and
     #    only the `[]` path (a verdict that cannot carry a thesis) remains.
     scenarios = build_scenario_distribution(gap, convergence)
+    # Section 25: stamp whether the distribution may drive sizing. Read from the
+    # config's own calibration_status leaves rather than asserted here, so
+    # promoting the probabilities to a calibrated status lifts the prohibition
+    # with no edit to this file.
+    scenario_status = scenario_distribution_status(
+        scenarios, probabilities_are_calibrated=scenario_probabilities_are_calibrated()
+    )
 
     # -- Q11..Q14. Sizing is Phase-1 prose; the falsifier is the assessment's
     #    own `text`, which is non-empty precisely because Q8 passed.
@@ -780,6 +919,7 @@ def build_us_macro_thesis(
             catalysts=list(catalysts),
         ),
         scenario_distribution=scenarios,
+        scenario_distribution_status=scenario_status,
         status=ThesisStatus.DRAFT,
         warnings=warnings,
         independent_source_families=_family_count(reads),
@@ -807,6 +947,7 @@ def _render(
     invalidation: InvalidationAssessment | None = None,
     selection: ModelResult | None = None,
     convergence_result: ModelResult | None = None,
+    regime: ModelResult | None = None,
 ) -> MacroThesis:
     """Render a stand-down into a ``MacroThesis`` with whatever partial view exists.
 
@@ -869,7 +1010,7 @@ def _render(
         country="us",
         created_at=stamp,
         as_of=stamp,
-        regime=_regime_view(reads.growth, reads.inflation),
+        regime=_regime_view(reads.growth, reads.inflation, regime),
         growth_view={"output_gap": _scalar(reads.growth)},
         inflation_view={"breadth_score": _scalar(reads.inflation)},
         policy_view=policy_view_dict(rules, ensemble),
@@ -877,6 +1018,7 @@ def _render(
         confirmation_signals=signal_list,
         convergence_classification=convergence or ConvergenceClassification.NO_SIGNAL,
         scenario_distribution=[],
+        scenario_distribution_status="empty_no_trade",
         independent_source_families=_family_count(reads),
     )
 
@@ -1015,26 +1157,49 @@ def _direction_for(selection: ModelResult, gap: MarketPricingGap) -> str:
     return "long" if gap.raw_gap < 0 else "short"
 
 
-def _regime_view(growth: ModelResult, inflation: ModelResult) -> dict[str, object]:
+def _regime_view(
+    growth: ModelResult,
+    inflation: ModelResult,
+    regime: ModelResult | None = None,
+) -> dict[str, object]:
     """§7.3's ``regime`` field: the state and its confidence.
 
     Section 16.2's Q1 calls ``classify_regime_rule_based`` as the **fourth**
     read. That function needs ``RegimeInputs`` — output gap, inflation level,
     inflation momentum, unemployment gap — a fourth plumbing requirement of the
-    same kind ``EconomyReads`` documents, and inventing it here would be the
-    same defect one field over.
+    same kind ``EconomyReads`` documents, and this builder does not invent it.
 
-    So the regime view is assembled from the reads **the caller supplied**, and
-    it is deliberately *thin*: ``state`` is absent, because a state is what a
-    classifier produces and there is no classifier in this call. What it
-    carries is the two axes the classifier would read, so a consumer sees the
-    inputs and knows the verdict was not computed rather than reading a
-    fabricated one.
+    **Two paths, and the caller chooses.** When ``regime`` is supplied (the
+    orchestrator now supplies it — ``_regime_leg``), its state, confidence and
+    interpretation are published along with the two bucketed axes and the
+    corroboration verdict, so a reader can see *which* axis chose the label and
+    whether the two slack measures agreed. When ``regime`` is ``None``, the
+    view falls back to the ``NOT_COMPUTED`` shape (D-043/D-045): the two axes
+    the classifier would have read, and an explicit statement that no verdict
+    was formed.
 
-    This is the ``NOT_COMPUTED`` disclosure pattern (D-043/D-045): the honest
-    answer to "what is the regime" when no classifier ran is **the inputs, and
-    the statement that no verdict was formed**.
+    The fallback is retained deliberately rather than deleted once the
+    orchestrator was wired. A caller holding a snapshot and no regime inputs
+    still gets a fully-formed, fully-disclosed thesis, and the note says which
+    case applied instead of the builder guessing a state. What changed is that
+    the *default* pipeline no longer takes the fallback path — before
+    ``_regime_leg`` existed, ``state: None`` was on every thesis ever produced
+    (``docs/DEFECTS_2026-09-19.md``, DEF-003).
     """
+    if regime is not None:
+        value = regime.value
+        if isinstance(value, dict):
+            state = value.get("state")
+            return {
+                "state": state,
+                "confidence": regime.confidence,
+                "note": regime.interpretation,
+                "growth_axis": value.get("growth_axis"),
+                "inflation_axis": value.get("inflation_axis"),
+                "slack_corroborated": value.get("slack_corroborated"),
+                "output_gap": _scalar(growth),
+                "inflation_breadth": _scalar(inflation),
+            }
     return {
         "state": None,
         "confidence": 0.0,

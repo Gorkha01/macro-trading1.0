@@ -29,6 +29,7 @@ from macro_engine.api_layer.orchestration import (
     DerivationNote,
     OrchestrationError,
     ThesisInputs,
+    _config_tenor_for,
     snapshot_to_thesis_inputs,
 )
 from macro_engine.config import get_settings
@@ -37,6 +38,7 @@ from macro_engine.data_layer.schemas import (
     ObservationPoint,
     YieldCurveSnapshot,
 )
+from macro_engine.models.contracts import ModelResult
 from macro_engine.models.instrument_selection import ThesisType
 from macro_engine.thesis_layer.schemas import ProductionUniverse
 
@@ -920,11 +922,17 @@ def test_every_note_has_a_source(consistent_snapshot: MacroDataSnapshot) -> None
 
 
 def test_the_notes_name_every_derived_argument(consistent_snapshot: MacroDataSnapshot) -> None:
-    """Each of the six arguments the builder needs has a note explaining it.
+    """Every argument the builder receives has a note explaining it.
 
     Not a completeness-for-its-own-sake check: the whole reason the notes exist
     is that a reviewer cannot reproduce the derivation from the thesis, so a
     derived argument that is absent here is one nobody can challenge.
+
+    The list covers the six *required* arguments and the two optional reads. The
+    optional pair is included deliberately: a degraded read writes a
+    ``NOT_COMPUTED`` note, so the name must be present either way — a check that
+    only listed the required arguments would stop noticing if an optional leg
+    dropped its disclosure.
     """
     inputs = snapshot_to_thesis_inputs(consistent_snapshot)
     names = {n.name for n in inputs.notes}
@@ -943,6 +951,13 @@ def test_the_notes_name_every_derived_argument(consistent_snapshot: MacroDataSna
         "i_prev",
         "r_star",
         "thesis_type",
+        # The optional reads. On this fixture both abstain, and each still
+        # writes its note — which is the property worth pinning.
+        "regime",
+        "gdp_gdi_divergence",
+        # The curve reads produce one note per model regardless of outcome.
+        "curve_slope",
+        "breakeven_inflation",
     ):
         assert required in names, f"no derivation note for {required!r}"
 
@@ -1084,3 +1099,445 @@ def test_no_bare_numeric_literal_is_used_as_a_threshold() -> None:
         f"config is one a reviewer cannot find; add it to settings.yaml and read "
         f"it through get_settings() instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# The regime read degrades rather than blocking the thesis
+# ---------------------------------------------------------------------------
+
+
+def _value_dict(result: ModelResult) -> dict[str, object]:
+    """A ``ModelResult.value`` narrowed to the dict these tests expect.
+
+    ``ModelResult.value`` is a union because different models publish different
+    shapes. The national-accounts model is documented and tested to publish a
+    dict, so the narrowing is asserted here once rather than cast or ignored at
+    every use — a bare ``.value["key"]`` would be a runtime ``TypeError`` if the
+    shape ever changed, which is what this makes explicit.
+    """
+    assert isinstance(result.value, dict)
+    return result.value
+
+
+def _without(snapshot: MacroDataSnapshot, field: str) -> MacroDataSnapshot:
+    """A copy of ``snapshot`` with one series emptied.
+
+    Emptied rather than deleted because the schema requires the field to exist:
+    what is being modelled is a *fetch that returned no observations*, which is
+    the shape Section 21.4 actually describes.
+    """
+    return snapshot.model_copy(update={field: []})
+
+
+def test_an_absent_unemployment_rate_yields_a_thesis_not_an_error(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The regime is a READ, not a gate — so a missing axis must not block.
+
+    Measured while wiring ``_regime_leg``: the first version called ``_realised``,
+    which raises on an empty series, and ``snapshot_to_thesis_inputs`` then
+    raised ``OrchestrationError`` on any snapshot without ``unemployment_rate``.
+    That inverts Section 16.2's order — the reads come *before* Q6's significance
+    test, and Q6 is what stands a thesis down — and it contradicts the rule
+    ``_output_gap_change`` states explicitly for the same situation
+    ("refusing would make the whole thesis unavailable over a term Section 6.1
+    weights separately").
+
+    So the contract this pins is: an absent optional axis produces inputs with
+    ``regime is None``, a derivation note that says NOT_COMPUTED, and nothing
+    raised.
+    """
+    inputs = snapshot_to_thesis_inputs(_without(consistent_snapshot, "unemployment_rate"))
+    assert inputs.regime is None
+    note = next(n for n in inputs.notes if n.name == "regime")
+    assert note.value == "NOT_COMPUTED"
+    assert "unemployment_rate" in note.source
+
+
+def test_an_absent_cpi_headline_refuses_in_the_policy_leg_not_the_regime_leg(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """CPI absence IS fatal, but the refusal must come from the policy leg.
+
+    A deliberate contrast with the test above rather than another copy of it.
+    ``cpi_headline`` is not optional: ``_inflation_leg`` computes ``pi_current``
+    for both policy rules from it, so with no CPI there is no policy gap and no
+    thesis — the refusal is correct and must stay.
+
+    What this pins is *where* it comes from. The regime's inflation guard must
+    not be what fires, because that would mean the regime leg had become load-
+    bearing for a quantity the thesis needs independently — the coupling the
+    test above exists to prevent. Measured: this raises from ``_inflation_leg``
+    before ``_regime_leg`` is reached, which is the ordering Section 16.2
+    specifies.
+    """
+    with pytest.raises(OrchestrationError) as caught:
+        snapshot_to_thesis_inputs(_without(consistent_snapshot, "cpi_headline"))
+    assert "cpi_headline" in str(caught.value)
+    # An empty series refuses earlier than a too-short one and says so — the
+    # distinction matters, because "no observations at all" and "not enough for
+    # a year-over-year" have different remedies (widen the lookback vs fix the
+    # fetch), and the message is the only thing that tells a reader which.
+    assert "is empty" in str(caught.value)
+
+
+def test_a_short_cpi_history_refuses_in_the_policy_leg_not_the_regime_leg(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """Three CPI observations also fail the policy leg first, for the same reason.
+
+    ``_inflation_momentum_3m`` needs four observations. The regime leg guards
+    that; the policy leg does not, because the momentum term feeds a rule there.
+    Reaching the policy leg's raise proves the guard ordering is the specified
+    one rather than the regime leg silently absorbing a fatal input error.
+    """
+    short = consistent_snapshot.model_copy(
+        update={"cpi_headline": consistent_snapshot.cpi_headline[:3]}
+    )
+    with pytest.raises(OrchestrationError) as caught:
+        snapshot_to_thesis_inputs(short)
+    assert "cpi_headline" in str(caught.value)
+
+
+def test_a_present_regime_is_classified_and_its_warnings_ride_along(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The non-degraded path still classifies, and still carries its warnings.
+
+    The counterpart to the three tests above: a guard that returned ``None``
+    unconditionally would satisfy them and fail this one. ``unemployment_rate``
+    is added here because the shared fixture omits it.
+    """
+    with_unrate = consistent_snapshot.model_copy(
+        update={"unemployment_rate": _monthly([4.0, 4.1, 4.2], series_id="unemployment_rate")}
+    )
+    inputs = snapshot_to_thesis_inputs(with_unrate)
+    assert inputs.regime is not None
+    assert isinstance(inputs.regime.value, dict)
+    assert inputs.regime.value.get("state") is not None
+    # The classifier's caveats are exactly what a reader needs to interpret the
+    # label, so they must reach the caller rather than being dropped at the seam.
+    assert inputs.regime.warnings
+
+
+# ---------------------------------------------------------------------------
+# Module 7.1's national-accounts divergence: wired, and degrading
+# ---------------------------------------------------------------------------
+
+
+def test_absent_gdp_nominal_leaves_the_divergence_uncomputed(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """No expenditure-side series means no pair — disclosed, not raised.
+
+    The fixture carries neither ``gdp_nominal`` nor ``gdi``, so this is also the
+    test that every other orchestration test has been exercising silently.
+    """
+    inputs = snapshot_to_thesis_inputs(consistent_snapshot)
+    assert inputs.national_accounts is None
+    note = next(n for n in inputs.notes if n.name == "gdp_gdi_divergence")
+    assert note.value == "NOT_COMPUTED"
+    assert "empty" in note.source
+
+
+def test_a_same_quarter_pair_produces_the_divergence_on_a_growth_basis(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The unit contract: two YoY **growth rates**, differenced — not two levels.
+
+    ``GdpGdiInputs`` takes growth rates, and the model's docstring is explicit
+    that a caller passing levels would compute a quantity dominated by BEA's
+    construction asymmetry while the model's warnings describe the mean-zero
+    residual. Two anonymous floats cannot reveal that mistake, so this test is
+    the only thing standing between the wiring and that defect.
+
+    The numbers are chosen so the expectation is checkable by hand: with a
+    year-ago level of 100 and a latest of 110, growth is exactly ``+10%``.
+    """
+    five_quarters = [100.0, 100.0, 100.0, 100.0, 110.0]
+    with_pair = consistent_snapshot.model_copy(
+        update={
+            "gdp_nominal": _quarterly(five_quarters, series_id="gdp_nominal"),
+            "gdi": _quarterly([100.0, 100.0, 100.0, 100.0, 115.0], series_id="gdi"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(with_pair)
+    assert inputs.national_accounts is not None
+
+    value = _value_dict(inputs.national_accounts)
+    assert value["gdp_growth_pct"] == pytest.approx(10.0)
+    assert value["gdi_growth_pct"] == pytest.approx(15.0)
+    # GDP minus GDI, in percentage points — the signed difference of the two
+    # growth rates, which is the whole quantity Module 7.1 reports.
+    assert value["divergence_pp"] == pytest.approx(-5.0)
+    # The average is named `average_growth_pct`, deliberately not `average`:
+    # averaging is only valid for the growth form, and the name is what stops
+    # a reader transferring it to levels.
+    assert value["average_growth_pct"] == pytest.approx(12.5)
+
+    note = next(n for n in inputs.notes if n.name == "gdp_gdi_divergence")
+    assert "growth" in note.source
+
+
+def test_the_divergence_never_reads_a_mismatched_quarter(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A pair is same-quarter or it is not formed.
+
+    This is Section 20.7's pairing requirement, and the failure it prevents is
+    specific: differencing two quarters that are not a year apart measures a
+    statistical discrepancy **plus** one quarter of growth, which is a number
+    that looks like a divergence and is not one.
+
+    The fixture is built to separate the two candidate implementations, which a
+    naiver version of this test did **not** do. A five-quarter series ending
+    2026-04 spans 2025-04 .. 2026-04, so its *earliest* observation happens to
+    be the year-ago one — meaning "take the first point" and "look up the
+    year-ago point" agree, and a test built on it passes either way (measured:
+    a first draft asserted ``+10%`` here and got ``+120%``, because the two
+    hypotheses were not actually distinguishable).
+
+    So this fixture makes them differ. The series is 2024-10 .. 2026-04, and the
+    year-ago level is deliberately *between* two observations' dates: the lookup
+    must land on the latest quarter at or before the anniversary, not on the
+    first quarter in the series.
+    """
+    # Dates: 2024-10(90), 2025-01(95), 2025-04(100), 2025-07(100),
+    #        2025-10(100), 2026-01(100), 2026-04(110)
+    levels = [90.0, 95.0, 100.0, 100.0, 100.0, 100.0, 110.0]
+    with_pair = consistent_snapshot.model_copy(
+        update={
+            "gdp_nominal": _quarterly(levels, series_id="gdp_nominal"),
+            "gdi": _quarterly(levels, series_id="gdi"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(with_pair)
+    assert inputs.national_accounts is not None
+
+    # The anniversary of 2026-04 is 2025-04, whose level is 100.0, so growth is
+    # 110/100 - 1 = +10%. Taking the FIRST observation (90.0) instead would give
+    # +22.2%, and skipping to the nearest later quarter would alter it again —
+    # both are wrong, and only a lookup answers +10%.
+    assert _value_dict(inputs.national_accounts)["gdp_growth_pct"] == pytest.approx(10.0)
+    note = next(n for n in inputs.notes if n.name == "gdp_gdi_divergence")
+    assert note.window is not None
+    assert "2025-04-01" in note.window
+    assert "2024-10-01" not in note.window
+
+
+def test_a_series_too_short_for_a_year_over_year_pair_abstains(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """Three quarters cannot contain a year-ago quarter, so nothing is computed."""
+    short = consistent_snapshot.model_copy(
+        update={
+            "gdp_nominal": _quarterly([100.0, 100.0, 110.0], series_id="gdp_nominal"),
+            "gdi": _quarterly([100.0, 100.0, 110.0], series_id="gdi"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(short)
+    assert inputs.national_accounts is None
+    note = next(n for n in inputs.notes if n.name == "gdp_gdi_divergence")
+    assert note.value == "NOT_COMPUTED"
+
+
+def test_the_divergence_carries_its_warnings_and_base_rate(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The model's corrections must reach the reader, not stop at the seam.
+
+    Module 7.1 defends six corrections; the two a consumer is most likely to
+    undo are that the SIGN carries no information and that averaging is only
+    valid on a growth basis. Both are carried as warnings, and the base rate
+    travels on the value dict so a boolean is never read without its frequency
+    (D-029).
+    """
+    with_pair = consistent_snapshot.model_copy(
+        update={
+            "gdp_nominal": _quarterly([100.0, 100.0, 100.0, 100.0, 110.0], series_id="gdp_nominal"),
+            "gdi": _quarterly([100.0, 100.0, 100.0, 100.0, 106.0], series_id="gdi"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(with_pair)
+    assert inputs.national_accounts is not None
+    assert inputs.national_accounts.warnings
+    assert _value_dict(inputs.national_accounts)["divergence_base_rate"] == pytest.approx(0.217)
+
+
+# ---------------------------------------------------------------------------
+# Modules 8.1/8.2: the curve reads, and the tenor vocabulary seam
+# ---------------------------------------------------------------------------
+
+
+def test_the_config_tenor_maps_onto_the_curves_own_vocabulary() -> None:
+    """``2y`` (config, for instrument names) -> ``2yr`` (the curve's key).
+
+    This is the defect the wiring exposed, and it is worth stating precisely
+    because neither vocabulary is wrong:
+
+    * ``settings.instrument_selection.curve_default_short_tenor`` is ``2y``, and
+      that spelling is CORRECT for its purpose — it is interpolated into
+      ``"Duration-weighted 2y/10y UST steepener"``, which is how a desk writes
+      it. ``D-058`` recorded these strings are "never parsed", which was true
+      only because nothing had ever compared them to curve data.
+    * The snapshot's ``yield_curve.tenors`` is keyed ``2yr``, from the registry's
+      ``2yr: DGS2`` and FRED's own spelling, and ``validation.py`` reads
+      ``tenors["2yr"]``.
+
+    Measured before the mapping existed: feeding the config label straight to
+    ``curve_slope`` raised ``KeyError: short tenor '2y' is not in the supplied
+    curve``. Changing either side instead would have broken the instrument name
+    or the validation layer.
+    """
+    available = {"3mo": 4.6, "2yr": 4.25, "10yr": 4.1, "30yr": 4.5}
+    assert _config_tenor_for("2y", available) == "2yr"
+    assert _config_tenor_for("10y", available) == "10yr"
+    assert _config_tenor_for("30y", available) == "30yr"
+    # An exact match is not second-guessed: a caller already speaking the
+    # curve's vocabulary must get its own label back, not a transformation.
+    assert _config_tenor_for("2yr", available) == "2yr"
+    # No unambiguous mapping -> None, so the caller abstains. A guessed tenor is
+    # a wrong number, which is worse than a missing one.
+    assert _config_tenor_for("9y", available) is None
+    assert _config_tenor_for("6m", available) is None
+
+
+def test_the_curve_slope_is_the_configured_pair_in_basis_points(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The slope is long-minus-short on the configured pair, and it is NEGATIVE here.
+
+    The fixture's curve is inverted (10yr 4.1 < 2yr 4.25), so this also pins that
+    the sign convention is not silently flipped: ``(10yr - 2yr) * 100 = -15.0bp``,
+    which ``curve_slope`` must report as ``inverted``.
+    """
+    inputs = snapshot_to_thesis_inputs(consistent_snapshot)
+    slope = next(r for r in inputs.curve if r.model_name == "curve_slope")
+
+    assert slope.value == pytest.approx(-15.0)
+    assert "inverted" in slope.interpretation
+    # The labels in the interpretation are the CURVE's, not the config's -- the
+    # whole point of the mapping, and the thing a reader sees.
+    assert "10YR" in slope.interpretation
+    assert "2YR" in slope.interpretation
+
+
+def test_every_matched_tenor_gets_a_breakeven_and_unmatched_ones_do_not(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A breakeven needs the SAME tenor on both curves, or it prices the slope.
+
+    The fixture's nominal curve carries 3mo/1yr/2yr/10yr/30yr; giving TIPS only
+    10yr and 30yr must produce exactly two breakevens — not five, and not one
+    computed from a mismatched maturity.
+    """
+    with_tips = consistent_snapshot.model_copy(
+        update={
+            "tips_yields": YieldCurveSnapshot(
+                as_of=date(2026, 9, 15),
+                tenors={"10yr": 1.8, "30yr": 2.1},
+            )
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(with_tips)
+    breakevens = [r for r in inputs.curve if r.model_name == "breakeven_inflation"]
+
+    assert len(breakevens) == 2
+    by_tenor = {t: r.value for t, r in zip(("10yr", "30yr"), breakevens, strict=True)}
+    # 10yr: 4.1 - 1.8 = 2.3 ; 30yr: 4.5 - 2.1 = 2.4
+    assert by_tenor["10yr"] == pytest.approx(2.3)
+    assert by_tenor["30yr"] == pytest.approx(2.4)
+
+    note = next(n for n in inputs.notes if n.name == "breakeven_inflation")
+    assert "10yr" in str(note.window)
+    assert "2yr" not in str(note.window)
+
+
+def test_an_absent_tips_curve_leaves_the_breakevens_uncomputed(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """No TIPS curve means no breakeven — disclosed, and the slope still runs.
+
+    The two reads are independent, which is why the leg returns a list: a missing
+    real curve must not suppress the nominal slope.
+    """
+    assert consistent_snapshot.tips_yields is None
+    inputs = snapshot_to_thesis_inputs(consistent_snapshot)
+
+    assert any(r.model_name == "curve_slope" for r in inputs.curve)
+    assert not any(r.model_name == "breakeven_inflation" for r in inputs.curve)
+    note = next(n for n in inputs.notes if n.name == "breakeven_inflation")
+    assert note.value == "NOT_COMPUTED"
+
+
+def test_an_absent_curve_refuses_in_the_short_yield_leg_not_the_curve_leg(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A snapshot with NO curve is already fatal — and the refusal predates the curve leg.
+
+    A deliberate contrast with the other curve tests rather than another copy of
+    them. The curve *slope* degrades gracefully, but the **short yield** does not:
+    ``_short_yield_from_curve`` runs earlier (``snapshot_to_thesis_inputs`` line
+    ~1531 vs the curve leg at ~1598) and a policy-path thesis cannot be built
+    without it, because ``derive_market_implied_policy_path`` reads it.
+
+    So "no curve at all" is not a case the curve leg ever sees. What this pins is
+    **where** the refusal comes from — if the curve leg were reached first, the
+    ordering would have changed and the short yield would silently fall back.
+    """
+    without = consistent_snapshot.model_copy(update={"yield_curve": None})
+    with pytest.raises(OrchestrationError) as caught:
+        snapshot_to_thesis_inputs(without)
+    assert "no yield curve" in str(caught.value)
+
+
+def test_a_curve_missing_the_short_yield_tenor_refuses_before_the_curve_leg(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A curve without the configured short tenor is refused by the short-yield leg.
+
+    The curve leg would abstain here (``_config_tenor_for`` returns ``None``), but
+    it never gets the chance: the short-yield read needs ``api.short_yield_tenor``
+    and names the available tenors when it is absent. That is the correct failure
+    — a policy path priced off a substituted tenor would be a different thesis —
+    and the error message names the config key so the remedy is visible.
+
+    Measured: this raises before ``_curve_leg`` is reached, which is why the
+    abstention path in ``_curve_leg`` is exercised by the test below rather than
+    by a malformed curve.
+    """
+    odd = YieldCurveSnapshot(
+        as_of=date(2026, 9, 15),
+        tenors={"3mo": 4.6, "1yr": 4.5},
+    )
+    without = consistent_snapshot.model_copy(update={"yield_curve": odd})
+    with pytest.raises(OrchestrationError) as caught:
+        snapshot_to_thesis_inputs(without)
+    assert "2yr" in str(caught.value)
+    assert "api.short_yield_tenor" in str(caught.value)
+
+
+def test_the_curve_leg_abstains_when_its_long_tenor_is_unmappable(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """With the short tenor satisfied, an unmappable LONG leg makes the slope abstain.
+
+    This is the branch the two refusal tests above cannot reach, and it is the one
+    that matters: the curve leg must **abstain**, not substitute. Substituting
+    ``3yr`` for a missing ``10y`` would produce a slope that looks right and
+    answers a different question.
+
+    The curve here carries ``2yr`` (so the short-yield leg is satisfied) but no
+    ``10yr`` and nothing ``_config_tenor_for`` can map to it.
+    """
+    partial = YieldCurveSnapshot(
+        as_of=date(2026, 9, 15),
+        tenors={"3mo": 4.6, "2yr": 4.25, "5yr": 4.3},
+    )
+    without = consistent_snapshot.model_copy(update={"yield_curve": partial})
+    inputs = snapshot_to_thesis_inputs(without)
+
+    assert not any(r.model_name == "curve_slope" for r in inputs.curve)
+    note = next(n for n in inputs.notes if n.name == "curve_slope")
+    assert note.value == "NOT_COMPUTED"
+    assert "not a key on the live curve" in note.source

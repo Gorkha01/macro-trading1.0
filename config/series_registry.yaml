@@ -393,20 +393,30 @@ series:
   iorb:
     provider: fred
     symbol: IORB
-    future_date_tolerance_days: 1
+    future_date_tolerance_days: 3
     description: >
-      Interest Rate on Reserve Balances. FRED publishes the current calendar
-      day's print before midnight UTC, so a process running in the hours after
-      publication but before UTC midnight sees an observation dated one day
-      ahead of its own clock. D-030 recorded this three times as a standing
-      test failure before it became a declared property of the series. The
-      tolerance is 1 day precisely: a genuine broken mapping lands far outside
-      it, so the ERROR path remains armed.
+      Interest Rate on Reserve Balances. The administered rate the Fed pays on
+      reserves, and the effective TOP of the post-2021 floor-system corridor.
+    decision_note: >
+      CORRECTED 2026-09-19 (AUDIT-002). The declaration was
+      `future_date_tolerance_days: 1`, justified by "FRED publishes the current
+      calendar day's print before midnight UTC". Live re-verification disproves
+      that: on retrieval date 2026-09-19 the series returned observations dated
+      2026-09-20 AND 2026-09-21 — TWO days ahead, so the tolerance of 1 armed
+      the ERROR path against a legitimate print and produced a standing failure
+      (O-84). IORB is *forward-scheduled*: the Fed publishes the administered
+      rate for upcoming days in advance because it is a policy-set number, not
+      a market print. A tolerance of 3 covers a weekend boundary (Fri publish
+      covering Mon) with no risk of masking a genuine fault, which lands far
+      outside it — a broken mapping would be weeks or years ahead. Compare
+      `sofr`, whose tolerance of 1 IS correct because SOFR is a real
+      prior-business-day market print; the two series differ in kind, which is
+      why the tolerance is a per-series property and not a global constant.
     frequency: daily
     units: percent
     status: verified
-    verified_on: 2026-09-16
-    verified_value: 3.65
+    verified_on: 2026-09-19
+    verified_value: 3.9
     plausible_range: [0.0, 25.0]
 
   on_rrp_rate:
@@ -458,22 +468,35 @@ series:
     provider: fred
     symbol: BAMLH0A0HYM2
     description: ICE BofA US High Yield Index Option-Adjusted Spread
+    decision_note: >
+      `signed_series: true` — the plausible_range [0.1, 40.0] is the correct bound
+      for the OAS LEVEL (verified 2026-09-19: BAMLH0A0HYM2 never negative across
+      its full 795-observation live history, min 2.59 / max 4.61), but this field
+      is also used to carry a spread CHANGE, and a narrowing spread is
+      legitimately negative. Only the UPPER bound is enforced. See
+      RegistrySeries.signed_series and AUDIT-001.
+    signed_series: true
     frequency: daily
     units: percent
     status: verified
-    verified_on: 2026-09-16
-    verified_value: 2.76
+    verified_on: 2026-09-19
+    verified_value: 2.7
     plausible_range: [0.1, 40.0]
 
   credit_spread_ig:
     provider: fred
     symbol: BAMLC0A0CM
     description: ICE BofA US Corporate Index Option-Adjusted Spread
+    decision_note: >
+      `signed_series: true` for the same reason as credit_spread_hy: the LEVEL
+      range [0.1, 20.0] is right, but the field also carries signed changes.
+      Only the UPPER bound is enforced.
+    signed_series: true
     frequency: daily
     units: percent
     status: verified
-    verified_on: 2026-09-16
-    verified_value: 0.8
+    verified_on: 2026-09-19
+    verified_value: 0.78
     plausible_range: [0.1, 20.0]
 
   equity_volatility:

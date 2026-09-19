@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 
-from macro_engine.config import get_settings
+from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.schemas import (
     MacroDataSnapshot,
     ObservationPoint,
@@ -465,11 +465,45 @@ def validate_equity_index(
 # Snapshot-level orchestration
 # ---------------------------------------------------------------------------
 
-# Series that must be positive index levels, not rates. CPI/PCE/PPI levels.
-_POSITIVE_LEVEL_SERIES: tuple[str, ...] = ("cpi_headline", "cpi_core", "pce_core", "ppi")
 
-# Series that are genuinely allowed to be negative (spreads, changes, real rates).
-_SIGNED_SERIES: tuple[str, ...] = ("credit_spread_hy", "credit_spread_ig")
+def _validated_scalar_series(
+    snapshot: MacroDataSnapshot,
+) -> list[tuple[str, list[ObservationPoint]]]:
+    """The snapshot's populated scalar series, in the order the schema declares.
+
+    Derived from the snapshot schema and the **series registry**, never from a
+    hand-maintained list. This is the pluggability contract: a new series
+    becomes validated by adding one registry entry and one schema field, with
+    no edit to this module (Part B of the 2026-09-19 audit).
+
+    Why that matters, concretely. Before this function existed,
+    ``validate_snapshot`` named four hardcoded tuples covering 18 of the
+    registry's 45 entries. A series outside those tuples received **no
+    validation at all** — no range check, no future-dating check, no staleness
+    check — and nothing said so. Worse, the two hardcoded tuples that *did*
+    name a series omitted its declared registry properties, so the same
+    snapshot was clean when built and error-smeared when re-validated
+    (AUDIT-001). Driving from the registry removes both failure modes at once.
+
+    ``not_a_snapshot_field`` entries are skipped: they document a model's input
+    provenance and are not part of ``MacroDataSnapshot`` (see
+    ``resolve_snapshot_field``).
+    """
+    registry = get_registry().series
+    out: list[tuple[str, list[ObservationPoint]]] = []
+    for name in type(snapshot).model_fields:
+        points = getattr(snapshot, name)
+        if not isinstance(points, list) or not points:
+            continue
+        if not all(isinstance(p, ObservationPoint) for p in points):
+            # Dict-valued fields (fx_spot, commodity_spot, equity_index) and the
+            # flag/source lists are handled separately below.
+            continue
+        entry = registry.get(name)
+        if entry is not None and entry.not_a_snapshot_field:
+            continue
+        out.append((name, points))
+    return out
 
 
 def validate_snapshot(snapshot: MacroDataSnapshot) -> ValidationReport:
@@ -483,43 +517,66 @@ def validate_snapshot(snapshot: MacroDataSnapshot) -> ValidationReport:
     covers whatever was fetched, and a snapshot that requests nothing has
     nothing to be wrong with it. A series that *is* present but violates a
     bound is always flagged.
+
+    **Every bound and every declared property comes from the registry entry**,
+    not from a literal in this module. ``plausible_range`` supplies the
+    ``[min, max]`` pair, ``unemployment_rate``'s configured bounds take
+    precedence for that one series, ``forward_looking`` selects the INFO
+    horizon branch over the ERROR future-dating branch, and
+    ``future_date_tolerance_days`` supplies the same-day-publication tolerance.
+
+    This makes ``validate_snapshot`` agree with the build path by construction.
+    They disagreed before (AUDIT-001): ``build_snapshot`` read the registry and
+    correctly reported ``gdp_potential``'s 41 CBO projections as one INFO,
+    while this function re-derived from the raw snapshot with no registry
+    properties and reported them as 30 ERRORs — the same data, two verdicts,
+    and the ERROR verdict was the false one.
     """
     report = ValidationReport()
 
-    for name in _POSITIVE_LEVEL_SERIES:
-        points = getattr(snapshot, name)
-        if points:
-            report.extend(validate_positive_index_level(points, series_id=name))
+    for name, points in _validated_scalar_series(snapshot):
+        entry = get_registry().series.get(name)
 
-    if snapshot.unemployment_rate:
-        report.extend(validate_unemployment_rate(snapshot.unemployment_rate))
+        # `unemployment_rate` has dedicated configured bounds and a dedicated
+        # validator; use them rather than the registry's generic plausible_range
+        # so the configured bound is the single source of truth for that series.
+        if name == "unemployment_rate":
+            report.extend(validate_unemployment_rate(points))
+            continue
 
-    for name in _SIGNED_SERIES:
-        points = getattr(snapshot, name)
-        if points:
-            report.extend(validate_observations(points, series_id=name))
+        min_value: float | None = None
+        max_value: float | None = None
+        if entry is not None and entry.plausible_range is not None:
+            low, high = entry.plausible_range
+            # A signed field (spread, change, net balance) may legitimately go
+            # below the LEVEL range's lower bound. `credit_spread_hy`'s OAS LEVEL
+            # has never been negative, so [0.1, 40.0] is the right LEVEL bound —
+            # but the same field carries spread CHANGES, and -0.2 is a valid
+            # narrowing. Applying the lower bound here would report real data as
+            # corrupt, so the UPPER bound still applies (a spread cannot exceed
+            # 40pp) while the lower bound is suppressed for declared-signed
+            # series. See RegistrySeries.signed_series.
+            max_value = float(high)
+            if not (entry.signed_series):
+                min_value = float(low)
+
+        report.extend(
+            validate_observations(
+                points,
+                series_id=name,
+                min_value=min_value,
+                max_value=max_value,
+                forward_looking=bool(entry.forward_looking) if entry is not None else False,
+                future_date_tolerance_days=(
+                    int(entry.future_date_tolerance_days) if entry is not None else 0
+                ),
+            )
+        )
 
     if snapshot.yield_curve is not None:
         report.extend(validate_yield_curve(snapshot.yield_curve, series_id="yield_curve"))
     if snapshot.tips_yields is not None:
         report.extend(validate_yield_curve(snapshot.tips_yields, series_id="tips_yields"))
-
-    for name in (
-        "gdp_real",
-        "gdp_nominal",
-        "gdp_potential",
-        "fed_funds_rate",
-        "jolts_openings",
-        "jolts_quits",
-        "initial_claims",
-        "continuing_claims",
-        "sofr",
-        "iorb",
-        "on_rrp_rate",
-    ):
-        points = getattr(snapshot, name)
-        if points:
-            report.extend(validate_observations(points, series_id=name))
 
     if snapshot.equity_index:
         report.extend(validate_equity_index(snapshot.equity_index))

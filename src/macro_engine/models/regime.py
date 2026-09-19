@@ -114,16 +114,19 @@ from macro_engine.models.evidence_family import EvidenceSourceFamily
 
 __all__ = [
     "REGIME_STATES",
+    "REGIME_TENSIONS",
     "TRILEMMA_SEVERITIES",
     "GrowthAxis",
     "InflationAxis",
     "PolicyDirection",
     "RegimeInputs",
     "RegimeState",
+    "RegimeTension",
     "TrilemmaInputs",
     "TrilemmaSeverity",
     "check_trilemma_tension",
     "classify_regime_rule_based",
+    "regime_tension",
 ]
 
 #: The nine states, as a closed vocabulary (D-029).
@@ -164,6 +167,34 @@ RegimeState = Literal[
 
 #: The three momentum buckets on the inflation axis.
 InflationAxis = Literal["falling", "flat", "rising"]
+
+#: Section 21's regime-tension flag: whether the published label rests on BOTH
+#: axes or on one of them.
+#:
+#: The directive's requirement is that *the regime must not be a single-factor
+#: switch.* The classifier has always read two axes, but a reading can land in a
+#: cell where **one axis decides the label alone** — the clearest case being a
+#: flat inflation momentum (inside the neutral band), where the state is chosen
+#: on the growth axis and the inflation axis is not distinguishing anything. The
+#: code warned about that in prose; this makes it a structured field a caller can
+#: branch on, so a single-axis label cannot be consumed as if it were a two-axis
+#: classification.
+#:
+#: ``NO_REGIME_TENSION``
+#:     Both axes contributed. The label is a genuine two-axis partition.
+#: ``REGIME_TENSION``
+#:     The label was decided by **one** axis. Published rather than suppressed,
+#:     because "the growth axis said late_expansion" is a weaker claim than "two
+#:     axes agree on late_expansion", and a reader needs to know which they hold.
+#:     The specific single-axis condition is named in ``regime_tension_reasons``.
+REGIME_TENSIONS: tuple[str, ...] = (
+    "NO_REGIME_TENSION",
+    "REGIME_TENSION",
+)
+
+#: The tension vocabulary as a type, for the same D-029 reason as the others: a
+#: bare ``str`` would let a typo fall through a branch that reports *safety*.
+RegimeTension = Literal["NO_REGIME_TENSION", "REGIME_TENSION"]
 
 #: The three buckets on the growth axis, in the order the bands partition it.
 #:
@@ -466,6 +497,58 @@ def _thresholds_calibrated() -> bool:
     )
 
 
+def regime_tension(
+    growth: GrowthAxis,
+    inflation: InflationAxis,
+    *,
+    inflation_trend_3m: float,
+    neutral_band: float,
+) -> tuple[RegimeTension, list[str]]:
+    """Whether the regime label rests on BOTH axes or on one (Section 21).
+
+    The directive's requirement: *the regime must not be a single-factor switch;
+    flag ``REGIME_TENSION``.* The classifier reads two axes and always has, so
+    the requirement is **not** "read two axes" — it is "say when one of them did
+    not actually distinguish anything". Two conditions produce a single-axis
+    label, and both are measured facts about the reading rather than guesses:
+
+    **1. Flat inflation momentum.** ``|inflation_trend_3m| <= neutral_band``
+    means the inflation axis is inside its neutral band, so it did not separate
+    ``falling`` from ``rising`` — the state was chosen on the growth axis alone.
+    This is the condition the classifier has warned about in prose since it was
+    written; here it becomes structured.
+
+    **2. Inflation momentum exactly at the band edge is NOT flat.** The test is
+    ``<=``, matching ``_inflation_axis``'s own boundary so the two cannot
+    disagree about whether a reading was neutral.
+
+    Returns the flag and the list of reasons, both published on the result. An
+    empty reason list with ``REGIME_TENSION`` would be an unexplainable flag, so
+    the two are computed together and cannot diverge.
+    """
+    reasons: list[str] = []
+
+    if abs(inflation_trend_3m) <= neutral_band:
+        reasons.append(
+            f"inflation momentum {inflation_trend_3m:+.2f}pp is inside the "
+            f"+/-{neutral_band:.2f}pp neutral band, so the inflation axis read "
+            f"'{inflation}' and did not distinguish a direction — the state was "
+            f"chosen on the growth axis ('{growth}') ALONE"
+        )
+
+    if growth == "deep_contraction":
+        # Depth beats direction by design (see _select_state): the inflation axis
+        # is not consulted at all for a deep contraction, so the label is
+        # single-axis even when momentum is two-sided.
+        reasons.append(
+            "growth is 'deep_contraction', for which the classifier returns "
+            "'recession' regardless of the inflation axis by design — the "
+            "inflation reading was not consulted"
+        )
+
+    return ("REGIME_TENSION" if reasons else "NO_REGIME_TENSION"), reasons
+
+
 def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
     """Place the economy in one of nine regime cells, from two measured axes.
 
@@ -507,6 +590,16 @@ def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
         gap=inputs.output_gap,
         momentum_band=settings.growth_momentum_band,
         gap_change=inputs.output_gap_change,
+    )
+
+    # Section 21: flag a label that rests on one axis. Computed from the same
+    # readings the state was chosen from, so the flag and the label cannot
+    # disagree about which axis was decisive.
+    tension, tension_reasons = regime_tension(
+        growth,
+        inflation,
+        inflation_trend_3m=inputs.inflation_trend_3m,
+        neutral_band=band,
     )
 
     # --- the base rate (D-029) -------------------------------------------
@@ -583,6 +676,14 @@ def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
                 f"weaker than its confidence suggests. Section 12: divergence is "
                 f"information — investigate before acting."
             )
+
+    if tension == "REGIME_TENSION":
+        warnings.append(
+            "REGIME_TENSION (Section 21): this label was decided by ONE axis, not "
+            "two, so it is a weaker claim than a two-axis classification. Reasons: "
+            + "; ".join(tension_reasons)
+            + ". Do not consume the state as if both axes agreed on it."
+        )
 
     if abs(inputs.inflation_trend_3m) <= band:
         warnings.append(
@@ -661,6 +762,10 @@ def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
             "slack_corroborated": inputs.slack_corroborated,
             "state_base_rate": state_base_rate,
             "rising_inflation_base_rate": axis_base_rate,
+            # Section 21: whether BOTH axes decided the label. A consumer that
+            # treats the state as a two-axis classification reads this first.
+            "regime_tension": tension,
+            "regime_tension_reasons": tension_reasons,
         },
         confidence=confidence,
         interpretation=(
@@ -681,6 +786,93 @@ def classify_regime_rule_based(inputs: RegimeInputs) -> ModelResult:
             "unemployment_gap",
         ],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="categorical (regime state label)",
+        direction=(
+            f"growth axis: {growth}; inflation momentum axis: {inflation} "
+            f"(the state '{state}' is the joint read of the two)"
+        ),
+        assumptions=[
+            "The two axes are a SUFFICIENT summary of the macro state: the state "
+            "grid partitions growth x inflation momentum and nothing else enters "
+            "the label. An economy distinguished by a third dimension (credit, "
+            "fiscal, external) is not expressible in this grid.",
+            "The output gap is computed against POTENTIAL, which is unobservable "
+            "by nature (Section 21.4 item 13); the label inherits whatever error "
+            "the potential estimate carries.",
+            "u* is unobservable (Section 21.4 item 13). It is taken from "
+            "settings.phillips.nairu.value, CBO's published estimate, and is "
+            "treated as a constant rather than as an estimate with its own error "
+            "band.",
+            "Thresholds are Section 6.2's illustrative literals, not estimated "
+            "from data (see `limitations`).",
+        ],
+        data_provenance=[
+            "output_gap — computed upstream by output_gap_from_snapshot and passed "
+            "in; not re-derived here (passing it is what keeps one implementation)",
+            "inflation_yoy — CPIAUCSL (BLS headline CPI via FRED) year-over-year percent",
+            "inflation_trend_3m — CPIAUCSL 3-month annualized momentum, "
+            "computed upstream by the orchestrator's _inflation_momentum_3m",
+            "unemployment_gap — UNRATE (BLS) minus u* from settings.phillips.nairu.value",
+        ],
+        # Empty because this function receives floats, not dated observations.
+        # Stated here rather than left to be inferred from the empty dict: the
+        # vintage of each input is knowable one layer up, in the orchestrator,
+        # which holds the ObservationPoints. Leaving it empty is a consequence
+        # of the signature, and a consumer should read it that way.
+        limitations=[
+            "RULE-BASED, NOT PROBABILISTIC: this partitions two thresholds; it "
+            "does not estimate a regime probability. Section 6.2 defers the "
+            "Markov-switching model (statsmodels.tsa.regime_switching) to Phase "
+            "5+, and until it replaces this the output is a label, not a "
+            "likelihood.",
+            "The inflation axis is MOMENTUM (3-month annualized change), NOT the "
+            "level: 'disinflation' means inflation is DECELERATING — possibly "
+            "from 8% toward 6% — not that inflation is low. Reading the label as "
+            "a level inverts its meaning.",
+            "`output_gap_change` is optional and, when absent, `recovery` is "
+            "unreachable: the three states `slowdown`, `recovery` and "
+            "`reflation` were declared by Section 6.2 but its logic could never "
+            "produce all three. A caller that omits the argument cannot receive "
+            "`recovery`, by construction rather than by data.",
+            "The inflation axis is defined on the SIGN of a 3-month annualized "
+            "change, a month-over-month measure. The price level falls in only a "
+            "small minority of months, so 'rising' is closer to a constant than "
+            "to a finding, and every state requiring a non-rising axis is rare "
+            "BY CONSTRUCTION rather than by economic fact (see OPEN_ISSUES "
+            "O-23). The measured axis base rate is published in `value`.",
+            "Points-in-time: observation dates are NOT supplied by this "
+            "function's inputs (it receives floats). The point-in-time filter "
+            "upstream is SUFFICIENT BUT NOT SOUND (see models/as_of.py), and no "
+            "release or vintage datetime is available on this installation "
+            "(Section 6, measured 2026-09-19) — so an as-of-correct run cannot "
+            "prove it did not use a revision.",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q1 fourth read (Module 3) and Section 16.4's "
+            "`regime` field on the published MacroThesis. Read by `_regime_view` "
+            "in the builder; carried into the thesis as the `state` label plus "
+            "its base rate. Downstream it qualifies how a reader should weight "
+            "every other view on the thesis — it is context, not a signal that "
+            "selects an instrument."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a probability, a likelihood, or a forecast. It "
+            "is a deterministic partition of two thresholds (Section 6.2).",
+            "MUST NOT be treated as a two-axis classification when "
+            "`value['regime_tension'] == 'REGIME_TENSION'`: in that case ONE "
+            "axis decided the label (Section 21) and the published reasons say "
+            "which. Consuming it as if both axes agreed is the error the flag "
+            "exists to prevent.",
+            "MUST NOT be used alone to stand a thesis down. The significance "
+            "test is Q6 (Section 16.3), and Section 16.3's order puts the reads "
+            "before it. A missing or surprising regime is information, not a "
+            "gate.",
+            "MUST NOT be consumed without the state base rate when it is "
+            "available: a regime that fires in 80% of periods is not a regime, "
+            "and the label cannot be judged unusual without its frequency "
+            "(D-029).",
+        ],
     )
 
 

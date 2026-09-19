@@ -48,6 +48,7 @@ from macro_engine.models.evidence_family import EvidenceSourceFamily
 # accepted. D-057 recorded it as **O-51**; D-064 closed it.
 from macro_engine.models.policy_rules import MarketPricingGap as MarketPricingGap
 from macro_engine.models.probability import PayoffUnit as PayoffUnit
+from macro_engine.models.probability import ScenarioDistributionStatus as ScenarioDistributionStatus
 from macro_engine.models.probability import ScenarioOutcome as ScenarioOutcome
 
 __all__ = [
@@ -60,6 +61,7 @@ __all__ = [
     "MarketPricingGap",
     "PayoffUnit",
     "ProductionUniverse",
+    "ScenarioDistributionStatus",
     "ScenarioOutcome",
     "SignalDirection",
     "ThesisStatus",
@@ -577,6 +579,21 @@ class MacroThesis(BaseModel):
 
     trade_idea: TradeIdea
     scenario_distribution: list[ScenarioOutcome] = Field(default_factory=list)
+    scenario_distribution_status: ScenarioDistributionStatus = Field(
+        default="empty_no_trade",
+        description=(
+            "Whether ``scenario_distribution`` is fit to size a position with "
+            "(Section 25 of the economic-integrity directive). ``calibrated`` "
+            "means every probability rests on a calibrated value; "
+            "``SCENARIO_DISTRIBUTION_UNAVAILABLE`` means a distribution is "
+            "published for a human to read but its probabilities are "
+            "``uncalibrated_illustrative`` placeholders and it MUST NOT drive "
+            "Kelly sizing; ``empty_no_trade`` means there is no distribution "
+            "because the verdict cannot carry a thesis. Default is the safest "
+            "value, so a thesis built without stating its provenance is treated "
+            "as unsizable rather than silently sized."
+        ),
+    )
 
     status: ThesisStatus = ThesisStatus.DRAFT
     warnings: list[str] = Field(
@@ -651,3 +668,53 @@ class MacroThesis(BaseModel):
                 f"a distribution, and Kelly sizing over it is meaningless."
             )
         return self
+
+    @model_validator(mode="after")
+    def _enforce_scenario_status_matches_distribution(self) -> MacroThesis:
+        """The status field must be consistent with what is actually present.
+
+        Section 25 makes the status load-bearing — a downstream sizer reads it to
+        decide whether sizing is permitted — so a status that disagrees with the
+        distribution would be worse than no status at all. Two directions, both
+        checked because both are reachable:
+
+        * a non-empty distribution declared ``empty_no_trade`` would hide a real
+          (if unsizable) distribution from a reader;
+        * an empty distribution declared ``calibrated`` or
+          ``SCENARIO_DISTRIBUTION_UNAVAILABLE`` would claim a distribution that
+          is not there.
+
+        Note this validator does **not** try to re-derive whether the
+        probabilities are calibrated: that fact lives in the config
+        (``scenario_probabilities_are_calibrated()``) and is stamped by the
+        builder, which is the only place that knows it. The validator's job is
+        internal consistency, not provenance.
+        """
+        if self.scenario_distribution and self.scenario_distribution_status == "empty_no_trade":
+            raise ValueError(
+                "scenario_distribution has "
+                f"{len(self.scenario_distribution)} branches but "
+                "scenario_distribution_status='empty_no_trade'. A non-empty "
+                "distribution must be classified as 'calibrated' or "
+                "'SCENARIO_DISTRIBUTION_UNAVAILABLE' so a reader can tell which."
+            )
+        if not self.scenario_distribution and self.scenario_distribution_status != "empty_no_trade":
+            raise ValueError(
+                f"scenario_distribution is empty but "
+                f"scenario_distribution_status={self.scenario_distribution_status!r}. An empty "
+                f"distribution has no probabilities to be calibrated or unavailable."
+            )
+        return self
+
+    @property
+    def scenario_sizing_permitted(self) -> bool:
+        """Whether Section 25 permits Kelly sizing from this thesis's scenarios.
+
+        ``True`` only for a **calibrated, non-empty** distribution. This is the
+        single question a sizer must ask before calling
+        ``apply_fractional_kelly`` on ``self.scenario_distribution``, and it is a
+        property rather than a documented convention so the answer cannot be
+        inferred wrong. Measured on every live thesis today: ``False`` — the
+        probabilities are the specification's illustrative literals.
+        """
+        return self.scenario_distribution_status == "calibrated"

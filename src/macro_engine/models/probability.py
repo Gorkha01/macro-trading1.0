@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BayesInputs",
     "PayoffUnit",
+    "ScenarioDistributionStatus",
     "ScenarioOutcome",
     "bayesian_update",
     "expected_value",
@@ -201,6 +202,35 @@ def bayesian_update(inputs: BayesInputs) -> ModelResult:
 PayoffUnit = Literal["bp_pnl_proxy", "fraction_of_capital"]
 
 
+#: Whether a scenario distribution is fit to size a position with, per the
+#: economic-integrity directive's Section 25.
+#:
+#: The directive is unambiguous: *"Scenario probabilities must be real; if they
+#: cannot be justified, return ``SCENARIO_DISTRIBUTION_UNAVAILABLE`` and MUST NOT
+#: calculate Kelly position sizing."* Three states, because the honest answer is
+#: not binary:
+#:
+#: ``calibrated``
+#:     Every probability in the distribution rests on a calibrated value —
+#:     ``CalibratedValue.is_trustworthy`` is True for each leaf that produced it.
+#:     Only this state may be handed to a sizer.
+#: ``SCENARIO_DISTRIBUTION_UNAVAILABLE``
+#:     A distribution exists in shape (four branches, summing to 1) but its
+#:     probabilities are ``uncalibrated_illustrative`` placeholders. It is
+#:     published so a human can see the reasoning, and it is **explicitly not
+#:     sizing-grade**. Section 25's named sentinel; it is a value rather than an
+#:     absence because "we have a placeholder" and "we have nothing" are
+#:     different facts and a reader needs both.
+#: ``empty_no_trade``
+#:     No distribution at all — the convergence verdict cannot carry a thesis
+#:     (``CONFLICTED``/``NO_SIGNAL``), so there is nothing to distribute over.
+ScenarioDistributionStatus = Literal[
+    "calibrated",
+    "SCENARIO_DISTRIBUTION_UNAVAILABLE",
+    "empty_no_trade",
+]
+
+
 class ScenarioOutcome(BaseModel):
     """One branch of a scenario set: a probability and the payoff it produces.
 
@@ -259,6 +289,31 @@ class ScenarioOutcome(BaseModel):
         default="",
         description="Optional plain-language note on this branch.",
     )
+
+
+def scenario_distribution_status(
+    scenarios: list[ScenarioOutcome],
+    *,
+    probabilities_are_calibrated: bool,
+) -> ScenarioDistributionStatus:
+    """Classify a scenario set for sizing eligibility (Section 25).
+
+    Three outcomes, and the classification is driven by a **caller-supplied
+    calibration fact** rather than by inspecting the numbers, because the
+    numbers cannot carry it: four probabilities of 0.55/0.225/0.175/0.05 look
+    exactly as authoritative whether they were fitted to a decade of outcomes or
+    copied from a specification's illustrative literal. Only the config knows
+    which, so the caller must say, and the caller's claim is
+    ``settings.scenario_distribution``'s own ``calibration_status`` leaves —
+    see :func:`macro_engine.thesis_layer.scenarios.scenario_probabilities_are_calibrated`.
+
+    ``empty`` short-circuits first: an empty list is ``empty_no_trade``
+    regardless of the calibration fact, because a verdict that cannot carry a
+    thesis has no distribution to be calibrated *or* unavailable.
+    """
+    if not scenarios:
+        return "empty_no_trade"
+    return "calibrated" if probabilities_are_calibrated else "SCENARIO_DISTRIBUTION_UNAVAILABLE"
 
 
 def expected_value(scenarios: list[ScenarioOutcome]) -> ModelResult:

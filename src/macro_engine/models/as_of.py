@@ -26,6 +26,19 @@ dates the economic fact. Two snapshots built a minute apart with different
 retrieval stamps describe the same quarter of GDP, and the arithmetic must
 agree.
 
+**This filter is SUFFICIENT but not SOUND (Section 6).** Excluding points dated
+after ``as_of`` is necessary and is done. It is not *sufficient* to guarantee
+that everything retained was knowable at ``as_of``, because publication lags
+the observation: a month's CPI is stamped the 1st of that month but published
+around mid-*following*-month, so an ``as_of`` equal to the observation date
+admits a value that had not been released yet. Closing that gap requires
+``release_datetime``, which no route reachable from this installation returns
+(measured 2026-09-19 — see ``ObservationPoint``). The consequence is stated
+plainly rather than hidden: **an ``as_of`` inside one reporting lag of the
+newest observation may include not-yet-public data.** The honest use of this
+module today is backtesting *at or after* the release, not replaying a decision
+made before it.
+
 **No silent truncation.** ``observation_as_of`` returns a report naming how
 many points were withheld and the horizon they extended to. A model can then
 either disclose the truncation in its ``warnings`` or refuse to compute. What

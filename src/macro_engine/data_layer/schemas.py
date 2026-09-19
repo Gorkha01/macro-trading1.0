@@ -52,6 +52,31 @@ class ObservationPoint(BaseModel):
     ``series_id`` is the *internal field name* from ``series_registry.yaml``
     (e.g. ``cpi_headline``), not the provider's series code — the provider code
     lives in the registry so the two can be re-pointed independently.
+
+    **Point-in-time provenance (Section 6).** Four distinct timestamps matter
+    to a point-in-time reasoning system and they are NOT interchangeable:
+
+    * ``observation_date`` — what period the value *describes* (2026-08 CPI).
+    * ``release_datetime`` — when the value became public.
+    * ``vintage_datetime`` — which revision of the value this is.
+    * ``retrieved_at`` — when *this process* read it.
+
+    ``observation_date`` and ``retrieved_at`` are always present. The two
+    release-side fields are **optional and default to ``None``, which means
+    UNKNOWN — never "same as observation_date"**. They are modelled but not
+    populated, because no route reachable from this installation returns them
+    (measured 2026-09-19: ``economy.fred_series`` returns only date + value;
+    ``economy.fred_release_table`` returns a table of contents with no dates;
+    ``economy.calendar`` raises ``TimeoutError`` on the FRED route and needs
+    credentials it does not have on the ``fmp``/``tradingeconomics`` routes).
+
+    The distinction matters: ``as_of`` filtering uses ``observation_date``
+    (Section 6's O-7), which is a *sufficient but not sound* point-in-time
+    proxy. A month's CPI print is knowable only around mid-*following*-month,
+    so an ``as_of`` of the observation date itself admits data that had not
+    been published yet. Until ``release_datetime`` is populated, consumers must
+    treat any observation dated within one reporting lag of the cutoff
+    as **possibly not yet public** — see ``has_known_release_timing``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -61,6 +86,31 @@ class ObservationPoint(BaseModel):
     series_id: str
     source: str = "openbb"
     retrieved_at: datetime = Field(default_factory=utc_now)
+
+    release_datetime: datetime | None = Field(
+        default=None,
+        description=(
+            "When the value became public. None = UNKNOWN (not 'equal to "
+            "observation_date'). No reachable route populates this yet (Section 6)."
+        ),
+    )
+    vintage_datetime: datetime | None = Field(
+        default=None,
+        description=(
+            "Which revision of the value this is (ALFRED-style realtime_start). "
+            "None = UNKNOWN, i.e. the value is treated as the latest vintage only."
+        ),
+    )
+
+    @property
+    def has_known_release_timing(self) -> bool:
+        """Whether this point's publication time is actually known.
+
+        False for every point today. Exists so a consumer can *ask* rather than
+        assume — the failure mode Section 6 prohibits is a system that silently
+        treats ``observation_date`` as the release date.
+        """
+        return self.release_datetime is not None
 
 
 class YieldCurveSnapshot(BaseModel):
@@ -110,6 +160,18 @@ class MacroDataSnapshot(BaseModel):
         ),
     )
     as_of: datetime = Field(default_factory=utc_now)
+    decision_cutoff: datetime | None = Field(
+        default=None,
+        description=(
+            "The instant the decision this snapshot feeds is being made. "
+            "``as_of`` says when the data was ASSEMBLED; ``decision_cutoff`` says "
+            "what must have been KNOWABLE. They are usually close but are "
+            "conceptually distinct: a snapshot rebuilt from a cache has an "
+            "``as_of`` of the rebuild and a ``decision_cutoff`` of the original "
+            "decision. None = the decision is happening now, i.e. ``retrieved_at`` "
+            "of the latest point (Section 6)."
+        ),
+    )
 
     # --- National accounts (Module 7) ---
     gdp_real: list[ObservationPoint] = Field(default_factory=list)

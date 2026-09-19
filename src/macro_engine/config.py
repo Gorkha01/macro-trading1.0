@@ -839,6 +839,25 @@ class RegistrySeries(BaseModel):
             "the failure message accurate."
         ),
     )
+    signed_series: bool = Field(
+        default=False,
+        description=(
+            "True when this series' snapshot field legitimately carries a SIGNED quantity "
+            "(a spread, a change, a net balance) rather than a non-negative level. "
+            "`plausible_range` describes the LEVEL, and the range check treats a breach as "
+            "an ERROR — so for a signed field the level range must not be applied as a hard "
+            "lower bound, or a legitimate negative value (a narrowing spread, a net "
+            "tightening reading of -2%) is reported as corrupt data. "
+            "`credit_spread_hy`/`credit_spread_ig` are the canonical cases: the OAS LEVEL "
+            "has never been negative in the full FRED history (verified 2026-09-19: BAMLH0A0HYM2 "
+            "ranges 2.59 to 4.61 over 795 observations), so [0.1, 40.0] is a correct LEVEL "
+            "bound — but the same field is used to carry a spread CHANGE, and a change is "
+            "legitimately negative. Declaring the field signed keeps the LEVEL range "
+            "documented and authoritative while suppressing the lower-bound ERROR. "
+            "This replaces the four hardcoded series tuples that used to live in "
+            "validation.py (AUDIT-001)."
+        ),
+    )
     future_date_tolerance_days: int = Field(
         default=0,
         ge=0,

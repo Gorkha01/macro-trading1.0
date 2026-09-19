@@ -542,3 +542,130 @@ def test_the_distribution_is_direction_blind() -> None:
     # information.
     assert _gap(raw_gap=-1.0).direction == "model_below_market"
     assert _gap(raw_gap=1.0).direction == "model_above_market"
+
+
+# ---------------------------------------------------------------------------
+# Section 25 of the economic-integrity directive: scenario probabilities must
+# be REAL or the distribution is unavailable for sizing.
+# ---------------------------------------------------------------------------
+
+
+class TestScenarioDistributionStatus:
+    """§25 — ``SCENARIO_DISTRIBUTION_UNAVAILABLE`` and the sizing prohibition.
+
+    The directive: *"Scenario probabilities must be real; if they cannot be
+    justified, return ``SCENARIO_DISTRIBUTION_UNAVAILABLE`` and MUST NOT
+    calculate Kelly position sizing."*
+
+    These tests pin three things: that the status vocabulary exists and is read
+    from config (not hardcoded), that today's config classifies every
+    distribution as UNAVAILABLE, and that a calibrated config would lift it —
+    which is the falsifiable half, because a gate that can never open is a gate
+    nobody can trust.
+    """
+
+    def test_the_configured_probabilities_are_not_calibrated_today(self) -> None:
+        """§16.4's literals are ``uncalibrated_illustrative``, so this is False.
+
+        If this ever fails, the scenarios became real and Section 25's
+        prohibition should be revisited deliberately rather than silently
+        lifted — which is exactly why the fact is asserted rather than assumed.
+        """
+        from macro_engine.thesis_layer.scenarios import scenario_probabilities_are_calibrated
+
+        assert scenario_probabilities_are_calibrated() is False
+
+    def test_a_distribution_from_illustrative_probabilities_is_unavailable(self) -> None:
+        from macro_engine.models.probability import scenario_distribution_status
+
+        status = scenario_distribution_status(_build(), probabilities_are_calibrated=False)
+
+        assert status == "SCENARIO_DISTRIBUTION_UNAVAILABLE"
+
+    def test_a_calibrated_distribution_would_be_marked_calibrated(self) -> None:
+        """The falsifiable half: the gate opens when the config is calibrated.
+
+        Without this the UNAVAILABLE verdict could be produced by a hardcoded
+        ``return "SCENARIO_DISTRIBUTION_UNAVAILABLE"`` and the test would still
+        pass — so this is what makes the first test meaningful.
+        """
+        from macro_engine.models.probability import scenario_distribution_status
+
+        status = scenario_distribution_status(_build(), probabilities_are_calibrated=True)
+
+        assert status == "calibrated"
+
+    def test_an_empty_distribution_is_empty_no_trade_whatever_the_calibration(self) -> None:
+        """A verdict that cannot carry a thesis has nothing to calibrate.
+
+        ``empty`` wins over the calibration fact, because "no distribution" and
+        "an unsizable distribution" are different facts and a reader needs both.
+        """
+        from macro_engine.models.probability import scenario_distribution_status
+
+        for calibrated in (True, False):
+            assert (
+                scenario_distribution_status([], probabilities_are_calibrated=calibrated)
+                == "empty_no_trade"
+            )
+
+    def test_the_status_vocabulary_is_exactly_three_members(self) -> None:
+        """A closed vocabulary, typed — so a typo cannot masquerade as a state."""
+        from macro_engine.models.probability import ScenarioDistributionStatus
+
+        assert set(get_args(ScenarioDistributionStatus)) == {
+            "calibrated",
+            "SCENARIO_DISTRIBUTION_UNAVAILABLE",
+            "empty_no_trade",
+        }
+
+    def test_the_calibration_fact_comes_from_config_not_a_literal(self) -> None:
+        """D-035: the status must be read from the leaves, not restated.
+
+        Proven by mutating a leaf's ``calibration_status`` in the loaded settings
+        and observing the predicate flip, then restoring it. A hardcoded
+        ``return False`` would fail this.
+        """
+        from macro_engine.thesis_layer.scenarios import scenario_probabilities_are_calibrated
+
+        settings = get_settings()
+        leaf = settings.scenario_distribution.base_probability_high
+        original = leaf.calibration_status
+        try:
+            leaf.calibration_status = "fitted_assumption"
+            assert scenario_probabilities_are_calibrated() is False, (
+                "one promoted leaf out of six left the distribution uncalibrated "
+                "— the predicate must require ALL leaves to be trustworthy"
+            )
+            settings.scenario_distribution.base_probability_medium.calibration_status = (
+                "fitted_assumption"
+            )
+            settings.scenario_distribution.base_probability_low.calibration_status = (
+                "fitted_assumption"
+            )
+            settings.scenario_distribution.remaining_share_partial_close.calibration_status = (
+                "fitted_assumption"
+            )
+            settings.scenario_distribution.remaining_share_reversal.calibration_status = (
+                "fitted_assumption"
+            )
+            settings.scenario_distribution.remaining_share_tail.calibration_status = (
+                "fitted_assumption"
+            )
+            assert scenario_probabilities_are_calibrated() is True, (
+                "with every probability leaf promoted the predicate must flip — a "
+                "hardcoded False would leave this red"
+            )
+        finally:
+            leaf.calibration_status = original
+            for name in (
+                "base_probability_medium",
+                "base_probability_low",
+                "remaining_share_partial_close",
+                "remaining_share_reversal",
+                "remaining_share_tail",
+            ):
+                getattr(
+                    settings.scenario_distribution, name
+                ).calibration_status = "uncalibrated_illustrative"
+        assert scenario_probabilities_are_calibrated() is False, "restore failed"

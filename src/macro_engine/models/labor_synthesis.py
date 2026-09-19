@@ -114,6 +114,26 @@ class LaborInputs(BaseModel):
     )
 
 
+def _tightness_direction_sentence(score: float) -> str:
+    """The tightness score's sign, in words, for the Section 3 ``direction`` field.
+
+    Three states, and the middle one is real: a score of exactly zero is AT the
+    balanced level, which is a reading and not a rounding of tightening or
+    loosening. Separating it avoids the D-040 pattern where a boundary value is
+    classified by whichever branch's ``else`` happens to catch it.
+
+    A positive score means the market is TIGHT (above its balanced level), which
+    is the opposite of the intuition a reader may bring from "positive = slack" —
+    the same sign trap that ``slack_corroborated`` in the regime model exists to
+    close.
+    """
+    if score > 0:
+        return "tightening: labour market above its balanced level"
+    if score < 0:
+        return "loosening: labour market below its balanced level"
+    return "neutral: at the balanced level"
+
+
 def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
     """Composite labor tightness, ``-100`` (very loose) to ``+100`` (very tight).
 
@@ -213,6 +233,89 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
             "nfp_3m_avg",
         ],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="index points, bounded to [-100, +100], zero = balanced market",
+        direction=_tightness_direction_sentence(score),
+        assumptions=[
+            "The three components are combinable in ONE score with fixed weights "
+            "(claims 0.4, JOLTS 0.4, NFP 0.2). That is a modelling choice, not a "
+            "measurement: the weights are config leaves and are heuristic rather "
+            "than estimated, which is why the confidence carries "
+            "is_heuristic_not_calibrated=True.",
+            "The claims sign is INVERTED by a configurable multiplier because "
+            "falling claims mean a TIGHTENING market. The inversion is a "
+            "documented, named transform rather than an implicit negation — a "
+            "reader recomputing by hand must apply it.",
+            "The score is a LEVEL, not a change: zero means the market sits at "
+            "its balanced level, and the score does not say how fast it is "
+            "moving. Two readings of +3.5 a year apart describe very different "
+            "labour markets.",
+            "Bounds of +/-100 are applied by clamping. A clamp is a disclosure, "
+            "not an error: when it fires the raw value is preserved in a warning "
+            "so the reader can see how far outside the range a component sat.",
+        ],
+        data_provenance=[
+            "initial_claims_4wk_avg_change_pct — DOL initial claims, 4-week "
+            "average, percent change year-over-year",
+            "jolts_openings_yoy_pct — BLS JOLTS job openings, percent change year-over-year",
+            "jolts_quits_level_percentile — BLS JOLTS quits rate, expressed as a "
+            "percentile of its own history (a within-series rank, not a level)",
+            "nfp_3m_avg — BLS nonfarm payrolls 3-month average change, in "
+            "thousands. ABSENT on this snapshot: there is no payrolls field in "
+            "MacroDataSnapshot, so the orchestrator redistributes NFP's weight "
+            "across the other two components and returns that as a warning "
+            "rather than passing a fabricated zero.",
+        ],
+        limitations=[
+            "HEURISTIC, NOT CALIBRATED: the component form, the multipliers and "
+            "the weights are Section 6.4's illustrative values, not estimates "
+            "fitted to data. The score's LEVEL is therefore not comparable to any "
+            "published tightness index, and only its sign and approximate "
+            "magnitude should be read.",
+            "A COMPOSITE LEVEL, NOT A GAP: unlike the output gap, there is no "
+            "'potential tightness' to compare against. Zero is the balanced "
+            "level by construction of the weights, not by measurement of an "
+            "equilibrium.",
+            "It is a SIGN-AND-MAGNITUDE summary that can hide a conflict: a "
+            "strong claims reading and a weak JOLTS reading can average to a "
+            "quiet-looking score. The components are printed in `context` for "
+            "exactly this reason — a reader who only sees the total cannot "
+            "detect it.",
+            "ONE OF ITS FOUR INPUTS IS ABSENT on the live path (NFP), and its "
+            "weight is redistributed. That makes the live score a different "
+            "estimator from the four-input one the unit tests exercise, and the "
+            "warning says so on every run where it applies.",
+            "NOT INDEPENDENT OF THE GROWTH READ: JOLTS openings and claims both "
+            "move with the cycle, so this score correlates with the output gap. "
+            "Section 12's independence count for the thesis is computed from "
+            "source families and does not treat labour and growth as disjoint.",
+            "Points-in-time: claims, JOLTS and payrolls are released on "
+            "different days and revised on different schedules. The latest "
+            "common vintage is not enforced, and no release or vintage datetime "
+            "is available on this installation (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q1 labour read, one of the three economy reads on the "
+            "live path. It is the corroborating read for the growth axis: the "
+            "regime classifier compares the output gap against the unemployment "
+            "gap, and this score is the broader labour read the thesis publishes "
+            "beside them."
+        ),
+        decision_prohibition=[
+            "MUST NOT be compared against any external labour-market tightness "
+            "index. The scale is this model's own, built from illustrative "
+            "weights, and a reader who compares it to a published index reads a "
+            "spurious level.",
+            "MUST NOT be read as a rate of change. It is a level, and 'the score "
+            "is +3.5' says nothing about whether the market is tightening or "
+            "loosening — that requires two readings and their difference.",
+            "MUST NOT be used as the sole justification for a tightening or "
+            "loosening call when its components conflict. Read the components in "
+            "`context` first (Section 12: divergence is information).",
+            "MUST NOT be consumed without noticing the NFP-redistribution "
+            "warning on the live path, where the score is computed from three "
+            "components rather than four.",
+        ],
     )
 
 
@@ -1152,6 +1255,26 @@ class InflationSubMeasures(BaseModel):
     pce_core_mom: float = Field(description="PCE core, m/m percent.")
 
 
+def _breadth_direction_sentence(all_positive: bool, all_negative: bool) -> str:
+    """The breadth read's direction, in words, for the Section 3 ``direction`` field.
+
+    Named rather than inlined because the three states are genuinely distinct and
+    a nested conditional collapses them: "all rising", "all falling", and
+    "measures disagree" are not a direction and its negation. The third state is
+    the one that matters — on a divergent read there is no direction, and saying
+    so is the whole point of the field.
+
+    Takes the two booleans the caller already computed rather than recomputing
+    them from the values, so the sentence cannot disagree with the branch that
+    chose the confidence.
+    """
+    if all_positive:
+        return "rising: all three measures positive"
+    if all_negative:
+        return "falling: all three measures negative"
+    return "CONFLICTED: measures disagree in sign, so the average describes neither"
+
+
 def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
     """Phase 1 three-measure breadth proxy. ``value`` is a ``float`` in percent.
 
@@ -1231,4 +1354,80 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
         ),
         inputs_used=["cpi_headline_mom", "cpi_core_mom", "pce_core_mom"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent, month-over-month (an AVERAGE across three measures)",
+        direction=_breadth_direction_sentence(all_positive, all_negative),
+        assumptions=[
+            "Three measures are a sufficient proxy for breadth. Full six-plus "
+            "measure convergence (supercore, trimmed mean, median) needs "
+            "BLS/Dallas Fed/Cleveland Fed direct sources and is a Phase 5+ "
+            "upgrade — this is a deliberate, named substitution, not a silent "
+            "one (Section 10).",
+            "'Breadth' is operationalised as a SIGN TEST: do all three point the "
+            "same way. A sign test discards magnitude, which is the weak "
+            "statistic the next limitation names.",
+            "The three m/m readings are comparable because all three are "
+            "month-over-month percent changes. Mixing a m/m with a YoY would "
+            "make the average meaningless, and the units alone would not reveal "
+            "it.",
+            "The confidence is a property of THIS convergence test, read from "
+            "config, and is deliberately NOT produced by compute_confidence() "
+            "(Section 6.3's exception, the same as Section 22.5's proxy). A "
+            "reader comparing this confidence to a compute_confidence() value is "
+            "comparing two different things.",
+        ],
+        data_provenance=[
+            "cpi_headline_mom — CPIAUCSL (BLS headline CPI) m/m percent, computed "
+            "in the orchestrator's _inflation_leg",
+            "cpi_core_mom — CPILFESL (BLS core CPI) m/m percent, same",
+            "pce_core_mom — PCEPILFE (BEA core PCE) m/m percent, same",
+            "All three read at the snapshot's own as_of, not wall-clock time",
+        ],
+        limitations=[
+            "WEAK STATISTIC: a sign test. Three measures at +0.001% read as "
+            "'convergent' exactly as three at +5.0% do, so convergence alone says "
+            "nothing about the size of the pressure. The average must be compared "
+            "against recent history before convergence is treated as evidence.",
+            "THREE MEASURES, NOT SIX-PLUS: Module 5.3/13.2's full convergence test "
+            "is a Phase 5+ upgrade. Three measures is a proxy whose confidence is "
+            "low by construction.",
+            "The three measures are not fully independent: headline CPI contains "
+            "core CPI's components, and CPI and PCE share underlying source data "
+            "even though they are different agencies (BLS and BEA). Agreement "
+            "between them is therefore weaker evidence than three genuinely "
+            "disjoint measurements would be.",
+            "The average in `value` is an ARITHMETIC mean of the three m/m "
+            "readings, which is not a price index: on a divergent reading it "
+            "averages opposing movements and describes neither. Use it as a "
+            "central-tendency indicator, not as an inflation rate.",
+            "Points-in-time: m/m changes are computed from the two most recent "
+            "observations, so a revision to either changes the reading. The O-7 "
+            "filter applies upstream but is SUFFICIENT BUT NOT SOUND "
+            "(models/as_of.py), and no vintage datetime exists on this "
+            "installation (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q1 inflation read (via the orchestrator's "
+            "_inflation_leg) and the Module 3 regime classifier's inflation axis "
+            "input. The sign convention is load-bearing for the regime: the "
+            "classifier reads inflation MOMENTUM, so a 'falling' breadth read is "
+            "what makes 'disinflation' reachable."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as an inflation RATE. `value` is an average of "
+            "three month-over-month changes, not a level and not an annualised "
+            "rate. Quoting it as 'inflation is X%' misreads the unit by a factor "
+            "of twelve at least.",
+            "MUST NOT be treated as evidence of breadth when the measures "
+            "diverge. On the divergent branch the value is published but the "
+            "interpretation and the warning both say it describes neither "
+            "movement, and Module 13 requires the divergence be investigated "
+            "rather than averaged.",
+            "MUST NOT have its confidence compared against a "
+            "compute_confidence() value: this confidence comes from config and "
+            "answers a different question (Section 6.3).",
+            "MUST NOT be used as the sole input to a regime label. Section 21's "
+            "regime_tension flag exists precisely because a label resting on one "
+            "axis is a weaker claim, and this is only one of the two axes.",
+        ],
     )

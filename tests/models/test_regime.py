@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from itertools import product
-from typing import get_args
+from typing import cast, get_args
 from unittest.mock import patch
 
 import pytest
@@ -52,10 +52,13 @@ from macro_engine.config import (
 from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
 from macro_engine.models.regime import (
     REGIME_STATES,
+    REGIME_TENSIONS,
     GrowthAxis,
     InflationAxis,
     RegimeInputs,
+    RegimeTension,
     classify_regime_rule_based,
+    regime_tension,
 )
 from tests.helpers import as_bool, as_float, as_str
 
@@ -993,9 +996,118 @@ def test_regime_states_tuple_and_literal_agree() -> None:
     Pydantic's ``Literal`` is not iterable at runtime, so the vocabulary is
     declared twice and the two declarations are compared here.
     """
-    from typing import get_args
-
     from macro_engine.models.regime import RegimeState
 
     assert set(get_args(RegimeState)) == set(REGIME_STATES)
     assert len(REGIME_STATES) == 9
+
+
+# ---------------------------------------------------------------------------
+# Section 21 of the economic-integrity directive: the regime must not be a
+# single-factor switch, and a one-axis label must be flagged REGIME_TENSION.
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeTension:
+    """§21 — a label decided by one axis is published as ``REGIME_TENSION``.
+
+    The classifier has always read two axes. The §21 requirement is about the
+    case where one of them **did not distinguish anything**: a flat inflation
+    momentum inside the neutral band, or a deep contraction where the
+    classifier consults the inflation axis not at all. In both cases the label
+    is single-axis, and a consumer must be able to tell.
+    """
+
+    def test_a_flat_inflation_axis_flags_tension(self) -> None:
+        """Inside the neutral band, the growth axis decides alone."""
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            result = classify_regime_rule_based(_inputs(output_gap=0.83, inflation_trend_3m=0.05))
+        value = result.value
+        assert isinstance(value, dict)
+        assert value["regime_tension"] == "REGIME_TENSION"
+        reasons = value["regime_tension_reasons"]
+        assert isinstance(reasons, list)
+        assert any("neutral band" in r for r in reasons), reasons
+
+    def test_a_two_sided_inflation_axis_is_not_tension(self) -> None:
+        """Outside the band, both axes contributed — the falsifiable half.
+
+        Without this the flag could be a constant ``REGIME_TENSION`` and the
+        first test would still pass.
+        """
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            result = classify_regime_rule_based(_inputs(output_gap=0.83, inflation_trend_3m=0.5))
+        value = result.value
+        assert isinstance(value, dict)
+        assert value["regime_tension"] == "NO_REGIME_TENSION"
+        assert value["regime_tension_reasons"] == []
+
+    def test_a_deep_contraction_flags_tension_whatever_the_inflation_axis(self) -> None:
+        """Depth beats direction by design — so the inflation axis was unused.
+
+        ``_select_state`` returns ``recession`` for ``deep_contraction`` without
+        consulting inflation. A two-sided momentum reading therefore does NOT
+        make this a two-axis classification, and the flag says so.
+        """
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            result = classify_regime_rule_based(_inputs(output_gap=-3.0, inflation_trend_3m=0.9))
+        value = result.value
+        assert isinstance(value, dict)
+        assert value["regime_tension"] == "REGIME_TENSION"
+        reasons = value["regime_tension_reasons"]
+        assert isinstance(reasons, list)
+        assert any("deep_contraction" in r for r in reasons), reasons
+
+    def test_the_band_edge_is_flat_matching_the_inflation_axis_boundary(self) -> None:
+        """The ``<=`` test matches ``_inflation_axis``'s own boundary.
+
+        If the two disagreed about whether a reading was neutral, the flag and
+        the axis could contradict each other on the same number.
+        """
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            at_edge = classify_regime_rule_based(
+                _inputs(output_gap=0.83, inflation_trend_3m=0.2)  # == neutral band
+            )
+        value = at_edge.value
+        assert isinstance(value, dict)
+        assert value["inflation_axis"] == "flat"
+        assert value["regime_tension"] == "REGIME_TENSION"
+
+    def test_tension_rides_along_as_a_warning_too(self) -> None:
+        """The structured flag and the prose warning cannot diverge."""
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            result = classify_regime_rule_based(_inputs(output_gap=0.83, inflation_trend_3m=0.05))
+        assert any("REGIME_TENSION" in w for w in result.warnings), result.warnings
+
+    def test_the_tension_vocabulary_and_literal_agree(self) -> None:
+        """``REGIME_TENSIONS`` and the ``RegimeTension`` Literal must not drift."""
+        assert set(get_args(RegimeTension)) == set(REGIME_TENSIONS)
+        assert len(REGIME_TENSIONS) == 2
+
+    def test_the_helper_is_pure_and_matches_the_classifier(self) -> None:
+        """The published flag comes from ``regime_tension()``, not a re-derivation.
+
+        Called directly with the classifier's own axes and band, the helper must
+        return what the classifier published — so a future edit to one cannot
+        silently diverge from the other.
+        """
+        with _PatchedSettings(RegimeSettings(**_SYNTHETIC.model_dump())):
+            result = classify_regime_rule_based(_inputs(output_gap=0.83, inflation_trend_3m=0.05))
+        value = result.value
+        assert isinstance(value, dict)
+        # The classifier publishes these as plain strings inside a dict, so they
+        # must be narrowed back to the Literal the helper accepts. Validated by
+        # membership FIRST, then cast — the assert is what makes the cast
+        # honest, so a classifier that started emitting an unknown axis fails
+        # here rather than being silently coerced into the helper's domain.
+        growth = as_str(result, key="growth_axis")
+        inflation = as_str(result, key="inflation_axis")
+        assert growth in get_args(GrowthAxis), growth
+        assert inflation in get_args(InflationAxis), inflation
+        expected, _ = regime_tension(
+            cast("GrowthAxis", growth),
+            cast("InflationAxis", inflation),
+            inflation_trend_3m=as_float(result, key="inflation_trend_3m_pp"),
+            neutral_band=0.2,  # the patched neutral band
+        )
+        assert value["regime_tension"] == expected

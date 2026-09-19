@@ -397,6 +397,83 @@ def classify_convergence(inputs: ConvergenceInputs) -> ModelResult:
             medium_family_floor=settings.medium_family_floor,
             high_family_floor=settings.high_family_floor,
         ),
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="categorical (a convergence verdict over the directional signals)",
+        direction=(
+            f"{verdict}: {agree_frac:.0%} of the {n} non-neutral signal(s) point "
+            f"the same way, weighted by measured independent source families"
+        ),
+        assumptions=[
+            "The three possible verdicts are defined on the WEIGHTED agreement "
+            "fraction, where the weight is MEASURED independent source families "
+            "and not the raw signal count (Section 15.19-D). So a verdict is a "
+            "statement about evidence diversity, not about how many models were "
+            "run.",
+            "NEUTRAL signals are excluded from the denominator. A signal that "
+            "points neither way is treated as carrying no directional "
+            "information rather than as a disagreement, which is why "
+            "`non_neutral_signals` is published beside `total_signals`.",
+            "Signal direction is READ from each signal's own value and unit, "
+            "using the model's own convention. A signal whose direction cannot be "
+            "read is counted in `untagged_signals` rather than guessed at.",
+            "CONFLICTED is a BLOCKING outcome, not a low-confidence pass: it "
+            "routes the thesis to no-trade via Section 16.3 Q7 because growth and "
+            "inflation pointing opposite ways is a genuine incapacity to form a "
+            "view, not a weak view.",
+        ],
+        data_provenance=[
+            "signals — Q1's three economy reads plus the market-pricing-gap "
+            "signal, assembled by the builder's classify_thesis_convergence",
+            "source-family tags on each signal — from the each model's own "
+            "`source_family`, counted by count_independent_families; an untagged "
+            "signal is reported rather than silently dropped",
+            "Weighting floors (medium_family_floor, high_family_floor) are "
+            "config-sourced thresholds, and the warnings name when a verdict "
+            "rests on a family count below them",
+        ],
+        limitations=[
+            "THE VERDICT IS A STATEMENT ABOUT EVIDENCE DIVERSITY, NOT A "
+            "PROBABILITY. 'HIGH agreement' means the directional signals span "
+            "enough independent source families and agree; it does not mean the "
+            "view is 80% likely to be right.",
+            "INDEPENDENCE IS TAKEN FROM DECLARED FAMILIES, not verified. Two "
+            "models that share a source but are tagged with different families "
+            "would be counted as independent, and the count is only as honest as "
+            "the tagging.",
+            "A SMALL SIGNAL SET MAKES CONVERGENCE CHEAP: with three directional "
+            "signals, one odd one out drops agreement sharply, so the verdict is "
+            "sensitive to the composition of `signals` rather than only to the "
+            "economy.",
+            "NEUTRAL IS NOT THE SAME AS ABSENT. A signal that carries no "
+            "direction is excluded from the denominator, so a reading with many "
+            "neutral signals can show high agreement on very little directional "
+            "evidence — `non_neutral_signals` is the field that bounds this.",
+            "Points-in-time: the signals inherit their own models' vintage "
+            "limitations, including the output gap's revision dependence, and no "
+            "release or vintage datetime exists on this installation (Section 6, "
+            "measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q7 — the convergence verdict that ends the sentence. "
+            "CONFLICTED routes to no-trade (Section 16.3); otherwise the verdict "
+            "is published on the thesis as the `convergence_classification`."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a probability or a confidence. It is a "
+            "categorical verdict over a weighted agreement fraction, and the "
+            "confidence on this result is a separate and differently-sourced "
+            "quantity.",
+            "MUST NOT be interpreted without `non_neutral_signals`. A HIGH "
+            "verdict over two directional signals is a much weaker statement than "
+            "the same verdict over six, and the total signal count alone does not "
+            "reveal which case applied.",
+            "MUST NOT be treated as a soft signal that can be overridden by "
+            "conviction when it reads CONFLICTED. Section 16.3 Q7 makes it a "
+            "blocking outcome by design.",
+            "MUST NOT be used to claim independent confirmation without checking "
+            "`independent_families`: agreement among signals from one source "
+            "family is not corroboration.",
+        ],
     )
 
 

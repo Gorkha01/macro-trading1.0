@@ -37,6 +37,16 @@ jobs:
       - name: Type check (mypy --strict)
         run: uv run mypy
 
+      # DEFECTS_2026-09-19.md item 3. A unit test tests the callee and a
+      # mutation sweep mutates the callee — neither asks whether the PIPELINE
+      # CALLS IT, which is how 59 Tier 1-4 functions came to be implemented,
+      # tested, and unreachable. This gate asks that question. It fails on a
+      # REGRESSION (a function that was reachable and stopped being) rather
+      # than on the known, triaged backlog, so it stays a signal instead of
+      # becoming noise people learn to ignore.
+      - name: Reachability gate (no new unreachable model functions)
+        run: uv run python tools/reachability_audit.py --check-baseline
+
       - name: Test suite (offline)
         run: uv run pytest -m "not live"
 

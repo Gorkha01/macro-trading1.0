@@ -97,6 +97,7 @@ from macro_engine.thesis_layer.schemas import (
 
 __all__ = [
     "build_scenario_distribution",
+    "scenario_probabilities_are_calibrated",
 ]
 
 #: The four branches, in the order they are published. Order is load-bearing for
@@ -123,6 +124,42 @@ _DISTRIBUTABLE: frozenset[ConvergenceClassification] = frozenset(
 #: because one conversion factor is configured: a second unit would need its own,
 #: and refusing is cheaper than guessing (D-057's ``payoff_unit`` pattern).
 _CONVERTIBLE_GAP_UNITS: frozenset[str] = frozenset({"%"})
+
+
+#: The leaves that together *are* the distribution's probability mass. If any one
+#: of them is a placeholder, every published probability is a placeholder,
+#: because each published probability is a function of these — ``base`` for the
+#: base case, ``(1 - base) * share`` for the other three. Reading them as a set
+#: rather than checking one is why this cannot drift when a leaf is added.
+_PROBABILITY_LEAVES = (
+    "base_probability_high",
+    "base_probability_medium",
+    "base_probability_low",
+    "remaining_share_partial_close",
+    "remaining_share_reversal",
+    "remaining_share_tail",
+)
+
+
+def scenario_probabilities_are_calibrated() -> bool:
+    """Whether the configured scenario probabilities rest on calibrated values.
+
+    Section 25's question: *"must be real; if they cannot be justified, ... MUST
+    NOT calculate Kelly position sizing."* The justification lives in the config
+    as each leaf's ``calibration_status`` (``CalibratedValue``), and this reads
+    it rather than restating it — so promoting a leaf from
+    ``uncalibrated_illustrative`` to ``fitted_assumption`` flips this to True with
+    no code change, which is the point.
+
+    **Measured today: False.** Every probability leaf in
+    ``settings.scenario_distribution`` is ``uncalibrated_illustrative``, which is
+    what Section 16.4 says of them — they are the specification's literals, not
+    estimates. So every live thesis is classified
+    ``SCENARIO_DISTRIBUTION_UNAVAILABLE``, and Section 25's prohibition is in
+    force.
+    """
+    block = get_settings().scenario_distribution
+    return all(getattr(block, leaf).is_trustworthy for leaf in _PROBABILITY_LEAVES)
 
 
 def build_scenario_distribution(

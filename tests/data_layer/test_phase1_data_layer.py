@@ -21,6 +21,8 @@ learn to ignore. Run it explicitly:
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -262,10 +264,23 @@ def test_negative_cpi_index_level_is_flagged() -> None:
 
 
 def test_negative_credit_spread_change_is_not_flagged() -> None:
-    """Spreads and changes are legitimately signed — no lower bound applies."""
+    """Spreads and changes are legitimately signed — no lower bound applies.
+
+    The registry's ``plausible_range`` describes the OAS *level* (which has
+    never been negative — verified 2026-09-19), but the same snapshot field is
+    used to carry a spread *change*, and a narrowing spread is legitimately
+    negative. ``signed_series: true`` on the registry entry suppresses the
+    lower-bound check while the upper bound still applies, so this test guards
+    the distinction: a widening beyond 40pp must still be an ERROR.
+    """
     points = make_points([4.5, 3.9, -0.2], series_id="credit_spread_hy")
     report = validate_snapshot(make_snapshot(credit_spread_hy=points))
     assert not report.has_errors
+
+    # The UPPER bound must still be enforced for a signed series.
+    absurd = make_points([4.5, 3.9, 99.0], series_id="credit_spread_hy")
+    upper = validate_snapshot(make_snapshot(credit_spread_hy=absurd))
+    assert any(f.code == "VALUE_ABOVE_MAX" for f in upper.findings)
 
 
 def test_future_observation_date_is_flagged() -> None:
@@ -695,6 +710,39 @@ def test_persistence_field_lists_match_schema() -> None:
     assert not missing, f"persistence declares fields absent from the schema: {missing}"
 
 
+def test_every_scalar_snapshot_field_is_in_the_bootstrap_fetch_list() -> None:
+    """A schema field that is never fetched is a field that is always empty.
+
+    This is the guard for a real defect (2026-09-19): ``gdi`` had a registry
+    entry with ``status: verified``, a ``MacroDataSnapshot`` field, a slot in
+    ``persistence.SCALAR_SERIES_FIELDS``, and a place in the dashboard's
+    ``growth`` panel — but was **absent from ``snapshot_fields.us``**, the list
+    the snapshot builder actually fetches from. Consequence: 0 observations on
+    every build, the only empty scalar series, and Module 7.1's
+    ``gdp_gdi_divergence`` (implemented, tested, mutation-tested) had no data
+    path. Nothing failed; the dashboard simply requested a series that could
+    never appear.
+
+    The reverse direction is not asserted, and deliberately so:
+    ``snapshot_fields`` legitimately names curve fields (``treasury_curve``,
+    ``tips_yields``) whose names are registry-level rather than schema-level, so
+    a strict equality would be wrong. What must hold is that no *scalar* schema
+    field is unreachable — that is the asymmetry that produced the bug.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.data_layer.persistence import SCALAR_SERIES_FIELDS
+
+    fetched = set(get_settings().snapshot_fields["us"])
+    unfetched = sorted(set(SCALAR_SERIES_FIELDS) - fetched)
+
+    assert not unfetched, (
+        f"scalar series declared in the schema and in persistence but never "
+        f"fetched by the snapshot builder: {unfetched}. Either add them to "
+        f"snapshot_fields.us in config/settings.yaml or remove them from "
+        f"SCALAR_SERIES_FIELDS."
+    )
+
+
 def test_documented_only_registry_entry_is_refused_by_the_snapshot_builder() -> None:
     """A provenance-only entry must fail loudly, not resolve to a wrong name.
 
@@ -914,8 +962,17 @@ def test_the_tolerance_defaults_to_zero_and_the_registry_declares_it() -> None:
         for name, entry in registry.series.items()
         if entry.future_date_tolerance_days > 0
     }
-    # Exactly the two series whose provider publishes ahead of the UTC clock.
-    assert declared == {"iorb": 1, "sofr": 1}, (
+    # Exactly the series whose provider publishes ahead of the UTC clock.
+    # iorb is 3, not 1: live re-verification on 2026-09-19 (AUDIT-002) showed
+    # IORB publishing TWO days ahead (retrieval 2026-09-19 returned points
+    # dated 2026-09-20 and 2026-09-21), because it is an ADMINISTERED rate
+    # the Fed schedules in advance rather than a market print. The old
+    # declaration of 1 armed the ERROR path against a legitimate print and
+    # produced a standing failure (O-84). sofr stays at 1 because SOFR IS a
+    # prior-business-day market print. A third series opting in, or either
+    # value moving, is a decision that needs its own justification rather
+    # than a quiet config edit.
+    assert declared == {"iorb": 3, "sofr": 1}, (
         f"unexpected tolerance declarations: {declared}. A third series opting in "
         "is a decision that needs its own justification, not a quiet config edit."
     )
@@ -1177,6 +1234,117 @@ def test_magicmock_is_not_used_for_validation_paths() -> None:
 
 
 # ---------------------------------------------------------------------------
+# AUDIT-001 guards (2026-09-19 ground-up audit)
+#
+# `validate_snapshot` used to hardcode four tuples of series names covering 18
+# of the registry's 45 entries, and it called `validate_observations` without
+# passing the registry's declared `forward_looking` /
+# `future_date_tolerance_days`. Two consequences, both measured live:
+#
+#   1. The build path read the registry and reported gdp_potential's 41 CBO
+#      projections as ONE INFO; a standalone `validate_snapshot()` call
+#      reported 30 ERRORs for the same snapshot. Same data, two verdicts, and
+#      the ERROR verdict was the false one.
+#   2. A newly registered series received NO validation at all unless a
+#      developer also edited validation.py — a direct contradiction of the
+#      Part B pluggability requirement.
+#
+# These tests fail if either regresses.
+# ---------------------------------------------------------------------------
+
+
+def test_validation_has_no_hardcoded_series_name_tuples() -> None:
+    """The registry is the only source of which series get validated.
+
+    Guard against a future contributor reinstating a hardcoded list: the
+    validation module must not enumerate snapshot series by name. Checked by
+    reading the source rather than by behaviour, because the failure mode is a
+    *silent omission* — a series that is simply never validated produces no
+    finding to assert on.
+    """
+    import re
+    from pathlib import Path
+
+    import macro_engine.data_layer.validation as validation_module
+
+    source = Path(validation_module.__file__).read_text(encoding="utf-8")
+    # Any tuple/list literal assigning two or more registry-style series names.
+    offenders = re.findall(
+        r"^[A-Z_]*SERIES[A-Z_]*\s*:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\([^)]*\)",
+        source,
+        flags=re.MULTILINE,
+    )
+    assert not offenders, (
+        f"validation.py reintroduced hardcoded series tuples: {offenders}. "
+        "Series membership must come from config/series_registry.yaml."
+    )
+
+
+def test_forward_looking_series_are_informational_not_errors() -> None:
+    """A declared `forward_looking` series must never produce a future-date ERROR.
+
+    ``gdp_potential`` is the canonical case: CBO publishes ~40 projections
+    running a decade ahead, and they are REQUIRED for the output-gap
+    calculation. Flagging them as corrupt data would train a reader to ignore
+    the flag list entirely.
+    """
+    from macro_engine.config import get_registry
+
+    entry = get_registry().series["gdp_potential"]
+    assert entry.forward_looking is True, "gdp_potential must stay forward_looking"
+
+    retrieve = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+    projection = ObservationPoint(
+        observation_date=date(2030, 1, 1),
+        value=25000.0,
+        series_id="gdp_potential",
+        retrieved_at=retrieve,
+    )
+    report = validate_observations(
+        [projection],
+        series_id="gdp_potential",
+        forward_looking=entry.forward_looking,
+        future_date_tolerance_days=entry.future_date_tolerance_days,
+    )
+    codes = [f.code for f in report.findings]
+    assert "FUTURE_OBSERVATION_DATE" not in codes
+    assert "FORWARD_LOOKING_HORIZON" in codes
+    assert not report.has_errors
+
+
+def test_validate_snapshot_passes_registry_properties_through() -> None:
+    """The standalone path must agree with the build path on the same snapshot.
+
+    This is the direct regression guard for the two-verdicts defect: a
+    forward-looking series placed in a snapshot must validate WITHOUT errors,
+    because the registry declares it forward-looking. Before the fix this test
+    failed with 30 ERRORs on exactly this input.
+    """
+    from macro_engine.config import get_registry
+
+    entry = get_registry().series["gdp_potential"]
+    assert entry.forward_looking is True
+
+    retrieve = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+    points = [
+        ObservationPoint(
+            observation_date=date(2026, 4, 1),
+            value=24070.0,
+            series_id="gdp_potential",
+            retrieved_at=retrieve,
+        ),
+        ObservationPoint(
+            observation_date=date(2030, 1, 1),
+            value=25000.0,
+            series_id="gdp_potential",
+            retrieved_at=retrieve,
+        ),
+    ]
+    report = validate_snapshot(make_snapshot(gdp_potential=points))
+    assert not report.has_errors, [f.as_flag() for f in report.findings]
+
+
+# ---------------------------------------------------------------------------
 # Live snapshot-builder tests (Section 21.0 rule 1)
 #
 # "No function may be marked complete until it has been executed against real
@@ -1366,6 +1534,92 @@ def test_curve_survives_the_persistence_round_trip() -> None:
     assert restored.tips_yields.tenors == snapshot.tips_yields.tenors
 
 
+def test_an_absent_store_is_distinguishable_from_an_empty_snapshot(tmp_path: Path) -> None:
+    """``strict=True`` raises on an absent store; the default returns empty.
+
+    The two states have genuinely different meanings and previously collapsed
+    into one:
+
+    * **absent store** — a deployment/checkout state. ``data/raw/`` is
+      git-ignored, so a fresh clone has none. Nothing has been fetched yet.
+    * **empty snapshot** — an audit fact. ``long_frame_from_snapshot`` writes a
+      file even for a snapshot with no observations, on the grounds that "we
+      fetched and got nothing" is itself worth recording.
+
+    Because ``load_snapshot`` returned an empty snapshot for *both*, a caller
+    writing ``except FileNotFoundError`` to detect "nothing persisted" caught
+    nothing, seeded the empty snapshot, and then reported its own downstream
+    failure as a data-layer defect. That is the mechanism behind the 22-failure
+    clean-checkout run in ``tests/api_layer``. This test pins the distinction so
+    the guard cannot silently become dead code again.
+    """
+    from macro_engine.data_layer.persistence import (
+        SnapshotStoreEmptyError,
+        has_persisted_snapshot,
+        load_snapshot,
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    # Point the store at an empty directory. ``_raw_root`` resolves through
+    # ``project_root() / settings.data.raw_store_path``, so patch the setting.
+    monkeypatch.setattr(
+        "macro_engine.data_layer.persistence.get_settings",
+        lambda: SimpleNamespace(data=SimpleNamespace(raw_store_path=tmp_path)),
+    )
+    try:
+        assert has_persisted_snapshot("us") is False
+
+        with pytest.raises(SnapshotStoreEmptyError):
+            load_snapshot("us", strict=True)
+
+        # The permissive default still returns an empty snapshot, not an error:
+        # callers that can legitimately act on "nothing yet" must keep working.
+        permissive = load_snapshot("us")
+        assert permissive.country == "us"
+        assert permissive.cpi_headline == []
+    finally:
+        monkeypatch.undo()
+
+
+def test_snapshot_store_empty_error_is_a_file_not_found_error() -> None:
+    """The exception subclasses ``FileNotFoundError`` so existing handlers work.
+
+    Callers throughout the codebase already guard persistence reads with
+    ``except FileNotFoundError``. Making the new signal a sibling of that class
+    rather than an unrelated one means those handlers become correct instead of
+    needing to be found and updated one at a time.
+    """
+    from macro_engine.data_layer.persistence import SnapshotStoreEmptyError
+
+    assert issubclass(SnapshotStoreEmptyError, FileNotFoundError)
+
+
+def test_has_persisted_snapshot_agrees_with_what_the_loader_finds() -> None:
+    """The predicate and the loader must not disagree.
+
+    ``has_persisted_snapshot`` exists so callers can branch without catching an
+    exception. If it ever returned ``False`` while a file was present, a caller
+    would skip work it should have done — a silent under-fetch rather than a
+    loud failure.
+    """
+    from macro_engine.data_layer.persistence import (
+        has_persisted_snapshot,
+        load_latest_snapshot_frame,
+    )
+
+    found = has_persisted_snapshot("us")
+    frame_is_empty = load_latest_snapshot_frame("us").empty
+
+    # Either there is no file (predicate False), or there is one (predicate True).
+    # A stored file that is itself empty is possible — see the module docstring —
+    # so the predicate must key on file existence, not on row count.
+    if found:
+        assert not frame_is_empty, (
+            "has_persisted_snapshot reported a file but the loader read no rows; "
+            "the repository may hold an empty parquet file"
+        )
+
+
 def test_local_api_liveness_does_not_treat_404_as_healthy() -> None:
     """A 404 must NOT be reported as an available server.
 
@@ -1473,3 +1727,90 @@ def test_live_output_gap_is_computed_from_same_quarter_realised_data() -> None:
 
     # --- confidence reflects the unobservable input ------------------------
     assert 0.0 < result.confidence <= 0.5
+
+
+# ---------------------------------------------------------------------------
+# Section 6 of the economic-integrity directive: point-in-time provenance
+# ---------------------------------------------------------------------------
+
+
+class TestPointInTimeProvenance:
+    """`ObservationPoint` must be able to say *when a value became public*.
+
+    Section 6 requires the system to distinguish the four timestamps that
+    matter to a point-in-time reasoning system: observation, release, vintage,
+    and retrieval. Two of them are always present; the two release-side ones
+    are modelled as **optional and defaulting to None**, because no route
+    reachable from this installation returns them. The tests below pin that
+    choice — in particular that None means UNKNOWN and is never quietly
+    back-filled from `observation_date`, which is the exact fabrication
+    Section 6 prohibits.
+    """
+
+    def test_release_and_vintage_default_to_unknown_not_to_observation(self) -> None:
+        """Absent release timing must read as UNKNOWN, not as the observation date."""
+        point = ObservationPoint(
+            observation_date=date(2026, 8, 1),
+            value=334.131,
+            series_id="cpi_headline",
+        )
+        assert point.release_datetime is None
+        assert point.vintage_datetime is None
+        # The trap this guards: a system that sets release = observation would
+        # make the CPI "public" on the 1st of a month it is actually published
+        # mid-*following*-month. None is the honest value.
+        assert point.release_datetime != datetime(2026, 8, 1, tzinfo=UTC)
+
+    def test_has_known_release_timing_is_false_today_and_true_when_populated(self) -> None:
+        """The predicate a consumer uses instead of assuming a release date."""
+        unknown = ObservationPoint(
+            observation_date=date(2026, 8, 1),
+            value=1.0,
+            series_id="cpi_headline",
+        )
+        assert unknown.has_known_release_timing is False
+
+        known = ObservationPoint(
+            observation_date=date(2026, 8, 1),
+            value=1.0,
+            series_id="cpi_headline",
+            release_datetime=datetime(2026, 9, 10, 12, 30, tzinfo=UTC),
+            vintage_datetime=datetime(2026, 9, 10, 12, 30, tzinfo=UTC),
+        )
+        assert known.has_known_release_timing is True
+
+    def test_release_datetime_cannot_be_earlier_than_the_observation(self) -> None:
+        """A value cannot be published before the period it describes exists.
+
+        Not enforced by a validator — this asserts the *documented semantics*
+        so that if a future edit back-fills release dates from the observation
+        date by default, the equality is visible rather than silent. A release
+        strictly *before* its observation date is a data error, and the schema
+        allows it to be constructed so a caller that detects it can say so
+        rather than have the model raise on genuinely odd (but real) revisions.
+        """
+        point = ObservationPoint(
+            observation_date=date(2026, 8, 1),
+            value=1.0,
+            series_id="cpi_headline",
+            release_datetime=datetime(2026, 9, 10, tzinfo=UTC),
+        )
+        assert point.release_datetime is not None
+        assert point.release_datetime.date() > point.observation_date
+
+    def test_decision_cutoff_defaults_to_none_meaning_now(self) -> None:
+        """`as_of` (when assembled) and `decision_cutoff` (when knowable) differ."""
+        snapshot = MacroDataSnapshot()
+        assert snapshot.decision_cutoff is None
+        # `as_of` is always populated; the cutoff is opt-in. Conflating the two
+        # is what makes a replayed-backtest indistinguishable from a live run.
+        assert snapshot.as_of is not None
+
+    def test_decision_cutoff_can_be_set_independently_of_as_of(self) -> None:
+        """A snapshot rebuilt from cache keeps the original decision's cutoff."""
+        built = datetime(2026, 9, 19, 16, 28, tzinfo=UTC)
+        decided = datetime(2026, 9, 12, 14, 0, tzinfo=UTC)
+        snapshot = MacroDataSnapshot(as_of=built, decision_cutoff=decided)
+        assert snapshot.as_of == built
+        assert snapshot.decision_cutoff == decided
+        assert snapshot.decision_cutoff < snapshot.as_of

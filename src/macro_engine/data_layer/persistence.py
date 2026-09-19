@@ -39,6 +39,8 @@ __all__ = [
     "CURVE_SERIES_FIELDS",
     "MAPPING_SERIES_FIELDS",
     "SCALAR_SERIES_FIELDS",
+    "SnapshotStoreEmptyError",
+    "has_persisted_snapshot",
     "load_latest_snapshot_frame",
     "load_snapshot",
     "long_frame_from_snapshot",
@@ -102,6 +104,41 @@ def _raw_root(country: str) -> Path:
     root = project_root() / str(settings.data.raw_store_path) / country
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+class SnapshotStoreEmptyError(FileNotFoundError):
+    """Raised when a country's audit trail holds no snapshot at all.
+
+    Subclasses ``FileNotFoundError`` because that is exactly what it is: the
+    caller asked for a file and there is none.
+
+    **Why this class has to exist.** ``load_snapshot`` on an empty store used to
+    return a default empty ``MacroDataSnapshot()`` — silently, successfully. Any
+    caller that tried to distinguish "no snapshot persisted yet" from "a snapshot
+    was persisted and it was empty" by catching an exception caught nothing, so
+    the failure surfaced later as a nonsense downstream error. That is precisely
+    how ``tests/api_layer`` came to report 22 failures on a fresh clone (where
+    ``data/raw/`` is git-ignored and therefore absent): the fixture guarded with
+    ``except (FileNotFoundError, ValueError)``, never fired, and seeded an empty
+    snapshot whose ``yield_curve`` is ``None`` — after which the API layer
+    correctly reported "no curve" and the tests blamed the API.
+
+    Distinguishing the two states is the entire point, so the distinction is
+    carried by the type, not by inspecting the returned object for emptiness:
+    an empty snapshot is a legitimate audit fact (see ``long_frame_from_snapshot``)
+    while an absent store is a deployment/checkout state.
+    """
+
+
+def has_persisted_snapshot(country: str = "us") -> bool:
+    """Whether the audit trail holds at least one snapshot for ``country``.
+
+    The cheap, side-effect-aware predicate. ``_raw_root`` mkdirs as a side effect
+    of resolving the path, which is correct for the write path but means this
+    check creates an empty directory — acceptable, since it is the same directory
+    ``load_snapshot`` would go on to read.
+    """
+    return _latest_parquet(country) is not None
 
 
 def parquet_path_for(snapshot: MacroDataSnapshot) -> Path:
@@ -301,8 +338,24 @@ def snapshot_from_long_frame(frame: pd.DataFrame) -> MacroDataSnapshot:
     return snapshot
 
 
-def load_snapshot(country: str = "us") -> MacroDataSnapshot:
-    """Load the most recent persisted snapshot for a country."""
+def load_snapshot(country: str = "us", *, strict: bool = False) -> MacroDataSnapshot:
+    """Load the most recent persisted snapshot for a country.
+
+    ``strict=True`` raises ``SnapshotStoreEmptyError`` when the audit trail holds
+    nothing, instead of returning an empty snapshot. Default is ``False`` so the
+    existing permissive behaviour — and the callers that legitimately want "give
+    me whatever is there, empty is fine" — are unchanged.
+
+    Use ``strict=True`` whenever the caller cannot act on an empty snapshot and
+    would otherwise misreport its own downstream failure as a defect in the data
+    layer. The API test fixtures are the canonical case.
+    """
+    if strict and not has_persisted_snapshot(country):
+        raise SnapshotStoreEmptyError(
+            f"no persisted snapshot for {country!r} under "
+            f"{_raw_root(country)}; run a live snapshot build to populate the "
+            f"audit trail (see scripts/live_api_check.py)"
+        )
     return snapshot_from_long_frame(load_latest_snapshot_frame(country))
 
 

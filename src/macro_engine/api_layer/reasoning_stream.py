@@ -214,6 +214,7 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
             short_yield=inputs.short_yield,
+            regime=inputs.regime,
         )
     except Exception as exc:
         yield _event("build_thesis", "error", f"the builder raised {type(exc).__name__}: {exc}")

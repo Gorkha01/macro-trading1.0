@@ -461,6 +461,92 @@ def policy_rule_ensemble(
         context=reading,
         inputs_used=["taylor_rule", "balanced_approach_rule", "first_difference_rule"],
         warnings=[] if agreement == "CONVERGED" else [reading],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent (each rule's prescribed rate; dispersion in percentage points)",
+        direction=(
+            f"{'CONVERGED' if agreement == 'CONVERGED' else 'DISPERSED'}: the three "
+            f"rules prescribe rates spanning "
+            f"{dispersion_pp:.2f}pp — this is the model's OWN uncertainty, not a "
+            f"market signal"
+        ),
+        assumptions=[
+            "AVERAGING/SUMMARY IS LEGITIMATE ONLY BECAUSE Section 22.4 names the "
+            "median of the three rules as the canonical model-implied value. The "
+            "median is not a vote: it is the middle of three numbers, so a single "
+            "outlier rule cannot drag it.",
+            "DISPERSION IS THE NOISE FLOOR. The spread among the three rules is "
+            "treated as the model's own uncertainty, and the significance test "
+            "compares the model-vs-market gap against it. That is a modelling "
+            "choice: three rules sharing a target and a functional form is a "
+            "NARROW disagreement set, so the floor is likely understated relative "
+            "to true model uncertainty (the possibility that the correct reaction "
+            "function is not in the family at all).",
+            "The three rules are treated as comparable quantities: each prescribes "
+            "a policy rate in percent on the same basis. Mixing a rule that "
+            "prescribes a LEVEL with one that prescribes a CHANGE would make the "
+            "dispersion meaningless.",
+            "Confidence is the MINIMUM of the three inputs', on the principle that "
+            "a summary cannot be more trustworthy than what it summarises.",
+        ],
+        data_provenance=[
+            "taylor_rule — Taylor Rule prescribed rate, from "
+            "TaylorRuleInputs(r_star, pi_current, output_gap)",
+            "balanced_approach_rule — the balanced-approach rule, same inputs",
+            "first_difference_rule — the first-difference rule, from "
+            "FirstDifferenceInputs(i_prev, pi_current, output_gap_change)",
+            "r_star is config-sourced (settings, CBO/HLW estimate) and is itself "
+            "UNOBSERVABLE; both rules inherit that. The market leg is NOT part of "
+            "this result — it is derived separately and combined in "
+            "canonical_policy_gap.",
+        ],
+        limitations=[
+            "THE DISPERSION IS THE POINT, NOT AN ERROR BAR. Three rules that "
+            "disagree by 80bp cannot support a claim about a 50bp gap. Reading "
+            "the ensemble as a single 'model view' and its dispersion as noise to "
+            "be averaged away inverts the model's design — the dispersion IS the "
+            "noise floor, and Section 16.2 Q6 uses it as the significance "
+            "threshold.",
+            "ALL THREE RULES SHARE A TARGET AND A FUNCTIONAL FORM, so agreement "
+            "among them is weak evidence of correctness. They are not three "
+            "independent methodologies; they are three parameterisations of one "
+            "family. Genuine model uncertainty — that the right reaction function "
+            "is not in the family — is NOT represented here.",
+            "r_star IS UNOBSERVABLE (Section 21.4 item 13) and enters the Taylor "
+            "and balanced-approach rules directly. A wrong r_star shifts those "
+            "two rules together and can leave the dispersion narrow while the "
+            "level is wrong.",
+            "The rules are prescribed RATES, not forecasts. Nothing here says the "
+            "Fed will set such a rate, or when.",
+            "Points-in-time: the inputs are read from the snapshot at one as_of, "
+            "and no release or vintage datetime is available (Section 6, "
+            "measured 2026-09-19). The output_gap term is revision-dependent, so "
+            "the ensemble is too.",
+        ],
+        decision_relevance=(
+            "The MODEL side of Section 16.2's Q6 gap — the median of these three "
+            "rules is what the market-implied path is compared against, and the "
+            "dispersion is the threshold that comparison uses. So this result "
+            "supplies BOTH quantities in the significance test, which is why it "
+            "is carried on the thesis rather than folded away."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a single 'model view' with the dispersion as "
+            "noise to be averaged away. Section 22.4 makes the dispersion the "
+            "noise floor itself; treating it as an error bar around a central "
+            "estimate — the reading this prohibition exists for — would "
+            "manufacture confidence the model does not have.",
+            "MUST NOT be used to claim the model has THREE independent "
+            "confirmations. The three rules share a target and a functional form, "
+            "so agreement among them is much weaker than three disjoint "
+            "methodologies agreeing, and Section 12's independence discipline "
+            "applies.",
+            "MUST NOT be compared against a market-implied value produced by a "
+            "DIFFERENT market leg than the one canonical_policy_gap uses — the "
+            "gap is only the gap under Section 22.4's single definition.",
+            "MUST NOT be read as a forecast of the policy rate, and MUST NOT be "
+            "consumed without its dispersion: a bare median rate is "
+            "uninterpretable without the spread it summarises.",
+        ],
     )
 
 
@@ -601,6 +687,89 @@ def derive_market_implied_policy_path(
         context=context,
         inputs_used=["short_yield", "short_tenor_term_premium"],
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent",
+        direction=(
+            "an expectations component of the short yield, with the term premium removed"
+            if short_tenor_term_premium is not None
+            else "the RAW short yield, term premium NOT removed — not an "
+            "expectations component at all"
+        ),
+        assumptions=[
+            "The short yield decomposes additively into an expectations component "
+            "and a term premium, so subtracting a tenor-matched premium isolates "
+            "the first. That is an accounting identity under a particular "
+            "decomposition, not a measured fact.",
+            "A single point on the short end represents the market's whole "
+            "policy-path view. A yield is a single number discounting a whole "
+            "future path, so the mapping from one to the other requires an "
+            "assumption about the path's shape that this model does not state.",
+            "A Fed-funds-futures-implied distribution and a term-premium-adjusted "
+            "short yield are treated as interchangeable proxies for 'what the "
+            "market implies'. They are not the same object; the futures-implied "
+            "one is what Phase 5+ replaces this with (Section 22.5).",
+        ],
+        data_provenance=[
+            "short_yield — the snapshot's nominal curve at "
+            "settings.api.short_yield_tenor, resolved by _short_yield_from_curve "
+            "and read in PERCENT (not basis points)",
+            "short_tenor_term_premium — supplied by the CALLER, not fetched. "
+            "There is no term-premium series wired (Section 22.5 defers ACM to "
+            "Phase 5+), so on the live path this is None and the raw-yield branch "
+            "runs",
+            "Confidence is read from config "
+            "(policy.market_implied.term_premium_available_confidence_value / "
+            "no_term_premium_confidence_value) and is NOT produced by "
+            "compute_confidence(): the two branches are deliberately different "
+            "qualities, not two settings of one factor.",
+        ],
+        limitations=[
+            "IT IS A PROXY, AND ON THE LIVE PATH IT IS A CONTAMINATED ONE. No "
+            "term-premium series is wired, so the no-premium branch runs and the "
+            "returned value is the RAW YIELD — which contains the premium. At the "
+            "front end that premium has been large enough to INVERT the reading "
+            "of the same data, so the sign of the resulting gap can be wrong for "
+            "reasons the model cannot detect.",
+            "THE VALUE LOOKS THE SAME IN BOTH BRANCHES. A consumer reading only "
+            "`value` cannot tell whether the adjustment was applied; only the "
+            "warnings and the confidence distinguish them. This is the disclosure "
+            "Section 22.5 requires, and it is a warning rather than a field by "
+            "design.",
+            "The adjusted branch is only as good as the term-premium model, which "
+            "is itself model output with its own revision history and its own "
+            "estimation error.",
+            "NOT A DISTRIBUTION: even the adjusted value is a single number, not a "
+            "probability distribution over future policy rates, so it cannot "
+            "support any statement about how likely a given policy path is.",
+            "One tenor stands in for the whole path: the model reads one point on "
+            "the curve, so it cannot represent a market pricing cuts then hikes, "
+            "or a path with a shape.",
+            "Points-in-time: the yield carries one observation timestamp and no "
+            "release or vintage datetime (Section 6, measured 2026-09-19).",
+        ],
+        decision_relevance=(
+            "The MARKET side of Section 16.2's Q6 gap — the quantity the "
+            "model-implied path is compared against, and therefore a direct input "
+            "to the significance test that decides whether the thesis trades at "
+            "all. It also feeds Q3/Q4's market read."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a market-implied policy RATE. It is a short "
+            "yield (adjusted or not), and the mapping from a yield to a policy "
+            "path needs an assumption this model does not make explicit.",
+            "MUST NOT be compared against a value produced by the OTHER branch "
+            "without checking which branch ran. The adjusted and unadjusted "
+            "values are different quantities and the difference is the term "
+            "premium.",
+            "MUST NOT be treated as a probability distribution or used to make a "
+            "likelihood statement about a future policy decision. Phase 5+ "
+            "replaces this with a genuine futures-implied distribution precisely "
+            "because the proxy cannot do that.",
+            "MUST NOT be consumed without noticing that on the live path the "
+            "NO-TERM-PREMIUM branch runs: the gap whose sign the thesis reports "
+            "is computed against a contaminated market leg, and any conclusion "
+            "about the gap's direction inherits that.",
+        ],
     )
 
 

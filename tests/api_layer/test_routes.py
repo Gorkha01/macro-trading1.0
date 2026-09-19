@@ -23,6 +23,21 @@ network. The cache is seeded from the **persisted parquet snapshot**, which is
 the same object a live build produces and requires no provider. The live path is
 ``scripts/live_api_check.py``'s job (Section 21.0: unit tests prove the function,
 the live check proves the wiring).
+
+**The store-absent contract.** Every test in this module requests a fixture that
+transitively depends on ``persisted_snapshot`` — including the few that appear to
+need nothing (``test_query_matches_whole_tokens_not_substrings`` only calls a pure
+matcher; it takes ``client`` anyway). That is deliberate: a module whose tests are
+*sometimes* seeded is a module whose tests *sometimes* call the real provider, so
+partial seeding would fail nondeterministically instead of skipping. This module
+therefore has exactly two outcomes — **all skip** (no store) or **all run against
+the seed** (store present).
+
+The ``persisted_snapshot`` fixture must call ``load_snapshot(..., strict=True)``.
+The non-strict signature returns a default *empty* snapshot when the store is
+absent rather than raising, so a naive ``except FileNotFoundError`` guard is dead
+code — and an empty seeded snapshot makes 22 of these tests fail with messages
+that read like genuine API breakage. See ``SnapshotStoreEmptyError``.
 """
 
 from __future__ import annotations
@@ -35,7 +50,7 @@ from fastapi.testclient import TestClient
 
 from macro_engine.api_layer import snapshot_provider
 from macro_engine.api_layer.app import create_app
-from macro_engine.data_layer.persistence import load_snapshot
+from macro_engine.data_layer.persistence import SnapshotStoreEmptyError, load_snapshot
 from macro_engine.data_layer.schemas import (
     MacroDataSnapshot,
     YieldCurveSnapshot,
@@ -87,10 +102,17 @@ def persisted_snapshot() -> MacroDataSnapshot:
     Skips rather than fails when the audit trail is empty: a checkout without
     ``data/raw`` cannot seed this fixture, and a failing test would report a
     missing fixture as a broken API.
+
+    ``strict=True`` is what makes the guard real. Without it, ``load_snapshot``
+    returns a default *empty* snapshot when the store is absent — so the
+    ``except`` below never fires, the empty snapshot gets seeded, and every test
+    that reads a series fails downstream as though the API were broken. That was
+    the actual cause of the 22-failure clean-checkout run; the exception this
+    catches is now raised deliberately rather than never.
     """
     try:
-        return load_snapshot("us")
-    except (FileNotFoundError, ValueError) as exc:  # pragma: no cover - environment
+        return load_snapshot("us", strict=True)
+    except SnapshotStoreEmptyError as exc:  # pragma: no cover - environment
         pytest.skip(f"no persisted snapshot available to seed the API tests: {exc}")
 
 
@@ -455,12 +477,16 @@ def test_query_with_no_match_returns_no_thesis(client: TestClient) -> None:
     assert "No topic matched" in body["answer"]
 
 
-def test_query_matches_whole_tokens_not_substrings() -> None:
+def test_query_matches_whole_tokens_not_substrings(client: TestClient) -> None:
     """``"session"`` contains ``"session"``, not ``"recession"`` — the reverse matters.
 
     Substring matching would route "trading session" to the regime model, because
     the word "recession" contains "session". This pins whole-token equality,
     which is what makes the keyword table's words mean what they say.
+
+    Takes ``client`` (though it only calls the pure matcher) so that the fixture
+    resolution is uniform across the module — see the module docstring's note on
+    why a partial store produces one skip/count rather than two.
     """
     from macro_engine.api_layer.routes_query import _match_topics, _tokenise
 

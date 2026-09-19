@@ -3341,6 +3341,17 @@ snapshot_fields:
   us:
     - gdp_real
     - gdp_nominal
+    # gdi was OMITTED from this list while being fully declared everywhere else:
+    # it has a registry entry (status: verified, verified_on 2026-09-17), a
+    # MacroDataSnapshot field, an entry in persistence.SCALAR_SERIES_FIELDS (so
+    # it is written to and read from every parquet file), and a slot in
+    # routes_dashboard's "growth" panel. Live census found it returning 0
+    # observations — the only scalar series that came back empty — because the
+    # builder only fetches what this list names. The dashboard's growth panel
+    # therefore requested a series that could never appear, and Module 7.1's
+    # gdp_gdi_divergence had no data path even though the model is implemented,
+    # tested, and mutation-tested.
+    - gdi
     - gdp_potential
     - cpi_headline
     - cpi_core

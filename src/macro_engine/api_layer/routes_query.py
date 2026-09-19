@@ -217,6 +217,7 @@ async def query(
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
             short_yield=inputs.short_yield,
+            regime=inputs.regime,
         )
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc

@@ -107,7 +107,7 @@ it has not earned.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -117,7 +117,11 @@ from macro_engine.config import get_settings
 from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
 from macro_engine.models.as_of import observation_as_of
 from macro_engine.models.contracts import ModelResult
-from macro_engine.models.gdp_nowcast import output_gap_from_snapshot
+from macro_engine.models.gdp_nowcast import (
+    GdpGdiInputs,
+    gdp_gdi_divergence,
+    output_gap_from_snapshot,
+)
 from macro_engine.models.instrument_selection import ThesisType
 from macro_engine.models.labor_synthesis import (
     InflationSubMeasures,
@@ -126,6 +130,13 @@ from macro_engine.models.labor_synthesis import (
     labor_tightness_score,
 )
 from macro_engine.models.policy_rules import FirstDifferenceInputs, TaylorRuleInputs
+from macro_engine.models.regime import RegimeInputs, classify_regime_rule_based
+from macro_engine.models.yield_curve import (
+    BreakevenInputs,
+    CurveSlopeInputs,
+    breakeven_inflation,
+    curve_slope,
+)
 from macro_engine.thesis_layer.builder import EconomyReads
 from macro_engine.thesis_layer.schemas import ProductionUniverse
 
@@ -197,6 +208,28 @@ class ThesisInputs:
     short_yield: float
     thesis_type: ThesisType
     universe: ProductionUniverse
+    #: Section 16.2 Q1's **fourth** read: the regime classification. ``None``
+    #: means the classifier was not run, and the builder then publishes
+    #: ``regime.state = None`` with its ``NOT_COMPUTED`` note (D-043/D-045) —
+    #: which is what every thesis carried before this field existed. It is
+    #: optional rather than required so that a caller holding only a snapshot and
+    #: no regime inputs still gets a fully-formed, fully-disclosed thesis; the
+    #: disclosure says which case applied rather than the builder guessing.
+    regime: ModelResult | None = None
+    #: Module 7.1's income-versus-expenditure divergence, on the same
+    #: year-over-year growth basis for both sides. ``None`` means the pair could
+    #: not be formed (either series absent, or no common quarter one year back),
+    #: which is a disclosure rather than a failure — see ``_national_accounts_leg``
+    #: for why this is a read and not a gate. Carried separately from ``reads``
+    #: because §16.2's ``EconomyReads`` is exactly three reads and this is not one
+    #: of them; it is a corroborating signal about the *quality* of the growth
+    #: read, which is how the model's own docstring frames it.
+    national_accounts: ModelResult | None = None
+    #: Module 8.1/8.2's curve reads: the slope and every matched-tenor breakeven.
+    #: A **tuple** because the leg legitimately produces several independent
+    #: results, and empty when the curve is absent — a data condition, not a
+    #: refusal, because the slope is a read rather than a gate. See ``_curve_leg``.
+    curve: tuple[ModelResult, ...] = ()
     notes: tuple[DerivationNote, ...] = ()
     #: Every warning raised while deriving, so the thesis can carry them.
     #: Collected here rather than dropped because a warning about an input is
@@ -252,6 +285,38 @@ def _realised(
     return series.points
 
 
+def _realised_or_none(
+    points: Sequence[ObservationPoint],
+    *,
+    as_of: datetime,
+    field: str,
+) -> list[ObservationPoint] | None:
+    """``_realised``, but a refusal is reported as ``None`` instead of raised.
+
+    For the **reads that may be legitimately absent** — currently only the regime
+    classifier's optional axes. ``_realised`` refuses an empty or entirely
+    forward-dated series, which is the right contract wherever absence would
+    invalidate arithmetic the thesis depends on. It is the wrong contract for a
+    read whose own consumer is documented to degrade: ``_regime_view`` already
+    publishes a ``NOT_COMPUTED`` shape, so a missing ``unemployment_rate`` should
+    select that branch, not destroy the whole thesis.
+
+    Both refusal conditions are folded into ``None`` because the caller's
+    response is identical — do not classify — and distinguishing them here would
+    invite the caller to special-case a difference it does not act on. The
+    distinct reason still reaches the reader through the derivation note the
+    caller writes, which names the field and the count.
+
+    Deliberately does **not** swallow a malformed snapshot: it converts only the
+    two documented absences, so a genuine schema error still propagates from
+    ``observation_as_of`` rather than masquerading as "no data".
+    """
+    try:
+        return _realised(points, as_of=as_of, field=field)
+    except OrchestrationError:
+        return None
+
+
 def _value_on_or_before(
     points: Sequence[ObservationPoint],
     target: date,
@@ -267,6 +332,36 @@ def _value_on_or_before(
     if not eligible:
         return None
     return max(eligible, key=lambda p: p.observation_date)
+
+
+def _latest_on_or_before(dates: Iterable[date], target: date) -> date | None:
+    """The latest of ``dates`` at or before ``target``, or ``None``.
+
+    The date-keyed twin of ``_value_on_or_before``. It is a separate function
+    rather than a reuse of either that or ``models.as_of``'s
+    ``observation_on_or_before`` because those two both take
+    ``ObservationPoint`` sequences, and the two call sites here hold a
+    **plain set of common dates** — the intersection of two series — where no
+    single series' points can answer the question. Forcing them through a
+    point-shaped helper would mean reconstructing throwaway points from dates.
+
+    It exists at all because the "latest at or before a target" lookup had been
+    hand-written twice in this module (``_output_gap_change``'s earlier-quarter
+    pair and ``_national_accounts_leg``'s year-ago pair) with the identical
+    ``[d for d in dates if d <= target][-1]`` shape. Two copies of a boundary
+    rule are two chances to get ``<=`` versus ``<`` wrong in only one of them —
+    and the bug that motivated writing this down (a ``replace(year=...)``
+    date-rewrite that silently paired observations ten quarters apart) is
+    exactly the class of mistake a single named helper makes visible.
+
+    ``None`` rather than raising, because at both call sites "the series does
+    not reach back far enough" is a disclosed abstention rather than a reason
+    to stand the whole thesis down (Section 21.4).
+    """
+    eligible = [d for d in dates if d <= target]
+    if not eligible:
+        return None
+    return max(eligible)
 
 
 def _mom_percent(points: Sequence[ObservationPoint], *, field: str) -> tuple[float, str]:
@@ -754,13 +849,12 @@ def _output_gap_change(
 
     latest_pair = max(common_dates)
     earlier_target = _minus_months(latest_pair, 3)
-    earlier_dates = [d for d in common_dates if d <= earlier_target]
-    if not earlier_dates:
+    earlier_pair = _latest_on_or_before(common_dates, earlier_target)
+    if earlier_pair is None:
         return 0.0, (
             f"no same-quarter pair at or before {earlier_target.isoformat()}, so "
             f"the gap change is 0.0 rather than a level masquerading as a change"
         )
-    earlier_pair = max(earlier_dates)
 
     def gap_at(pair: date) -> float:
         actual = _value_on_or_before(real, pair)
@@ -785,6 +879,577 @@ def _output_gap_change(
         f"{earlier_pair.isoformat()})"
     )
     return change, described
+
+
+def _inflation_momentum_3m(
+    snapshot: MacroDataSnapshot,
+    *,
+    as_of: datetime,
+) -> tuple[float, str]:
+    """The 3-month **annualized** change in the price level, in percent.
+
+    This is the regime classifier's inflation axis, and its unit is the part
+    that goes wrong: Section 6.2's ``inflation_trend_3m`` is a *momentum* measure
+    — a month-over-month rate carried to an annual basis — **not** a
+    year-over-year level. The two answer different questions. YoY at 2.4% says
+    prices are higher than a year ago; 3m-annualized at -0.8% says they are
+    *currently falling*. Only the second distinguishes disinflation from
+    reflation, which is the axis the classifier reads.
+
+    The conversion is ``(latest / three_months_ago) ** 4 - 1``, on a monthly
+    series where three months is three observations. The exponent of 4 is what
+    "annualized" means for a quarterly-period quantity: one quarter's change
+    grossed up four times. Reporting the raw 3-month change instead would
+    understate the rate by roughly a factor of four and would put a
+    quarterly-scale number into bands calibrated for annual ones — a
+    unit-mismatch defect of the same class as D-053's undecidable threshold.
+
+    Three *observations* back, not a calendar date three months back, and the
+    difference matters here: this is the one place ``_mom_percent``'s count-based
+    neighbour lookup is correct rather than a pairing hazard, because the
+    anniversarization is done by the exponent, not by the date arithmetic.
+    """
+    points = _realised(snapshot.cpi_headline, as_of=as_of, field="cpi_headline")
+    if len(points) < 4:
+        raise OrchestrationError(
+            f"snapshot field 'cpi_headline' has {len(points)} observation(s); a "
+            f"3-month annualized change needs at least 4 (the latest plus the "
+            f"point three months back).",
+            fields=("cpi_headline",),
+        )
+    latest, base = points[-1], points[-4]
+    if base.value == 0:
+        raise OrchestrationError(
+            f"snapshot field 'cpi_headline' has a zero observation on "
+            f"{base.observation_date.isoformat()}, so a percent change is "
+            f"undefined rather than infinite.",
+            fields=("cpi_headline",),
+        )
+    momentum = ((latest.value / base.value) ** 4 - 1.0) * 100.0
+    described = (
+        f"{momentum:+.4f}% annualized ({latest.observation_date.isoformat()} "
+        f"{latest.value:g} vs {base.observation_date.isoformat()} {base.value:g}, "
+        f"a {len(points) - 1 - (len(points) - 4)}-month span)"
+    )
+    return momentum, described
+
+
+def _regime_leg(
+    snapshot: MacroDataSnapshot,
+    *,
+    as_of: datetime,
+    output_gap: float,
+    output_gap_change: float,
+) -> tuple[ModelResult | None, list[DerivationNote]]:
+    """``classify_regime_rule_based`` fed from the snapshot.
+
+    The fourth read of Section 16.2's Q1, and the one this orchestrator did not
+    previously supply — so ``_regime_view`` published ``state: None`` on every
+    thesis with a note saying no classifier ran. The note was honest, but the
+    reason was plumbing, not data: every input below exists in the snapshot and
+    every threshold exists in ``config/settings.yaml``. This function is the
+    missing wiring (``docs/DEFECTS_2026-09-19.md``, DEF-003).
+
+    **Returns ``None`` when a required series is absent, and only then.** The
+    regime is Q1's fourth *read*, not a gate: the significance test (Q6) is what
+    stands a thesis down, and Section 16.3's order puts the reads before it.
+    A classifier whose inputs are missing must therefore degrade to
+    "not classified" and let the thesis proceed with its other three reads —
+    which is what ``_regime_view``'s ``NOT_COMPUTED`` path exists to render.
+    Raising here instead would let one absent optional series block an entire
+    thesis, contradicting the rule ``_output_gap_change`` already applies for
+    the same reason ("refusing would make the whole thesis unavailable over a
+    term Section 6.1 weights separately"). Measured while wiring this: 28 tests
+    that call ``snapshot_to_thesis_inputs`` on a snapshot lacking
+    ``unemployment_rate`` failed with ``OrchestrationError`` rather than
+    producing a fully-formed thesis — the regime leg had turned a read into a
+    precondition.
+
+    Four inputs, and each one is a unit trap worth naming:
+
+    * ``output_gap`` — percent of potential. **Passed in**, because
+      ``output_gap_from_snapshot`` already computed it and recomputing it here
+      would create a second implementation that could drift from the first.
+    * ``inflation_yoy`` — headline CPI, year over year, percent. The *level*.
+      Read only to make the momentum reading interpretable, but required by the
+      contract.
+    * ``inflation_trend_3m`` — 3-month annualized momentum, from
+      ``_inflation_momentum_3m``. Not a level, not a YoY.
+    * ``unemployment_gap`` — ``UNRATE - u*``, in percentage points. **``u*`` is
+      unobservable** and comes from ``settings.phillips.nairu.value`` (CBO's
+      published estimate, currently 4.4). The sign convention is the trap: a
+      POSITIVE gap means labour is *slacker* than natural, which AGREES with a
+      NEGATIVE output gap. ``RegimeInputs.slack_corroborated`` compares
+      ``output_gap`` against ``-unemployment_gap`` for exactly this reason, and
+      getting it backwards would report a clean corroboration as a flat
+      contradiction — a plausible ``CONTRADICTED`` verdict rather than an
+      exception (the D-031 class).
+
+    ``output_gap_change`` is forwarded so ``recovery`` is reachable: a regime
+    name describing a direction of travel cannot be decided from a level alone,
+    and omitting it would silently collapse every contracting-and-decelerating
+    economy into ``slowdown``.
+    """
+    notes: list[DerivationNote] = []
+
+    cpi_points = _realised_or_none(snapshot.cpi_headline, as_of=as_of, field="cpi_headline")
+    if cpi_points is None:
+        notes.append(
+            DerivationNote(
+                name="regime",
+                value="NOT_COMPUTED",
+                source=(
+                    "cpi_headline is empty, so the inflation axis of the regime "
+                    "classifier has no input; the regime is reported as not "
+                    "classified rather than guessed (Section 21.4)"
+                ),
+                window="no observations",
+            )
+        )
+        return None, notes
+
+    inflation_yoy, yoy_described = _yoy_percent(cpi_points, field="cpi_headline")
+    notes.append(
+        DerivationNote(
+            name="inflation_yoy",
+            value=f"{inflation_yoy:+.4f}",
+            source="headline CPI year-over-year percent — the level the regime axis interprets",
+            window=yoy_described,
+        )
+    )
+
+    # Guarded rather than called bare: `_inflation_momentum_3m` keeps its strict
+    # raise for the *policy* path, where a missing momentum term feeds a rule and
+    # must be refused. Here it is the regime's own axis, and the regime is a read
+    # that may be reported as not-classified — so four monthly observations are
+    # required to classify, not to build a thesis.
+    if len(cpi_points) < 4:
+        notes.append(
+            DerivationNote(
+                name="regime",
+                value="NOT_COMPUTED",
+                source=(
+                    f"cpi_headline has {len(cpi_points)} observation(s) and the "
+                    f"3-month annualized momentum axis needs 4; the regime is "
+                    f"reported as not classified rather than guessed"
+                ),
+                window=f"{len(cpi_points)} observation(s)",
+            )
+        )
+        return None, notes
+    momentum, momentum_described = _inflation_momentum_3m(snapshot, as_of=as_of)
+    notes.append(
+        DerivationNote(
+            name="inflation_trend_3m",
+            value=f"{momentum:+.4f}",
+            source=(
+                "3-month annualized change in the CPI level — MOMENTUM, not a "
+                "level and not a YoY: negative means decelerating"
+            ),
+            window=momentum_described,
+        )
+    )
+
+    unrate_points = _realised_or_none(
+        snapshot.unemployment_rate, as_of=as_of, field="unemployment_rate"
+    )
+    if unrate_points is None:
+        notes.append(
+            DerivationNote(
+                name="regime",
+                value="NOT_COMPUTED",
+                source=(
+                    "unemployment_rate is empty, so the slack axis of the regime "
+                    "classifier has no input; the regime is reported as not "
+                    "classified rather than guessed (Section 21.4)"
+                ),
+                window="no observations",
+            )
+        )
+        return None, notes
+
+    unrate = unrate_points[-1]
+    u_star, u_star_source = _nairu_from_config()
+    unemployment_gap = unrate.value - u_star
+    notes.append(
+        DerivationNote(
+            name="unemployment_gap",
+            value=f"{unemployment_gap:+.4f}",
+            source=(
+                f"UNRATE minus u* ({u_star_source}); POSITIVE = slacker than "
+                f"natural, which AGREES with a NEGATIVE output gap"
+            ),
+            window=(
+                f"{unrate.value:g} on {unrate.observation_date.isoformat()} minus u* {u_star:g}"
+            ),
+        )
+    )
+
+    result = classify_regime_rule_based(
+        RegimeInputs(
+            output_gap=output_gap,
+            inflation_yoy=inflation_yoy,
+            inflation_trend_3m=momentum,
+            unemployment_gap=unemployment_gap,
+            output_gap_change=output_gap_change,
+        )
+    )
+    return result, notes
+
+
+def _national_accounts_leg(
+    snapshot: MacroDataSnapshot,
+    *,
+    as_of: datetime,
+) -> tuple[ModelResult | None, list[DerivationNote]]:
+    """Module 7.1's ``gdp_gdi_divergence`` fed from the snapshot.
+
+    Wiring `gdp_gdi_divergence` — implemented at ``models/gdp_nowcast.py:576``,
+    with a full mutation sweep defending six corrections — had exactly one
+    blocker before DEF-002: GDI was declared in the snapshot schema and never
+    fetched, so the pair could not be formed. DEF-002 put real ``GDI`` data in
+    the snapshot, which reduced this to the input pair and a caller.
+
+    **The unit contract is the whole difficulty, and it is a trap this function
+    exists to close.** ``GdpGdiInputs`` takes two **year-over-year growth rates
+    in percent**, not levels, and the model's own docstring is emphatic about
+    why: in growth terms the divergence is mean-zero (measured over 314 quarters,
+    mean -0.009pp, GDP leading 47.8% of the time), while in *level* terms the
+    wedge is systematically negative (-0.459% mean, negative in seven of nine
+    decades). A caller passing levels would compute a quantity dominated by
+    BEA's construction asymmetry while the model's warnings describe the
+    mean-zero residual — and two anonymous floats cannot reveal the mistake. The
+    transforms below therefore convert to YoY percent, and the note records the
+    exact quarter pair so the arithmetic is auditable.
+
+    **Both sides use the SAME basis: nominal.** ``GDP`` and ``GDI`` are the
+    nominal pair. Mixing one with a real series would make the difference
+    measure the deflator as much as the discrepancy, which is the second half of
+    the unit contract.
+
+    **``None`` when the pair cannot be formed, and only then.** Like the regime,
+    this is a *read about the growth read's quality*, not a gate — the thesis
+    must not become unavailable because one corroborating signal is missing.
+    Three ways it abstains, each disclosed in a note with the reason: either
+    series absent, or no common observation at or before one year prior to the
+    latest common quarter (a BEA revision vintage gap, not an error).
+
+    The year-ago lookup is ``_value_on_or_before`` on a quarterly series rather
+    than ``_minus_months``-style calendar arithmetic alone, because the two
+    series are paired on a **common** quarter — a divergence computed from
+    mismatched quarters would be a discrepancy plus one quarter of growth, which
+    is precisely what Section 20.7's pairing requirement exists to prevent.
+    """
+    notes: list[DerivationNote] = []
+
+    gdp_points = _realised_or_none(snapshot.gdp_nominal, as_of=as_of, field="gdp_nominal")
+    gdi_points = _realised_or_none(snapshot.gdi, as_of=as_of, field="gdi")
+    if gdp_points is None or gdi_points is None:
+        absent = "gdp_nominal" if gdp_points is None else "gdi"
+        notes.append(
+            DerivationNote(
+                name="gdp_gdi_divergence",
+                value="NOT_COMPUTED",
+                source=(
+                    f"{absent} is empty, so the income-versus-expenditure pair "
+                    f"cannot be formed; reported as not computed rather than "
+                    f"substituting a dead route (Section 21.4)"
+                ),
+                window="no observations",
+            )
+        )
+        return None, notes
+
+    gdp = {p.observation_date: p.value for p in gdp_points}
+    gdi = {p.observation_date: p.value for p in gdi_points}
+    common = sorted(set(gdp) & set(gdi))
+    if not common:
+        notes.append(
+            DerivationNote(
+                name="gdp_gdi_divergence",
+                value="NOT_COMPUTED",
+                source=(
+                    "GDP and GDI share no observation date, so no same-quarter "
+                    "pair exists; a mismatched pairing would measure one quarter "
+                    "of growth as well as the discrepancy"
+                ),
+                window="no common quarters",
+            )
+        )
+        return None, notes
+
+    latest_pair = common[-1]
+    year_ago_target = _minus_months(latest_pair, 12)
+    prior_pair = _latest_on_or_before(common, year_ago_target)
+    if prior_pair is None:
+        notes.append(
+            DerivationNote(
+                name="gdp_gdi_divergence",
+                value="NOT_COMPUTED",
+                source=(
+                    f"no common quarter at or before {year_ago_target.isoformat()}, "
+                    f"so a year-over-year pair cannot be formed"
+                ),
+                window=f"earliest common quarter {common[0].isoformat()}",
+            )
+        )
+        return None, notes
+
+    if gdp[prior_pair] == 0 or gdi[prior_pair] == 0:
+        notes.append(
+            DerivationNote(
+                name="gdp_gdi_divergence",
+                value="NOT_COMPUTED",
+                source=(
+                    "a year-ago observation is zero, so a percent change is "
+                    "undefined rather than infinite"
+                ),
+                window=f"{prior_pair.isoformat()}",
+            )
+        )
+        return None, notes
+
+    gdp_growth = (gdp[latest_pair] / gdp[prior_pair] - 1.0) * 100.0
+    gdi_growth = (gdi[latest_pair] / gdi[prior_pair] - 1.0) * 100.0
+    notes.append(
+        DerivationNote(
+            name="gdp_gdi_divergence",
+            value=f"{(gdp_growth - gdi_growth):+.4f}pp",
+            source=(
+                "nominal GDP year-over-year growth minus nominal GDI year-over-year "
+                "growth, on a SAME-quarter pair — growth basis because that is the "
+                "basis on which the divergence is mean-zero"
+            ),
+            window=(
+                f"{latest_pair.isoformat()} vs {prior_pair.isoformat()}: "
+                f"GDP {gdp_growth:+.3f}%, GDI {gdi_growth:+.3f}%"
+            ),
+        )
+    )
+
+    result = gdp_gdi_divergence(
+        GdpGdiInputs(
+            gdp_growth_pct=round(gdp_growth, 3),
+            gdi_growth_pct=round(gdi_growth, 3),
+        )
+    )
+    return result, notes
+
+
+def _config_tenor_for(curve_label: str, available: Mapping[str, float]) -> str | None:
+    """Translate a config tenor label (``2y``) into the curve's own key (``2yr``).
+
+    **This function exists because of a latent defect it would otherwise paper
+    over.** The system carries TWO tenor vocabularies and, until this leg was
+    wired, nothing had ever put them side by side:
+
+    * ``config/settings.yaml``'s ``curve_default_short_tenor``/``long_tenor`` are
+      ``2y``/``10y``. That spelling is CORRECT for its purpose — the value is
+      interpolated into a desk instrument name, and
+      ``"Duration-weighted 2y/10y UST steepener"`` is how a desk writes it.
+      ``D-058`` recorded that these strings are "interpolated into an instrument
+      *name* and are never parsed", which was true precisely because no consumer
+      had ever compared them to curve data.
+    * The snapshot's ``yield_curve.tenors`` and ``tips_yields.tenors`` are keyed
+      ``2yr``/``10yr``/``5yr``, from the registry's ``2yr: DGS2`` mapping and
+      FRED's own tenor spelling. ``data_layer/validation.py`` reads
+      ``tenors["2yr"]`` and ``tenors["10yr"]``, so the data layer's vocabulary is
+      ``yr``.
+
+    Measured, before this helper existed: ``curve_slope`` fed the config labels
+    raised ``KeyError: short tenor '2y' is not in the supplied curve; available:
+    ['10yr', '1mo', ..., '2yr', ...]``. The trap is that the *natural* fix —
+    changing the config to ``2yr`` — would break the instrument name, and the
+    *other* natural fix — changing the data keys — would break the registry and
+    the validation layer. Neither vocabulary is wrong; they answer different
+    questions, and the translation was simply missing.
+
+    **Why this is a defect and not a nuisance.** ``validation.py`` guards its
+    2s10s check with ``if "2yr" in tenors and "10yr" in tenors:``. A vocabulary
+    mismatch there does not raise — the guard is simply False and the check
+    **silently does not run**. That is the same silent-no-op class as the
+    ``if not points:`` guard that could never fire in ``_regime_leg``: a
+    conditional that fails open looks like a passing check.
+
+    Returns ``None`` when no mapping is clear, so the caller abstains rather than
+    guessing — a wrong tenor is a wrong number, not a missing one.
+    """
+    # Exact match first: the common case is a caller who already speaks the
+    # curve's vocabulary, and it must not be second-guessed.
+    if curve_label in available:
+        return curve_label
+
+    # ``2y`` -> ``2yr``: the config's spelling, with the registry's suffix.
+    # Only applied when the result is an actual key, so an unexpected label
+    # returns None instead of a plausible-looking near-miss.
+    if not curve_label.endswith("yr") and curve_label.endswith("y"):
+        candidate = f"{curve_label}r"
+        if candidate in available:
+            return candidate
+    return None
+
+
+def _curve_leg(
+    snapshot: MacroDataSnapshot,
+) -> tuple[list[ModelResult], list[DerivationNote]]:
+    """Modules 8.1/8.2: the curve slope and the breakevens, from the live curve.
+
+    Returns a **list** rather than one result because this leg legitimately
+    produces several independent reads that a reader wants separately: the
+    slope is a shape statement, each breakeven is an inflation-compensation
+    statement at a named tenor. Neither is a prerequisite for the other, so
+    folding them into one result would hide which one was computed.
+
+    **The data is real and was previously unconsumed.** Live on 2026-09-17, the
+    snapshot carries an 11-tenor nominal curve (1mo 3.97 .. 30yr 5.29) and a
+    5-tenor TIPS curve (5yr 2.46 .. 30yr 3.04). ``curve_slope``,
+    ``breakeven_inflation`` and ``decompose_yield`` were all implemented,
+    unit-tested and in the unreferenced set (DEF-004): the data existed, the
+    models existed, and the consumers did not run.
+
+    **Scope: slope and breakevens, NOT the decomposition.** ``decompose_yield``
+    needs an ACM-style term premium, and no term-premium series is wired
+    (Section 22.5 defers it to Phase 5+). Passing ``term_premium=None`` is
+    *supported* by ``CurveDecompositionInputs`` and is the honest input — but
+    the function's own contract says ``None`` means "no series available at this
+    tenor", so calling it would produce a result that publishes an expectations
+    component while disclosing that the premium was absent. Section 22.5's whole
+    point is that this is disclosed rather than fabricated, so it is left
+    unwired for now and named as the remaining gap rather than half-done.
+
+    Empty when the curve is absent. A snapshot without a curve is a data
+    condition, and the slope is a read, not a gate.
+    """
+    notes: list[DerivationNote] = []
+    results: list[ModelResult] = []
+
+    curve = snapshot.yield_curve
+    if curve is None or not curve.tenors:
+        notes.append(
+            DerivationNote(
+                name="curve_slope",
+                value="NOT_COMPUTED",
+                source=(
+                    "yield_curve is absent or carries no tenors, so no spread can "
+                    "be formed; reported as not computed rather than guessed "
+                    "(Section 21.4)"
+                ),
+                window="no curve",
+            )
+        )
+        return results, notes
+
+    tenors = curve.tenors
+    resolved: dict[str, str] = {}
+    for role, label in (
+        ("short", get_settings().instrument_selection.default_short_tenor),
+        ("long", get_settings().instrument_selection.default_long_tenor),
+    ):
+        key = _config_tenor_for(label, tenors)
+        if key is not None:
+            resolved[role] = key
+
+    if "short" not in resolved or "long" not in resolved:
+        missing = [role for role in ("short", "long") if role not in resolved]
+        notes.append(
+            DerivationNote(
+                name="curve_slope",
+                value="NOT_COMPUTED",
+                source=(
+                    f"the configured {'/'.join(missing)} curve tenor is not a key on "
+                    f"the live curve, and no unambiguous mapping exists; abstaining "
+                    f"rather than substituting a different tenor"
+                ),
+                window=f"available: {sorted(tenors)}",
+            )
+        )
+        return results, notes
+
+    short_key, long_key = resolved["short"], resolved["long"]
+    slope = curve_slope(CurveSlopeInputs(tenors=tenors, short=short_key, long=long_key))
+    results.append(slope)
+    notes.append(
+        DerivationNote(
+            name="curve_slope",
+            value=f"{short_key}/{long_key}",
+            source=(
+                "long-minus-short spread on the observed curve, in basis points "
+                "— the primary curve-shape measure (Module 8.1)"
+            ),
+            window=(
+                f"as_of {curve.as_of.isoformat()}: "
+                f"{long_key} {tenors[long_key]:.2f}% - {short_key} {tenors[short_key]:.2f}%"
+            ),
+        )
+    )
+
+    # -- The breakevens. Only tenors present in BOTH curves can produce one: the
+    #    model subtracts a real yield from a nominal yield at the SAME tenor, and
+    #    a mismatch would silently price the curve's slope into the breakeven.
+    tips = snapshot.tips_yields
+    if tips is None or not tips.tenors:
+        notes.append(
+            DerivationNote(
+                name="breakeven_inflation",
+                value="NOT_COMPUTED",
+                source="tips_yields is absent, so no real yield is available to subtract",
+                window="no TIPS curve",
+            )
+        )
+        return results, notes
+
+    common = sorted(set(tenors) & set(tips.tenors))
+    if not common:
+        notes.append(
+            DerivationNote(
+                name="breakeven_inflation",
+                value="NOT_COMPUTED",
+                source=(
+                    "the nominal and TIPS curves share no tenor, so no breakeven can "
+                    "be formed at a matched maturity"
+                ),
+                window=f"nominal {sorted(tenors)}, TIPS {sorted(tips.tenors)}",
+            )
+        )
+        return results, notes
+
+    for tenor in common:
+        results.append(
+            breakeven_inflation(
+                BreakevenInputs(
+                    nominal=tenors[tenor],
+                    tips_real=tips.tenors[tenor],
+                    tenor=tenor,
+                )
+            )
+        )
+    notes.append(
+        DerivationNote(
+            name="breakeven_inflation",
+            value=f"{len(common)} tenor(s)",
+            source=(
+                "nominal minus TIPS real at each matched tenor — inflation "
+                "COMPENSATION, which contains an inflation risk premium"
+            ),
+            window=f"tenors {common} as_of {curve.as_of.isoformat()}",
+        )
+    )
+    return results, notes
+
+
+def _nairu_from_config() -> tuple[float, str]:
+    """``u*``, which is unobservable, plus a source string naming that fact.
+
+    Section 21.4 item 13 lists the natural rate among the quantities this system
+    is required to admit it does not know. It is a config value with
+    ``calibration_status: uncalibrated_illustrative``, tracked to CBO's published
+    estimate — not fitted here. The models layer propagates the unobservability
+    into confidence wherever it is consumed; this function's job is only to
+    resolve it and to say where it came from, so the derivation note cannot
+    present a placeholder as a measurement.
+    """
+    value = float(get_settings().phillips.nairu.value)
+    return value, "u* from config (phillips.nairu, uncalibrated_illustrative, CBO estimate)"
 
 
 # ---------------------------------------------------------------------------
@@ -834,8 +1499,11 @@ def snapshot_to_thesis_inputs(
     Returns
     -------
     ThesisInputs
-        Six arguments, their derivation notes, and every warning raised while
-        deriving them.
+        Every argument the builder takes, their derivation notes, and every
+        warning raised while deriving them. The *required* set is the six the
+        builder cannot proceed without (three reads, two rule records, the short
+        yield); ``regime`` and ``national_accounts`` are optional reads that
+        degrade to ``None`` with a ``NOT_COMPUTED`` note rather than refusing.
 
     Raises
     ------
@@ -927,6 +1595,39 @@ def snapshot_to_thesis_inputs(
 
     r_star, r_star_source = _r_star_from_config()
 
+    # -- Q1's fourth read: the regime (Module 3). Derived here because both
+    #    inputs it needs from the growth axis (`output_gap` level and its
+    #    one-quarter change) have just been computed above, and re-deriving them
+    #    inside `_regime_leg` would create a second implementation free to drift.
+    regime, regime_notes = _regime_leg(
+        snapshot,
+        as_of=as_of,
+        output_gap=output_gap_value,
+        output_gap_change=gap_change,
+    )
+    notes.extend(regime_notes)
+    # `None` means "not classified" — a missing optional series, not a failure.
+    # Its warnings are then absent by construction, so the guard is what keeps
+    # the degradation from turning into an `AttributeError` on the way out.
+    if regime is not None:
+        warnings.extend(str(w) for w in regime.warnings)
+
+    # -- Module 7.1's national-accounts divergence (Section 20.7). A read about
+    #    the growth read's quality rather than a fourth economy read, so it is
+    #    derived here and carried beside `reads` — see `_national_accounts_leg`.
+    national_accounts, national_notes = _national_accounts_leg(snapshot, as_of=as_of)
+    notes.extend(national_notes)
+    if national_accounts is not None:
+        warnings.extend(str(w) for w in national_accounts.warnings)
+
+    # -- Modules 8.1/8.2: the curve reads. The snapshot already carries a real
+    #    11-tenor nominal curve and a 5-tenor TIPS curve; these models had no
+    #    caller (DEF-004), so the data was fetched and never consumed.
+    curve_results, curve_notes = _curve_leg(snapshot)
+    notes.extend(curve_notes)
+    for curve_result in curve_results:
+        warnings.extend(str(w) for w in curve_result.warnings)
+
     policy_rate, policy_described = _policy_rate(snapshot, as_of=as_of)
     notes.append(
         DerivationNote(
@@ -1008,6 +1709,9 @@ def snapshot_to_thesis_inputs(
         short_yield=short_yield,
         thesis_type=resolved_type,
         universe=resolved_universe,
+        regime=regime,
+        national_accounts=national_accounts,
+        curve=tuple(curve_results),
         notes=tuple(notes),
         warnings=tuple(warnings),
     )
