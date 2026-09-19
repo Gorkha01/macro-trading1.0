@@ -1,0 +1,3264 @@
+# config/settings.yaml
+#
+# AGENTS.md Section 10.4 + Section 21.1's CONFIG row.
+#
+# CRITICAL CONVENTION: every parameter here is either
+#   (a) a genuine, observable institutional convention, or
+#   (b) explicitly labelled `calibration_status: uncalibrated_illustrative`.
+#
+# Section 21.1 requires each CONFIG parameter to carry "a documented default
+# AND a note on calibration status". A reader of this file must be able to
+# tell, without opening the code, which numbers are facts and which are
+# placeholders awaiting calibration.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# OpenBB transport. Endpoints live in series_registry.yaml; everything about
+# HOW we talk to them lives here. No URL, port, timeout or retry count is
+# hardcoded in Python.
+# ---------------------------------------------------------------------------
+openbb:
+  local_api_base_url:
+    value: "http://127.0.0.1:6900"
+    calibration_status: institutional_convention
+    note: >
+      OpenBB Platform API default port. Override via the OPENBB_API_URL
+      environment variable in deployments where the API runs elsewhere.
+  use_local_api_first:
+    value: false
+    calibration_status: institutional_convention
+    note: >
+      MEASURED 2026-09-16, not assumed. The original rationale was "local API
+      first avoids re-initialising the SDK per call" — that reasoning is wrong
+      for this workload. Timing a full 21-field snapshot build against a
+      HEALTHY local server on :6900: local-first 223.6s vs in-process package
+      9.5s, a ~23x difference, with identical results (21/21 fields, no
+      failures, byte-identical values). The package path keeps OpenBB
+      initialised in-process, whereas every local-API call is a fresh HTTP
+      round-trip through the server's provider layer.
+
+      Default is therefore FALSE (package first). The local API remains the
+      fallback path and can be preferred by flipping this flag — which is the
+      point of having it in config: the roles are swappable without a code
+      change. Re-measure before changing this, and record the number here.
+  max_retries:
+    value: 3
+    calibration_status: institutional_convention
+  backoff_seconds:
+    value: 1.5
+    calibration_status: institutional_convention
+    note: Linear backoff — attempt N waits N * this value.
+  timeout_seconds:
+    value: 15.0
+    calibration_status: institutional_convention
+  verify_ssl:
+    value: true
+    calibration_status: institutional_fact
+    note: Never disable outside a local development override.
+
+country:
+  # Section 22.3 / Finding #3: only "us" is implemented through Phase 4.
+  # Adding de/jp/gb requires its OWN data sources, its OWN central-bank
+  # reaction function, and its OWN instrument set — not a label change.
+  enabled: ["us"]
+  implemented: ["us"]
+
+policy:
+  r_star:
+    value: 0.5
+    # UNOBSERVABLE. The single largest driver of policy-rule dispersion.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      NY Fed Holston-Laubach-Williams publishes estimates; track them and
+      update. Phase 5+ replaces this constant with a Kalman-filtered estimate.
+      Section 21.4 item 13: unobservable by nature.
+    source_reference: "Holston, Laubach & Williams (NY Fed) — r* estimate"
+
+  pi_target:
+    value: 2.0
+    calibration_status: institutional_fact
+    note: FOMC's longer-run inflation objective, 2% on PCE.
+
+  balanced_approach_output_gap_coefficient:
+    value: 1.0
+    calibration_status: institutional_fact
+    note: Fed's stated balanced-approach rule weights the output gap 2x classic Taylor.
+
+  # Section 6.1 / 22.4. The coefficients below appear as literals in the
+  # specification's sample code; externalised here so the rule variants are
+  # auditable and so the divergence thresholds that drive the ensemble's
+  # interpretation are reviewable rather than buried in a comparison.
+  rules:
+    taylor_output_gap_coefficient:
+      value: 0.5
+      calibration_status: institutional_fact
+      note: Taylor (1993) original output-gap coefficient on the classic rule.
+    inflation_gap_coefficient:
+      value: 0.5
+      calibration_status: institutional_fact
+      note: Taylor (1993) inflation-gap coefficient. Must exceed 0 for the
+        Taylor principle to hold — a nominal rate response below 1:1 to
+        inflation is destabilising.
+    first_difference_alpha:
+      value: 0.5
+      calibration_status: conventional
+      note: Speed-limit rule weight on the inflation gap.
+    first_difference_beta:
+      value: 0.5
+      calibration_status: conventional
+      note: Speed-limit rule weight on the change in the output gap.
+
+  ensemble:
+    convergence_threshold_bp:
+      value: 50.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 6.1's "low dispersion (<50bp) = rules agree" band. Unit is
+        BASIS POINTS because the rules return percent; comparing a percentage
+        dispersion against a basis-point threshold without conversion is a
+        silent factor-of-100 error.
+    uncertainty_threshold_bp:
+      value: 100.0
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.1's "high dispersion (>100bp) = policy uncertainty" band.
+
+  market_implied:
+    term_premium_available_confidence:
+      value: 0.4
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 22.5's proxy confidence when a tenor-matched term premium
+        exists. Explicitly lower than a real futures-implied distribution
+        would earn; the specification calls this "still a PROXY".
+    no_term_premium_confidence:
+      value: 0.2
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 22.5's confidence when no term premium is available and the
+        raw, contaminated yield is returned. Deliberately near the floor.
+
+phillips:
+  nairu:
+    value: 4.4
+    calibration_status: uncalibrated_illustrative
+    note: >
+      u* is NOT OBSERVABLE and is revised significantly ex-post. Default tracks
+      CBO's published estimate. Section 21.1 requires its uncertainty be
+      propagated into every downstream confidence value — the models layer
+      passes depends_on_unobservable=True wherever this is consumed.
+    source_reference: "CBO Short-Term Economic Outlook — NAIRU"
+
+  beta:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: Phillips curve slack sensitivity. Textbook convention, not fitted here.
+
+  # D-053 — `project_inflation_trajectory`'s bridge and dead band.
+  #
+  # The specification wrote `beta = 0.3` and compared `0.3 * score / 100`
+  # against a bare `0.05`. That quantity is on the -0.3..+0.3 score-fraction
+  # scale, not on a percent scale, so the threshold's unit was undecidable and
+  # `stable` covered 79.1% of months (measured 2001-12..2026-07). The estimand
+  # is named here instead: a change in ANNUAL CORE INFLATION, in percentage
+  # points, and the band below is in the same unit.
+  trajectory:
+    beta_core_inflation_pp_per_score_point:
+      value: 0.006
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Percentage points of annual core PCE inflation per point of
+        labor_tightness_score, over a SIX-MONTH horizon. MEASURED, not
+        asserted: the OLS slope of (core PCE YoY change over 6 months) on the
+        score, over 290 monthly observations (2001-12..2026-07) is +0.00598
+        with a standard error of 0.00159, i.e. t = +3.76, R2 = 0.047.
+
+        This replaces an earlier 0.043 derived from a band-corner spread. That
+        method was wrong twice over and the live check caught it: (a) it used a
+        CONTEMPORANEOUS LEVEL spread, a different estimand from a projected
+        CHANGE; and (b) the band width and beta are NOT independent -- the
+        band's score-width IS (band_pp / beta), so choosing both at once chose
+        the partition and the slope simultaneously. The slope below needs no
+        band at all, which is what makes it the defensible measurement.
+
+        Stability across subsamples (same 6m horizon): 2001-10 +0.0078
+        (n=91), 2010-18 +0.0028 (n=90), 2018-27 +0.0074 (n=97). Same sign
+        throughout; weakest through the mid-2010s.
+
+        NOT calibrated. No controls for monetary policy, expectations, or
+        supply shocks. The relation REVERSES at 24 months (slope -0.0114,
+        t = -2.94) and is insignificant at 12 and 18 months -- consistent with
+        a policy reaction, not a permanent relation. Phase 5+ should fit this
+        properly (Module 18).
+    bands:
+      reaccelerating_above_pp:
+        value: 0.05
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Projected annual core inflation change above this is
+          "reaccelerating". Chosen SEPARATELY from beta, as a statement about
+          what counts as a meaningful move, because the two are not jointly
+          free: the band's score-width is (band_pp / beta).
+
+          +/-0.05pp at beta=0.006 is +/-8.36 score points, which partitions the
+          live history as stable 31.4% / reaccelerating 40.5% / decelerating
+          28.0% (n=296). Every label is well represented, which is the test the
+          specification FAILED: its threshold put `stable` at 79.1%.
+
+          0.05pp over six months is ~10bp annualised -- small relative to a
+          single core CPI print, so this band is deliberately sensitive. Widen
+          it toward 0.10pp (+/-16.7 pts) if the intent is to fire only on
+          larger moves; note that 0.10pp reproduces the specification's own 79%
+          base state, which is why it is not the default here.
+      decelerating_below_pp:
+        value: -0.05
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Projected annual core inflation change below this is
+          "decelerating". Symmetric with the upper band: the specification's
+          story gives no reason for a direction to be easier to reach than its
+          opposite, and an asymmetric band would make one label rarer for
+          reasons unrelated to the economy.
+    fiscal_active_multiplier:
+      value: 1.5
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 18.6: when `fiscal_response_active` is true, the
+        fiscal-transfer channel is weighted, not just the QE/reserves
+        channel. A 1.5x scale on the projected change encodes "the same
+        labor slack propagates further when a fiscal impulse is landing
+        directly in household spending power". ILLUSTRATIVE AND UNFITTED --
+        there is one clean historical instance (2020-21) and no way to
+        estimate a multiplier from n=1. It changes the MAGNITUDE, and can
+        therefore change which band a reading falls in; it never changes the
+        SIGN, so it can never invent a direction the labor market does not
+        support.
+
+production_function:
+  alpha:
+    value: 0.3
+    calibration_status: conventional
+    note: Capital share of income. Conventional value; unused if gdp_potential (GDPPOT) is used directly.
+
+  # Module 3.5's growth-accounting split. The threshold is a statement about
+  # which term carries the estimate, not a forecast parameter: above it, the
+  # low-confidence term dominates and the total inherits its unreliability.
+  productivity_dominance_share:
+    value: 0.6
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.3's literal ("> 0.6"). Share of potential growth attributable
+      to productivity above which the decomposition warns that the less
+      predictable term is carrying the estimate.
+
+inflation:
+  shelter_lag_months:
+    value: 15
+    calibration_status: uncalibrated_illustrative
+    note: Midpoint of the 12-18 month lease-turnover lag documented in Module 5.1.
+
+  # Module 5.1's projection compares a lagged market-rent vintage against the
+  # current CPI shelter rate. The specification's two-way test calls an exact
+  # match "reaccelerating", which asserts a direction change where none exists.
+  # This band gives the converged state a width.
+  shelter_converged_tolerance_pp:
+    value: 0.1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Gap in percentage points within which the projection is reported as
+      CONVERGED rather than cooling or reaccelerating. Set at the reporting
+      precision (both sides are rounded to 2dp), so a rounding-level difference
+      does not manufacture a direction.
+
+  # Module 5.4's PPI stage-of-processing gradient. The specification asserts
+  # "crude > intermediate > final demand" signals upstream pressure building.
+  # Measured on this build's own three live series, the strict descending order
+  # holds only 30.0% of 190 usable months (2010-11..2026-08), and the looser
+  # two-way comparison "crude > final" holds 44.2%. Both are coin flips, so the
+  # gradient is reported WITH its base rate rather than as a signal on its own.
+  # See D-029.
+  pipeline_base_rate:
+    strict_descending:
+      value: 0.3
+      calibration_status: fitted_assumption
+      note: >
+        Share of months (57/190, 2010-11..2026-08) in which year-over-year PPI
+        growth was strictly ordered crude > intermediate > final demand, on
+        WPSID62/WPSID61/PPIFIS at the latest common date. Measured from this
+        build's own live series, which is why the status is fitted_assumption
+        ("estimated from data, documented as such") rather than a claimed
+        institutional fact — it is a property of THESE three series over THIS
+        window, not a constant of the economy.
+    crude_above_final:
+      value: 0.442
+      calibration_status: fitted_assumption
+      note: >
+        Share of the same 190 months (84/190) in which crude PPI growth exceeded
+        final-demand PPI growth, ignoring the intermediate stage. The "pressure
+        building upstream" claim in its loosest defensible form. Still below a
+        coin flip, which is why Module 5.4's statement needs its base rate.
+    stale_after_months:
+      value: 3
+      calibration_status: uncalibrated_illustrative
+      note: >
+        A stage-of-processing reading older than this many months is reported as
+        stale. PPI is monthly, so three months is a full quarter of missing
+        publication — long enough that the gradient describes a different policy
+        regime rather than a pipeline in progress.
+
+  # Module 5.4's ordering test is strict (`>`), so three stages growing at
+  # exactly the same rate report "no clear upstream gradient" while three
+  # differing by 0.01pp report that pressure is building. Both statements are
+  # literally true and neither is useful. This band lets the REPORTED direction
+  # say "no clear gradient" without changing the underlying comparison.
+  pipeline_gradient_tolerance_pp:
+    value: 0.1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Difference in percentage points between adjacent PPI stages below which
+      the gradient is reported as absent. Set at the reporting precision (the
+      inputs are 2dp percentages), so a rounding-level separation does not
+      manufacture a direction.
+
+  # Section 6.3's Phase 1 breadth proxy. The convergence split is a confidence
+  # fact rather than a threshold, but it belongs here so the two levels are
+  # reviewable side by side and a Phase 5+ replacement has one place to edit.
+  breadth:
+    convergent_confidence:
+      value: 0.5
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.3's literal. All three sub-measures move the same way.
+    divergent_confidence:
+      value: 0.3
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 6.3's literal. Sub-measures disagree; per Module 13 the signal
+        must be investigated rather than treated as a trend.
+
+  # Module 5.3 (Section 15.19-C) — the inflation sub-measure convergence
+  # classifier. Two things about this block are corrections rather than
+  # transcriptions, and both were forced by measurement.
+  #
+  # (1) THE SPEC's 0.8/0.6 THRESHOLDS ARE DEGENERATE AT n=3. With three
+  # measures the only attainable agreement fractions are 1/3, 2/3 and 1.0, so
+  # `>= 0.8` requires UNANIMITY and `0.6 <= frac < 0.8` is the single value
+  # 2/3 — a knife edge, not a band. The band structure only becomes a band from
+  # n=5 upward. The thresholds are therefore kept (they are the specification's)
+  # but the classifier publishes the attainable-fraction count so the
+  # degeneracy is visible rather than latent.
+  #
+  # (2) THE UNAVOIDABLE BASE RATE. Measured over 522 real months
+  # (1983-01..2026-07) on this build's own live series, a three-measure sign
+  # test returns HIGH in 86.9% of months and the six-measure form in 89.5%.
+  # The cause is not the thresholds — it is the SIGN TEST itself. The price
+  # level rises in 87.8% (headline), 90.7% (core) and 97.9% (core PCE) of
+  # months, so unanimity-positive is the base state rather than a finding.
+  # This is O-23's pathology (a near-constant axis) one layer up, and it is
+  # disclosed on every output rather than papered over.
+  #
+  # The base rates below are published in `value` and recomputed by the live
+  # check, so they cannot go stale (D-029).
+  convergence:
+    high_threshold:
+      value: 0.8
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 15.19-C's literal. Retained as the specification's own value,
+        but see the degeneracy note above: at n=3 this is unanimity.
+    medium_threshold:
+      value: 0.6
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 15.19-C's literal. At n=3 the band it opens is the single
+        fraction 2/3.
+    deep_conflict_share_threshold:
+      value: 0.25
+      calibration_status: uncalibrated_illustrative
+      note: >
+        CORRECTION to Section 15.19-C. The specification gates CONFLICTED on
+        `headline * core < 0` ALONE, so a reading in which headline and core
+        agree while three of the four remaining measures oppose is reported as
+        HIGH/MEDIUM convergence. Measured over 522 months, that happens in 14
+        months (2.68%), 7 of which the spec's logic calls HIGH. The corrected
+        gate adds: CONFLICTED also fires when the losing side carries at least
+        this share of the measures. A genuine conflict is not a property of
+        two particular measures — it is a property of how the whole set splits.
+    min_independent_families_per_band:
+      # Section 15.19-D's integration requirement, made operational. The section
+      # says confidence must weight the count of INDEPENDENT source families,
+      # not the count of agreeing signals, and gives the rule: "five agreeing
+      # BLS-CPI-derived sub-measures should never produce higher confidence than
+      # two genuinely independent sources agreeing." A band therefore cannot be
+      # claimed on fewer independent families than this, however many measures
+      # agree. HIGH and MEDIUM both require 2 because the whole point is that a
+      # single release cannot corroborate itself.
+      high: 2
+      medium: 2
+      low: 1
+    confidence_ceiling_by_independent_families:
+      value: 5
+      calibration_status: fitted_assumption
+      note: >
+        Independent families at which `compute_confidence`'s independence credit
+        SATURATES. Recognition rather than a bonus: compute_confidence() already
+        credits independence, and a classifier that suppressed that credit would
+        be the D-027 circularity error in reverse.
+
+        DERIVED, NOT CHOSEN: with `confidence.source_independence_bonus` = 0.05
+        and `source_independence_bonus_cap` = 0.25, the credit stops growing at
+        ceil(0.25 / 0.05) = 5 families. This entry was 3 on first writing, which
+        the code contradicted — at 3 families the credit is 0.15 of a possible
+        0.25, so confidence is still rising. The test
+        `test_families_for_full_credit_is_live_not_dead_config` now derives this
+        number from those two constants instead of restating it, so it cannot
+        drift again.
+
+        NOTE it is currently unreachable as a *ceiling*: this model can supply at
+        most 3 families (BLS_CPI, BEA_PCE, DALLAS_FED), so the credit never
+        saturates for this classifier. The entry still governs the relationship
+        and will bind the moment a market-based input (a breakeven) is added.
+    measured_base_rates:
+      three_measure:
+        high:
+          value: 0.866
+          calibration_status: fitted_assumption
+          note: "Section 15.19-C's Phase 1 form. 452 of 522 months."
+        medium:
+          value: 0.040
+          calibration_status: fitted_assumption
+          note: "21 of 522 months."
+        low:
+          value: 0.004
+          calibration_status: fitted_assumption
+          note: "2 of 522 months."
+        conflicted:
+          value: 0.090
+          calibration_status: fitted_assumption
+          note: "47 of 522 months. The spec's head*core gate is the only conflict source."
+      six_measure:
+        high:
+          value: 0.895
+          calibration_status: fitted_assumption
+          note: >
+            467 of 522 months. The six-measure form this build can actually run
+            (§21.1 marks three of the six BLOCKED/MANUAL — two of which proved
+            reachable on FRED, see D-047). Adding measures makes HIGH MORE
+            frequent, not less, which is the opposite of what "more evidence"
+            intuition suggests and is a property of the sign test rather than
+            of these particular series.
+        medium:
+          value: 0.008
+          calibration_status: fitted_assumption
+          note: "4 of 522 months."
+        low:
+          value: 0.008
+          calibration_status: fitted_assumption
+          note: "4 of 522 months."
+        conflicted:
+          value: 0.090
+          calibration_status: fitted_assumption
+          note: "47 of 522 months under the spec's gate; the corrected gate fires more."
+      measure_up_share:
+        headline:
+          value: 0.878
+          calibration_status: fitted_assumption
+          note: "Share of the 522 months CPIAUCSL rose month-over-month."
+        core:
+          value: 0.907
+          calibration_status: fitted_assumption
+          note: "Share of the 522 months CPILFESL rose month-over-month."
+        core_pce:
+          value: 0.979
+          calibration_status: fitted_assumption
+          note: >
+            Share of the 522 months PCEPILFE rose month-over-month. This is the
+            ROOT CAUSE of the HIGH base rate and the reason this block exists: a
+            sign test over series that rise 88-98% of the time is near-constant
+            by construction, i.e. O-23's pathology one layer up. Published so
+            the numbers above cannot be misread as economic findings.
+
+# Module 7.1 — GDP vs GDI statistical discrepancy.
+#
+# Section 20.7 treats a divergence above 1.0pp as a sign that "one dataset is
+# capturing something the other misses". Measured on this build's own two live
+# series (FRED GDP and GDI, 314 usable year-over-year quarters), the sign of
+# that divergence turns out to carry no information at all: GDP leads 47.8% of
+# the time and GDI leads 52.2%, mean -0.009pp, median -0.026pp. That is the
+# signature of a RESIDUAL, not of a signal — the two series are two estimates
+# of the same quantity, so their difference is by construction mean-zero and
+# its direction is a coin flip. See D-031.
+#
+# The LEVEL wedge is a different object and is NOT mean-zero: it averages
+# -0.459% of GDP and is negative in seven of nine decades. Both facts are
+# recorded here because a consumer who confuses the two will report a genuine
+# construction artifact as an economic finding, or vice versa.
+#
+# ---------------------------------------------------------------------------
+# Module 5.6 — cross-asset transmission (Section 20.5).
+#
+# Section 20.5 has NO configurable parameters at all: its map is a chain of
+# literals (`> 0`, three hardcoded option strings, and `confidence=0.45`), so
+# under Section 21's "no literals in models" rule every threshold the map
+# actually uses has to be named for the first time here. Two kinds of leaf:
+#
+#   * the DRIVER CLASSIFICATION bands (how much of a nominal move one channel
+#     must account for before the move is attributed to it), and
+#   * the FLAT band (how small a change must be before `> 0` would be reporting
+#     rounding noise as a direction).
+#
+# Both are measured against the live 10-year complex rather than chosen.
+# ---------------------------------------------------------------------------
+transmission:
+  # --- the flat band (Section 20.5's `> 0` tests) ------------------------
+  flat_band_bp:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Absolute change in basis points below which a leg is reported `flat`
+      rather than up or down. Section 20.5 writes `"down" if
+      nominal_yield_change_bp > 0 else "up"`, so an EXACTLY zero change is
+      reported as `up` — a dead-branch defect of the D-040 class (the
+      specification's neutral branch requiring a value that a continuous
+      series almost never takes). Measured on the live 10-year complex:
+      DGS10 is exactly unchanged on 459 of 5 930 daily changes (7.7%) and
+      T10YIE on 965 (16.3%), so the spec's `else` fires on a meaningful share
+      of real observations and reports the WRONG SIGN on all of them.
+
+      Set at 0.5bp because that is the reporting precision of the Treasury
+      constant-maturity series (published to 2 decimal places of a percent =
+      1bp granularity), so a change below half a tick is not a measurement of
+      anything. A move AT the band is reported `flat` — the boundary is
+      inclusive, and a test pins which side owns it.
+
+  # --- the driver classification bands -----------------------------------
+  #
+  # The splits below are what Section 20.5's OWN gold paragraph argues from
+  # ("gold trades real yields, not inflation") without ever computing. They
+  # are shares of the nominal move: `|real_share| >= real_driven_share` means
+  # the real leg alone accounts for at least that fraction.
+  #
+  # MEASURED over 5 520 non-trivial monthly changes (>2bp) in the 10-year
+  # complex, 2003-01-02..2026-09-16:
+  #
+  #     real-driven      (|real_share| >= 0.66)   61.74%
+  #     breakeven-driven (|be_share|   >= 0.66)   40.85%
+  #     both bands hold  (the two overlap)        20.42%
+  #     neither band     (marginal, no driver)    17.83%
+  #
+  # The overlap is the reason these are DISCLOSED bands rather than a
+  # partition: a share and its complement can both exceed two-thirds only
+  # when one of them is negative — i.e. exactly the case where the two legs
+  # moved in OPPOSITE directions, which is 27.54% of non-trivial moves. A
+  # partition would be a lie about the data. The `both` case is reported as
+  # its own driver, not silently assigned to one leg, and `neither` is
+  # reachable too (the legs offsetting each other, each individually small).
+  real_driven_share:
+    value: 0.66
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Share of the nominal move the real leg must account for before the
+      repricing is attributed to the real-yield channel. 0.66 is two-thirds,
+      chosen as a round fraction rather than fitted: the measured
+      distribution of the breakeven share over the 264 non-trivial MONTHLY
+      changes has quartiles -0.0811 / 0.3684 / 0.8000, so two-thirds (0.66)
+      sits inside the upper half and labels the clear-majority cases without
+      claiming the marginal ones.
+
+      **The bands OVERLAP and that is deliberate, not a defect.** Measured at
+      the shipped 0.66/0.66: real_driven 37.12%, breakeven_driven 22.35%,
+      both_channels 21.59%, neither_channel 18.94%. `both_channels` is
+      non-empty because a share and its complement can both be large only when
+      one is negative — the legs opposed each other — and the breakeven share
+      is negative on 26.52% of non-trivial months and above 1.0 on a further
+      20.08%. The four figures sum to 100% because they are assigned by the
+      function's branch ORDER, not read off independent predicates; the raw
+      predicate counts do NOT sum to 100% (a move can satisfy both). Quoting
+      the predicate counts as if they partitioned the data is the error this
+      note exists to prevent.
+
+  breakeven_driven_share:
+    value: 0.66
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The mirror of `real_driven_share` on the breakeven leg. Kept as a
+      SEPARATE leaf rather than derived, because the two are not symmetric in
+      economics: measured at the shipped bands the breakeven leg alone drives
+      22.35% of non-trivial months against the real leg's 37.12%, so a future
+      calibration may legitimately move one and not the other. A validator
+      asserts each stays within (0, 1] so that neither can become a band no
+      move can ever satisfy.
+
+  # --- the trivial-move floor -------------------------------------------
+  trivial_move_bp:
+    value: 2.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Absolute nominal change in basis points below which the driver is
+      reported `indeterminate` rather than classified. A share is a ratio
+      whose denominator is the nominal move, so it explodes as that move
+      approaches zero — at a 1bp nominal change a 1bp real move is a 100%
+      share, and the driver classification becomes a statement about rounding
+      rather than about the market.
+
+      **Measured on the MONTHLY horizon the live check uses** (last
+      observation per month, DGS10 and T10YIE, 2003-01-01..2026-09-01): there
+      are 284 month-over-month changes, of which a 2.0bp floor keeps 264
+      (92.96%) and a 5.0bp floor would keep only 234 (82.39%). The |nominal|
+      monthly quintiles are 0 / 1 / 6 / 11 / 18 / 31 / 49bp, so 2bp sits just
+      above the rounding floor without removing the signal.
+
+      **THE WINDOW AXIS, and this note has now been wrong about it TWICE.**
+      The first draft of this file quoted "5 520 of 5 910 observations" for
+      the monthly population. 5 910 is the count of DAILY changes and 284 is
+      the monthly one — the note had a DAILY denominator under a MONTHLY
+      heading, and the figure was reproduced by nothing. Its replacement here
+      is the number the live check recomputes on every run
+      (`scripts/live_transmission_check.py` step 3), so the drift is caught
+      mechanically rather than by proofreading. At a DAILY horizon the same
+      2.0bp floor keeps 4 347 of 5 930 (73.31%) and a 5.0bp floor only 1 840
+      (31.03%) — the floor's population is a function of the cadence, which is
+      Section 21.0's window axis and the reason this leaf states its horizon
+      rather than only its value.
+
+  # --- the base rate of the gold call ------------------------------------
+  measured_gold_down_on_nominal_rise_share:
+    value: 0.7556
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEASURED, not assumed: over the 135 non-trivial MONTHLY changes where
+      the nominal 10-year yield ROSE, the real leg also rose — so Section
+      20.5's gold rule says gold DOWN — on 102 of them, 75.56%. The remaining
+      24.44% are the cases the rule gets the other way: a nominal rise driven
+      by breakeven repricing with the real yield FALLING, which is precisely
+      the "hot CPI, gold up" scenario the section's own paragraph says naive
+      reasoning misses.
+
+      **This leaf previously read 0.7779 and no population reproduced it.**
+      The live check showed a 2.23pp drift against both cadences (monthly
+      75.56%, daily 88.46%), which is well outside any data-revision margin —
+      the original figure was a transcription error from the authoring probe
+      (O-30's class: a recalled measurement is plausible, wrong, and
+      unverifiable without re-fetching). The value is now the one the live
+      check recomputes, and the check fails on >0.5pp drift.
+
+      The rule reports gold-down on a nominal rise about three times in four,
+      so the base rate travels with every output so a reader can tell a call
+      from the default (D-029/D-047's base-rate rule). Measured on the same
+      non-trivial subset (|change| >= the shipped `trivial_move_bp`) as the
+      other figures here, so the numbers are comparable — quoting a base rate
+      over a different population from the one the function runs on is Section
+      21.0's pairing trap.
+
+  measured_breakeven_negative_share:
+    value: 0.2652
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEASURED: over the 264 non-trivial MONTHLY changes, the breakeven leg
+      moves OPPOSITE to the nominal leg on 70 of them, 26.52%. This is the
+      number that justifies the whole function existing — if it were near
+      zero, the real leg would be a near-linear function of the nominal leg
+      and the split would add no information over the nominal sign alone.
+      Because it is more than a quarter of moves, `gold` genuinely disagrees
+      with `bonds` on a large minority of reads. Reported alongside the map.
+
+      Corrected from 0.2754, which drifted 1.02pp against the recomputation —
+      the same O-30 transcription failure as the gold base rate above, in the
+      same paragraph of the same probe.
+gdp_gdi:
+  significance_threshold_pp:
+    value: 1.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.7's literal `abs(diff) > 1.0`. Retained because it fires at a
+      usable rate (68/314 = 21.7% of quarters, see divergence_base_rate), but
+      the boundary is illustrative rather than calibrated — it was chosen by
+      the specification, not fitted to anything.
+  level_wedge_mean_pct:
+    value: -0.459
+    calibration_status: fitted_assumption
+    note: >
+      Mean of (GDI - GDP) / GDP * 100 over 318 quarters, 1947-01..2026-04,
+      from this build's live FRED series. Negative in seven of nine decades
+      (-1.072% in the 1980s, +0.249% in the 2000s), so it is a persistent
+      construction and revision asymmetry rather than sampling noise. Reported
+      with the model output so a level discrepancy is never mistaken for the
+      mean-zero growth divergence, or vice versa.
+  divergence_base_rate:
+    significant_at_threshold:
+      value: 0.217
+      calibration_status: fitted_assumption
+      note: >
+        Share of quarters (68/314) in which |GDP YoY - GDI YoY| exceeded the
+        significance threshold. Reported as D-029 requires: a boolean produced
+        by a comparison over a noisy series must travel with its own measured
+        frequency, otherwise a reader treats a one-in-five event as unusual.
+      # NOTE: this value is specific to the threshold above. If the threshold
+      # is re-calibrated in Phase 5+, this rate MUST be recomputed in the same
+      # commit — the two are one measurement, not two independent settings.
+    stale_after_quarters:
+      value: 2
+      calibration_status: uncalibrated_illustrative
+      note: >
+        A divergence reading older than this many quarters is reported as
+        stale. BEA revises GDP and GDI on different schedules, so a two-quarter
+        lag is long enough for the pair to describe different revision
+        vintages rather than the same reporting period.
+    gdp_above_gdi:
+      value: 0.478
+      calibration_status: fitted_assumption
+      note: >
+        Share of quarters (150/314) in which GDP YoY growth exceeded GDI YoY
+        growth. Indistinguishable from a coin flip, which is the evidence that
+        the SIGN of the divergence carries no information and the model must
+        report magnitude without interpreting direction.
+
+# Module 7.5 — the crude expenditure-approach GDP nowcast.
+#
+# Section 6.5 supplies literal weights of 0.6 / 0.3 / 0.1 and a docstring
+# asserting the Atlanta Fed's GDPNow has no free API. Five things were measured
+# against this build's live data before the function was written; see D-034.
+#
+# The decisive measurement: on 137 quarters where all three inputs have a
+# complete month set and both realised prints exist, the SPECIFICATION's form
+# correlates -0.169 with realised SAAR growth, the prior quarter's own print
+# correlates -0.168, and adding the specification's delta therefore makes the
+# estimate no better than doing nothing. Its 83.2% sign agreement reads as
+# skill until set against the 89.8% base rate -- realised growth was positive
+# in 123 of the 137 quarters -- at which point it is worse than a constant.
+#
+# A weight sweep on the CORRECTED delta confirms the problem is not fixable by
+# reweighting: no weight decisively beats persistence, and the specification's
+# effective weight of 1.0 is the worst row in the table. The corrected form and
+# its error are therefore shipped with the error PUBLISHED rather than the
+# weights fitted -- fitting them on the same 137 points that measure them would
+# be D-027's circularity in another guise.
+gdp_nowcast:
+  # Section 6.5's weights are 0.6 / 0.3 / 0.1. They sum to 1.0 as though the
+  # three inputs were the whole of GDP. Actual 2026 Q2 BEA shares are
+  # consumption ~67.9%, investment ~18.2%, net exports ~-3.1% (sum ~83.0%), so
+  # the specification's numbers are not a share allocation at all. The values
+  # below are the BEA shares, and the net-exports sign is the single most
+  # important correction: it must be NEGATIVE because net exports are
+  # subtracted from GDP.
+  consumption_weight:
+    value: 0.679
+    calibration_status: fitted_assumption
+    note: >
+      Personal consumption expenditures as a share of nominal GDP, 2026 Q2
+      (BEA). Section 6.5's literal was 0.60. Replaces it because the literal,
+      together with the other two, implied the three components were 100% of
+      GDP when they are ~83%.
+  investment_weight:
+    value: 0.182
+    calibration_status: fitted_assumption
+    note: >
+      Gross private domestic investment as a share of nominal GDP, 2026 Q2.
+      Section 6.5's literal was 0.30. Also note the specification gave durable
+      goods -- whose month-over-month change is 3-4x more volatile than retail
+      sales' -- HALF retail sales' weight, which is backwards for a level
+      share: durable goods orders are one component of investment, not a
+      stand-in for investment that is more stable than consumption.
+  net_exports_weight:
+    value: -0.031
+    calibration_status: fitted_assumption
+    note: >
+      Net exports as a share of nominal GDP, 2026 Q2: NEGATIVE, because net
+      exports are subtracted from GDP. Section 6.5's literal was +0.10.
+
+      The sign is the defect this replaces. The model multiplies this weight by
+      a PERCENT CHANGE of FRED BOPGSTB, which is the US goods-and-services
+      balance and is negative in 100% of its 415 observations.
+
+      The algebra, because the sign is easy to get backwards and was in fact
+      got backwards once while writing this. For an all-negative series
+      (v = -|v| everywhere):
+
+          pct = v[t] / v[t-1] - 1 = |v[t]| / |v[t-1]| - 1
+
+      because the two minus signs cancel. So pct is the percent change of the
+      ABSOLUTE VALUE, and |v| grows exactly when the deficit WIDENS -- which is
+      contractionary. Therefore pct > 0 is CONTRACTIONARY, and a contractionary
+      event must LOWER the nowcast. The weight must be NEGATIVE.
+
+      Under Section 6.5's POSITIVE +0.1 the sign is inverted:
+
+        pct > 0 (deficit widened, contractionary) -> +0.1 * pct > 0 -> RAISED
+        pct < 0 (deficit narrowed, expansionary)   -> +0.1 * pct < 0 -> LOWERED
+
+      Both directions wrong, on every observation. Measured over 414 months:
+      deficit widened 227 (54.8%), narrowed 187 (45.2%). Verified against the
+      raw LEVELS rather than the percent changes -- the level's direction is
+      known independently of the model, so it is a cross-series check and not a
+      restatement (the D-009 lesson).
+  months_per_quarter_value:
+    value: 3
+    calibration_status: fitted_assumption
+    note: >
+      Months in a quarter. The three inputs are MONTH-over-month percentages
+      while the base is a QUARTERLY annualized rate; Section 6.5 added one raw
+      month's change to a full-quarter rate. Annualizing (x12) and averaging
+      the quarter's three months makes both sides of the addition the same kind
+      of quantity. This value is the annualization factor's denominator.
+  persistence_improvement_threshold_pp:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Improvement in mean absolute error, in percentage points, required before
+      this model may claim it beats simply reporting the prior quarter's
+      realised print. Set ABOVE anything achievable on purpose. The measured
+      best is 0.0395pp (see `delta_overweighting_ratio`), achieved by fitting a
+      single scalar to the same 137 quarters that measure it -- D-027's
+      circularity. Setting this bar below the achieved value would convert a
+      null result into a claimed one.
+  accuracy:
+    quarters_measured:
+      value: 137
+      calibration_status: fitted_assumption
+      note: >
+        The one-quarter-ahead measurement window: quarters where all three
+        inputs have a complete month set and both the quarter's own and its
+        predecessor's realised SAAR prints exist. The realised growth series is
+        FRED `A191RL1Q225SBEA` -- the published "real GDP, percent change from
+        preceding period, annualized" figure, which is the same quantity the
+        model's `prior_quarter_annualized` field declares.
+
+        NOTE ON HOW EASY THIS IS TO GET WRONG (D-035): a reconstruction built
+        from `GDPC1` with the growth computed as (x[t]/x[t-1])^4 - 1 gives a
+        DIFFERENT sample and different figures (~3.026pp corrected, 0.505
+        ratio) because the compounded power form is not identical to BEA's
+        published percent change and the quarterly alignment differs by one
+        point. Both are defensible computations; only `A191RL1Q225SBEA` is the
+        series this model actually consumes, so only it can validate the record.
+        A later reader comparing against a `GDPC1`-derived figure will see a
+        discrepancy and should check the series before changing anything.
+    realised_positive_rate:
+      value: 0.8978
+      calibration_status: fitted_assumption
+      note: >
+        Share of the 137 measured quarters (123) in which realised SAAR growth
+        was positive. This is the BASE RATE every sign-agreement claim must
+        clear, reported per D-029. The specification's form agrees on the sign
+        in 83.2% of quarters, which sounds like skill and is 6.6pp WORSE than
+        predicting "positive" every time, so it carries no information about
+        direction.
+    delta_overweighting_ratio_value:
+      value: 0.5052
+      calibration_status: fitted_assumption
+      note: >
+        Mean |delta| / mean |realised change|, one quarter ahead: 1.4727pp
+        against 2.9153pp, a ratio of 0.5052. The adjustment carries about HALF
+        the magnitude of the movement it exists to predict.
+
+        **This replaces D-035's `delta_inertness_ratio` of 0.005, which was
+        wrong.** The 0.005 was an artefact of the `GDPC1`-derived series noted
+        above: in that sample the annualized monthly percent changes came out
+        two orders of magnitude too small. On the series the model actually
+        consumes, the delta is a material quantity.
+
+        **The finding that survives, in corrected form.** The delta is not too
+        small; it is too LARGE for how little it knows. `corr(delta, realised
+        change) = +0.1727`, so the sign correction worked (the specification's
+        delta correlates -0.0565), but R^2 is only 0.0298 -- the delta explains
+        3% of the variance of the change. Applying a 3% signal at full weight
+        adds more noise than information:
+
+          scale k on delta | mean|err|
+          0.00 (persistence) | 2.9153pp
+          0.25               | 2.8765pp
+          0.50               | 2.8758pp   <- best
+          1.00 (as shipped)  | 3.0261pp
+          2.00               | 3.8785pp
+
+        The shipped form is 0.11pp WORSE than doing nothing, and the best
+        scale (0.498, fitted) recovers 0.0395pp. The weights are NOT fitted
+        because that 0.0395pp was obtained by tuning a free parameter on the
+        same 137 points that measure it (D-027). Published so a reader can see
+        both that the adjustment has the right sign and that applying it at
+        unit weight costs accuracy.
+    mean_abs_error_pp:
+      value: 3.0261
+      calibration_status: fitted_assumption
+      note: >
+        Mean |corrected nowcast - realised SAAR growth|, in pp, measured
+        ONE QUARTER AHEAD over 137 quarters. The persistence benchmark is
+        2.9153pp, so this form is 0.11pp WORSE than reporting the prior quarter
+        unchanged. Published rather than fitted away.
+    persistence_mean_abs_error_pp:
+      value: 2.9153
+      calibration_status: fitted_assumption
+      note: >
+        Mean |prior_quarter_annualized - realised SAAR growth|. The benchmark.
+        Reported with every model output because a nowcast that does not beat
+        it has not earned the name.
+    correlation_with_realised:
+      value: -0.0922
+      calibration_status: fitted_assumption
+      note: >
+        corr(corrected nowcast, realised SAAR growth) over 137 quarters, one
+        quarter ahead. Negative, but materially less so than the base's own
+        -0.1680: the delta does pull the estimate toward the realised change,
+        which is why this form's sign agreement (89.1%) beats the base's
+        (85.4%). It still does not beat the 89.8% base rate of positive
+        quarters by enough to matter.
+    spec_form_correlation_with_realised:
+      value: -0.169
+      calibration_status: fitted_assumption
+      note: >
+        corr(SPECIFICATION's form, realised SAAR growth) over 137 quarters, one
+        quarter ahead. NEGATIVE, and -- unlike the corrected form -- its delta
+        correlates -0.0565 with the CHANGE it is meant to predict, i.e. it
+        carries a signal pointing the wrong way. That is why its form is the
+        worst of the three on every measure. Recorded so the correction cannot
+        be mistaken for a stylistic preference.
+    gdpnow_published_mean_abs_error_pp:
+      value: 1.364
+      calibration_status: fitted_assumption
+      note: >
+        Mean |FRED GDPNOW - realised SAAR growth| over 60 common quarters, max
+        4.231pp. This is the published Atlanta Fed figure's error as a RECORD
+        of the quarter, not as a real-time nowcast: FRED GDPNOW returns one
+        final observation per quarter (61 observations, 2011-07..2026-07,
+        median gap 92 days, zero consecutive repeats), so it is a settled
+        number rather than a forecast made inside the quarter. Disclosed so the
+        cross-check gap is not read as this model's error.
+
+        For scale: this 1.364pp is roughly half of what a HUMAN nowcast must
+        contend with, because it is made with the quarter already over. It must
+        never be compared against `mean_abs_error_pp` as though the two
+        measured the same task.
+
+auction_demand:
+  trailing_window_auctions_value:
+    value: 6
+    calibration_status: conventional
+    note: >
+      How many PRIOR auctions the trailing average is taken over. Section 20.8
+      supplies no window at all, so this is a judgement rather than a
+      measurement and is recorded as such.
+
+      Six is roughly six months for a 10-Year note, which auctions monthly, and
+      two quarters for the 2/5/7-Year tenors. The choice is NOT load-bearing:
+      the two measured base rates below come out at 18.3% / 32.4% on a 4-auction
+      window, 17.9% / 32.1% on 6, and 21.6% / 32.8% on 12. A parameter that
+      moves the answer by 3pp across a 3x change in its own value should be
+      declared a convention, not fitted and presented as estimated.
+
+      The window must be taken over auctions of the SAME normalised tenor. The
+      feed's `security_term` splits one tenor across three labels -- a 10-Year
+      note appears as "10-Year", "9-Year 11-Month" and "9-Year 10-Month"
+      depending on whether it is an original or a reopening -- so grouping on
+      the raw string would build each average from a third of the history.
+      Group on `original_security_term`.
+  weak_bid_to_cover_ratio_value:
+    value: 0.95
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.8's literal. Bid-to-cover below 0.95x its trailing average is
+      called a weak auction.
+
+      Uncalibrated: no realised outcome (a subsequent yield move, a failed
+      auction, a concession) has been used to choose it. The measured base rate
+      below says what it actually fires at -- 17.9% of 140 live 10-Year auctions
+      -- which is the disclosure D-029 requires, not a validation of the level.
+  indirect_fade_threshold_pp_value:
+    value: 3.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.8's literal. The indirect-bidder share is called fading when it
+      falls more than 3.0 percentage points below its trailing average.
+
+      **The basis matters and is not interchangeable.** The feed exposes both
+      `indirect_bidder_accepted` and `indirect_bidder_tendered`, and the two
+      give different answers on every row: mean 54.9% on the ACCEPTED basis
+      against 28.3% on the TENDERED basis, with a largest single-row gap of
+      45.3pp. This model's `indirect_bidder_pct` is the ACCEPTED basis, which is
+      the market convention (Treasury reports the indirect share of the amount
+      AWARDED). A caller supplying the tendered basis would silently move the
+      flag by roughly 27pp -- far more than the 3pp threshold it is compared
+      against -- so the input contract states the basis explicitly.
+  tail_boundary_bp_value:
+    value: 0.0
+    calibration_status: mechanical_rule
+    note: >
+      The stop-through level at or above which an auction did not tail. A tail
+      is a negative stop-through BY DEFINITION, so this is a pre-committed rule
+      rather than an estimated parameter -- there is nothing here to calibrate.
+
+      **The sign convention is the trap.** `stop_through_bp` is defined as
+      (expected yield - clearing yield), so NEGATIVE means the auction cleared
+      ABOVE expectations, which is a tail and is weak. A caller who supplies the
+      more intuitive (clearing - expected) "yield surprise" instead would invert
+      every verdict silently, because both signs produce a plausible number.
+      This is the D-034 failure mode (a sign-inverted term that was wrong on
+      414/414 observations without raising an error), so the convention is
+      stated in the input contract, published in the output, and warned about.
+  base_rates:
+    auctions_measured_value:
+      value: 137
+      calibration_status: fitted_assumption
+      note: >
+        Live 10-Year note auctions with a full trailing window, 2015-01-13 ..
+        2026-09-09, fetched from 2015-01-01. The history holds 143 usable
+        auctions in total; 137 is the count that has six predecessors to
+        average.
+
+        The start date matters and is recorded here for that reason: an earlier
+        start (2014-10) yields 146 auctions and 140 with a window, which shifts
+        both rates by a few tenths of a point. The check refetches from the same
+        date so its recomputation is comparable; a shorter span would produce a
+        different number rather than a failure.
+    weak_bid_to_cover_rate_value:
+      value: 0.1825
+      calibration_status: fitted_assumption
+      note: >
+        25 of 137 auctions (18.2%) fired `weak_bid_to_cover`. Measured, not
+        asserted, per D-029 -- a threshold comparison that decides a categorical
+        verdict must travel with the frequency at which it fires, or a reader
+        cannot tell a signal from a coin flip. Roughly one auction in five and a
+        half.
+    foreign_fading_rate_value:
+      value: 0.328467
+      calibration_status: fitted_assumption
+      note: >
+        45 of 137 auctions (32.8%) fired `foreign_fading`. Roughly one in three,
+        which is frequent enough that the flag alone is weak evidence and must
+        be read alongside its own base rate.
+
+        Stored as the exact ratio rather than rounded to four places: 0.3285
+        sits on a rounding boundary and displays as "32.9%", so the live check
+        would print a recorded 32.9% against a recomputed 32.8% and a reader
+        would have to work out that the two are the same number.
+
+        NOTE ON WHAT COULD NOT BE MEASURED: the VERDICT's own three-way base
+        rate is NOT recorded, because one of its two inputs (`stop_through_bp`)
+        is manual and the Treasury publishes no when-issued yield to derive it
+        from (D-036). The two rates above cover the derivable flags only.
+
+credit_spread:
+  change_window_days_value:
+    value: 5
+    calibration_status: conventional
+    note: >
+      Trading days over which every input's change is measured. Section 20.8
+      names NO window, even though all four numeric inputs are changes over
+      some period -- which makes this the most consequential unspecified
+      parameter in the function.
+
+      The same 20% volatility threshold fires at very different rates depending
+      on it, measured over 767 overlapping windows of the live series:
+
+        window   VIX > +20%   HY widened
+        1 day         1.8%        41.5%
+        5 days       10.2%        42.6%
+        21 days      18.2%        37.7%
+
+      Five days (one week) is chosen because a "spike" that fires on 18% of
+      observations is not a spike, and one that fires on 1.8% is too rare to
+      corroborate anything. Note that the HY widening rate is far LESS
+      sensitive to the window (38-43%) than the volatility rate is -- widening
+      is close to a coin flip at every horizon, which is itself worth knowing
+      and is why its base rate is published.
+  equity_vol_spike_threshold_pct_value:
+    value: 20.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.8's literal. A rise of more than 20% in equity volatility
+      counts as a risk-aversion spike.
+
+      Uncalibrated: no realised outcome has been used to choose it. Its
+      measured base rate (10.2% of five-day windows) is disclosed with every
+      output per D-029.
+  differentiation_threshold_bp_value:
+    value: 5.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Basis points within which the HY and IG spread changes count as moving
+      TOGETHER rather than being differentiated.
+
+      **This threshold cannot change the verdict.** Section 20.8's attribution
+      reads only `default_rate_trend` and `equity_vol_change_pct`; the two
+      spread changes are declared in `inputs_used` but never consumed. Per the
+      user's decision on 2026-09-17 the differentiation ships as a DISCLOSED
+      DIAGNOSTIC only, so this value affects what is reported, never what is
+      concluded.
+
+      Measured over 767 five-day windows: 36.6% of them move within +/-5bp
+      (parallel), the rest are differentiated. The distribution is symmetric
+      enough that 5bp is a reasonable band, but it is not fitted -- see the
+      note on the base rates.
+  delinquency_trend_band_pp_value:
+    value: 0.10
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far the delinquency rate must move over four quarters, in
+      percentage points, before `default_rate_trend` counts as rising or
+      falling rather than stable.
+
+      **This band decides whether the STABLE state is reachable at all**, and
+      the choice was made on measurement. Over 162 four-quarter changes in
+      DRALACBS (1985-2026):
+
+        +/-0.02pp -> rising 29.0%  stable  3.1%  falling 67.9%
+        +/-0.05pp -> rising 27.2%  stable 11.7%  falling 61.1%
+        +/-0.10pp -> rising 25.9%  stable 21.0%  falling 53.1%   <- used
+        +/-0.20pp -> rising 20.4%  stable 40.1%  falling 39.5%
+
+      At +/-0.02 the stable state occurs 3.1% of the time, which is close to
+      the dead-branch problem D-037 and D-040 both found. At +/-0.10 all three
+      states are well represented.
+
+      NOTE ON THE SKEW: falling is the modal state at 53.1%. That is a property
+      of the sample -- it spans 1985-2026, so the GFC spike and the long decline
+      after it dominate. A reader should not conclude that delinquencies usually
+      fall.
+  trend_base_rates:
+    observations_measured_value:
+      value: 162
+      calibration_status: fitted_assumption
+      note: >
+        Four-quarter changes in DRALACBS over which the three rates below were
+        measured, 1986 .. 2026.
+    rising_rate_value:
+      value: 0.25926
+      calibration_status: fitted_assumption
+      note: >
+        42 of 162 (25.9%) had delinquency rising by more than the band. This is
+        the share of periods in which the credit model's `fundamental`
+        predicate holds -- a frequency that was UNMEASURABLE while the trend
+        was a manual input.
+    stable_rate_value:
+      value: 0.20988
+      calibration_status: fitted_assumption
+      note: 34 of 162 (21.0%) were flat within the band.
+    falling_rate_value:
+      value: 0.53086
+      calibration_status: fitted_assumption
+      note: >
+        86 of 162 (53.1%) had delinquency falling by more than the band. Stored
+        to five places so the three sum to exactly 1.00000.
+  base_rates:
+    observations_measured_value:
+      value: 767
+      calibration_status: fitted_assumption
+      note: >
+        Overlapping five-day windows over the common history of
+        BAMLH0A0HYM2 (786 obs), BAMLC0A0CM (785 obs) and VIXCLS, 2023-09-18 ..
+        2026-09-15. Overlapping windows are used rather than non-overlapping
+        ones because the question is "how often does this flag fire", and a
+        reader of a single reading needs the unconditional rate.
+
+        NOTE ON WHAT COULD NOT BE MEASURED: the ATTRIBUTION's own base rate is
+        NOT recorded. Two of the three predicates are derivable (volatility,
+        widening) but the third -- `default_rate_trend` -- is MANUAL, per
+        Section 21.1, and has no free series. So the frequencies of
+        FUNDAMENTAL, TECHNICAL and BOTH cannot be measured and are not
+        claimed. The three rates below cover the derivable flags only.
+    equity_vol_spike_rate_value:
+      value: 0.1017
+      calibration_status: fitted_assumption
+      note: >
+        78 of 767 windows (10.2%) in which equity volatility rose more than
+        20% over five trading days. Roughly one week in ten.
+    widening_rate_value:
+      value: 0.4263
+      calibration_status: fitted_assumption
+      note: >
+        327 of 767 windows (42.6%) in which the high-yield spread widened at
+        all. Close to a coin flip -- which is the point of publishing it: the
+        model attributes widening, and widening is the SLIGHTLY LESS LIKELY
+        outcome over a week, so "spreads widened" alone is not evidence of
+        anything.
+    parallel_widening_rate_value:
+      value: 0.3664
+      calibration_status: fitted_assumption
+      note: >
+        281 of 767 windows (36.6%) in which HY and IG moved within +/-5bp of
+        each other. Published with the diagnostic so a reader can see that
+        "parallel widening" is not the default case it is often assumed to be
+        -- two thirds of moves are differentiated.
+
+beveridge:
+  pre_covid_curve:
+    calibration_status: fitted_assumption
+    note: >
+      A fitted lookup table (unemployment rate -> openings rate) from pre-2020
+      data. NOT an observation. Section 21.1 requires it be documented as a
+      fitted assumption. Phase 5+ can refit. Values below are the published
+      pre-COVID relationship, to be re-verified in Phase 0.
+    points:
+      - {unemployment_rate: 3.5, openings_rate: 4.6}
+      - {unemployment_rate: 4.0, openings_rate: 4.3}
+      - {unemployment_rate: 4.5, openings_rate: 3.9}
+      - {unemployment_rate: 5.0, openings_rate: 3.5}
+      - {unemployment_rate: 5.5, openings_rate: 3.1}
+      - {unemployment_rate: 6.0, openings_rate: 2.8}
+      - {unemployment_rate: 7.0, openings_rate: 2.3}
+
+  # Module 6.2's dead-band around the fitted curve. A shift inside this band
+  # is reported ON_CURVE, because a curve estimated on historical data cannot
+  # resolve dislocations smaller than its own fit error. Symmetric: resolution
+  # is not direction-dependent.
+  shift_tolerance:
+    shift_pp:
+      value: 0.5
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.6's literal. Symmetric band in percentage points. Phase
+        5+ should replace this with the standard error of the fitted
+        curve, which is the statistically defensible value.
+
+labor:
+  neutral_nfp_pace_thousands:
+    value: 150.0
+    calibration_status: conventional
+    note: Rough breakeven pace consistent with stable unemployment. Configurable per Section 6.4.
+
+  # Section 6.4's composite weights and per-component scalings, grouped so
+  # they cannot collide with the other labor.* keys (each block gets its own
+  # namespace, which is what the CalibratedValue envelope needs to stay
+  # distinguishable from a bare scalar).
+  # Section 6.4's composite weights. The ordering encodes the model: claims
+  # and JOLTS carry 0.4 each while NFP carries 0.2, because NFP is coincident,
+  # noisy and heavily revised (Module 6.1) and is the block least able to
+  # carry a leading signal.
+  tightness_weights:
+    claims:
+      value: 0.4
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.4's literal. Claims are a LEADING series.
+    jolts:
+      value: 0.4
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.4's literal. JOLTS openings and quits are LEADING series.
+    nfp:
+      value: 0.2
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 6.4's literal, and deliberately the smallest: NFP is
+        coincident, noisy, and heavily revised (Module 6.1).
+
+  tightness_scaling:
+    claims_multiplier:
+      value: -2.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 6.4's literal. NEGATIVE because RISING claims mean a LOOSER
+        market. The sign is the model, not an artefact.
+    jolts_openings_multiplier:
+      value: 0.5
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.4's literal, applied to openings YoY percent.
+    jolts_quits_multiplier:
+      value: 0.5
+      calibration_status: uncalibrated_illustrative
+      note: Section 6.4's literal, applied to the centred quits percentile.
+    quits_centering:
+      value: 50.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 6.4's literal. Maps the 0-100 percentile onto a symmetric
+        +/-50 range so the quits term is comparable with the others.
+
+  # Section 21.3 A / Module 6.1's explicit rule replacing "sustained uptrend".
+  claims:
+    consecutive_weeks_threshold:
+      value: 3
+      calibration_status: uncalibrated_illustrative
+      note: Section 21.3 A's literal. Weeks the 4-week MA must rise consecutively.
+    pct_above_trailing_threshold:
+      value: 0.05
+      calibration_status: uncalibrated_illustrative
+      note: Section 21.3 A's literal. Fractional (0.05 = 5%), not percent.
+
+  # Section 20.3's bands for openings-per-unemployed-worker. Judgment
+  # boundaries, so they live here rather than as literals in the comparison.
+  openings_ratio:
+    very_tight_threshold:
+      value: 1.5
+      calibration_status: uncalibrated_illustrative
+      note: Section 20.3's literal. Above this the labor market is VERY_TIGHT.
+    tight_threshold:
+      value: 1.0
+      calibration_status: uncalibrated_illustrative
+      note: Section 20.3's literal. Above this (and below very_tight) = TIGHT.
+    balanced_threshold:
+      value: 0.7
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.3's literal. Above this (and below tight) = BALANCED;
+        at or below it = SLACK. This band matters because 1.0 is the
+        level at which openings equal unemployed workers, which the Fed
+        has treated as the practical boundary of a balanced market.
+
+  # Module 6.1's two-survey comparison. The published decision rule is
+  # sign-only, so this threshold is a floor below which a change is not
+  # treated as a movement at all. Kept in config so a calibrated dead-band
+  # can replace the zero implicit in a bare sign test without a code change.
+  two_survey:
+    min_meaningful_change_thousands:
+      value: 0.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.6's decision rule is sign-only, so this is 0.0: any
+        positive NFP change counts as "payrolls up". Phase 5+ may
+        calibrate a dead-band against the NFP revision distribution,
+        which is the natural source of a meaningful floor.
+
+  # Module 6.2's AHE composition-distortion conditions. Both must hold for
+  # the flag to fire; either alone produces false positives.
+  ahe_distortion:
+    low_wage_decline_pct:
+      value: -1.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.6's literal. NEGATIVE because the condition is a
+        DECLINE in low-wage employment: below this, composition can
+        mechanically inflate AHE without any raise.
+    eci_divergence_pp:
+      value: 0.75
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.6's literal. Absolute AHE-minus-ECI gap beyond which
+        the two measures are treated as disagreeing rather than noisy.
+
+  # Module 6.1's threshold for calling a headline beat misleading.
+  revisions:
+    misleading_net_thousands:
+      value: -50.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 20.6's literal. NEGATIVE: net downward revisions to the
+        prior two months below this, alongside a positive headline,
+        make the headline misleading about the underlying picture.
+
+risk:
+  target_vol_annualized:
+    value: 0.10
+    calibration_status: institutional_convention
+    note: 10% annualized portfolio vol target — standard institutional default.
+
+  stress_correlation:
+    value: 0.9
+    calibration_status: institutional_convention
+    note: Stressed pairwise correlation for hedge-degradation reporting (Section 21.1).
+
+  var_confidence_levels:
+    value: [0.95, 0.99]
+    calibration_status: institutional_convention
+    note: Historical/parametric VaR confidence levels.
+
+  historical_var_lookback_days:
+    value: 500
+    # ~2 trading years. Long enough to include a stress episode, short enough
+    # to stay relevant. Module 17 discusses the horizon-matching tradeoff.
+    calibration_status: uncalibrated_illustrative
+
+  drawdown_thresholds:
+    calibration_status: mechanical_rule
+    note: >
+      Pre-committed mechanical de-risking (Module 17.3). Worst triggered rule
+      wins. These are HARD RULES, not heuristics — they are stated in advance
+      precisely so they are not renegotiated in the moment.
+    tiers:
+      - {drawdown_pct: 10.0, risk_reduction_pct: 50.0}
+      - {drawdown_pct: 15.0, risk_reduction_pct: 75.0}
+      - {drawdown_pct: 20.0, risk_reduction_pct: 100.0}
+
+  # --- Module 17.2 / 17.3 — the hard risk limits (RiskLimits) -------------
+  #
+  # Section 17.3 writes these as LITERALS in a Pydantic class body, which
+  # Section 21 prohibits in a model. They move here so a policy change is a
+  # config change and every limit carries a calibration_status.
+  #
+  # UNIT NOTE, because this block now mixes two conventions and Section 20.13
+  # is where that has already gone wrong once. The three `_pct` leaves below
+  # are **FRACTIONS** (`0.15` = 15%), matching Section 17.3's own field types
+  # and matching the module's arithmetic. They are NOT percent. The suffix
+  # `_pct` is retained only because it is the specification's field name --
+  # the CONVENTION is what a reader needs and the name does not carry it.
+  # `max_leverage` is a MULTIPLE and `min_liquidity_days_to_unwind` is DAYS;
+  # neither is ambiguous.
+  max_position_pct_of_portfolio:
+    value: 0.15
+    calibration_status: institutional_convention
+    note: >
+      Largest single position as a FRACTION of portfolio (Section 17.3,
+      Module 17.2/17.3). Hard constraint -- it always wins over any sizing
+      derived from vol-targeting or Kelly.
+
+  max_factor_exposure_pct:
+    value: 0.30
+    calibration_status: institutional_convention
+    note: >
+      Largest exposure to any single PCA factor, as a FRACTION (Section 17.3,
+      Modules 17.1/18.3). Consumed by the Phase 5+ portfolio concentration
+      check; declared here so the policy object is complete and no caller has
+      to invent a default.
+
+  max_leverage:
+    value: 3.0
+    calibration_status: institutional_convention
+    note: >
+      Gross exposure ceiling as a MULTIPLE of capital. The only hard limit
+      Section 20.13's body actually reads, and on live data it is the one that
+      never binds (measured 0.0% of days over 575 sessions) -- which is why it
+      cannot be the only limit the function enforces.
+
+  min_liquidity_days_to_unwind:
+    value: 2
+    calibration_status: institutional_convention
+    note: >
+      Never size beyond what can be unwound in N days (Section 17.3). An int
+      number of DAYS. Consumed by Phase 4+ sizing; declared here for the same
+      completeness reason as max_factor_exposure_pct.
+
+  vol_target_reflexivity_scale:
+    value: 0.8
+    calibration_status: institutional_convention
+    note: >
+      Section 20.13 warns that vol-targeting is industry-reflexive: when many
+      funds run similar rules, a vol spike triggers simultaneous de-risking
+      that itself amplifies the spike. The warning fires below this SCALE
+      (target/current), i.e. when current vol exceeds target/0.8 = 1.25x the
+      target. Probed live: fires 11.3% of days over 575 sessions, so it is a
+      real regime indicator rather than a permanent banner.
+
+  rebalancing_drift:
+    value: 0.10
+    # A FRACTION, despite the `_pct` suffix it inherits from Section 15.18's
+    # `drift_threshold_pct: float = 0.10`. Read as a percent this is a 0.1%
+    # tolerance, which trips on every real book — the magnitude is what
+    # disambiguates, and the reader bounds it because a magnitude argument is
+    # not a contract.
+    calibration_status: mechanical_rule
+    note: >
+      Risk-budget drift tolerance (Module 17.3 / Section 15.18). A drift of
+      exactly this size does NOT flag (the specification's comparison is
+      strict); this is disclosed on the output rather than inferred from the
+      operator. Probed over 20 000 plausible weight wobbles on a realistic
+      4-instrument covariance, drift trips 10.8% of the time — `balanced` is
+      modal, which is what a maintenance check should look like.
+
+kelly:
+  # Section 22.6 / Finding #6 — the generalized Kelly solution.
+  fractional_divisor:
+    value: 2.0
+    calibration_status: institutional_convention
+    note: >
+      Full Kelly maximises long-run growth but assumes the probability
+      estimates are exact. They are not. Fractional Kelly (k >= 2, i.e. at most
+      half-Kelly) is mandatory here.
+  min_fractional_divisor:
+    value: 2.0
+    calibration_status: institutional_convention
+    note: Hard floor. A divisor below 2.0 is rejected at validation time.
+
+  grid_points:
+    value: 100001
+    calibration_status: mechanical_rule
+    note: >
+      Resolution of the argmax grid search for generalized_kelly_fraction
+      (Section 22.6). Section 22.6's literal is n_grid = 1000, which is NOT
+      fine enough for this project's published precision: an increment of
+      1/999 means the printed 6 dp digit is decided by the search rather than
+      by the mathematics. Measured on a binary bet whose closed form is
+      exactly 0.200000, n=1000 returns 0.200200 -- a 2e-4 error, 400x the
+      rounding. n=100001 returns 0.200000 and costs ~97 ms on a 5-branch set.
+      Mechanical, not economic: it is a numerical-accuracy knob.
+
+# ---------------------------------------------------------------------------
+# Module 15 / 16.4 — instrument selection (select_instrument, Tier 4)
+#
+# Section 22.3.1 writes the branch table as Python `if/elif` with the
+# instrument strings inline, which Section 21 prohibits in a model: a desk
+# changing which instrument expresses a policy-path gap should change config,
+# not code. The table moves here, keyed by ThesisType, so a routing change is
+# a config change and every entry carries a calibration_status.
+#
+# This is a ROUTING table, not a measurement: calibration_status is
+# `mechanical_rule` for the mappings (they encode desk convention, not an
+# estimate) and `institutional_convention` for the one width that is a policy
+# choice (curve_tenor_minimum_gap_years).
+#
+# UNIT NOTE: the tenors below are STRINGS ("2y", "10y") because they are
+# interpolated into the instrument NAME and must read the way a desk writes
+# them. They are NOT parsed into arithmetic anywhere — nothing in this module
+# computes a duration from them. A future consumer that does parse them must
+# add the years as data rather than splitting the string.
+instrument_selection:
+  thesis_type_routes:
+    calibration_status: mechanical_rule
+    note: >
+      ThesisType -> (instrument template, universe category, rationale).
+      `instrument_template` is formatted with curve_short_tenor /
+      curve_long_tenor / direction_word where the branch is a rates-shape
+      trade; every other template is a literal. `universe_category` must be a
+      key of ProductionUniverse (rates / fx / equity) -- NOT "equity_index",
+      which Section 22.3.1 writes and which is not a category this system
+      knows (D-058 probe P3).
+    routes:
+      policy_path_gap:
+        instrument_template: "UST 2yr note futures"
+        universe_category: rates
+        rationale: >
+          Most directly sensitive to the expected policy path (Module 8
+          expectations component); avoids 30yr term-premium noise.
+      curve_shape_gap:
+        instrument_template: "Duration-weighted {short}/{long} UST {direction_word}"
+        universe_category: rates
+        rationale: >
+          Isolates slope from level via duration weighting (Module 15.1). The
+          leading "UST" is load-bearing: without it the string names no
+          instrument the production universe recognises, which is exactly how
+          Section 22.3.1's literal failed its own matcher (D-058 probe P1/P2).
+          The 2y/10y default pair lives in curve_default_short/long_tenor.
+      inflation_expectations_gap:
+        instrument_template: "Duration-matched TIPS long / nominal short (breakeven trade)"
+        universe_category: rates
+        rationale: >
+          Isolates inflation expectations from real-yield direction
+          (Module 15.2).
+      equity_macro:
+        instrument_template: "Broad equity index (per Section 6.9 duration/sector logic)"
+        universe_category: equity
+        rationale: >
+          No single-stock exposure (production universe boundary).
+
+  curve_default_short_tenor:
+    value: "2y"
+    calibration_status: institutional_convention
+    note: >
+      Default near leg when a CURVE_SHAPE_GAP caller supplies no
+      curve_short_tenor. Section 22.3.1's pseudocode interpolated the raw
+      Optional field and produced "Duration-weighted None/None ..." for the
+      default call -- a string naming no instrument (D-058 probe P7).
+  curve_default_long_tenor:
+    value: "10y"
+    calibration_status: institutional_convention
+    note: Default far leg when a CURVE_SHAPE_GAP caller supplies no curve_long_tenor.
+
+  curve_minimum_leg_gap_years:
+    value: 1.0
+    calibration_status: institutional_convention
+    note: >
+      Minimum separation between the two curve legs, in years. A slope trade
+      whose legs are the same point on the curve is not a slope trade: the
+      "2y/2y steepener" that Section 22.3.1 accepted is a degenerate
+      instrument, and the f-string could not tell (D-058 probe P7). The
+      comparison is made on parsed years, so "2y"/"30m" are comparable.
+  curve_maximum_leg_years:
+    value: 30.0
+    calibration_status: institutional_convention
+    note: >
+      Longest leg this system will name, in years. Beyond this the instrument
+      is not one the desk trades in this book, and the string would pass the
+      universe matcher (which sees "UST") while naming something unusable.
+
+  # Section 22.8: confidence is COMPUTED, never asserted. Section 22.3.1
+  # returned a hardcoded confidence=0.7 for the executable branches and 0.0 for
+  # the sentinels, both of which violate the rule -- and 0.0 is worse than a
+  # styling lapse, because a sentinel is a CONFIDENT "no instrument" and must
+  # not present itself as an unknown.
+  is_heuristic_not_calibrated:
+    value: true
+    calibration_status: mechanical_rule
+    note: >
+      The routing table is desk convention, not calibrated against realized
+      outcomes -- so the heuristic penalty applies. This is a fact about the
+      method, not a feeling about the answer (Section 22.8).
+  source_independence_count:
+    value: 0
+    calibration_status: mechanical_rule
+    note: >
+      Selection consumes a thesis_type label and a direction, not a set of
+      independent measurements, so there is no corroboration to credit. Zero
+      here is a TRUE zero (unlike the literal earlier in the project's
+      history): the input genuinely carries no source diversity.
+
+# ---------------------------------------------------------------------------
+# Module 2 — bond math and the floor-system corridor.
+#
+# Section 20.2 writes these thresholds as literals inside the function body.
+# They are moved here because each is a JUDGMENT about where a market state
+# becomes a defect, and a reviewer must be able to see and change that line
+# without editing Python. Section 20.2's literal values are preserved as the
+# defaults, so behaviour is unchanged.
+# ---------------------------------------------------------------------------
+bond_math:
+  repo_stress:
+    elevated_threshold_bp:
+      value: 10.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        SOFR-IORB spread above which the repo market is flagged ELEVATED.
+        Section 20.2's literal was 10.
+    acute_threshold_bp:
+      value: 25.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Spread above which ACUTE_REPO_STRESS is requested. Section 20.2's
+        literal was 25. NOTE this is the REQUEST only: Section 22.11 requires
+        persistence AND repo-volume corroboration before the label is applied,
+        so a raw breach alone yields ELEVATED plus a warning.
+    persistence_days_required:
+      value: 3
+      calibration_status: mechanical_rule
+      note: >
+        Section 22.11: the breach must persist this many days. The amendment's
+        stated rule, not a tunable heuristic — a single-snapshot breach is the
+        quarter-end pattern, not stress.
+    repo_volume_change_threshold_pct:
+      value: 10.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Absolute percentage change in repo volume required as corroboration.
+        Section 22.11 requires volume corroboration but does not supply the
+        number; this is the illustrative default and is explicitly marked
+        uncalibrated so it lowers downstream confidence.
+
+  # Curve orientation and shape thresholds, consumed by yield_curve.py.
+  curve:
+    inversion_threshold_bp:
+      value: 0.0
+      calibration_status: institutional_fact
+      note: A spread below zero IS an inversion by definition, not a judgment call.
+    deep_inversion_threshold_bp:
+      value: -100.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Depth at which inversion is characterised as deep rather than marginal.
+        Illustrative; the recession signal does not depend on this band.
+    steep_threshold_bp:
+      value: 100.0
+      calibration_status: uncalibrated_illustrative
+      note: Spread above which the curve is characterised as steep rather than flat.
+  duration:
+    convexity_reporting_scale:
+      value: 100.0
+      calibration_status: institutional_fact
+      note: >
+        Percentage conversion for price-change reporting. 100.0 converts a
+        decimal return to percent; it is a unit factor, not a tuned parameter.
+
+qe_qt:
+  neutral_band_pct_value:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.4 decides the stance with `balance_sheet_change_3mo > 0`,
+      `< 0`, else NEUTRAL_HOLD. **That makes NEUTRAL_HOLD require a change of
+      EXACTLY zero**, which is unreachable: over 1226 weeks of WALCL the 13-week
+      change was exactly 0.0 on **zero** occasions. The branch was dead code,
+      and the same defect class as D-037's credit model.
+
+      The fix is a RELATIVE band: the change is expressed as a percentage of the
+      balance-sheet level, and anything inside +/-0.5% is NEUTRAL_HOLD. Measured
+      over the same 1226 weeks, the 13-week change is:
+
+        median |change| = 1.997% of the level
+        within +/-0.5%  =  20.1% of weeks
+
+      Half a percent of a $6.7T balance sheet is about $34bn over a quarter,
+      which is genuinely flat for this series. A relative band is used rather
+      than an absolute one because the balance sheet has ranged from $0.7T to
+      $9.0T over the sample and an absolute tolerance would mean different
+      things at different times.
+  rrp_drained_threshold_bn_value:
+    value: 50.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      ON RRP level, in BILLIONS of dollars, below which the facility is treated
+      as drained. The facility last read 5.4 against a peak of 2,553.7.
+
+      This threshold is the difference between "QT is draining the RRP buffer"
+      and "QT is draining reserves directly". While the facility is large, QT
+      can run without reserves falling; once it is empty, the same QT comes out
+      of reserves. That is the mechanism behind September 2019, and it is why
+      the specification warns that reserve scarcity "is not predictable
+      ex-ante" -- it is predictable in KIND, not in timing.
+  base_rates:
+    observations_measured_value:
+      value: 1226
+      calibration_status: fitted_assumption
+      note: >
+        Weekly observations, 2003-03 .. 2026-09, over which the stance rates
+        below were measured with the +/-0.5% band.
+    qe_expanding_rate_value:
+      value: 0.4869
+      calibration_status: fitted_assumption
+      note: >
+        597 of 1226 weeks (48.7%) were QE_EXPANDING -- the balance sheet grew
+        by more than 0.5% over 13 weeks.
+    qt_contracting_rate_value:
+      value: 0.3124
+      calibration_status: fitted_assumption
+      note: >
+        383 of 1226 weeks (31.2%) were QT_CONTRACTING. Lower than QE because the
+        balance sheet has spent more of its history growing than shrinking.
+    neutral_hold_rate_value:
+      value: 0.2007
+      calibration_status: fitted_assumption
+      note: >
+        246 of 1226 weeks (20.1%) were NEUTRAL_HOLD under the band. **Under the
+        specification's `== 0` test this rate is 0.0%** -- the branch is
+        unreachable, which is the defect the band corrects. A reader should
+        expect roughly one week in five to be flat, not never.
+    reserve_drain_while_qt_rate_value:
+      value: 0.7676
+      calibration_status: fitted_assumption
+      note: >
+        294 of the 383 QT weeks (76.8%) also had reserves FALLING over the same
+        13 weeks. Published because it is the base rate for the scarcity flag:
+        "QT is draining reserves directly" is the ordinary case during QT, not
+        an exceptional one, so the flag on its own is weak evidence and must be
+        read with the ON RRP level beside it.
+
+probability:
+  uninformative_lr_band_value:
+    value: 0.25
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far a likelihood ratio must sit from 1.0 before the evidence counts as
+      informative. Section 20.11's sample uses an ASYMMETRIC band, `0.8 < lr <
+      1.25`; this is the symmetric `|lr - 1| < 0.25`, which is the same on the
+      high side and slightly wider on the low.
+
+      Symmetric because the likelihood ratio's informativeness is symmetric in
+      log-space: an LR of 0.8 and an LR of 1.25 are the same distance from
+      uninformative, and the specification's band treats them as 0.2 and 0.25
+      apart respectively. That asymmetry was not chosen, it is an artefact of
+      writing the band as two constants.
+  probability_sum_tolerance_value:
+    value: 0.01
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far a scenario set's probabilities may sum from 1.0 before
+      `expected_value` refuses it. Section 20.11's literal. Tight enough to
+      catch a genuine omission, loose enough to tolerate the rounding of a
+      caller who built the probabilities from percentages.
+  tail_loss_multiple_value:
+    value: 2.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How large the worst-case loss must be, as a multiple of |EV|, before
+      `expected_value` warns that positive EV does not make a position safe.
+      Section 20.11's literal, externalized because it is the one threshold in
+      that function and it decides whether the LTCM lesson is surfaced at all.
+
+      Note this warning's frequency CANNOT be measured: it depends entirely on
+      caller-supplied scenarios, and no scenario set is stored. That is recorded
+      rather than papered over with an invented rate.
+
+minsky:
+  drift_margin_pct_value:
+    value: 0.2
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.3 tests `risky_credit_growth_pct > total_credit_growth_pct *
+      1.2` — a 20% margin, written as a multiplier. **That form is wrong when
+      total credit growth is NEGATIVE**, and it is wrong in the dangerous
+      direction: multiplying a negative base by 1.2 makes it MORE negative, so
+      the test fires when risky credit is shrinking FASTEST.
+
+        total -10.0%  risky -11.0%  -> risky > total*1.2 is TRUE  ("outgrowing")
+            reality: risky is falling faster than total = DE-RISKING
+
+        total -10.0%  risky  -5.0%  -> TRUE  (correct: risky holding up better)
+        total +10.0%  risky +11.0%  -> FALSE (correct)
+        total +10.0%  risky +13.0%  -> TRUE  (correct)
+
+      Measured over 2739 weeks of total bank credit (TOTBKCR), year-over-year
+      growth is NEGATIVE in 91 of them (**3.3%**) — including 2009-09 at -3.83%,
+      which is exactly the crisis the module exists to flag. A model that calls
+      de-risking "drift toward risky" at the moment of maximum stress is worse
+      than no model.
+
+      The margin is therefore applied to the GAP, scaled by the magnitude of
+      total growth:
+
+        risky_outgrowing = (risky - total) > margin * |total|
+
+      which reduces to the specification's `risky > total * 1.2` whenever total
+      growth is positive, and is sign-safe when it is not.
+  base_rates:
+    stage_observations_measured_value:
+      value: 51
+      calibration_status: fitted_assumption
+      note: >
+        Quarters over which the three STAGE rates below were measured --
+        2013-Q4 .. 2026-Q2. **These were UNMEASURABLE until D-043.** Before
+        the block was lifted there was no history of risky or total credit
+        growth to classify, so no stage frequency could be recorded without
+        inventing one. The window is short because the leveraged-loan series
+        reads zero before 2013-Q4; see the registry entry.
+    ponzi_drift_warning_rate_value:
+      value: 0.31373
+      calibration_status: fitted_assumption
+      note: >
+        16 of 51 quarters (31.4%) were PONZI_DRIFT_WARNING -- loose standards
+        AND risky credit outgrowing total. Roughly one quarter in three, which
+        is frequent enough that the flag alone is weak evidence.
+    speculative_drift_rate_value:
+      value: 0.43137
+      calibration_status: fitted_assumption
+      note: >
+        22 of 51 quarters (43.1%) were SPECULATIVE_DRIFT -- exactly one of the
+        two predicates held. The most common stage in the window.
+    hedge_dominant_rate_value:
+      value: 0.25490
+      calibration_status: fitted_assumption
+      note: >
+        13 of 51 quarters (25.5%) were HEDGE_DOMINANT. Stored to five places so
+        the three sum to exactly 1.00000.
+    observations_measured_value:
+      value: 146
+      calibration_status: fitted_assumption
+      note: >
+        Quarterly SLOOS observations, 1990-04 .. 2026-07, over which the
+        standards rate below was measured.
+
+        **The STAGE base rate is NOT recorded, and cannot be.** Two of the
+        model's three inputs are BLOCKED by Section 21.1, so no history of
+        `risky_credit_growth_pct` or `total_credit_growth_pct` exists to
+        classify. Recording a stage frequency would mean inventing one. See
+        O-20.
+    standards_loosening_rate_value:
+      value: 0.4658
+      calibration_status: fitted_assumption
+      note: >
+        68 of 146 quarters (46.6%) had net LOOSENING standards (DRTSCILM < 0).
+        This is the ONE predicate of the model that rests on a live input, so it
+        is the only frequency that can be measured and the only one published.
+        Tightening was 71 quarters (48.6%) and exactly flat 7 (4.8%) — and the
+        latest reading is one of the flat ones, which Section 20.3's `< 0` test
+        counts as NOT loosening.
+# Module 8 -- the inversion -> recession probability heuristic.
+#
+# Section 15.20-B supplies this function with five literals and two hardcoded
+# confidences. The literals are externalised here; the confidences are refused
+# (Section 22.8 makes `compute_confidence()` the only producer). The
+# specification's DEFAULT base rate of 0.15 is deleted entirely -- it is a
+# measured quantity, and a shipped default is an invitation to use a stale
+# prior instead of measuring one. The live check measures the real rates.
+#
+# WHAT THE PROBE FOUND (2026-09-17, DGS2/DGS10 1976-06..2026-09 vs USREC,
+# 592 months with a COMPLETE 12-month forward window):
+#
+#   depth is MONOTONE      -0..-25bp 0.412   -25..-50bp 0.391
+#                          -50..-100bp 0.567  -100bp+   0.857
+#   duration is HUMP-SHAPED  0-4wk 0.400   4-13wk   0.333   13-26wk 0.444
+#                            26-52wk 0.750  >=52wk   0.409
+#
+# The duration turning point matters: the >=52-week bucket is dominated by the
+# 2022-2024 inversion (~107 weeks), which has NOT yet been followed by a
+# recession. The specification's 26-week cap therefore sits exactly at the peak
+# of the hump -- the spec never enters the region where its own monotonicity
+# assumption is contradicted by the data. The cap is kept as the default for
+# that reason, and this note exists so a future calibration decides deliberately.
+yield_curve:
+  # Consumed by `models/yield_curve.py::inversion_probability_adjustment`
+  # (Module 8, Section 15.20-B). Decision record: D-049. Open calibration item:
+  # O-31 (the duration dimension is hump-shaped while the mechanism assumes
+  # monotone). Every number quoted below is from scripts/live_inversion_check.py
+  # over 592 complete-window months to 2026-09, re-measured 2026-09-17.
+  depth_saturation_bp:
+    value: 100.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.20-B's literal (`min(abs(slope_bp)/100, 1.0)`): depth beyond
+      100bp adds no further adjustment. Measured support (592 complete-window
+      months, live check 2026-09-17): the depth buckets read
+      0.412 / 0.417 / 0.552 / 0.857 for the four depth ranges, i.e. MONOTONE
+      non-decreasing, so the ordering holds at the cap even though the cap
+      discards the difference between -100bp and the -201bp reached in 1980.
+
+  duration_saturation_cap:
+    value: 26.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.20-B's literal (`min(weeks_inverted/26, 1.0)`): 26 weeks is
+      "about six months persistent", beyond which duration adds no adjustment.
+      RETAINED as the default, but the measured relationship is NOT monotone
+      past this point -- see the block comment above. Measured duration buckets
+      (weeks since episode start, 592 complete-window months, live check
+      2026-09-17): 0.250 / 0.286 / 0.412 / 0.769 / 0.520 for 0-4 / 4-13 / 13-26
+      / 26-52 / 52+ weeks. The peak is the 26-52 week bucket at 0.769 and the
+      relationship FALLS to 0.520 beyond 52 weeks, so 26 weeks sits at the
+      turning point. A Phase 5+ calibration should fit the curve rather than
+      extend this cap.
+
+  max_adjustment:
+    value: 0.35
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.20-B's literal maximum addition to the base rate, reached when
+      both factors saturate. Deliberately much larger than any single-bucket
+      measured difference, because it is applied MULTIPLICATIVELY to two
+      saturating factors and so rarely reaches its own maximum.
+
+  probability_ceiling:
+    value: 0.80
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.20-B's literal hard cap: "never claim near-certainty". The
+      validator requires this to sit strictly between max_adjustment (0.35) and
+      1 + max_adjustment (1.35) so it neither binds for every input (making the
+      base rate decorative) nor is unreachable (dead config). Measured
+      reference: the highest conditional bucket observed is 0.857, which the
+      ceiling would clamp -- correctly, since that cell has n=7.
+      Reachability at the shipping numbers: with base 0.489 and both factors
+      saturated the uncapped value is 0.839 > 0.80, so the clamp DOES fire on
+      real inputs and the ceiling-binding warning is reachable -- confirmed by
+      the live check on the 2022-2024 episode. With the specification's deleted
+      0.15 default the same input gives 0.50 and the ceiling would not bind.
+
+  base_rates:
+    observations_measured_value:
+      value: 592
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Months between 1976-06 and 2026-08 whose 12-month forward recession
+        window is COMPLETE in the data. The last ~13 months are excluded rather
+        than counted as "no recession", which would bias the rate down.
+    unconditional_12mo_rate:
+      value: 0.209
+      calibration_status: uncalibrated_illustrative
+      note: >
+        P(recession within 12 months), unconditioned: 124 of 592 months. This
+        is the honest anchor -- nearly three times Section 15.20-B's assumed
+        0.15 default, which is why that default was deleted rather than kept.
+    not_inverted_12mo_rate:
+      value: 0.157
+      calibration_status: uncalibrated_illustrative
+      note: >
+        P(recession within 12 months) with a non-negative 2s10s spread.
+    inverted_12mo_rate:
+      value: 0.489
+      calibration_status: uncalibrated_illustrative
+      note: >
+        P(recession within 12 months) with a negative 2s10s spread: 46 of 94
+        months. About 3.1x the non-inverted rate, which is the evidence that
+        the signal carries information at all.
+    note: >
+      These are the anchor the function adjusts FROM, published so a reader can
+      see how much of any returned probability is the signal and how much is the
+      background rate (D-029).
+
+  reference_episodes:
+    asian_1998:
+      label: "1998 mini-inversion (LTCM/Russia)"
+      expected_start: "1998-05-26"
+      expected_end: "1998-07-27"
+      expected_weeks_approx: 8
+      expected_min_slope_bp: -7.0
+      note: >
+        A SHORT, SHALLOW episode with no recession within 12 months. It is kept
+        as a reference precisely because it is a false positive for the
+        heuristic's mechanism -- an inversion that did not lead to recession.
+        The dates are the DAILY segmentation's (gap closed after 62 days above
+        zero), which reproduces the specification's narrower 1998-06-15..
+        1998-07-09 window inside it. The daily window is recorded because that
+        is what the live check can verify; the narrower one is not reachable by
+        any single gap rule.
+    dotcom_2000:
+      label: "2000 inversion (dot-com)"
+      expected_start: "2000-02-02"
+      expected_end: "2000-12-28"
+      expected_weeks_approx: 47
+      expected_min_slope_bp: -52.0
+      note: >
+        The canonical case: ~47 weeks inverted, reaching -52bp, followed by the
+        2001 recession. Sits in the 26-52 week bucket, the highest measured
+        conditional rate (0.769).
+    gfc_2006:
+      label: "2006-2007 inversion (pre-GFC)"
+      expected_start: "2006-06-08"
+      expected_end: "2007-06-05"
+      expected_weeks_approx: 51
+      expected_min_slope_bp: -19.0
+      note: >
+        Shallow (-19bp) but persistent (~51 weeks) -- it isolates the duration
+        factor, since the depth factor at -19bp is only 0.19. It is also the
+        episode most sensitive to the gap rule: the spread crosses back above
+        zero several times across these months, and a shorter gap would report
+        three fragments rather than one inversion.
+    recent_2022:
+      label: "2022-2024 inversion (post-COVID)"
+      expected_start: "2022-07-06"
+      expected_end: "2024-09-05"
+      expected_weeks_approx: 113
+      expected_min_slope_bp: -108.0
+      note: >
+        The longest and deepest inversion on record, ~113 weeks at as deep as
+        -108bp, and as of 2026-09 NOT followed by a recession. This episode is
+        the entire reason the duration relationship measures as hump-shaped,
+        and it is the strongest available argument that the spec's monotone
+        duration assumption is wrong. Recorded rather than excluded. It is also
+        the input that makes the probability ceiling BIND in production
+        (0.489 + 0.35 = 0.839 uncapped, clamped to 0.80), which is what keeps
+        the ceiling-binding warning reachable.
+
+# Module 15.1 -- duration-weighted curve-trade construction.
+#
+# Section 15.1b's `construct_duration_weighted_curve_trade`, implemented in
+# `models/yield_curve.py` (where 15.1b places it). Decision record: D-059.
+#
+# TWO of the three leaves below exist because the specification's own guard
+# cannot fire. Section 15.1b publishes `net_duration_residual` and attaches a
+# warning when `abs(residual) >= 0.01`, described as "check duration inputs".
+# But the residual is `(N_s*D_s) - (N_s*(D_s/D_l))*D_l`, which is ZERO for every
+# input by construction -- it is the definition, algebraically simplified, not
+# a check. A duration wrong by 10x leaves it at 0.0468 and produces the SAME
+# output as a correct one (D-059 probe P14). The only thing that ever moves it
+# is the 2-decimal rounding of the notional, which is unrelated to any input
+# error. So the plausibility band below is the increment's replacement for a
+# guard that could not fire, and it is the ONLY check here with an input that
+# can fail it.
+#
+# UNIT NOTE: `duration` is in YEARS throughout this block and in the contract,
+# because the plausibility band below divides it by a tenor in years. The
+# ratio `D_short/D_long` that produces the notional is unit-free, so a caller
+# passing period-based durations gets a CORRECT notional and a FAILING band --
+# which is the intended behaviour: the band is what makes a unit error visible
+# (D-059 probe P17/P18). bond_math returns Macaulay duration in PERIODS.
+curve_trade:
+  # The plausible range of (modified duration / tenor in years) for a real
+  # US Treasury. Measured over 1y..30y x coupon 1e-6..10% (D-059 probe P16):
+  # the observed range is 0.1740 .. 1.0000. A zero-coupon bond sits AT 1.0
+  # (ModDur == tenor); the floor falls with maturity as coupons shorten the
+  # effective life, reaching ~0.17 for a 30y near-zero-coupon issue.
+  #
+  # The band is deliberately WIDE. It catches unit errors (years vs periods,
+  # ~2x), decimal-vs-percent mixups and 10x transcription slips -- the defect
+  # classes this project keeps finding -- and it CANNOT catch a 2x error at
+  # short maturities. A narrow band would reject real 20y/30y instruments,
+  # which is why the floor is 0.15 and not 0.5 as first drafted.
+  duration_to_tenor_min:
+    value: 0.15
+    calibration_status: mechanical_rule
+    note: >
+      Lower bound. The measured floor is 0.1740 (30y, near-zero coupon); 0.15
+      leaves headroom below it so the band refuses only genuinely implausible
+      inputs, never a real instrument. First drafted at 0.5, which would have
+      rejected every 20y and 30y UST -- corrected from the measurement rather
+      than from intuition (D-059 probe P16).
+
+  duration_to_tenor_max:
+    value: 1.05
+    calibration_status: mechanical_rule
+    note: >
+      Upper bound. A duration cannot exceed the instrument's own maturity: a
+      2y bond cannot have a 2.1-year duration. 1.05 admits the zero-coupon
+      limit (exactly 1.0) with a little slack for convention differences
+      between annual and continuous compounding, and refuses anything above.
+
+  net_duration_display_pct:
+    value: 0.01
+    calibration_status: mechanical_rule
+    note: >
+      Section 15.1b's literal `0.01`, RETAINED but re-purposed. The
+      specification used it as the threshold for a warning about the residual,
+      which is tautologically zero, so as a warning threshold it is dead. Here
+      it is the PRINTED precision of the residual and the rounding tolerance
+      used when comparing the two legs' duration-dollars -- i.e. it states how
+      small a difference this function treats as "balanced" for display, and
+      is no longer presented as a test of the inputs.
+
+  # The breakeven constructor (Module 15.2, D-060) shares the duration/tenor
+  # band above, because the check is identical in kind: is this duration a
+  # plausible fraction of the maturity its instrument claims? What differs is
+  # the arithmetic the band is asked to bless -- see `construct_breakeven_trade`
+  # for why the RATIO is the wrong quantity to guard and the pair is the right
+  # one.
+  #
+  # Section 15.1b's breakeven sample publishes NEITHER a residual NOR a
+  # warnings list, so it contains no guard of any kind: the only way a wrong
+  # duration can be reported is for the constructor to refuse it. These two
+  # leaves are the floor on the REAL/NOMINAL duration RATIO, and both are
+  # measured (D-060 probe P7/P11), not chosen.
+  breakeven_duration_ratio_min:
+    value: 0.5
+    calibration_status: mechanical_rule
+    note: >
+      Lower bound on Dur_tips / Dur_nominal. MEASURED via the SHIPPED
+      bond_math primitives: over a 10y grid of 4x4 TIPS x nominal coupons
+      {0.125%, 2%, 4.5%, 8%} x real yields {0.5%, 1.5%, 2.5%, 3.5%} x
+      breakevens {0.5%, 1.5%, 2.5%} (192 cases), the realised range is
+      0.6820 .. 1.5528 and 72 of the 192 sit BELOW 1.0 -- the nominal leg
+      having the longer duration is a real regime, not a pathology. It arises
+      when the TIPS coupon is HIGH relative to the nominal's: a high real
+      coupon at a low real yield has a short duration, while a low-coupon
+      nominal at a high yield has a long one. So this floor is NOT the mirror
+      of a "tips must be longer" assumption; it exists to catch a duration
+      assigned to the wrong leg. Note both coupons are free parameters here;
+      the narrower fresh-issue-nominal grid (nominal repriced to par) gives
+      0.7686 .. 1.4742 over 48 cases. Swapping the two durations in the 10y
+      par-like case gives 0.888, INSIDE this band -- the honest limit of the
+      check, stated in the function's docstring: a leg swap between two
+      similar durations is not detectable here.
+
+  breakeven_duration_ratio_max:
+    value: 1.6
+    calibration_status: mechanical_rule
+    note: >
+      Upper bound on Dur_tips / Dur_nominal. MEASURED maximum over the same
+      192-case grid is 1.5528 (a low-coupon TIPS at a low real yield against a
+      high-coupon nominal at a high yield), so 1.6 leaves only 3% headroom --
+      LESS than an earlier draft of this note claimed (it recorded 1.3790; that
+      figure came from a simplified local pricer and is NOT reproducible from
+      the shipped bond_math -- O-30). The bound that matters is the
+      degenerate one: a ratio of exactly 1.0 means the two legs are the SAME
+      bond, so the trade has no exposure to anything and is not a breakeven
+      trade at all. That case is refused separately and explicitly rather than
+      by being pulled outside this band, because a band edge is not a statement
+      about a degenerate instrument.
+
+# Module 15.3 -- the cross-market relative-value constructor (D-062).
+#
+# Section 20.12's constructor has **no input contract and no guard of any
+# kind**. `duration_b = 0` divides by zero, a duration wrong by 10x is silent,
+# and the specification's own default for the stressed correlation makes its
+# headline number negative on every real pair in the sample. These three leaves
+# are what replace that silence.
+#
+# Note the band is on each leg's ABSOLUTE modified duration, not on a
+# duration/tenor ratio like its two siblings. A cross-market pair has no shared
+# maturity, so the ratio D_a/D_b is legitimately 0.0161 .. 62.21 over the same
+# grid and carries no information about whether either leg is plausible.
+cross_market_rv:
+  minimum_duration_years:
+    value: 0.25
+    calibration_status: mechanical_rule
+    note: >
+      Per-leg floor on a MODIFIED duration, in YEARS. MEASURED through the
+      shipped bond_math over 5 tenors {3m,2y,5y,10y,30y} x 4 coupons
+      {0,2%,4.5%,8%} x 4 yields {0.5%,2%,4.5%,8%} (80 cases, D-062 probe P3):
+      the realised range is 0.4810 (a 3m bill at 8%) .. 29.9250 (a 30y
+      zero-coupon). 0.25 sits below the measured floor so the band refuses only
+      genuinely implausible inputs, never a real instrument. STATED LIMIT: this
+      cannot catch a Macaulay-periods-for-modified-years error, because periods
+      and years are the same order of magnitude at short maturities; that is
+      what `duration_is_modified` is for.
+
+  maximum_duration_years:
+    value: 30.0
+    calibration_status: mechanical_rule
+    note: >
+      Per-leg ceiling. A modified duration cannot exceed the instrument's own
+      maturity and no US Treasury exceeds 30 years, so a zero-coupon 30y sits
+      AT the measured maximum 29.9250 and 30.0 admits it with slack for
+      convention differences between annual and continuous compounding.
+      Anything above it is a unit error or a non-Treasury instrument.
+
+  max_abs_hedge_degradation:
+    value: 0.5
+    calibration_status: fitted_assumption
+    note: >
+      Plausibility bound on abs(correlation_normal - correlation_stressed).
+      MEASURED by scripts/live_cross_market_rv.py over 8 real US cross-market
+      pairs on daily changes (S&P tail = the worst decile of S&P daily percent
+      change, n=248; VIX tail = VIX at or above its 90th percentile, n=928).
+      The realised abs(degradation) range is 0.004 .. 0.175 on the S&P tail and
+      0.072 .. 0.320 on the VIX tail, so the worst measured pair is 0.320 and
+      this bound has **1.56x** headroom over it. An earlier draft of this note
+      claimed "about 3x" from the S&P tail alone; the live check's
+      headroom assertion is what corrected it (the same class of overclaim
+      D-060's O-30 recorded, caught this time before the record set was
+      written). The bound REFUSES the values the specification's own default
+      produces, which reach 1.523 because the configured stressed correlation
+      0.9 exceeds the normal correlation of every pair measured (max 0.820).
+      Exceeding it means the two correlations were supplied on inconsistent
+      bases, or one of them is a default rather than a measurement of this
+      pair. It is a fitted_assumption, not a mechanical_rule, because it is an
+      estimate from data rather than a pre-committed rule.
+
+# Module 3 -- the rule-based regime classifier.
+#
+# Section 6.2's sample code writes six literal thresholds and a
+# `else` fallthrough into `early_expansion`. Externalised here so the bands are
+# reviewable side by side and so the reachability of each state is something a
+# test can assert rather than something a reader has to simulate. See D-045.
+# Module 14 — thesis invalidation (the LTCM-lesson hard gate).
+#
+# `derive_invalidation_conditions` decides what would falsify a thesis, and its
+# output lands in `TradeIdea.stop_or_invalidation`, which the schema refuses to
+# leave empty for a live trade. Section 20.15's sample writes both of these as
+# literals (`< 0` twice, and the string "reverses positive"), and its fallback
+# sentence is non-empty — so it SATISFIES the very gate it says is unmet. They
+# move here so the crossing level and the agreement band are stated once.
+invalidation:
+  zero_crossing_threshold:
+    value: 0.0
+    calibration_status: mechanical_rule
+    note: >
+      The level a signed signal must cross back over to falsify a thesis that
+      leans on its current sign. Zero is NOT a tunable: it is the models' own
+      balance point, stated in their own contexts — `labor_tightness_score`'s
+      context reads "Positive = tightening, negative = loosening vs a balanced
+      market", and `inflation_breadth_score` averages signed month-over-month
+      changes. It lives here so the crossing is written once and the sign
+      convention cannot drift, not because anyone chose it.
+
+  supporting_agreement_class:
+    value: "HIGH"
+    calibration_status: mechanical_rule
+    note: >
+      The `inflation_convergence_classifier` verdict a thesis may rest on. Its
+      vocabulary is HIGH / MEDIUM / LOW / CONFLICTED, and it reports AGREEMENT
+      STRENGTH, not direction — `agreeing` is the majority COUNT, not the
+      majority SIDE. So the falsifier that model can support is an AGREEMENT
+      COLLAPSE, not the "broad-based reacceleration" Section 20.15's docstring
+      attributes to it: a HIGH verdict is equally compatible with six measures
+      agreeing down and with six agreeing up, and the verdict cannot tell them
+      apart (D-063 probe P8). Only a thesis resting on HIGH can have its
+      agreement collapse, so MEDIUM / LOW / CONFLICTED produce no condition.
+
+# Module 14 — the Q7 confirmation-signal list (Section 16.4 / D-066).
+#
+# `build_confirmation_signals` states, per model, whether it corroborates or
+# contradicts the thesis gap. Section 16.4's sample has FIVE defects, and the
+# most consequential is that its single `if`/`else` reports an UNREADABLE value
+# (a dict — which `four_pillar_scorecard` and `inflation_convergence_classifier`
+# both publish) as an active CONTRADICTION, and reports a value of exactly ZERO
+# the same way. The schema's own vocabulary has three members (confirms /
+# contradicts / neutral) and the sample used two of them for three outcomes.
+#
+# THERE IS NO `confirmation_signals:` BLOCK HERE, deliberately. The function has
+# exactly one constant — the marker it appends when a corroborating model also
+# warned — and it is a display TOKEN, not a tunable: nothing about it is a fact
+# about the economy, a convention, or an uncalibrated placeholder, so it does
+# not belong in a `{value, calibration_status}` envelope (Section 10.4 scopes
+# this file to country lists, model params and thresholds). It lives beside the
+# slot-name constants in `thesis_layer/signals.py` for the same reason those do.
+#
+# The three SLOT LABELS likewise do not live here. Section 16.4 labels the
+# middle slot "inflation_convergence" (a different model), Section 7.1's golden
+# JSON labels the three "labor_tightness_score / inflation_breadth_simple /
+# curve_slope" (and `curve_slope` is not even a parameter), and Section 16.2
+# actually passes "output_gap / inflation_breadth_score / labor_tightness_score"
+# — six distinct labels for three slots, only one of which appears in all three
+# (O-69, full extent). A config leaf would be a seventh copy; the function
+# derives each label from the result's own `model_name` instead, which is the
+# only source that cannot drift from what was actually read.
+
+# Module 13-adjacent — the forward catalyst calendar (Section 16.4 / D-065).
+#
+# Section 16.4 names its sources in prose ("FRED release/dates +
+# federalreserve.gov RSS ... NEVER a third-party calendar") and returns three
+# hardcoded STRINGS with no dates. The three FRED release ids it implies are
+# collected here, and each one is stored beside the release NAME it must return.
+#
+# WHY THE NAME MATTERS. A wrong FRED release id does not fail — it returns a
+# different release's dates under the configured label. MEASURED 2026-09-19:
+# `rid=101` is "FOMC Press Release" and returns a row for EVERY CALENDAR DAY
+# (50 consecutive daily rows in a 50-day window), so a reader that trusted the
+# label would report the next FOMC as *tomorrow*, every day, forever. The
+# function warns when a configured id's returned name disagrees with it.
+catalyst_calendar:
+  cpi_release_id:
+    value: 10
+    calibration_status: institutional_convention
+    note: >
+      FRED release id for the Consumer Price Index. MEASURED 2026-09-19: a
+      120-day window returned three forward events named "Consumer Price
+      Index" (2026-10-14, 2026-11-10, 2026-12-10). It is an institutional
+      convention rather than a tunable — it is FRED's identifier, not a choice.
+
+  nfp_release_id:
+    value: 50
+    calibration_status: institutional_convention
+    note: >
+      FRED release id for the Employment Situation (non-farm payrolls).
+      MEASURED 2026-09-19: three forward events, all named "Employment
+      Situation" (2026-10-02, 2026-11-06, 2026-12-04).
+
+  pce_release_id:
+    value: 54
+    calibration_status: institutional_convention
+    note: >
+      FRED release id for Personal Income and Outlays (the PCE deflator the Fed
+      targets). MEASURED 2026-09-19: four forward events, all named "Personal
+      Income and Outlays" (2026-09-30, 2026-10-29, 2026-11-25, 2026-12-23).
+
+  horizon_days:
+    value: 120
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far forward the calendar looks. A tuned number, not a convention:
+      120 days covers at least one release of each monthly catalyst (CPI, NFP,
+      PCE) plus the next two-to-three FOMC meetings, which is the horizon a
+      6-12 month thesis actually needs to see its first scheduled test. It is
+      NOT the length of an unfiltered FRED request — that path costs one HTTP
+      call per calendar day and is never used here.
+
+  http_timeout_seconds:
+    value: 30.0
+    calibration_status: institutional_convention
+    note: >
+      Per-request timeout. MEASURED 2026-09-19: FRED answered the release-id
+      endpoint in ~1.0s and the Fed's FOMC page in ~0.6s, so 30s is ~30x
+      headroom for a slow day without hanging a thesis build behind a dead
+      source.
+
+
+#
+# Section 16.4 writes four probabilities and four payoff multipliers as LITERALS
+# in the function body, which Section 21 prohibits, and its convergence mapping
+# has TWO branches for a FIVE-member vocabulary. Everything numeric moves here.
+#
+# TWO STRUCTURAL FACTS about this block, both stated because they are the reason
+# it looks the way it does:
+#
+# 1. The four probabilities are NOT independently settable. Each is
+#    `base` or `(1 - base) * share`, so the four sum to exactly 1 only when the
+#    three `remaining_share` leaves sum to 1 — one constraint across three
+#    leaves, which no leaf can carry alone (O-41's shape). The constraint is
+#    therefore asserted explicitly by `ScenarioDistributionSettings`.
+# 2. Every leaf here is `uncalibrated_illustrative`, which is what Section 16.4
+#    says of them: "ILLUSTRATIVE probabilities, NOT a real Monte Carlo". They
+#    are not estimates and the block must not read as if they were.
+scenario_distribution:
+  base_probability_high:
+    value: 0.55
+    calibration_status: uncalibrated_illustrative
+    note: >
+      P(the gap closes as modelled) when the four-pillar convergence is HIGH.
+      Section 16.4's literal. It rises with convergence, which is the right
+      direction: more independent agreement means the base case is more likely.
+
+  base_probability_medium:
+    value: 0.45
+    calibration_status: uncalibrated_illustrative
+    note: Section 16.4's literal for MEDIUM convergence.
+
+  base_probability_low:
+    value: 0.30
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 16.4's literal, and the value its `else` branch assigns to EVERY
+      other convergence state. Only LOW reaches here now: CONFLICTED and
+      NO_SIGNAL produce NO distribution at all, because a thesis cannot be built
+      on them — `MacroThesis` hard-blocks a live trade on CONFLICTED, and
+      NO_SIGNAL means every pillar read neutral, so there is nothing to
+      distribute.
+
+  remaining_share_partial_close:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The share of `1 - base` assigned to "the gap partially closes". Together
+      with the next two leaves this must sum to 1; the settings model asserts it.
+
+  remaining_share_reversal:
+    value: 0.35
+    calibration_status: uncalibrated_illustrative
+    note: The share of `1 - base` assigned to "the thesis is invalidated".
+
+  remaining_share_tail:
+    value: 0.15
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The share of `1 - base` assigned to the adverse tail. It is the SMALLEST
+      probability and the LARGEST loss, which is the asymmetry the distribution
+      exists to make visible.
+
+  payoff_multiple_base:
+    value: 1.0
+    calibration_status: mechanical_rule
+    note: >
+      The base case's payoff as a multiple of the gap: 1.0 by DEFINITION, not by
+      choice — "the gap closes as modelled" pays the gap. It is a leaf anyway so
+      the four branches are described in one place and a reader does not have to
+      infer which one is definitional.
+
+  payoff_multiple_partial_close:
+    value: 0.4
+    calibration_status: uncalibrated_illustrative
+    note: Section 16.4's literal `40` against a `* 100` scale.
+
+  payoff_multiple_reversal:
+    value: -0.6
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 16.4's literal `-60`. The reversal loses 60% of the gap; it does
+      not lose the gap, because a partially-wrong thesis is not a
+      fully-wrong one.
+
+  payoff_multiple_tail:
+    value: -1.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 16.4's literal `-150`. **The tail loses 1.5x the gap** — more than
+      the entire mispricing — which is the LTCM shape the Module 12.4 caveat
+      names: a positive expected value says nothing about surviving the tail.
+
+  percent_to_bp:
+    value: 100.0
+    calibration_status: mechanical_rule
+    note: >
+      The conversion from a PERCENT gap to a BASIS-POINT payoff: 1% = 100bp.
+      Definitional, but stated once because a percent/basis-point mixup is the
+      100x error class this project has hit twice (D-054, D-060). The function
+      reads `MarketPricingGap.unit` and REFUSES a gap it cannot convert rather
+      than assuming this factor applies — `unit` is a bare `str` defaulting to
+      "%", so a caller passing an already-bp gap would otherwise be scaled by
+      100 silently.
+
+regime:
+  # --- the two axes the classifier actually reads -----------------------
+  #
+  # `output_gap` is measured against potential (percent of potential).
+  # `inflation_trend_3m` is the 3-month ANNUALIZED change in the price level,
+  # in percent -- a MOMENTUM measure, not a level. Section 6.2 declares both
+  # `inflation_yoy` and `inflation_trend_3m` and then uses only the latter; the
+  # level is retained because it is what makes a momentum reading
+  # interpretable, and because Section 21.1's "no input may be declared and
+  # unread" rule (the D-037 defect class) applies.
+  recession_output_gap_max:
+    value: -1.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 6.2's literal (`output_gap < -1.5`). A gap more negative than
+      this, with falling inflation, is classified as recession.
+
+  weak_growth_output_gap_max:
+    value: -0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 6.2's literal (`output_gap < -0.5`), shared by the stagflation
+      band and the lower bound of the disinflation band. One config entry
+      because it is ONE threshold appearing in two tests -- two entries could
+      drift apart and open a gap no rule covers.
+
+  late_expansion_output_gap_min:
+    value: 1.0
+    calibration_status: uncalibrated_illustrative
+    note: Section 6.2's literal (`output_gap > 1.0`).
+
+  disinflation_output_gap_max:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 6.2's literal, the upper bound of the near-trend band
+      `-0.5 <= output_gap <= 0.5`.
+
+  # --- the inflation-momentum side ---------------------------------------
+  #
+  # Section 6.2 uses a bare `0` as its inflation-momentum boundary. Zero as a
+  # strict boundary means a reading of exactly 0.0 -- plausible, since the
+  # trend is computed from rounded published indices -- falls through to
+  # whichever branch's `else` happens to catch it rather than to a band chosen
+  # deliberately. `neutral_inflation_trend_band_pp` replaces the bare zero with
+  # an explicit band, in the same shape as D-040's correction to
+  # `qe_qt_stance`'s unreachable `== 0` branch.
+  neutral_inflation_trend_band_pp:
+    value: 0.1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Inflation momentum within +/-this many percentage points of zero is
+      treated as FLAT, not as rising or falling. Set at the reporting
+      precision of the momentum inputs so that a rounding-level reading does
+      not manufacture a direction. Section 6.2's bare `< 0` / `> 0` tests
+      classify a reading of exactly 0.0 by fallthrough rather than by rule;
+      this band is what makes the flat case explicit.
+
+  measured_rising_inflation_rate:
+    value: 0.9375
+    calibration_status: fitted_assumption
+    note: >
+      MEASURED 2026-09-17: the share of the 240-quarter window in which the
+      inflation axis read `rising` (225/240). Published because it is the
+      number that makes the state base rates above interpretable, and because
+      it is a KNOWN ARTEFACT of the specification's axis definition rather than
+      a fact about the economy.
+
+      The cause is structural, not statistical. `inflation_trend_3m` is a
+      3-month ANNUALIZED change -- a month-over-month measure -- and the CPI
+      level falls in only ~6% of months, so an axis defined on its sign is
+      near-constant by construction. Measured alternatives over the same
+      window: a 12-month change of the 12-month YoY rate gives 124 rising / 10
+      flat / 106 falling; a 3-month annualized reading *relative to* the 12-month
+      YoY rate gives 121 / 18 / 101. Either is a genuine two-sided axis; the
+      specification's is effectively one-sided.
+
+      This is disclosed on every output rather than corrected here, because
+      changing which input defines the inflation axis is a redefinition of
+      Section 6.2's own declared input -- see OPEN_ISSUES O-23. The model warns
+      with the measured share so a reader is never left believing `rising` is a
+      finding when it is the base rate.
+
+  # --- the growth-side hysteresis band -----------------------------------
+  growth_momentum_band_pp:
+    value: 0.25
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The output gap is revised, and -- more importantly -- a gap of +0.05%
+      and a gap of -0.05% are the same economic state measured with different
+      rounding. Section 6.2 makes `mid_expansion` and `early_expansion`
+      depend on the SIGN of the output gap, so a gap oscillating around zero
+      flips the label every period. This band absorbs that: a gap inside
+      +/-this value is treated as AT TREND for the purpose of choosing between
+      those two states. The classification that results is stable under a
+      revision of a few basis points, which the specification's is not.
+
+  # --- the published state frequencies (D-029) ---------------------------
+  #
+  # The classifier returns a CATEGORICAL from threshold comparisons on two
+  # continuous axes. Per D-029 a categorical must travel with the frequency at
+  # which it occurs -- a state that fires 90% of the time carries no
+  # information, and a reader cannot tell without the number. These are
+  # MEASURED from this build's own live series by
+  # `scripts/live_regime_check.py`, which recomputes every one of them and
+  # fails on drift, so they cannot go stale silently.
+  base_rates:
+    observations_measured_value:
+      value: 240
+      calibration_status: fitted_assumption
+      note: >
+        Number of quarterly observations the rates below were measured over.
+        MEASURED on 2026-09-17 over 1966-07-01 .. 2026-04-01 (240 common
+        GDPC1/GDPPOT quarters), from this build's own live series by
+        `scripts/live_regime_check.py`. A zero here means NOT YET MEASURED and
+        must not be read as a measured zero; the live check asserts this count
+        matches its own window and fails on drift in any rate below.
+    rates:
+      early_expansion_value:
+        value: 0.0
+        calibration_status: fitted_assumption
+        note: >
+          Measured frequency of `early_expansion`. **ZERO over 240 quarters --
+          the one state not reached in the measured window.** This is NOT a
+          coding defect: the cell is `-0.25 <= gap < 0` with inflation not
+          rising, and all eight quarters that landed in that strip had RISING
+          3-month momentum, so the `reflation` test claims them first. See the
+          note on `neutral_inflation_trend_band_pp` and OPEN_ISSUES O-23: the
+          axis definition, not the grid, is what crowds this state out.
+      mid_expansion_value:
+        value: 0.0042
+        calibration_status: fitted_assumption
+        note: "Measured frequency of `mid_expansion` (1/240)."
+      late_expansion_value:
+        value: 0.4875
+        calibration_status: fitted_assumption
+        note: >
+          Measured frequency of `late_expansion` (117/240). Nearly half of
+          sixty years -- NOT a rare state, and the number a reader needs
+          before treating the label as notable (D-029).
+      slowdown_value:
+        value: 0.0083
+        calibration_status: fitted_assumption
+        note: >
+          Measured frequency of `slowdown` (2/240). Low because the cell is
+          `contraction` with falling momentum, and momentum reads `rising` in
+          225 of 240 quarters -- the same axis artefact as `early_expansion`.
+      recession_value:
+        value: 0.2625
+        calibration_status: fitted_assumption
+        note: "Measured frequency of `recession` (63/240) -- consistent with the post-1966 record."
+      recovery_value:
+        value: 0.0125
+        calibration_status: fitted_assumption
+        note: >
+          Measured frequency of `recovery` (3/240). Reachable only when
+          `output_gap_change > 0` is supplied, which the live check does.
+      disinflation_value:
+        value: 0.0083
+        calibration_status: fitted_assumption
+        note: "Measured frequency of `disinflation` (2/240)."
+      reflation_value:
+        value: 0.0625
+        calibration_status: fitted_assumption
+        note: "Measured frequency of `reflation` (15/240)."
+      stagflation_value:
+        value: 0.1542
+        calibration_status: fitted_assumption
+        note: "Measured frequency of `stagflation` (37/240)."
+
+  # --- Module 1's trilemma check (D-048) ---------------------------------
+  #
+  # Section 15.20-A specifies this function with two HARDCODED confidences
+  # (0.7 / 0.6 / 0.4 / 0.8) and a bare `<-0.10` reserves threshold. The
+  # hardcoded confidences are refused per Section 22.8 -- `compute_confidence()`
+  # is the only producer -- and the threshold is kept as specified but now
+  # carries its measured base rate, because a 10% drawdown rule fires far more
+  # often than a peg crisis occurs.
+  #
+  # MEASURED 2026-09-17 on `TRESEGGBM052N` (UK total reserves excluding gold,
+  # 843 obs from 1950-12 -- long enough to COVER Black Wednesday, which is why
+  # this function is live-verifiable at all on a US-only build).
+  trilemma:
+    # The specification's own threshold, Section 15.20-A: `<-0.10`.
+    reserves_depletion_threshold_3mo:
+      value: -0.10
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Section 15.20-A's literal, retained unchanged. A 3-month reserves
+        decline steeper than this is the spec's "reserves depleting" test.
+        MEASURED BASE RATE over the UK's 834 computable MONTHLY observations:
+        **88 months (10.6%)** breach it, and the breaches cluster in 1974-76,
+        1981, 1992, 1997, 2008 and 2016. A threshold that fires on a tenth of
+        all months is NOT a crisis detector on its own -- it is a precondition
+        that the direction-conflict gate must then narrow. Published in
+        `value` so a reader can tell the two apart. (NOT measured over the raw
+        observation count: the series' first six points are ANNUAL and would
+        make a "3-month change" span years -- see the CADENCE FINDING under
+        `base_rates` below.)
+
+    # ADDED, not in the specification -- see D-048. The spec's 3-month trend
+    # MISSES the Black Wednesday month itself: at 1992-09 the 3-month change is
+    # only -5.37%, well inside the threshold, and the breach first appears at
+    # 1992-10 (-11.00%). A one-month measure DOES fire on the crisis month
+    # (-7.25%, the largest single month in 1992-93). Both are kept: they carry
+    # different information and are NOT nested -- over real history the UK has
+    # 53 months where only the 3-month test fires and 30 where only the 1-month
+    # test fires.
+    reserves_break_threshold_1mo:
+      value: -0.07
+      calibration_status: fitted_assumption
+      note: >
+        NOT in Section 15.20-A. A 1-month reserves drop steeper than this is an
+        acute break rather than a trend, and it is what makes the check
+        CONTEMPORANEOUS. The value is chosen so that Black Wednesday's crisis
+        month registers: 1992-09 reads -7.25%, the steepest single month in
+        1992-93, while the surrounding months are all smaller in magnitude.
+        MEASURED BASE RATES over each series' monthly span: UK 65/834 (7.8%),
+        Korea 45/833 (5.4%), Indonesia 56/665 (8.4%). The 1-month and 3-month
+        breach SETS are NOT nested. On the Korean 1997 crisis the two are
+        complementary: 1997-09 breaches the 3-month test only (-10.80% vs
+        -2.30%), an early warning, and by 1997-11 the 1-month test is firing
+        hard (-20.04%, with the 3-month also at -21.66%). `fitted_assumption`
+        because the threshold is set from a single historical episode and has
+        not been fitted across crises.
+
+    confidence_penalty_for_manual_trilemma_booleans:
+      value: 0.20
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The three trilemma booleans (`has_fixed_or_managed_fx`,
+        `has_free_capital_movement`, `claims_monetary_independence`) are
+        STRUCTURAL CLASSIFICATIONS of a country's regime, supplied by the
+        caller rather than measured from a series. Section 21.1 supplies no
+        route for any of them, so they are manual by construction -- tracked as
+        O-28. This is the `is_heuristic_not_calibrated` penalty, applied
+        because a misclassified peg makes every downstream severity wrong at
+        once, and there is no series that could disagree with the caller.
+
+    # The MEASURED firing frequency of each reserves test (D-029). A threshold
+    # comparison produces a categorical, so it must travel with the frequency at
+    # which it fires -- otherwise a reader cannot tell a precondition from a
+    # crisis signal.
+    #
+    # Measured 2026-09-17. The window is the MONTHLY span of each series, not
+    # its observation count -- see the CADENCE FINDING below, which this
+    # increment's live check caught on its first run.
+    #
+    # CADENCE FINDING: `TRESEGGBM052N` reports 843 observations and
+    # `TRESEGKRM052N` 842, but their first SIX are ANNUAL (1950-12 .. 1955-12);
+    # both become monthly only at 1956-12. `TRESEGIDM052N` is annual to 1964-11,
+    # then quarterly to 1969-11, monthly from 1970-12 (700 obs, 668 monthly).
+    # Every threshold here is a change over a NAMED number of months, so the
+    # non-monthly prefix computes a different span than the one it names and is
+    # EXCLUDED from the measurement. The honest UK window is 837 monthly
+    # observations from 1956-12, and 834 of those have both measures computable
+    # (the first three months have no 3-month lag).
+    base_rates:
+      observations_measured_value:
+        value: 834
+        calibration_status: fitted_assumption
+        note: >
+          Months of the UK's MONTHLY span (`TRESEGGBM052N`, 837 observations
+          from 1956-12) at which BOTH a 1-month and a 3-month change are
+          computable -- 834, because the first three months of any monthly
+          series has no 3-month lag. This is the denominator for both rates
+          below. It is NOT the observation count (843), which includes six
+          annual points that would span years under a 3-month label.
+      depletion_3mo_base_rate:
+        value: 0.106
+        calibration_status: fitted_assumption
+        note: >
+          MEASURED 88/834 = 10.6% over the monthly span. The specified 3-month
+          threshold fires on roughly a TENTH of all months -- so "reserves are
+          depleting" is a PRECONDITION, not a crisis signal. NOT every breach is
+          a peg defense: the 2016-09/10/11 reading is BREXIT, an
+          earlier-than-expected-exit episode. Korea over its own monthly span
+          reads 66/833 = 7.9%; Indonesia 41/665 = 6.2%.
+      break_1mo_base_rate:
+        value: 0.078
+        calibration_status: fitted_assumption
+        note: >
+          MEASURED 65/834 = 7.8% on the UK; Korea 45/833 = 5.4%; Indonesia
+          56/665 = 8.4%. The added 1-month threshold (see below). The two
+          breach SETS are NOT nested, verified over real history: the UK has 53
+          months where ONLY the 3-month test fires and 30 where ONLY the
+          1-month test fires, and Korea has 35 and 14. Both thresholds are
+          therefore load-bearing, and neither subsumes the other.
+          NOTE the earlier figures (10.8% / 8.2%, over 842) were computed over
+          the observation count INCLUDING the annual prefix; corrected here.
+      note: >
+        Both figures are frequencies of the TEST firing, not of a peg crisis
+        occurring, and they are measured on non-US history because the US has
+        no peg to measure. They are disclosed on every output for that reason.
+
+    # Section 18.1's Black Wednesday setup is the reference episode.
+    reference_episode:
+      country: gb
+      reserves_series: TRESEGGBM052N
+      event_date: "1992-09-16"
+      expected_severity: CRITICAL_PEG_STRESS
+      expected_month: "1992-09"
+      note: >
+        Black Wednesday (1992-09-16) is the specification's own worked example
+        (Section 18.1) and the reason this function exists. The live check
+        asserts the classifier reaches CRITICAL_PEG_STRESS on or before
+        1992-10, because the reserves break is measured at MONTHLY frequency
+        and the sterling withdrawal was completed within September.
+        NOTE the polarity trap: this is `country: gb` on a build that
+        implements only `us` (Section 22.3). The UK carries no US macro series
+        and is NOT a supported thesis country -- the historical series is used
+        as a FIXTURE to validate the rule, which is a different act from
+        supporting the country. See D-048.
+
+# Module 12.2 -- the four-pillar scorecard (Section 20.11).
+#
+# The specification writes four literals (0.9, 0.75, 3, 2) and four hardcoded
+# confidences into the function body. Exposed here for the same reason the
+# regime bands were (D-045): the thresholds' REACHABILITY is a property a test
+# should assert, and it is not obvious by inspection -- see D-050.
+#
+# Two specification defects are corrected and both are about these numbers:
+#
+#   * `agree_frac >= 0.9` can never bind as written. The denominator is the
+#     number of NON-NEUTRAL pillars (1..4), so the reachable ratios are exactly
+#     {1.0} at n=1, {0.5, 1.0} at n=2, {0.667, 1.0} at n=3 and {0.5, 0.75, 1.0}
+#     at n=4. NO ratio ever lands in [0.9, 1.0), so 0.9 and 1.0 are the same
+#     threshold, and the pair 0.9/0.75 distinguishes nothing except the single
+#     n=4 3-1 split. The gates are therefore expressed as a DISSENT COUNT --
+#     `max_dissenting_pillars_high=0` (unanimity) and
+#     `max_dissenting_pillars_medium=1` -- which is what the fractions were
+#     reaching for and which has no granularity cliff. The fraction is still
+#     PUBLISHED alongside, so a reader sees both.
+#
+#   * A "1 dissenter out of 3" read scored LOW while "1 out of 4" scored
+#     MEDIUM. Under the dissent-count form they are both MEDIUM, which is the
+#     property the thresholds were trying to express.
+scorecard:
+  # --- the agreement gates, as dissent counts ---------------------------
+  max_dissenting_pillars_high:
+    value: 0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      HIGH requires UNANIMITY among the non-neutral pillars: zero dissenters.
+      Section 20.11's `agree_frac >= 0.9` expresses this, and this is the only
+      thing it can express -- at every n, the unanimous ratio is exactly 1.0
+      and the next value down is 0.75 (n=4) or 0.667 (n=3) or 0.5 (n=2). So
+      the literal 0.9 is retained in meaning (unanimity or nothing) and
+      rewritten as the count it actually denotes.
+
+  max_dissenting_pillars_medium:
+    value: 1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEDIUM permits a SINGLE dissenter among however many non-neutral pillars
+      there are. Section 20.11's `agree_frac >= 0.75` reaches exactly the n=4
+      3-1 split and nothing else, so the literal is a one-configuration gate;
+      as a dissent count it covers the 2-1 (n=3) and 3-1 (n=4) reads alike.
+      A 2-2 split is never MEDIUM -- it is CONFLICTED, and is caught by the
+      opposition test before this gate is consulted at all.
+
+  # --- the independence gates, per Section 15.19-D ----------------------
+  min_independent_families_high:
+    value: 3
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.19-D's own worked example: "five agreeing BLS-CPI-derived
+      sub-measures should never produce higher confidence than two genuinely
+      independent sources agreeing". Three families is the level at which the
+      section is willing to call agreement real. NOT a measured quantity --
+      no live series carries a source-family label, so this cannot be
+      calibrated from data and remains an illustrative floor (see D-050's
+      disclosure of what is unvalidatable here).
+
+  min_independent_families_medium:
+    value: 2
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Two families: one government release and one market-based signal is the
+      minimum that makes agreement mean anything. A single family, however
+      many sub-measures compose it, is one vote and cannot reach MEDIUM.
+
+  # --- the "most of the space is CONFLICTED" disclosure ------------------
+  measured_conflicted_share:
+    value: 0.617
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEASURED, not assumed: over the full admissible input space (3^4 = 81
+      pillar combinations x 7 family counts), 350 of 567 configurations are
+      CONFLICTED -- 61.7%. Any read of four pillars over {-1,0,+1} opposes
+      itself most of the time, so a bare `CONFLICTED` verdict carries less
+      information than its prominence suggests. The share is published on
+      every output so a reader can see whether CONFLICTED is a finding about
+      this read or the base state of the input space. Compare D-047's
+      `HIGH`-is-the-base-state finding (89.5%), which this mirrors.
+
+  # --- the pillar DERIVATION bands (not part of Section 20.11) ---------
+  #
+  # Section 20.11 takes the four pillar directions as GIVEN ints, so the
+  # specification never says where a +1 comes from. A scorecard whose every
+  # live check supplies its own inputs proves nothing about the wiring, so
+  # the live check derives all four from real series and needs explicit
+  # bands. These are the bands and nothing else -- the derivation RULES
+  # (which sign means what) live in the check's docstring, where their
+  # prose can be audited against the arithmetic.
+  pillar_rules:
+    unemployment_change_band:
+      value: 0.1
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Percentage points of UNRATE 3-month change treated as neutral. The
+        sign is INVERTED downstream: rising unemployment is easing-implying.
+        0.1pp is roughly a tenth of a typical monthly move, so it filters
+        rounding noise without filtering a genuine turn.
+
+    inflation_change_band:
+      value: 0.05
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Percentage points of core-PCE year-over-year 3-month change treated as
+        neutral. Small because the YoY rate is already smooth; a 0.05pp move
+        in it is a real change in momentum, not noise.
+
+    yield_change_band:
+      value: 0.10
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Percentage points of 10-year yield 3-month change treated as neutral.
+        Daily Treasury data is noisy at the 1-5bp scale, so this is set above
+        the noise floor while staying well below a real repricing.
+
+    real_rate_change_band:
+      value: 0.10
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Percentage points of real-fed-funds (DFF minus core PCE yoy) 3-month
+        change treated as neutral. This is a GAP series, so it moves less than
+        its components; the band is shared with the nominal yield change
+        because the differencing dominates the variance.
+
+convergence:
+  # --- the agreement gates, as dissent counts ---------------------------
+  #
+  # Section 22.10 writes `frac >= 0.8` / `frac >= 0.6`. Past the CONFLICTED
+  # gate every non-neutral signal points the same way, so the reachable
+  # agreement fraction is exactly 1.0 and the two literals are the SAME test
+  # (D-050's fifth defect, structural to the gate order). They are exposed as
+  # dissent counts, which is what they can actually express, and the fraction
+  # is still published on every result so the gates stay auditable.
+  max_dissenting_signals_high:
+    value: 0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      HIGH requires UNANIMITY among the non-neutral signals: zero dissenters.
+      Section 22.10's `agree_frac >= 0.8` is the nearest literal, and past the
+      CONFLICTED gate it only ever evaluates to 1.0 -- so it already means
+      unanimity and nothing else. Written here as the count it denotes.
+
+  max_dissenting_signals_medium:
+    value: 1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEDIUM permits a SINGLE dissenting signal. **The reachable value is in
+      fact always 0** -- CONFLICTED is tested first and consumes every opposed
+      read, so no dissenter ever reaches this gate. The ceiling is kept (rather
+      than deleted) because deleting it would freeze the gate ORDER as
+      permanent; a tripwire test asserts the reachable dissenter set is exactly
+      {0} and fails if the composition ever changes. A validator refuses any
+      value above 1, since a higher ceiling could only promote CONFLICTED reads.
+
+  # --- the independence gates, per Section 15.19-D ----------------------
+  min_independent_families_high:
+    value: 3
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 15.19-D's own worked example: "five agreeing BLS-CPI-derived
+      sub-measures should never produce higher confidence than two genuinely
+      independent sources agreeing". Three families is the level at which the
+      section is willing to call agreement real. NOT a measured quantity -- no
+      live series carries a source-family label, so this cannot be calibrated
+      from data and remains an illustrative floor (see D-051's disclosure of
+      what is unvalidatable here).
+
+  min_independent_families_medium:
+    value: 2
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Two families: one government release and one market-based signal is the
+      minimum that makes agreement mean anything. A single family, however many
+      sub-measures compose it, is ONE vote and cannot reach MEDIUM.
+
+  # --- the "most of the space is CONFLICTED" disclosure ------------------
+  measured_conflicted_share:
+    value: 0.6173
+    calibration_status: uncalibrated_illustrative
+    note: >
+      MEASURED for n=4 over the full admissible input space (3^4 = 81 signal
+      combinations x 6 family counts = 486 configurations): 300 of 486 are
+      CONFLICTED -- 61.73%. **It agrees with the scorecard's independently
+      measured 61.7% (D-050) to three significant figures, which is a genuine
+      cross-check**: the scorecard is the same predicate over four named
+      pillars and the classifier is that predicate over a four-long list.
+
+      The share is NOT constant in n, and it RISES fast: 0.222 at n=2, 0.444 at
+      n=3, 0.617 at n=4, 0.741 at n=5, 0.826 at n=6, 0.883 at n=7. With more
+      signals it becomes progressively less likely that none oppose each other.
+      A caller handing this classifier a long list should expect CONFLICTED as
+      the DEFAULT, not as a finding.
+
+      Published on every output so a reader can see whether CONFLICTED is a
+      finding about this read or the base state of the input space. The value
+      stored here is the n=4 figure because that is the size the specification's
+      own call site uses ([growth, inflation, labor, gap]).
+
+policy_mix:
+  fiscal_deficit_avg_pct_gdp:
+    value: 4.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Trailing 10yr average US federal deficit as % of GDP. Recompute annually.
+      Section 21.1 names this key and its schedule.
+
+      **SIGN CONVENTION: positive means a DEFICIT.** The source series
+      `FYFSGDA188S` is negative for a deficit (-5.77 for 2025, -14.48 for 2020),
+      so this value and the model's field are both stated as positive-deficit
+      quantities. A caller supplying the raw FRED figure would invert every
+      comparison and report the largest deficits as the tightest fiscal policy.
+
+      MEASURED, and it disagrees: over 1959-2025 the trailing 10-year mean
+      deficit averaged 2.83%, against this stored 4.5. The stored value is an
+      uncalibrated placeholder predating the model. It is left as-is because the
+      live check RECOMPUTES the average from the trailing window and compares
+      against this expectation, warning on a mismatch -- so the disagreement is
+      visible on every run rather than silently resolved here.
+  base_rates:
+    observations_measured_value:
+      value: 57
+      calibration_status: fitted_assumption
+      note: >
+        Annual observations, 1969-2025, over which the four quadrant rates below
+        were measured. FYFSGDA188S is ANNUAL (97 observations, day-gaps of
+        365/366), so the common keys with the quarterly policy, inflation and
+        output series are one per year, and the trailing average is ten annual
+        observations.
+
+        **TWO MEASUREMENT DEFECTS WERE CAUGHT HERE, BOTH BEFORE THE MODEL SHIPPED.**
+
+        (1) The first probe stepped back four OBSERVATIONS for a year-over-year
+        inflation rate, which on annual data is a four-YEAR rate. That inflated
+        the Taylor-implied rate and made `monetary_loose` true in 100% of the
+        sample, so only two of the four quadrants appeared reachable.
+
+        (2) The corrected probe then fed the RAW deficit series in -- which is
+        NEGATIVE for a deficit -- so `deficit > average` measured the INVERTED
+        comparison. It reported 17.5% / 28.1% / 22.8% / 31.6%, and every one of
+        those four numbers is wrong. The live check, which negates the series
+        and asserts the sign, produced the figures recorded below.
+
+        The second defect is the more instructive one: it is exactly the sign
+        trap the model's field description warns about, and it was caught only
+        because the live check independently recomputes the rates from a series
+        it has sign-verified. A rate measured by the same code path that has the
+        sign error cannot detect it.
+    max_stimulus_rate_value:
+      value: 0.22807
+      calibration_status: fitted_assumption
+      note: >
+        13 of 57 years (22.8%) were MAX_STIMULUS -- fiscal loose AND monetary
+        loose. A quadrant that fired 80% of the time would carry no information,
+        so the frequency of each is disclosed with every verdict (D-029).
+    mixed_fiscal_loose_monetary_tight_rate_value:
+      value: 0.31579
+      calibration_status: fitted_assumption
+      note: >
+        18 of 57 years (31.6%) were MIXED_FISCAL_LOOSE_MONETARY_TIGHT -- the
+        post-2022 disinflation case the specification names, where fiscal is
+        pulling against monetary. The most common single quadrant.
+    mixed_fiscal_tight_monetary_loose_rate_value:
+      value: 0.19298
+      calibration_status: fitted_assumption
+      note: >
+        11 of 57 years (19.3%) were MIXED_FISCAL_TIGHT_MONETARY_LOOSE -- the
+        mirror case, monetary stimulus against fiscal consolidation. The least
+        common quadrant.
+    max_restraint_rate_value:
+      value: 0.26316
+      calibration_status: fitted_assumption
+      note: >
+        15 of 57 years (26.3%) were MAX_RESTRAINT -- both pulling the same way,
+        toward restraint.
+
+        The two MIXED quadrants together are 50.9%, so a reader should expect a
+        mixed policy mix about half the time rather than treating it as
+        unusual -- which is the point of publishing these frequencies.
+
+# ---------------------------------------------------------------------------
+# Module 7.3's leading-indicator PROXY. Not the Conference Board LEI: that
+# series is licensed and FRED USLEI returns empty on this build (probed
+# 2026-09-17 via scripts/_probe_lei.py). Section 21.1 states that an in-house
+# composite built from free components must NOT be called "LEI".
+#
+# Section 20.7 names the four free components: claims, permits, curve slope,
+# S&P 500. All four are live on this build (ICSA 3114 obs, PERMIT 799,
+# T10Y3M 11179, SP500 2512), which is why the in-house route was chosen over
+# manual entry of a figure this system could neither refresh nor validate.
+# ---------------------------------------------------------------------------
+leading_indicator:
+  # Section 20.7's `broad_based = breadth >= 0.6`, externalized so the
+  # boundary is reviewable and so the base rate below can be recomputed
+  # against it. The two are ONE measurement: changing the threshold without
+  # recomputing breadth_null_rate silently misreports the frequency.
+  breadth_threshold:
+    value: 0.6
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 20.7's literal. Share of components that must be declining for
+      the reading to count as broad-based. With 4 components this requires 3
+      or more (ceil(0.6 * 4) = 3), which is the COMMON case under the
+      no-signal null — see breadth_null_rate.
+  breadth_null_rate:
+    value: 0.3125
+    calibration_status: fitted_assumption
+    note: >
+      P(at least ceil(0.6 * 4) = 3 of 4 components decline) under the
+      sign-symmetric null (each component falling independently with
+      probability 1/2) = (4 + 1) / 16 = 0.3125.
+
+      A COMBINATORIAL null frequency, NOT a historical hit rate. The model
+      reports it as such and does not present it as a track record, because
+      this build has no validated history for the proxy. What it establishes
+      is the D-029 point: a "broad-based decline" is the expected state
+      roughly 31% of the time when nothing at all is happening, so the flag
+      is not on its own evidence of a turning point.
+
+      Recorded for the 4-component case the specification names. The model
+      recomputes it exactly for whatever component count it is given, so this
+      entry is documentation rather than the value the code reads.
+  component_series:
+    calibration_status: judgment_parameters
+    note: >
+      The this-build mapping from Section 20.7's four named components to live
+      registry series. NOT the Conference Board's components and NOT its
+      weights — declared so a reader can see exactly what the proxy is made of.
+    mapping:
+      # ICSA is a LEVEL in persons and rises when the labour market WEAKENS, so
+      # a leading-indicator input must be its INVERSE. The orientation is part
+      # of the mapping, not a detail: a composite that added claims directly
+      # would treat rising layoffs as expansionary.
+      claims: {registry: initial_claims, symbol: ICSA, orientation: inverted, units: persons}
+      permits: {registry: building_permits, symbol: PERMIT, orientation: direct, units: thousands_saar}
+      curve_slope: {registry: curve_slope_10y3m, symbol: T10Y3M, orientation: direct, units: percent}
+      equity: {registry: sp500_index, symbol: SP500, orientation: direct, units: index}
+    known_limitations: >
+      SP500 reaches back only to 2016-09 — FRED serves it as a rolling
+      ~10-year window (2512 daily observations), not the full history. Enough
+      for a six-month change today; it cannot support a long base rate, and
+      the window rolls forward.
+
+      T10Y3M is a DAILY spread while PERMIT is monthly and ICSA weekly, so the
+      four components are read at four different frequencies. A six-month
+      change is computed per component on its own series; the components are
+      NOT sampled on a common date. For a six-month horizon on these cadences
+      the mismatch is hours-to-days against a 182-day window, which is
+      second-order — but it is a stated limitation, not an identity.
+
+
+# ---------------------------------------------------------------------------
+# The single confidence rule (Section 22.8 / Finding #8). Structure is
+# mandatory; these constants are explicitly calibratable, so they live here.
+# Confidence is COMPUTED from stated factors, never asserted as a literal.
+# ---------------------------------------------------------------------------
+confidence:
+  base:
+    value: 0.7
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 22.8's stated base. Phase 5+ recalibrates the whole formula
+      against realized forecast accuracy.
+  data_quality_flag_penalty:
+    value: 0.25
+    calibration_status: uncalibrated_illustrative
+    note: Applied when any input carried a data_quality_flag.
+  heuristic_penalty:
+    value: 0.20
+    calibration_status: uncalibrated_illustrative
+    note: Applied when the model leans on uncalibrated illustrative thresholds.
+  unobservable_penalty:
+    value: 0.20
+    calibration_status: uncalibrated_illustrative
+    note: Applied when the model depends on r*, u*, potential GDP or TFP.
+  source_independence_bonus:
+    value: 0.05
+    calibration_status: uncalibrated_illustrative
+    note: Credit per INDEPENDENT evidence family (Module 13), not per signal.
+  source_independence_bonus_cap:
+    value: 0.25
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Must exceed (ceiling - base) = 0.25 for the ceiling to be reachable at
+      all. With a cap below that, a fully-corroborated model could never climb
+      past base + cap, and the ceiling would be decorative rather than
+      binding — a silent inconsistency between the stated structure and the
+      arithmetic.
+  floor:
+    value: 0.05
+    calibration_status: uncalibrated_illustrative
+    note: Keeps a returning confidence distinguishable from a missing value.
+  ceiling:
+    value: 0.95
+    calibration_status: mechanical_rule
+    note: >
+      HARD CEILING. This system never claims near-certainty about a macro
+      forecast. Raising this above 0.95 is a scope change, not a tuning choice.
+
+bayesian:
+  likelihoods:
+    calibration_status: judgment_parameters
+    note: >
+      Section 21.1: these are judgment parameters and MUST be stated,
+      versioned, and reviewable — never chosen per-call. Each entry maps an
+      evidence type to P(evidence | thesis true) and P(evidence | thesis false).
+    version: 1
+    table: {}
+    # Deliberately empty. Populating this table is a Phase 5+ task requiring
+    # historical evidence-vs-outcome data. An empty table means bayesian_update()
+    # raises rather than inventing likelihood ratios.
+
+fci:
+  weights:
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 21.1 requires the output be cross-checked against FRED NFCI.
+      Section 22.7 / Finding #7: every component MUST be z-scored before
+      weighting. Percent, basis-point and index-point units are not
+      comparable raw.
+
+      The five weights sum to 1.00 and FCISettings REFUSES to load if they do
+      not -- a non-summing set silently rescales the composite, which changes
+      the interpretation of every threshold downstream.
+
+      These differ from Section 22.7's illustrative defaults
+      (0.25/0.30/0.15/0.15/0.15). This block predates them and names the
+      components explicitly; it governs, and the divergence is recorded in
+      D-038 rather than silently reconciled.
+    components:
+      policy_rate: 0.25
+      credit_spread_hy: 0.25
+      term_premium: 0.20
+      equity_index: 0.20
+      usd_index: 0.10
+  standardization_window_years_value:
+    value: 3
+    calibration_status: fitted_assumption
+    note: >
+      Length of the trailing window over which EACH component's mean and
+      standard deviation are computed for z-scoring. Section 22.7 names this
+      key and suggests a default of 10.
+
+      **Ten years is not achievable on this build.** The binding constraint is
+      `BAMLH0A0HYM2`, which returns only 786 observations (2023-09-18 ..
+      2026-09-15, about 3.1 years) -- and that is a PROVIDER limit, not a fetch
+      window: requesting `start_date=1990-01-01` returns the identical 786 rows.
+      Section 22.7 requires "a consistent, documented trailing window for every
+      component", so the window is the COMMON history of all five, not each
+      series' own maximum.
+
+      This is recorded as `fitted_assumption` rather than a free choice: the
+      value is forced by data availability, and the live check reports the
+      window it actually achieved so a later provider change is visible.
+  nfci_divergence_threshold_value:
+    value: 1.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Absolute divergence between this composite and the Chicago Fed's NFCI
+      beyond which the model warns. Section 21.1 calls the cross-check
+      "mandatory" and Module 12 says a large unexplained divergence "should be
+      investigated, not ignored".
+
+      Both series are in standardised units, so a gap of 1.0 is one standard
+      deviation of the cross-check series. The level is illustrative: the two
+      are NOT the same construction (NFCI weights 105 series across four
+      subindices; this weights five), so a systematic level difference is
+      expected and the threshold exists to catch a divergence that is LARGE,
+      not any divergence at all.
+
+data:
+  raw_store_path: "data/raw"
+  persist_parquet: true
+  lookback_years:
+    value: 5
+    calibration_status: uncalibrated_illustrative
+    note: Default fetch window. Wide enough for YoY comparisons with revision room.
+
+# ---------------------------------------------------------------------------
+# Validation bounds (Section 5.4). These are the thresholds at which a value
+# stops being a market state and starts being a data fault. They live here
+# because the line between the two is a judgment call that a reviewer must be
+# able to see and change — not a literal buried in a comparison.
+# ---------------------------------------------------------------------------
+validation:
+  unemployment_min:
+    value: 0.0
+    calibration_status: institutional_fact
+  unemployment_max:
+    value: 100.0
+    calibration_status: institutional_fact
+    note: A rate is a percentage of a labor force; it cannot exceed 100.
+  stale_series_days:
+    value: 500
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Beyond this, a series is flagged stale. Deliberately loose because
+      quarterly series are legitimately ~90 days old plus revision lag.
+      Tightening this would flag every quarterly series every quarter.
+  max_plausible_yield_pct:
+    value: 25.0
+    calibration_status: uncalibrated_illustrative
+    note: Far above any observed US Treasury yield; only reached by a units error.
+  implausible_long_end_inversion_bp:
+    value: -50.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      30yr vs 10yr. A slight long-end inversion can be genuine; one this deep
+      indicates a mis-parsed row (Section 5.4's "inverted-looking value that's
+      actually a data error").
+  scenario_probability_tolerance:
+    value: 0.01
+    calibration_status: conventional
+    note: Allowed absolute deviation of scenario probabilities from 1.0.
+
+# ---------------------------------------------------------------------------
+# Bootstrap fetch list. Which registry fields a default US snapshot pulls.
+# Kept in config so adding a series to the snapshot is a config edit, not a
+# code change — and so the fetch set is reviewable at a glance.
+# ---------------------------------------------------------------------------
+snapshot_fields:
+  us:
+    - gdp_real
+    - gdp_nominal
+    - gdp_potential
+    - cpi_headline
+    - cpi_core
+    - pce_core
+    - ppi
+    - unemployment_rate
+    - initial_claims
+    - continuing_claims
+    - jolts_openings
+    - jolts_quits
+    - fed_funds_rate
+    - sofr
+    - iorb
+    - on_rrp_rate
+    - on_rrp_volume_bn
+    - treasury_curve
+    - tips_yields
+    - credit_spread_hy
+    - credit_spread_ig

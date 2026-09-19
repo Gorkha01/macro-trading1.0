@@ -1,0 +1,1159 @@
+# config/series_registry.yaml
+#
+# AGENTS.md Section 5.2 + Section 21.1.
+#
+# Every LIVE input in the system resolves through this file. One entry = one
+# internal field name -> exactly one provider route. Keeping the mapping in
+# config (not code) is what lets a source be re-pointed after a Phase 0
+# verification without touching the models layer.
+#
+# ENTRY STATUS VALUES
+#   verified  — route confirmed to return data in Phase 0 (see docs/SERIES_VERIFICATION.md)
+#   unverified— route documented in the spec but NOT yet confirmed; a fetch attempt
+#               against an unverified route raises rather than silently returning empty
+#   blocked   — no reachable source exists; the consuming function raises
+#               NotImplementedError and the item appears in docs/OPEN_ISSUES.md
+#
+# Section 21.0 rule 3: "No input may be invented. If an input's source is not
+# defined in Section 21.1, the agent MUST stop and ask, not assume."
+
+version: 1
+
+# Default provider route. OpenBB's FRED provider is the workhorse for this
+# system: it exposes the full FRED catalog behind one consistent interface.
+defaults:
+  provider: fred
+  endpoint: economy.fred_series
+  frequency_note: >
+    FRED series carry their own native frequency. The data layer does NOT
+    resample or forward-fill: a monthly series stays monthly. Resampling to a
+    common frequency is a modelling decision that belongs in the models layer,
+    where it is explicit and testable.
+
+series:
+  # ---------------------------------------------------------------- Module 7
+  gdp_real:
+    provider: fred
+    symbol: GDPC1
+    description: Real Gross Domestic Product, chained 2017 dollars, SAAR, billions
+    frequency: quarterly
+    units: billions_chained_2017_usd
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 24269.613
+    plausible_range: [1000.0, 100000.0]
+
+  gdp_nominal:
+    provider: fred
+    symbol: GDP
+    description: Gross Domestic Product, SAAR, billions
+    frequency: quarterly
+    units: billions_usd
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 32486.066
+    plausible_range: [1000.0, 100000.0]
+
+  # Module 7.1's income-side counterpart to gdp_nominal. Section 21.1's
+  # data-source table marks this as "BEA GDI (VERIFY series)", and Section
+  # 21.0 rule 5 forbids building against an unverified route, so the symbol
+  # was probed live before this entry was written. FRED `GDI` returns 318
+  # quarterly observations, 1947-01..2026-04, fully populated. The two
+  # candidate alternatives are DEAD and were rejected by probe:
+  # `GDINC1` (real GDI) and `A261RC1Q027SBEA` both return empty frames, so
+  # neither may be used as a substitute.
+  #
+  # Note the deliberate asymmetry with gdp_nominal: `GDP` and `GDI` are both
+  # NOMINAL here. Pairing a nominal series with a real one would make the
+  # discrepancy measure a deflator wedge rather than a statistical one.
+  gdi:
+    provider: fred
+    symbol: GDI
+    description: >-
+      Gross Domestic Income, SAAR, billions. The income-side measure of the
+      same aggregate GDP measures from the expenditure side. The two are
+      equal in theory and differ in practice by a statistical discrepancy
+      that is a residual, so its SIGN is not informative (measured 47.8%
+      GDP-led vs 52.2% GDI-led on year-over-year growth).
+    frequency: quarterly
+    units: billions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 32245.142
+    plausible_range: [1000.0, 100000.0]
+    decision_note: >-
+      D-031. Selected after live probing; the sibling routes GDINC1 and
+      A261RC1Q027SBEA are absent from FRED and return empty frames.
+
+  gdp_potential:
+    provider: fred
+    symbol: GDPPOT
+    forward_looking: true
+    description: >
+      Real Potential Gross Domestic Product (CBO). Section 21.1 directs using
+      this directly rather than computing Cobb-Douglas, logging the choice in
+      docs/DECISIONS.md. NOTE: CBO publishes forward projections here (~10
+      years ahead of the current quarter), so this series is explicitly
+      `forward_looking`. Consumers must filter to observation_date <= as_of
+      before using any value as realised capacity; the forward points are the
+      basis for the *expected* output gap, not the current one.
+    frequency: quarterly
+    units: billions_chained_2017_usd
+    seasonality: >
+      NOT SEASONALLY ADJUSTED, per FRED's series page (verified 2026-09-16).
+      Its sibling gdp_real (GDPC1) is seasonally adjusted at an annual rate.
+      The two are published on the same chained-dollar basis so the ratio is
+      usable, but a seasonally unadjusted *potential* series has no seasonal
+      component to remove — potential output is a counterfactual, not a
+      measurement. The mismatch is a recorded limitation (DECISIONS.md D-009),
+      not a correction to apply. Empirical check: the output gap shows no
+      systematic quarterly pattern (Q1 +0.96, Q2 +0.95, Q3 +1.21, Q4 +1.37 over
+      20 quarters), so the difference is second-order here — but it is why a
+      consumer must not assume the two series are adjusted identically.
+    decision_note: >
+      PUBLICATION CADENCE (DECISIONS.md D-009). GDPPOT runs ONE QUARTER AHEAD
+      of GDPC1: on 2026-09-16 the latest realised potential estimate was
+      Q3 2026 while the latest actual GDP print was Q2 2026. A consumer that
+      takes each series' own latest point subtracts Q2 output from Q3 capacity
+      and measures a quarter of growth rather than slack — the live defect that
+      produced +0.29% instead of +0.83%. Consumers must pair on the latest
+      COMMON observation date.
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 24070.9386484
+    verified_observation_date: 2026-04-01
+    verified_curve:
+      latest_realised_observation: 2026-07-01
+      latest_realised_value: 24200.4446936
+      projection_block_starts: 2026-10-01
+      projection_horizon_end: 2036-10-01
+      observation_count: 62
+      forward_dated_count: 41
+    plausible_range: [1000.0, 40000.0]
+
+  # ---------------------------------------------------------------- Module 5
+  cpi_headline:
+    provider: fred
+    symbol: CPIAUCSL
+    description: Consumer Price Index for All Urban Consumers, All Items, SA
+    frequency: monthly
+    units: index_1982_1984_100
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 334.13
+    plausible_range: [50.0, 1000.0]
+
+  cpi_core:
+    provider: fred
+    symbol: CPILFESL
+    description: CPI All Items Less Food and Energy, SA
+    frequency: monthly
+    units: index_1982_1984_100
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 337.765
+    plausible_range: [50.0, 1000.0]
+
+  pce_core:
+    provider: fred
+    symbol: PCEPILFE
+    description: PCE Price Index Excluding Food and Energy
+    frequency: monthly
+    units: index_2017_100
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 130.658
+    plausible_range: [50.0, 500.0]
+
+  # Module 5.3's two dispersion measures. Section 21.1 marked BOTH blocked
+  # ("BLOCKED -> MANUAL"); both are live FRED series and were found by
+  # `fred_search` in a single query each. This is the O-21 defect class for the
+  # THIRD time (D-043, D-047, and now), and it is the occurrence with the
+  # largest measurable consequence: with the block trusted, the convergence
+  # classifier runs at THREE measures, where `high_threshold = 0.8` is a
+  # unanimity rule in disguise and MEDIUM is reachable at exactly one value.
+  # So the false block was not merely hiding two series -- it was hiding a
+  # threshold degeneracy, and the degeneracy would have shipped unnoticed
+  # because three is a perfectly plausible input set. See D-047.
+  #
+  # `median_cpi_direction` and `trimmed_mean_direction` are named for the
+  # DIRECTION (the sign) each contributes, not for the level. The classifier
+  # consumes signs only, so neither entry publishes a meaningful
+  # `verified_value`; what is verified is the ROUTE, the window, and the units.
+  median_cpi_direction:
+    provider: fred
+    symbol: MEDCPIM157SFRBCLE
+    not_a_snapshot_field: true
+    description: >
+      Cleveland Fed 16% Trimmed-Mean CPI Inflation Rate (month-over-month).
+      NOT a MacroDataSnapshot field: Module 5.3 consumes only the SIGN of this
+      measure, and the classifier's own live check fetches it directly rather
+      than reading it out of a snapshot.
+    frequency: monthly
+    units: percent_change_mom
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 0.1737
+    verified_observation_date: 2026-08-01
+    plausible_range: [-5.0, 5.0]
+    decision_note: >
+      PROBED LIVE 2026-09-17: 524 observations, 1983-01 .. 2026-08. The series
+      begins 1983-01, which is the binding constraint on the classifier's
+      common window -- shorter than `PCETRIM1M158SFRBDAL`'s 1977-02 start, so
+      524 months is the sample the live check runs over, not 594.
+
+      TAGGED `BLS_CPI`, NOT `DALLAS_FED`, even though the Cleveland Fed
+      computes it. The median is derived from the BLS CPI microdata: a BLS
+      survey redesign corrupts it at the same moment it corrupts headline CPI,
+      which is the definition of a shared evidence family. Tagging it as its
+      own family would overstate independence and inflate every confidence
+      this function publishes. A reviewer could reasonably assign it
+      otherwise; that is why the assignment is recorded here rather than left
+      implicit in the code (D-047).
+
+  trimmed_mean_direction:
+    provider: fred
+    symbol: PCETRIM1M158SFRBDAL
+    not_a_snapshot_field: true
+    description: >
+      Dallas Fed Trimmed Mean PCE Inflation Rate (percent change at an annual
+      rate). NOT a MacroDataSnapshot field: Module 5.3 consumes only the SIGN
+      of this measure, and the classifier's own live check fetches it directly
+      rather than reading it out of a snapshot.
+    frequency: monthly
+    units: percent_change_annualized
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 2.2
+    verified_observation_date: 2026-07-01
+    plausible_range: [-10.0, 20.0]
+    decision_note: >
+      PROBED LIVE 2026-09-17: 594 observations, 1977-02 .. 2026-07.
+
+      **UNITS TRAP, and it is silent.** This series is a percent change at an
+      ANNUAL rate; every other input to the classifier is a month-over-month
+      change. The same month is therefore roughly TWELVE TIMES larger here than
+      its siblings, in a model whose six inputs otherwise look symmetric. The
+      classifier consumes only each measure's SIGN, so the scale cancels and
+      the current verdict is unaffected -- but a caller that later adds
+      magnitude handling has a factor-of-twelve hazard sitting in one of six
+      inputs, and nothing in the arithmetic would flag it. The unit is declared
+      above so the trap is visible at the point of consumption rather than only
+      in the model's docstring.
+
+      **DISTINCT EVIDENCE FAMILY FROM THE CPI MEASURES.** Unlike the median
+      above, this is tagged `DALLAS_FED`: it is a *PCE* measure computed from
+      BEA microdata by a different institution, so it is independent of a BLS
+      CPI survey problem. That independence is the entire reason the
+      classifier's family count reaches 3 rather than being capped at 2.
+
+  ppi:
+    provider: fred
+    symbol: PPIFIS
+    description: PPI Final Demand, SA
+    frequency: monthly
+    units: index_nov_2009_100
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 157.411
+    plausible_range: [50.0, 500.0]
+    decision_note: >
+      Module 5.4's FINAL-DEMAND stage. Begins 2009-11, which bounds the common
+      window for any three-stage comparison: WPSID61/WPSID62 reach back to 1947
+      but this series does not, so the usable history for the pipeline signal is
+      202 months, not 953. That 751-month difference is why the gradient's base
+      rate is measured over 2010-11 .. 2026-08 and not the full WPSID history.
+
+  # Module 5.4's stage-of-processing pipeline. The specification names three
+  # stages and no symbols; these are this build's mapping (see D-029). Note the
+  # base-year difference: WPSID* are 1982=100, PPIFIS is Nov 2009=100. That is
+  # immaterial for the pipeline signal because every input is a year-over-year
+  # percent change of a series against ITSELF, where the base cancels -- but it
+  # forbids comparing the levels across stages, which is why they never are.
+  #
+  # PPICRM ("crude materials for further processing") is deliberately NOT used:
+  # it was DISCONTINUED by BLS after 2015-12 with the 2017 PPI reclassification
+  # and would silently truncate every crude-stage reading by a decade. WPSID62 is
+  # the live crude-stage equivalent.
+  ppi_stage_crude:
+    provider: fred
+    symbol: WPSID62
+    description: PPI by Commodity, Intermediate Demand by Commodity Type, Unprocessed Goods
+    frequency: monthly
+    units: index_1982_100
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 280.001
+    plausible_range: [10.0, 2000.0]
+    decision_note: >
+      The crude stage for Module 5.4. "Unprocessed goods for intermediate
+      demand" is the closest live series to the crude stage; the explicit crude
+      index is discontinued. More volatile than the other two stages by
+      construction, which is part of why the three-way ordering is noisy -- see
+      the base-rate warning in ppi_pipeline_signal.
+
+  ppi_stage_intermediate:
+    provider: fred
+    symbol: WPSID61
+    description: PPI by Commodity, Intermediate Demand by Commodity Type, Processed Goods
+    frequency: monthly
+    units: index_1982_100
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 291.93
+    plausible_range: [10.0, 2000.0]
+    decision_note: >
+      The intermediate stage for Module 5.4. Conceptually the least ambiguous of
+      the three stages: "processed goods for intermediate demand" is precisely
+      what the intermediate stage means.
+
+  # ---------------------------------------------------------------- Module 6
+  unemployment_rate:
+    provider: fred
+    symbol: UNRATE
+    description: Civilian Unemployment Rate, SA
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 4.1
+    plausible_range: [0.0, 25.0]
+
+  initial_claims:
+    provider: fred
+    symbol: ICSA
+    description: Initial Claims for Unemployment Insurance, SA, weekly
+    frequency: weekly
+    units: persons
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 206000.0
+    plausible_range: [50000.0, 10000000.0]
+
+  continuing_claims:
+    provider: fred
+    symbol: CCSA
+    description: Continuing Claims for Unemployment Insurance, SA, weekly
+    frequency: weekly
+    units: persons
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 1774000.0
+    plausible_range: [500000.0, 30000000.0]
+
+  jolts_openings:
+    provider: fred
+    symbol: JTSJOL
+    description: Job Openings — Total Nonfarm, SA
+    frequency: monthly
+    units: thousands
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 7271.0
+    plausible_range: [1000.0, 20000.0]
+
+  jolts_quits:
+    provider: fred
+    symbol: JTSQUR
+    description: Quits Rate — Total Nonfarm, SA
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 1.9
+    plausible_range: [0.5, 10.0]
+
+  # ---------------------------------------------------------- Modules 2, 4, 8
+  fed_funds_rate:
+    provider: fred
+    symbol: FEDFUNDS
+    description: Effective Federal Funds Rate, monthly average
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 3.63
+    plausible_range: [0.0, 25.0]
+
+  sofr:
+    provider: fred
+    symbol: SOFR
+    future_date_tolerance_days: 1
+    description: >
+      Secured Overnight Financing Rate. Same same-day-publication condition as
+      iorb: SOFR is published in the morning for the prior business day, so a
+      tolerance of 1 covers the UTC-date boundary without arming a wider gap.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 3.64
+    plausible_range: [0.0, 25.0]
+
+  iorb:
+    provider: fred
+    symbol: IORB
+    future_date_tolerance_days: 1
+    description: >
+      Interest Rate on Reserve Balances. FRED publishes the current calendar
+      day's print before midnight UTC, so a process running in the hours after
+      publication but before UTC midnight sees an observation dated one day
+      ahead of its own clock. D-030 recorded this three times as a standing
+      test failure before it became a declared property of the series. The
+      tolerance is 1 day precisely: a genuine broken mapping lands far outside
+      it, so the ERROR path remains armed.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 3.65
+    plausible_range: [0.0, 25.0]
+
+  on_rrp_rate:
+    provider: fred
+    symbol: RRPONTSYAWARD
+    description: >
+      Overnight Reverse Repurchase Agreement Offering Rate. This is the
+      administered ON-RRP rate and the true lower bound of the post-2021 floor
+      system corridor.
+    decision_note: >
+      CORRECTED 2026-09-16. Section 21.1 originally named FRED `RRPONTSYD` as
+      the on_rrp_rate source. A live probe measured RRPONTSYD = 0.70 with 3326
+      observations — that is the ON-RRP *volume* in USD billions, not a rate
+      (a genuine policy rate could not sit 290bp below IORB). RRPONTSYAWARD
+      measured 3.50%, slotting correctly between SOFR (3.64) and the lower
+      bound of the corridor. Section 21.0 rule 3 forbids resolving this by
+      assumption, so the rebinding was put to the user and approved. Recorded
+      in docs/DECISIONS.md as D-001.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 3.50
+    plausible_range: [0.0, 25.0]
+
+  on_rrp_volume_bn:
+    provider: fred
+    symbol: RRPONTSYD
+    description: >
+      Overnight Reverse Repurchase Agreements, Treasury Securities Sold by the
+      Federal Reserve — the outstanding ON-RRP *volume* in USD billions. NOT a
+      rate; never to be substituted for one (Section 21.0 rule 4). Exists to
+      supply the `repo_volume_change_pct` corroboration that Section 22.11
+      requires before `repo_stress_check` may escalate to ACUTE_REPO_STRESS.
+    decision_note: >
+      Added 2026-09-16 when `on_rrp_rate` was rebound to RRPONTSYAWARD. Without
+      this field, Section 22.11's mandatory volume cross-check has no source and
+      the corrected repo_stress_check could not be implemented as specified.
+      See docs/DECISIONS.md D-001.
+    frequency: daily
+    units: billions_usd
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 0.70
+    plausible_range: [0.0, 3000.0]
+
+  # ---------------------------------------------------------------- Module 8
+  credit_spread_hy:
+    provider: fred
+    symbol: BAMLH0A0HYM2
+    description: ICE BofA US High Yield Index Option-Adjusted Spread
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 2.76
+    plausible_range: [0.1, 40.0]
+
+  credit_spread_ig:
+    provider: fred
+    symbol: BAMLC0A0CM
+    description: ICE BofA US Corporate Index Option-Adjusted Spread
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 0.8
+    plausible_range: [0.1, 20.0]
+
+  equity_volatility:
+    provider: fred
+    symbol: VIXCLS
+    not_a_snapshot_field: true
+    description: >
+      CBOE Volatility Index (VIX), the 30-day implied volatility of S&P 500
+      options, in index points. Module 8.3's `equity_vol_change_pct` input.
+      NOT a MacroDataSnapshot field: the model takes it as a raw float and
+      credit_spread_attribution's own live check fetches it (Section 21.1
+      names "VIX" as the source; VIXCLS is FRED's series for it).
+
+      NOTE ON UNITS: this series is a LEVEL in index points, not a percent.
+      The model's input is a PERCENT CHANGE, so the live check divides two
+      levels. That is a different conversion from the two credit spreads
+      directly above, which are in percent and must be multiplied by 100 to
+      reach the basis points their input is denominated in. Two different
+      conversions on adjacent inputs is exactly the pairing-axis hazard
+      (Section 21.0; D-035), so both are asserted in the live check.
+    frequency: daily
+    units: index
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 17.2
+    verified_observation_date: 2026-09-15
+    plausible_range: [5.0, 100.0]
+
+  federal_deficit_pct_gdp:
+    provider: fred
+    symbol: FYFSGDA188S
+    not_a_snapshot_field: true
+    description: >
+      Federal Surplus or Deficit as Percent of GDP. Module 3.2's
+      `fiscal_deficit_pct_gdp`. NOT a MacroDataSnapshot field: the model takes a
+      raw float and policy_mix_classifier's own live check fetches it.
+
+      **SIGN WARNING -- this series is NEGATIVE for a deficit.** 83 of its 97
+      observations are negative, and the 2020 COVID deficit reads -14.48. The
+      model's field is named `fiscal_deficit_pct_gdp` and compares it against a
+      trailing average to decide whether fiscal policy is LOOSE, so a caller must
+      NEGATE this series before supplying it. Fed raw, a LARGER deficit is MORE
+      negative, and `deficit > average` reports the most stimulative budgets in
+      the sample as the tightest -- the D-034 failure mode, silent and plausible.
+    frequency: annual
+    units: percent_of_gdp
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: -5.7691
+    verified_observation_date: 2025-01-01
+    plausible_range: [-40.0, 10.0]
+
+  fed_total_assets:
+    provider: fred
+    symbol: WALCL
+    not_a_snapshot_field: true
+    description: >
+      Federal Reserve total assets, weekly (Wednesday), in MILLIONS of dollars.
+      Module 4.1's `balance_sheet_level`. NOT a MacroDataSnapshot field: the
+      model takes raw floats and qe_qt_stance's own live check fetches it.
+
+      Last 6,740,619 ($6.74T) against a peak of 8,965,000 ($8.97T). The 13-week
+      change is what decides the stance, and it is measured as a PERCENTAGE of
+      the level because the raw change is never exactly zero -- see the note on
+      `neutral_band_pct`.
+    frequency: weekly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 6740619.0
+    verified_observation_date: 2026-09-09
+    plausible_range: [500000.0, 12000000.0]
+
+  reserve_balances:
+    provider: fred
+    symbol: WRESBAL
+    not_a_snapshot_field: true
+    description: >
+      Reserve balances with Federal Reserve Banks, weekly, in MILLIONS of
+      dollars. Module 4.1's `reserve_balances`. Last 2,991,310 ($2.99T) against
+      a peak of 4,276,000.
+
+      This is the series the September 2019 repo spike was about: reserves can
+      reach scarcity faster than the balance sheet suggests, because while the
+      ON RRP facility holds a buffer, QT drains THAT first. See
+      `on_rrp_level`.
+    frequency: weekly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 2991310.0
+    verified_observation_date: 2026-09-09
+    plausible_range: [0.0, 6000000.0]
+
+  on_rrp_level:
+    provider: fred
+    symbol: RRPONTSYD
+    not_a_snapshot_field: true
+    description: >
+      Overnight reverse repurchase agreements, DAILY, in BILLIONS of dollars --
+      note the different unit from the two series above. The buffer that
+      absorbs QT before reserves are touched.
+
+      Last 5.4 against a peak of 2,553.7 ($2.55T). It is now essentially
+      drained, which means further balance-sheet contraction drains reserves
+      DIRECTLY rather than drawing down the facility -- the configuration that
+      produced the September 2019 repo spike.
+    frequency: daily
+    units: billions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 5.4
+    verified_observation_date: 2026-09-16
+    plausible_range: [0.0, 3000.0]
+
+  sloos_net_tightening:
+    provider: fred
+    symbol: DRTSCILM
+    not_a_snapshot_field: true
+    description: >
+      Net percentage of domestic banks tightening standards for commercial and
+      industrial loans to large and middle-market firms, from the Fed's Senior
+      Loan Officer Opinion Survey (SLOOS). Module 3.4's
+      `lending_standards_net_tightening_pct`. NEGATIVE means net LOOSENING.
+
+      The ONE of Module 3.4's three inputs that Section 21.1 marks LIVE, and the
+      only one this build can source. Quarterly, 146 observations,
+      1990-04 .. 2026-07, last 0.0.
+
+      NOTE ON THE ZERO: the latest reading is EXACTLY 0.0, and Section 20.3 tests
+      `net_tightening_pct < 0` for loosening — so a flat survey counts as NOT
+      loosening. That happened in 7 of 146 quarters (4.8%). The boundary is
+      disclosed rather than silently resolved.
+    frequency: quarterly
+    units: net_percent
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 0.0
+    verified_observation_date: 2026-07-01
+    plausible_range: [-100.0, 100.0]
+
+  # ------------------------------------------------ Module 3.4 BLOCKED inputs
+  # Both of Module 3.4's credit-growth inputs are in the `blocked:` list at the
+  # foot of this file, where Section 21.4's Loophole Ledger keeps them. They have
+  # no `series` entries: FRED's total bank credit, total loans and C&I loans are
+  # NOT measures of the leveraged-loan segment the specification names, and
+  # Section 21.1 forbids the substitution outright. See D-041 and O-20.
+
+  leveraged_loan_holdings:
+    provider: fred
+    symbol: BOGZ1FL623069503Q
+    not_a_snapshot_field: true
+    description: >
+      Hedge Funds (Domestic); Leveraged Loans; Asset, Level -- from the Fed's Z.1
+      Financial Accounts, in MILLIONS of dollars, quarterly. Module 3.4's
+      `risky_credit_growth_pct`.
+
+      **THIS SERIES LIFTS A BLOCK THAT SECTION 21.1 SAID COULD NOT BE LIFTED.**
+      The registry listed this input BLOCKED with the reason "No clean free series
+      for leveraged-loan growth". That was wrong, and `fred_search` found the
+      series in one query. See D-043.
+
+      **TWO LIMITATIONS, both material.**
+
+      (1) It measures HEDGE FUNDS' leveraged-loan holdings, not the whole
+      leveraged-loan market. Right asset class, narrower holder base.
+
+      (2) **It reads exactly ZERO for 90 of its 145 common quarters -- 1990-Q2
+      through 2012-Q3.** That is a structural break in the Z.1 accounts, not a
+      statement that hedge funds held nothing, and growth is undefined across it.
+      The usable history is therefore **51 quarters, 2013-Q4 onward**, which
+      includes the 2020 stress but not the 2008 crisis. A caller must drop the
+      zero-denominator quarters rather than impute them.
+    frequency: quarterly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 90590.0
+    verified_observation_date: 2026-04-01
+    plausible_range: [0.0, 2000000.0]
+
+  total_bank_credit:
+    provider: fred
+    symbol: TOTBKCR
+    not_a_snapshot_field: true
+    description: >
+      Total bank credit, all commercial banks, weekly, in BILLIONS of dollars.
+      Module 3.4's `total_credit_growth_pct`. 2801 observations, 1973-01 .. 2026-09.
+
+      Blocked only BY ASSOCIATION before D-043 -- a total-credit series always
+      existed; the function could not run because its sibling had no source.
+    frequency: weekly
+    units: billions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 19835.254
+    verified_observation_date: 2026-09-02
+    plausible_range: [0.0, 40000.0]
+
+  delinquency_rate:
+    provider: fred
+    symbol: DRALACBS
+    not_a_snapshot_field: true
+    description: >
+      Delinquency rate on ALL loans, all commercial banks, quarterly, in percent.
+      166 observations, 1985-01 .. 2026-04, last 1.42. Module 8.3's
+      `default_rate_trend`, which Section 21.1 marks MANUAL ("no clean free
+      real-time series").
+
+      **A PROXY, and the difference is stated.** Delinquency is not default: a loan
+      is delinquent before it defaults, so this series LEADS the quantity the model
+      names. What the model needs is the TREND, and the direction of delinquencies
+      is a defensible measure of the direction of default risk -- but a caller must
+      not read the level as a default rate.
+
+      `DRBLACBS` (business loans, 158 obs) is the narrower alternative.
+    frequency: quarterly
+    units: percent
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 1.42
+    verified_observation_date: 2026-04-01
+    plausible_range: [0.0, 20.0]
+
+  # ------------------------------------------------------------ Yield curve
+  # Treasury curve via FRED's constant-maturity series. The Treasury.gov
+  # route (fixedincome.government.treasury_rates) is the alternative; the
+  # registry keeps them side by side so Phase 0 can pick whichever verifies.
+  treasury_curve:
+    provider: fred
+    endpoint: economy.fred_series
+    snapshot_field: yield_curve
+    tenors:
+      1mo: DGS1MO
+      3mo: DGS3MO
+      6mo: DGS6MO
+      1yr: DGS1
+      2yr: DGS2
+      3yr: DGS3
+      5yr: DGS5
+      7yr: DGS7
+      10yr: DGS10
+      20yr: DGS20
+      30yr: DGS30
+    description: >
+      Treasury constant-maturity yields, daily, percent.
+      NOTE: registry key is `treasury_curve` but it populates the schema field
+      `yield_curve`; declared via `snapshot_field` above rather than assumed.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 4.97
+    verified_curve: {1mo: 3.94, 3mo: 4.11, 6mo: 4.18, 1yr: 4.37, 2yr: 4.65, 3yr: 4.73, 5yr: 4.8, 7yr: 4.88, 10yr: 4.97, 20yr: 5.37, 30yr: 5.34}
+
+  tips_yields:
+    provider: fred
+    endpoint: economy.fred_series
+    tenors:
+      5yr: DFII5
+      7yr: DFII7
+      10yr: DFII10
+      20yr: DFII20
+      30yr: DFII30
+    description: >
+      Treasury real yields from TIPS. Section 21.1 (D-2.1) notes 5yr is the
+      SHORTEST breakeven available — there is no 1yr/2yr TIPS breakeven.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-16
+    verified_value: 2.6
+    verified_curve: {5yr: 2.4, 7yr: 2.49, 10yr: 2.6, 20yr: 2.89, 30yr: 3.05}
+
+  # ---------------------------------------------- Module 7.3 proxy components
+  # Four leading-indicator components for the in-house composite that stands in
+  # for the licensed Conference Board LEI (Section 21.1; the proxy must not be
+  # called "LEI"). Section 20.7 names exactly these four: claims, permits,
+  # curve slope, S&P 500. All were probed live on 2026-09-17.
+  building_permits:
+    provider: fred
+    symbol: PERMIT
+    not_a_snapshot_field: true
+    description: >
+      New Privately-Owned Housing Units Authorized, total, SAAR. Module 7.3's
+      third leading-indicator component (PERMIT). NOT a MacroDataSnapshot field:
+      it is consumed by leading_indicator_proxy, whose own live check fetches it.
+    frequency: monthly
+    units: thousands_saar
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 1433.0
+    verified_observation_date: 2026-07-01
+    plausible_range: [100.0, 5000.0]
+
+  curve_slope_10y3m:
+    provider: fred
+    symbol: T10Y3M
+    not_a_snapshot_field: true
+    description: >
+      Ten-Year minus Three-Month Treasury spread. Long minus short, so a POSITIVE
+      value is a normal upward-sloping curve and a negative one is inverted. The
+      orientation is stated because an inverted sign here would make an
+      inversion read as stimulus, which is the opposite of its meaning in a
+      leading indicator. Module 7.3's fourth leading-indicator component. NOT a
+      MacroDataSnapshot field — the snapshot already carries the full Treasury
+      curve as `yield_curve`, and deriving the slope there would be a second
+      source for the same quantity.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 0.87
+    verified_observation_date: 2026-09-16
+    plausible_range: [-5.0, 10.0]
+
+  sp500_index:
+    provider: fred
+    symbol: SP500
+    not_a_snapshot_field: true
+    description: >
+      S&P 500 index level. Module 7.3's equity component. NOT a
+      MacroDataSnapshot field: the snapshot's `equity_index` is a keyed mapping
+      populated by the cross-asset route, and Module 7.3 needs this one index
+      for its own composite. NOTE: FRED serves this as a ROLLING ~10-YEAR window,
+      not the full history — verified 2026-09-17 as 2512 daily observations
+      beginning 2016-09-16. Enough for a six-month change, insufficient for a
+      long historical base rate, and the start date moves forward over time.
+      A consumer needing longer history must source the index elsewhere.
+    frequency: daily
+    units: index
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 7585.7
+    verified_observation_date: 2026-09-15
+    verified_curve: {window_observations: 2512, window_starts: 2016-09-16}
+    plausible_range: [500.0, 50000.0]
+    decision_note: >
+      Recorded with verified_observation_date and verified_curve because the
+      published window's SHAPE is the thing a consumer must understand: the
+      series is not a fixed history but a rolling window, so a long lookback
+      silently truncates rather than erroring.
+
+  # ------------------------------------------- Module 7.5 nowcast inputs
+  # The three expenditure proxies Section 6.5 names, plus the published
+  # GDPNow figure its docstring says must be entered by hand. All four were
+  # probed live on 2026-09-17. None is a MacroDataSnapshot field: the snapshot
+  # carries the quarterly aggregates, and Module 7.5 consumes monthly proxies
+  # that only it needs. See D-034.
+  retail_sales:
+    provider: fred
+    symbol: RSAFS
+    not_a_snapshot_field: true
+    description: >
+      Advance Retail Sales, total, SA, millions of dollars. Module 7.5's
+      consumption proxy. NOMINAL, not deflated — Section 6.5 adds it to a REAL
+      annualized rate without saying so, which mixes a price change into a
+      volume estimate. Probed 2026-09-17: 416 monthly observations,
+      1992-01..2026-08, distinct day-gaps [28,29,30,31], so the cadence is
+      genuinely monthly.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 773947.0
+    verified_observation_date: 2026-08-01
+    plausible_range: [100000.0, 2000000.0]
+
+  durable_goods_orders:
+    provider: fred
+    symbol: DGORDER
+    not_a_snapshot_field: true
+    description: >
+      Manufacturers' New Orders, durable goods, SA, millions of dollars.
+      Module 7.5's investment proxy. NOMINAL, same basis caveat as
+      retail_sales. Note this is NEW ORDERS — a forward-looking intent measure
+      — being used as a stand-in for realised investment, and its
+      month-over-month change is 3-4x more volatile than retail sales'.
+      Probed 2026-09-17: 414 monthly observations, 1992-02..2026-07.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 339392.0
+    verified_observation_date: 2026-07-01
+    plausible_range: [50000.0, 1000000.0]
+
+  trade_balance:
+    provider: fred
+    symbol: BOPGSTB
+    not_a_snapshot_field: true
+    description: >
+      Trade Balance, goods and services, SA, millions of dollars. Module 7.5's
+      net-exports input. NEGATIVE in 100% of its observations — it is the US
+      goods-and-services DEFICIT (min -132983, max -831 over 415 observations,
+      1992-01..2026-07).
+
+      This sign is load-bearing and is why the entry exists in the registry
+      rather than only in the model. Section 6.5 takes a PERCENT CHANGE of this
+      series and multiplies it by a POSITIVE weight. For an all-negative series
+      v = -|v| the percent change is
+
+          pct = v[t] / v[t-1] - 1 = |v[t]| / |v[t-1]| - 1
+
+      (the two minus signs cancel), so pct is the percent change of the
+      ABSOLUTE VALUE. |v| grows exactly when the deficit WIDENS, which is
+      contractionary, so pct > 0 is contractionary and a contractionary event
+      must LOWER the nowcast. The weight must therefore be NEGATIVE.
+
+      Under the specification's +0.1 both directions are inverted: a widening
+      deficit (contractionary) raises the nowcast, and a narrowing one lowers
+      it. Measured over 414 months the term was wrong on 414/414 -- deficit
+      widened 227 (54.8%), narrowed 187 (45.2%) -- so this is structural, not
+      intermittent. Module 7.5 applies a NEGATIVE net-exports weight.
+      See D-034.
+
+      Also unbounded by construction: a percent change of a series that crossed
+      zero would explode, and this one comes within 0.6% of doing so.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: -88576.0
+    verified_observation_date: 2026-07-01
+    plausible_range: [-500000.0, 0.0]
+
+  gdpnow_published:
+    provider: fred
+    symbol: GDPNOW
+    not_a_snapshot_field: true
+    description: >
+      Atlanta Fed GDPNow estimate. Section 6.5's docstring states there is "no
+      free API" for this figure and prescribes manual entry. That is FALSE on
+      this build: FRED serves it, so the manual route is unnecessary and the
+      cross-check is live.
+
+      What it is, precisely — and this matters for how the cross-check is read:
+      a FINAL per-quarter record, NOT a real-time nowcast. Probed 2026-09-17:
+      61 quarterly observations, 2011-07..2026-07, exactly one per quarter
+      (median gap 92 days), ZERO consecutive repeats, range -32.08..36.97,
+      mean 2.42. Its mean absolute error against the realised SAAR print is
+      1.364pp (max 4.231pp) over 60 common quarters — that is its error as a
+      RECORD of the quarter, not as a forecast made inside it.
+
+      Alternatives probed and REJECTED as empty frames (3 attempts each plus a
+      cross-path fallback): NOWCAST, GDPNOWC1, ATLGDPNOW.
+    frequency: quarterly
+    units: percent_annualized
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 5.1028
+    verified_observation_date: 2026-07-01
+    plausible_range: [-50.0, 50.0]
+
+  # -------------------------------------------------------------------------
+  # trilemma_reserves — Section 15.20-A / D-048
+  #
+  # Total reserves excluding gold, IMF International Financial Statistics,
+  # expressed in dollars, from FRED's `TRESEG<CC>M052N` family. These are the
+  # series `check_trilemma_tension` reads to detect a losing peg defence
+  # (reserves depleting while the peg holds).
+  #
+  # WHY THEY ARE `not_a_snapshot_field: true`: the three trilemma LEGS are
+  # manual by construction (O-28) — a currency's peg status and capital-account
+  # regime are institutional facts, not FRED fields — so `TrilemmaInputs` is
+  # assembled by hand and no `MacroDataSnapshot` field carries these series.
+  # They are registered for PROVENANCE: so that the live check's exclusion
+  # counts and the dollar magnitudes are traceable to a symbol.
+  #
+  # THE CADENCE CAVEAT, which is the reason this comment is long. The symbol's
+  # trailing `M` says monthly, and the COUNT of observations implies a long
+  # monthly history — but the earliest observations are NOT monthly. Verified
+  # 2026-09-17: GB and KR carry 843/842 observations of which 6 are annual
+  # (pre-1956-12), and ID carries 700 of which 32 are annual-then-quarterly
+  # (pre-1970-12). A model whose threshold names a calendar span must therefore
+  # verify the SAMPLING CADENCE over the window and disclose what it excluded;
+  # it must not read the observation count as a measurement window.
+  # `check_trilemma_tension` excludes the non-monthly prefix and reports the
+  # exclusion on every output.
+  # -------------------------------------------------------------------------
+
+  trilemma_reserves_gb:
+    provider: fred
+    symbol: TRESEGGBM052N
+    not_a_snapshot_field: true
+    description: >
+      UK total reserves excluding gold, MILLIONS of dollars. The 1992 Black
+      Wednesday episode (§18.1): the UK spent reserves defending the ERM's
+      DM 2.7780 floor until 1992-09-16, when it left the mechanism and the
+      pound fell. Probed 2026-09-17: 843 raw observations, beginning
+      1950-12-01, ending 2026-08-01; 837 of them are monthly.
+
+      CADENCE: the first SEVEN observations are annual — 1950-12, 1951-12, ...,
+      1956-12 — and only then does the series switch to monthly (1957-01,
+      1957-02, ...). The 6 pure-annual points 1950-12 .. 1955-12 are EXCLUDED;
+      1956-12 is RETAINED as the first monthly observation, so the monthly span
+      does not open with a 12-month hole. Result: 6 dropped, 837 monthly, of
+      which 834 carry the prior 3-month history the two measures need and are
+      therefore the denominator of the published base rates. The gap between
+      837 and 834 is not a data defect: the measures consume two observations
+      as history.
+
+      NOT a clean monthly series for its whole length, despite the symbol's
+      trailing M. See the group comment above.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 169355.6607966373
+    verified_observation_date: 2026-08-01
+    plausible_range: [0.0, 200000.0]
+
+  trilemma_reserves_kr:
+    provider: fred
+    symbol: TRESEGKRM052N
+    not_a_snapshot_field: true
+    description: >
+      Korea total reserves excluding gold, MILLIONS of dollars. The 1997 Asian
+      crisis episode (§18.7): reserves fell from roughly $30bn in 1997-08 to
+      below $10bn by 1997-12 as the won's defence failed. Probed 2026-09-17:
+      842 raw observations, beginning 1950-12-01, ending 2026-07-01; 836 of
+      them are monthly.
+
+      CADENCE: the first SEVEN observations are annual — 1950-12 .. 1956-12 —
+      then monthly from 1957-01. The 6 pure-annual points 1950-12 .. 1955-12
+      are EXCLUDED and 1956-12 is RETAINED as the first monthly observation,
+      leaving 836 monthly, of which 833 carry a full 3-month history and are
+      the published base-rate denominator.
+
+      Carries the same cadence caveat as the GB entry: the symbol says monthly
+      and the count implies a long monthly history, but the prefix is not.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 421968.564846368
+    verified_observation_date: 2026-07-01
+    plausible_range: [0.0, 600000.0]
+
+  trilemma_reserves_id:
+    provider: fred
+    symbol: TRESEGIDM052N
+    not_a_snapshot_field: true
+    description: >
+      Indonesia total reserves excluding gold, MILLIONS of dollars. The 1997
+      Asian crisis's worst case (§18.7): the rupiah's crawling band was
+      abandoned in 1997-08 and reserves fell by roughly a third within months.
+      Probed 2026-09-17: 700 raw observations, beginning 1950-12-01, ending
+      2026-07-01; only 668 of them are monthly.
+
+      CADENCE, and this entry is written out in full because the first
+      characterisation of it was WRONG in a way that would mislead. It was
+      recorded as "32 annual observations before 1970-12-01". The COUNT (32)
+      was right; the COMPOSITION was not. Re-probed against the provider, the
+      raw sequence is: 16 ANNUAL points 1950-12 .. 1964-12, then a CONTINUOUS
+      QUARTERLY block 1965-03 .. 1968-12 (16 points, four years of Mar/Jun/Sep/
+      Dec), then the monthly series from 1971-01. It is not one cadence change
+      at one date, and a reader who assumed so would mis-date the usable window
+      by four years.
+
+      Exclusion convention (the count depends on it, and the GB/KR entries use
+      it too): the pure-annual/quarterly points strictly before the monthly
+      span are dropped, and the span's first member is RETAINED. So "32 of 700
+      excluded" pairs with "668 monthly observations".
+
+      Monthly observations: 668, of which 665 carry a full 3-month history and
+      are the published base-rate denominator. This is why the cadence caveat
+      is stated numerically per country on every output rather than as one
+      general disclaimer.
+    frequency: monthly
+    units: millions_usd
+    status: verified
+    verified_on: 2026-09-17
+    verified_value: 133983.0890807822
+    verified_observation_date: 2026-07-01
+    plausible_range: [0.0, 300000.0]
+
+# ---------------------------------------------------------------------------
+# BLOCKED — Section 21.4 Loophole Ledger. These have no reachable source.
+# The registry records them so that an attempt to use them fails loudly and
+# with a reason, rather than an implementer quietly inventing a proxy.
+# ---------------------------------------------------------------------------
+blocked:
+  # RESOLVED 2026-09-17 (D-043): `risky_credit_growth_pct` and
+  # `total_credit_growth_pct` were blocked here and are now SOURCED. Section
+  # 21.1's premise -- "No clean free series for leveraged-loan growth" -- was
+  # factually wrong: `BOGZ1FL623069503Q` is one, and `fred_search` found it in a
+  # single query rather than by guessing symbols. Both now have `series` entries
+  # above, and the entries are REMOVED rather than left as stale blocks, because
+  # a registry that lists a sourced input as blocked is worse than one that
+  # lists nothing.
+  #
+  # RESOLVED 2026-09-17 (D-047): `median_cpi_direction` and
+  # `trimmed_mean_direction` are SOURCED. They are *not* removed from this list
+  # by the D-043 rule above, because they were **never in it** -- which is the
+  # other half of the O-21 problem and worth naming. D-043's defect was a FALSE
+  # BLOCK (a claim in this file that was wrong). D-047's was an **UNRECORDED
+  # BLOCK**: Section 21.1's prose declared the inputs MANUAL, the model
+  # docstring repeated it, and no entry here ever contradicted either, so there
+  # was nothing for a re-probe to be *scheduled against*. The two `blocked:`
+  # entries that did exist alongside them (`supercore_direction`,
+  # `conference_board_lei`) are both still correct -- supercore was
+  # re-confirmed in the same probe that killed its two neighbours.
+  #
+  # The lesson: a `blocked:` list catches FALSE blocks because a false entry is
+  # auditable. It cannot catch an ABSENT one, and prose in the specification is
+  # not a list. Any input the specification calls MANUAL or unreachable should
+  # therefore get a `blocked:` entry on the day it is discovered, even when the
+  # reason is only "the specification says so" -- an entry can be re-probed,
+  # a paragraph cannot.
+
+  - field: iron_ore_change_pct
+    reason: No clean free source for iron ore prices.
+    opened_in: OPEN_ISSUES.md
+
+  - field: ppp_implied_rate
+    reason: OECD publishes PPP conversion factors; no clean free API. Manual entry only.
+    opened_in: OPEN_ISSUES.md
+
+  - field: supercore_direction
+    reason: >
+      Per audit finding O-8 there is no valid BLS construction for supercore.
+      RE-CONFIRMED LIVE 2026-09-17 (D-047), in the same probe that found its two
+      neighbouring dispersion measures to be live -- so this block rests on
+      evidence rather than on inheritance from the specification's prose. It is
+      the one absence that matters most, because supercore is the measure the
+      Fed most often cites: the classifier's coverage of the core-inflation
+      spectrum is incomplete exactly where a reader would look for it.
+
+      The classifier must degrade to 5 of its 6 measures. The supercore SLOT is
+      filled by the Atlanta Fed's sticky-price CPI, which is a DIFFERENT measure
+      and is named as such (`sticky_price_cpi_direction`) rather than
+      substituted silently -- Section 21.1 rule 4's prohibition is about
+      mislabelling, and O-8 is the canonical example of why.
+    opened_in: OPEN_ISSUES.md
+
+  - field: conference_board_lei
+    reason: >
+      Conference Board LEI is a licensed product with no free API (Section 21.4
+      item 5). FRED `USLEI` returns an EMPTY frame through both the local API
+      and the in-process package, three attempts each — probed 2026-09-17 via
+      scripts/_probe_lei.py, so the BLOCKED status is evidence-backed rather
+      than assumed from the specification's prose.
+
+      The MANUAL-entry route Section 21.1 offers for this input is refused: a
+      figure a human types in carries no refresh, no vintage and no validation,
+      so it cannot satisfy Section 21.0 rule 5. The in-house route is taken
+      instead, under the name `leading_indicator_proxy` — Section 21.1 is
+      explicit that "if in-house, it must NOT be called 'LEI'".
+    opened_in: OPEN_ISSUES.md
+
+  - field: inflation_surprise_bp
+    reason: >
+      Module 5.6 declares `inflation_surprise_bp` and lists it in
+      `inputs_used`, but NO FREE SERIES carries a CPI consensus forecast, so
+      the input cannot be sourced — and its ABSENCE is why D-052 keeps it as a
+      caller-supplied DISCLOSURE rather than deriving a direction from it.
+
+      Probed 2026-09-18 with `fred_search` (the O-21 order: local API spec, then
+      `fred_search`, then Treasury Fiscal Data). Four queries, verbatim results:
+      `fred_search(query="CPI forecast")` and `query="CPI consensus"` both raise
+      `EmptyDataError` ("The request was returned empty"), and
+      `query="consumer price index forecast"` returns "No results found".
+      `query="inflation expectation"` DOES return eight rows — `T5YIFR` and the
+      `EXPINF*YR` family — but every one is an EXPECTED-INFLATION series (a
+      model's or the market's forward estimate), not a consensus forecast of the
+      next print. That distinction is load-bearing: a nowcast is published
+      BEFORE the release; a surprise is the difference between the outcome and
+      the professional consensus collected by Bloomberg/Reuters/AP, all of which
+      license it. Sections 21.0 rule 3 and 21.1 forbid inventing a substitute,
+      and a nowcast-minus-realised quantity would be a different estimand
+      wearing the same name.
+
+      FRED does carry the REALISED index (`CPIAUCSL`, `CPIAUCNS`, `CPILFESL`),
+      which is why a caller CAN compute a surprise if they supply their own
+      consensus — the block is on the source, not on the arithmetic.
+
+      Consequence for the model: the transmission map publishes the caller's
+      value when supplied and NEVER lets a direction depend on it (see the
+      function's Defect 1 note). This entry exists so the block is re-probeable
+      — per the lesson recorded above, an unrecorded block is the one that
+      cannot be caught.
+    opened_in: OPEN_ISSUES.md

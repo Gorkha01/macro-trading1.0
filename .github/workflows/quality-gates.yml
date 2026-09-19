@@ -1,0 +1,55 @@
+name: quality-gates
+
+# Phase 0 Definition of Done (AGENTS.md Section 11): pytest collects and
+# passes, ruff clean, mypy clean. The offline suite runs here; the live tests
+# are excluded because a network dependency in CI is how a suite becomes
+# something people learn to ignore — and a provider outage would then look
+# like a code regression.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies (locked)
+        run: uv sync --extra dev --frozen
+
+      - name: Lint (ruff check)
+        run: uv run ruff check src/ tools/ tests/
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check src/ tools/ tests/
+
+      - name: Type check (mypy --strict)
+        run: uv run mypy
+
+      - name: Test suite (offline)
+        run: uv run pytest -m "not live"
+
+  # Manual/ scheduled job for the live data path. Requires FRED reachability.
+  live-data:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --extra dev --frozen
+      - name: Live data-layer tests
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: uv run pytest -m live

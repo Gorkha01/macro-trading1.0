@@ -1,0 +1,277 @@
+"""Mutation sweep for ``ppi_pipeline.py`` (``ppi_pipeline_signal``, Module 5.4).
+
+The suite would pass under the specification's own spelling in places, so this
+sweep exists mainly to prove three corrections are **load-bearing** rather than
+cosmetic:
+
+* **M1** reverts the two ``Literal`` fields to the specification's free ``str``.
+  Under that spelling a typo'd assessment is accepted and reports ``fuller``
+  pass-through. If the suite does not catch M1, the ``Literal`` correction is
+  decoration.
+* **M2** drops the base-rate keys from ``value``, which would remove the D-029
+  disclosure while leaving the flag — the exact shape the finding is about.
+* **M3** makes pass-through read the gradient, which destroys the
+  margin-absorption mechanism the module exists to model.
+
+Every pattern is matched against the pristine source read from the repo, not a
+backup: a ``/tmp`` path resolves in Git Bash but not in a Windows Python process.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+SRC = Path("src/macro_engine/models/ppi_pipeline.py")
+ORIGINAL = SRC.read_text(encoding="utf-8")
+
+# Named fragments keep the mutation literals under the line limit (E501).
+_MARGIN_FIELD = "    corporate_margin_trend: MarginTrend = Field("
+_DEMAND_FIELD = "    demand_condition: DemandCondition = Field("
+_VALUE_DICT = (
+    '            "base_rate_strict_descending": base_rate.strict_descending_rate,\n'
+    '            "base_rate_crude_above_final": base_rate.crude_above_final_rate,\n'
+)
+_GRADIENT_BAND = (
+    "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:\n"
+    '        gradient_direction = "no_clear_gradient"'
+)
+_MARGIN_WARNING = '        "``corporate_margin_trend`` is a HUMAN ASSESSMENT, not an observation "'
+_BASE_RATE_WARNING = '        f"The stage gradient\'s own base rate: the strict ordering "'
+
+MUTATIONS: list[tuple[str, str, str]] = [
+    # --- The Literal correction (the centrepiece) -------------------------
+    (
+        "M1a margin field reverted to the spec's free str",
+        _MARGIN_FIELD,
+        "    corporate_margin_trend: str = Field(",
+    ),
+    (
+        "M1b demand field reverted to the spec's free str",
+        _DEMAND_FIELD,
+        "    demand_condition: str = Field(",
+    ),
+    (
+        "M1c margin Literal admits a typo'd extra member",
+        'MarginTrend = Literal["expanding", "stable", "compressing"]',
+        'MarginTrend = Literal["expanding", "stable", "compressing", "compress"]',
+    ),
+    (
+        "M1d demand Literal admits a case variant",
+        'DemandCondition = Literal["strong", "neutral", "weak"]',
+        'DemandCondition = Literal["strong", "neutral", "weak", "Strong"]',
+    ),
+    # NOTE: an attempt to mutate the *description text* of the margin field was
+    # removed from this sweep after being diagnosed as an INERT MUTATION.
+    # pydantic builds the ``literal_error`` message from the ``Literal``
+    # annotation's members, not from ``Field(description=...)``, so shortening
+    # the description cannot change anything a test could observe — verified by
+    # mutating the source, re-importing the module, and comparing the
+    # ValidationError text with and without the change: byte-identical. An inert
+    # mutation is not a test gap, and keeping it in the list would misreport the
+    # kill rate. That probe is not kept as a script because the finding is a
+    # one-time property of pydantic's error construction rather than a recurring
+    # check. The two survivors that WERE real test gaps (M4e, M5b) became tests
+    # in tests/models/test_ppi_pipeline.py instead.
+    # --- The D-029 base-rate disclosure -----------------------------------
+    (
+        "M2a base-rate keys removed from value",
+        _VALUE_DICT,
+        "",
+    ),
+    (
+        "M2b strict base rate reported as a percentage (30.0 not 0.30)",
+        '"base_rate_strict_descending": base_rate.strict_descending_rate,',
+        '"base_rate_strict_descending": base_rate.strict_descending_rate * 100.0,',
+    ),
+    (
+        "M2c crude-above-final rate swapped for the strict rate",
+        '"base_rate_crude_above_final": base_rate.crude_above_final_rate,',
+        '"base_rate_crude_above_final": base_rate.strict_descending_rate,',
+    ),
+    (
+        "M2d base-rate warning removed entirely",
+        _BASE_RATE_WARNING,
+        '        f"REMOVED: ',
+    ),
+    (
+        "M2e base-rate warning states no number",
+        'f"The stage gradient\'s own base rate: the strict ordering "\n'
+        '        f"crude > intermediate > final held in "\n'
+        '        f"{base_rate.strict_descending_rate:.1%} of the 190 months this build "',
+        'f"The stage gradient\'s own base rate: the strict ordering "\n'
+        '        f"crude > intermediate > final held in "\n'
+        '        f"some share of the months this build "',
+    ),
+    # --- Pass-through mechanism -------------------------------------------
+    (
+        "M3a pass-through reads the gradient (destroys margin absorption)",
+        '    absorbing = inputs.demand_condition == "weak" or '
+        'inputs.corporate_margin_trend == "compressing"',
+        '    absorbing = upstream_building and inputs.demand_condition == "weak"',
+    ),
+    (
+        "M3b pass-through ignores the margin trend",
+        'inputs.demand_condition == "weak" or inputs.corporate_margin_trend == "compressing"',
+        'inputs.demand_condition == "weak"',
+    ),
+    (
+        "M3c pass-through ignores the demand condition",
+        'inputs.demand_condition == "weak" or inputs.corporate_margin_trend == "compressing"',
+        'inputs.corporate_margin_trend == "compressing"',
+    ),
+    (
+        "M3d pass-through labels inverted",
+        '    pass_through: PipelinePassThrough = "muted" if absorbing else "fuller"',
+        '    pass_through: PipelinePassThrough = "fuller" if absorbing else "muted"',
+    ),
+    # --- The ordering test and the dead band ------------------------------
+    (
+        "M4a strict ordering loosened to crude > final only",
+        "    upstream_building = crude > intermediate > final",
+        "    upstream_building = crude > final",
+    ),
+    (
+        "M4b strict ordering inverted",
+        "    upstream_building = crude > intermediate > final",
+        "    upstream_building = crude < intermediate < final",
+    ),
+    (
+        "M4c dead band removed (tolerance forced to zero)",
+        "    tolerance = settings.inflation.pipeline_gradient_tolerance",
+        "    tolerance = 0.0",
+    ),
+    (
+        "M4d dead band made exclusive (<= becomes <)",
+        "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:",
+        "    if abs(crude - intermediate) < 0 and abs(intermediate - final) < 0:",
+    ),
+    (
+        "M4e dead band applies to only one adjacent pair",
+        "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:",
+        "    if abs(crude - intermediate) <= tolerance:",
+    ),
+    (
+        "M4f non-monotonic label collapsed into the downstream case",
+        '        gradient_direction = "non_monotonic"',
+        '        gradient_direction = "passing_through_downstream"',
+    ),
+    (
+        "M4g stage spread sign flipped",
+        "    stage_spread = crude - final",
+        "    stage_spread = final - crude",
+    ),
+    # --- Conditional warnings ---------------------------------------------
+    (
+        "M5a contradiction warning removed",
+        '    if upstream_building and inputs.corporate_margin_trend == "expanding":',
+        "    if False:",
+    ),
+    (
+        "M5b contradiction warning fires regardless of the margin trend",
+        '    if upstream_building and inputs.corporate_margin_trend == "expanding":',
+        "    if upstream_building:",
+    ),
+    (
+        "M5c non-monotonic warning removed",
+        '    if gradient_direction == "non_monotonic":',
+        "    if False:",
+    ),
+    (
+        "M5d downstream-arrival warning removed",
+        '    if gradient_direction == "passing_through_downstream":',
+        "    if False:",
+    ),
+    (
+        "M5e flat-ends warning removed",
+        "    if abs(stage_spread) <= tolerance:",
+        "    if False:",
+    ),
+    (
+        "M5f margin human-assessment warning removed",
+        _MARGIN_WARNING,
+        '        "REMOVED:',
+    ),
+    (
+        "M5g 1:1-predictor warning removed",
+        '        "PPI is NOT a 1:1 CPI predictor — margin absorption breaks the link "',
+        '        "REMOVED: PPI is a 1:1 CPI predictor "',
+    ),
+    # --- Confidence and contract ------------------------------------------
+    (
+        "M6a confidence hardcoded to the spec's 0.4",
+        "        confidence=compute_confidence(\n"
+        "            ConfidenceInputs(\n"
+        "                is_heuristic_not_calibrated=True,\n"
+        "                depends_on_unobservable=True,\n"
+        "            ),\n"
+        "        ),",
+        "        confidence=0.4,",
+    ),
+    (
+        "M6b heuristic penalty dropped",
+        "                is_heuristic_not_calibrated=True,\n",
+        "",
+    ),
+    (
+        "M6c unobservable penalty dropped",
+        "                depends_on_unobservable=True,\n",
+        "",
+    ),
+    (
+        "M6d inputs_used loses a field",
+        '            "demand_condition",\n        ],',
+        "        ],",
+    ),
+    (
+        "M6e extra=forbid removed from the input model",
+        '    model_config = ConfigDict(extra="forbid")\n\n    crude_stage_yoy_pct',
+        "    crude_stage_yoy_pct",
+    ),
+]
+
+
+def run_tests() -> bool:
+    # The test path is a literal, not the ``_TEST_FILE`` constant, because ruff's
+    # S603 rule treats a variable argument to ``subprocess`` as potentially
+    # untrusted input and cannot see that the constant is a pinned path. The
+    # constant above is used for documentation; the invocation stays literal.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/models/test_ppi_pipeline.py",
+            "-q",
+            "--no-header",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def main() -> int:
+    survivors: list[tuple[str, str]] = []
+    for name, old, new in MUTATIONS:
+        if old not in ORIGINAL:
+            print(f"PATTERN MISSING   {name}")
+            survivors.append((name, "pattern-not-found"))
+            continue
+        SRC.write_text(ORIGINAL.replace(old, new, 1), encoding="utf-8", newline="")
+        caught = not run_tests()
+        SRC.write_text(ORIGINAL, encoding="utf-8", newline="")
+        print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
+        if not caught:
+            survivors.append((name, "survived"))
+
+    print()
+    print(f"{len(MUTATIONS) - len(survivors)}/{len(MUTATIONS)} killed")
+    for name, why in survivors:
+        print(f"  SURVIVOR ({why}): {name}")
+    return 0 if not survivors else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

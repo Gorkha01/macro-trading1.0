@@ -1,0 +1,23 @@
+# Line-ending convention (D-061).
+#
+# The repo was committed MIXED: 90 files CRLF, 76 LF. The cause is a harness
+# defect, not an editor setting — `Path.write_text` translates "\n" to
+# os.linesep on write while `read_text` normalises on read, so a mutation
+# sweep's round-trip is stable IN MEMORY and lossy ON DISK. Every sweep
+# silently converted its target to CRLF, and the D-060 commit captured that.
+#
+# The cost is not cosmetic. `git status` then reports a whole-file modification
+# for a change with no content, which destroys the clean-tree precondition that
+# `check_targets` and the sweep-health check depend on: a tree that is dirty for
+# an invisible reason is worse than no version control at all.
+#
+# The harness is fixed at the source (every `write_text` passes `newline=""`),
+# and this file pins the convention so a Windows checkout cannot reintroduce it.
+* text=auto eol=lf
+
+# Binary assets must never be text-normalised.
+*.parquet binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.xlsx binary

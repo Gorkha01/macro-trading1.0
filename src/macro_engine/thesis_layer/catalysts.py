@@ -1,0 +1,373 @@
+"""Module 13-adjacent — the forward catalyst calendar (Section 16.4, D-065).
+
+``next_catalyst_calendar`` answers a single question for the thesis: **what
+scheduled, official event could move the gap I am trading, and when.** It fills
+``TradeIdea.catalysts``, and Section 16.4 is emphatic about where the dates may
+come from:
+
+    "MUST pull from FRED release/dates + federalreserve.gov RSS (Section 8,
+    matching the companion data-pipeline project's rule) — NEVER a third-party
+    calendar."
+
+The sample in Section 16.4 returns three hardcoded **strings** — *"Next CPI
+release (FRED release/dates)"* — which names the source but carries no date. A
+catalyst with no date is not a catalyst: the entire point of a calendar is to
+say *when*. Everything below is about turning those three names into three
+dated, measured answers.
+
+What the two sources actually are, measured (D-065)
+---------------------------------------------------
+**FRED.** ``https://fred.stlouisfed.org/releases/calendar?po=1&ptic=0&vs=..&ve=..&rid=..``
+returns a JSON envelope ``{"pager": "<html table>", "ptic": N}``. There is **no
+structured JSON event list** — the events are an HTML table inside a JSON
+string. Three measured facts about it:
+
+1. **``ptic`` is a pagination TOTAL, not an event count.** A 120-day unfiltered
+   window returns ``ptic=2806`` while the first page holds **50 rows**. An
+   implementation that reports ``ptic`` as the number of catalysts is off by a
+   factor of ~56, and one that assumes the single page is the whole calendar
+   sees 1.8% of it. This function therefore reads only the **``rid``-filtered**
+   path, where ``ptic`` is 3-4 and the page genuinely is the whole answer.
+2. **Without ``rid`` it is one HTTP request per calendar day.** 90 days = 90
+   requests, which reliably times out. With ``rid`` it is one paginated call.
+   The cost asymmetry is why this function never issues an unfiltered request.
+3. **The event date is a human string, not a field.** The table header reads
+   ``"Friday October 02, 2026"`` with the event name in an ``<a>`` beneath it.
+   The date must be parsed.
+
+**federalreserve.gov.** The Fed's own FOMC calendar page carries the meetings as
+structured markup — ``fomc-meeting__month`` → ``"October"`` and
+``fomc-meeting__date`` → ``"27-28"`` — grouped under a ``"2026 FOMC Meetings"``
+heading, with ``*`` marking a meeting that carries a **Summary of Economic
+Projections** (Section 16.4's "dot plot").
+
+Three source defects, measured, that shape this code (D-065)
+------------------------------------------------------------
+**1. FRED's FOMC release is not a meeting calendar.** Release id **101**,
+"FOMC Press Release", returns a row for **every single calendar day** — the
+2026-09-19 .. 2026-11-07 window returned 50 consecutive daily rows. An
+implementation that read ``rid=101`` and reported "the next FOMC" would report
+**tomorrow, every day, forever**. It is a *press-release* feed, not a *meeting*
+schedule, and the distinction is exactly the one Section 16.4 draws when it
+names ``federalreserve.gov`` as the FOMC source. FOMC dates therefore come from
+the Fed, never from FRED.
+
+**2. Flattening the Fed's HTML to text creates phantom meetings.** Stripping
+tags from the 2027 panel yields ``"January 26-27 ... September 14-15* ...
+Note: A two-day meeting is scheduled for January ..."`` — and a regex over that
+flat text matches the trailing note as a *second* January meeting. Measured: the
+flat-text parse produced **2027-01-26 and 2027-01-27 as two separate meetings**
+from one. The structured markup has no such ambiguity, so the parser reads
+``fomc-meeting__month``/``fomc-meeting__date`` and never a flattened panel.
+
+**3. A cross-month range must not be split.** The Fed writes some meetings as
+a single month with a day range (``"January" 26-27``). A naive "month + first
+day" read would silently drop the second day of every two-day meeting; the
+meeting is dated by its **last** day here, which is when the decision lands.
+
+What this function will not do
+------------------------------
+**It will not invent a date.** Every returned string contains a real date
+parsed from the named source. If a source yields nothing forward, that catalyst
+is **omitted** rather than emitted as a dateless placeholder — the sample's
+``"Next CPI release (FRED release/dates)"`` is precisely the output this
+function refuses to produce, because it reads as a scheduled event while
+carrying no schedule.
+
+**It will not silently return an empty list when every source failed.** An
+empty calendar is a legitimate answer only when the sources were reached and
+had nothing; if every source errored, the caller gets an exception. A thesis
+whose calendar is empty because the network was down is worse than one with no
+calendar, because the emptiness is indistinguishable from "no catalysts" (the
+silence failure mode, D-054).
+
+Why the transport is ``httpx`` and not ``urllib`` (D-065)
+---------------------------------------------------------
+Measured on this host, 2026-09-19, all against the same working URL:
+
+======================================  ==========  ============================
+client                                  result      note
+======================================  ==========  ============================
+``curl`` (CLI)                          **200**     the endpoint is fine
+``httpx``, HTTP/1.1, UA ``curl/8.0``    **200**     what this module uses
+``urllib.request``                      dropped     ``RemoteDisconnected``
+``aiohttp`` (what OpenBB uses)          dropped     ``TimeoutError``
+======================================  ==========  ============================
+
+The endpoint closes the connection for ``urllib`` and ``aiohttp`` regardless of
+the User-Agent, and answers ``httpx`` on HTTP/1.1. That is TLS/HTTP-fingerprint
+filtering, not an FRED outage — and it is the real reason
+``obb.economy.calendar`` times out here even on its single-call ``release_id``
+path: OpenBB's FRED provider is built on ``aiohttp``. ``httpx`` is already a
+project dependency (``data_layer/openbb_client.py`` uses it for the local-API
+path), so this adds no new one.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import date
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from macro_engine.config import get_settings
+from macro_engine.models.contracts import utc_now
+
+__all__ = [
+    "CatalystSourceError",
+    "next_catalyst_calendar",
+]
+
+logger = logging.getLogger(__name__)
+
+#: The FRED releases-calendar JSON endpoint. The three query parameters that
+#: matter: ``ptic=0`` (no importance filter), ``vs``/``ve`` (the window), and
+#: ``rid`` (the release id — the ONLY filter that does not cost one request per
+#: day).
+_FRED_CALENDAR_URL = (
+    "https://fred.stlouisfed.org/releases/calendar?po=1&ptic=0&vs={start}&ve={end}&rid={rid}"
+)
+
+#: The Fed's own FOMC meeting calendar. Section 16.4 names this host for the
+#: third catalyst, and D-065's probe is why: FRED's FOMC release is a daily
+#: press-release feed, not a meeting schedule.
+_FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+#: FRED close the connection for urllib's and aiohttp's TLS/HTTP fingerprint
+#: (measured: ``RemoteDisconnected`` and ``TimeoutError``) while answering
+#: httpx on HTTP/1.1. This pair is what makes the endpoint respond.
+_REQUEST_HEADERS = {
+    "Accept": "application/json, text/html;q=0.9",
+    "User-Agent": "curl/8.0",
+}
+
+#: FRED's table date header: ``"Friday October 02, 2026"``.
+_FRED_DATE_RE = re.compile(r">(\w+day (\w+) (\d{1,2}), (\d{4}))<")
+
+#: The event name inside a date group: ``<a href="/release?rid=10">Consumer
+#: Price Index</a>``.
+_FRED_EVENT_RE = re.compile(r'<a href="/release\?rid=(\d+)">([^<]+)</a>')
+
+#: The Fed's structured FOMC cells. Read in pair, never from flattened text —
+#: see defect 2 in the module docstring.
+_FED_MONTH_RE = re.compile(
+    r'fomc-meeting__month[^>]*>(.*?)</div>\s*<div class="fomc-meeting__date[^>]*>(.*?)</div>',
+    re.S,
+)
+_FED_YEAR_RE = re.compile(r"(\d{4}) FOMC Meetings")
+
+_MONTHS: dict[str, int] = {
+    "January": 1,
+    "February": 2,
+    "March": 3,
+    "April": 4,
+    "May": 5,
+    "June": 6,
+    "July": 7,
+    "August": 8,
+    "September": 9,
+    "October": 10,
+    "November": 11,
+    "December": 12,
+}
+
+
+class CatalystSourceError(RuntimeError):
+    """Raised when **every** configured catalyst source failed to answer.
+
+    Not the same as "no catalysts". A source that answers and has no forward
+    event yields nothing; only a source that cannot be reached raises, and only
+    when no source at all produced a date. The distinction is what keeps an
+    empty calendar from meaning two different things (D-054).
+    """
+
+
+#: The timezone the catalysts are scheduled in. Every event this function
+#: returns is a **US** release or meeting, and both sources publish their dates
+#: in US calendar terms. Using UTC's date instead would roll the calendar over
+#: up to a day early during the US evening, so a release scheduled for tomorrow
+#: would be filtered out as "today" — an off-by-one that only shows up for a few
+#: hours each day, which is the worst kind. ``zoneinfo`` is stdlib (3.9+) and
+#: carries the DST rules, so the boundary is correct in both halves of the year.
+_US_EASTERN = ZoneInfo("America/New_York")
+
+
+def _us_calendar_today() -> date:
+    """Today's date **as the US calendar sees it**.
+
+    Deliberately not ``utc_now().date()``: the two disagree for several hours
+    daily, and every date this module handles is a US-scheduled one.
+    """
+    return utc_now().astimezone(_US_EASTERN).date()
+
+
+def _http_get(url: str, *, timeout: float) -> str:
+    """One GET over HTTP/1.1, returning decoded text.
+
+    HTTP/1.1 is forced rather than negotiated: FRED answers HTTP/1.1 and drops
+    the HTTP/2 preface (measured). Raises ``httpx.HTTPError``.
+    """
+    with httpx.Client(http2=False, timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url, headers=_REQUEST_HEADERS)
+        response.raise_for_status()
+        return response.text
+
+
+def _fetch_fred_release(
+    release_id: int, *, start: date, end: date, timeout: float
+) -> list[tuple[date, str]]:
+    """Forward events for one FRED release id, as ``[(date, name), ...]``.
+
+    Uses the ``rid``-filtered path exclusively: it is **one** paginated request
+    for the whole window, whereas the unfiltered path issues one request per
+    calendar day and times out. The ``ptic`` field is deliberately **not** read;
+    it is a pagination total (measured 2806 for a window whose first page holds
+    50 rows), not the event count.
+    """
+    url = _FRED_CALENDAR_URL.format(start=start.isoformat(), end=end.isoformat(), rid=release_id)
+    payload = json.loads(_http_get(url, timeout=timeout))
+
+    events: list[tuple[date, str]] = []
+    current: date | None = None
+    # The "pager" member is the HTML table. Split on row openers and carry the
+    # most recent date-header forward to the event rows beneath it.
+    for row in re.split(r"<tr[^>]*>", payload.get("pager", "")):
+        header = _FRED_DATE_RE.search(row)
+        if header and "colspan" in row:
+            current = date(int(header.group(4)), _MONTHS[header.group(2)], int(header.group(3)))
+            continue
+        event = _FRED_EVENT_RE.search(row)
+        if event and current is not None:
+            events.append((current, event.group(2).strip()))
+    return events
+
+
+def _fetch_fed_fomc_meetings(*, timeout: float) -> list[tuple[date, bool]]:
+    """Forward FOMC meetings as ``[(last_day, has_projections), ...]``.
+
+    Parsed from the Fed's structured ``fomc-meeting__month`` /
+    ``fomc-meeting__date`` pair, **not** from flattened text — flattening the
+    2027 panel yields phantom duplicates from the trailing explanatory note
+    (measured, defect 2 of the module docstring). The meeting is dated by its
+    **last** day, which is when the statement and projections are published.
+    """
+    html = _http_get(_FED_FOMC_CALENDAR_URL, timeout=timeout)
+
+    meetings: list[tuple[date, bool]] = []
+    # Walk the year panels so each meeting is attributed to the right year.
+    for year_match in _FED_YEAR_RE.finditer(html):
+        year = int(year_match.group(1))
+        next_year = _FED_YEAR_RE.search(html, year_match.end())
+        panel_end = next_year.start() if next_year else len(html)
+        panel = html[year_match.end() : panel_end]
+        for month_cell, date_cell in _FED_MONTH_RE.findall(panel):
+            month_name = re.sub(r"<[^>]+>", " ", month_cell).strip().split("/")[0].strip()
+            if month_name not in _MONTHS:
+                continue
+            # "27-28" / "8-9*" -> the last day, and the projections marker.
+            # The character class takes a hyphen OR an en dash: the Fed's own
+            # markup uses a hyphen today, but an en dash is the typographic
+            # choice a CMS makes when it renders a range, and the difference is
+            # invisible in a rendered page while breaking the parse. Accepting
+            # both costs nothing and is why the noqa is here rather than a
+            # "simplification" to a bare hyphen (D-065).
+            day_match = re.search(
+                r"(\d{1,2})\s*[-–]\s*(\d{1,2})(\*?)",  # noqa: RUF001
+                re.sub(r"<[^>]+>", "", date_cell),
+            )
+            if not day_match:
+                continue
+            try:
+                last_day = date(year, _MONTHS[month_name], int(day_match.group(2)))
+            except ValueError:
+                continue
+            meetings.append((last_day, bool(day_match.group(3))))
+    return meetings
+
+
+def next_catalyst_calendar(as_of: date | None = None) -> list[str]:
+    """The forward official calendar, as dated strings (Section 16.4).
+
+    Returns one entry per catalyst that a source could date within
+    ``[as_of, as_of + horizon_days]``, earliest first. A catalyst whose source
+    answered but had no event in the window is omitted; if **no** source
+    answered, raises ``CatalystSourceError`` so that an unreachable calendar
+    cannot read as an empty one.
+
+    The horizon bounds the result **locally** as well as the request, because a
+    source that ignores the window returns rows a request parameter cannot
+    un-return.
+    """
+    settings = get_settings().catalyst_calendar
+    today = as_of or _us_calendar_today()
+    # The horizon is applied TWICE, deliberately. Once as a request parameter
+    # (the source is asked for a bounded window, which keeps the payload small)
+    # and once as a LOCAL filter below. The second is not redundant: a source
+    # that ignores or mis-handles the window returns everything it has, and a
+    # request parameter cannot un-return a row. Measured while testing this
+    # increment: a one-day horizon still received a 60-day event because only the
+    # request was bounded. A horizon that bounds the request but not the result is
+    # a horizon that does not bound anything.
+    horizon_ordinal = today.toordinal() + int(settings.horizon_days.value)
+    horizon = date.fromordinal(horizon_ordinal)
+    timeout = float(settings.http_timeout_seconds.value)
+
+    entries: list[tuple[date, str]] = []
+    answered = 0
+
+    # --- Catalyst 1: CPI, from the FRED releases calendar (rid=10). ---------
+    releases = (
+        ("CPI", settings.cpi_id, "Consumer Price Index"),
+        ("NFP", settings.nfp_id, "Employment Situation"),
+        ("PCE", settings.pce_id, "Personal Income and Outlays"),
+    )
+    for label, rid, expected_name in releases:
+        try:
+            events = _fetch_fred_release(rid, start=today, end=horizon, timeout=timeout)
+        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            logger.warning("catalyst source FRED rid=%s (%s) failed: %s", rid, label, exc)
+            continue
+        answered += 1
+        forward = [(d, n) for d, n in events if today <= d <= horizon]
+        # Each release should carry exactly one release name; a mismatched name
+        # means the release id points somewhere else (FRED renumbers releases),
+        # which must be loud rather than silently relabelled.
+        if forward and not any(expected_name.lower() in n.lower() for _, n in forward):
+            logger.warning(
+                "FRED rid=%s was configured as %s but returned %r",
+                rid,
+                label,
+                sorted({n for _, n in forward}),
+            )
+        if forward:
+            when = min(forward)[0]
+            entries.append((when, f"{label} release ({expected_name}) — {when.isoformat()}"))
+
+    # --- Catalyst 4: the next FOMC meeting, from the Fed. ------------------
+    try:
+        meetings = _fetch_fed_fomc_meetings(timeout=timeout)
+    except (httpx.HTTPError, TimeoutError) as exc:
+        logger.warning("catalyst source federalreserve.gov failed: %s", exc)
+        meetings = []
+    else:
+        answered += 1
+        forward_meetings = [(d, proj) for d, proj in meetings if today <= d <= horizon]
+        if forward_meetings:
+            when, has_projections = min(forward_meetings)
+            detail = " + projections" if has_projections else ""
+            entries.append((when, f"FOMC meeting{detail} — {when.isoformat()}"))
+
+    if answered == 0:
+        raise CatalystSourceError(
+            "no catalyst source answered: FRED (rid "
+            f"{settings.cpi_id}/{settings.nfp_id}/{settings.pce_id}) and "
+            f"{_FED_FOMC_CALENDAR_URL} all failed. An empty calendar here would be "
+            "indistinguishable from a genuinely quiet calendar, so it is an error "
+            "rather than a silent []."
+        )
+
+    entries.sort(key=lambda pair: pair[0])
+    return [text for _, text in entries]
