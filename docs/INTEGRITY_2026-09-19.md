@@ -249,14 +249,27 @@ NO TRADE in preference to a fabricated edge.
 - Point-in-time filtering by `observation_date` is real and well-built
   (`as_of.py`, O-7): the live snapshot withheld **42 forward-dated CBO projections**
   and named the horizon.
-- **`release_datetime` is now POPULATED when the calendar can be read;
+- **`release_datetime` is now FULLY POPULATED from an exact source;
   `vintage_datetime` and `decision_cutoff` remain modelled-but-not-populated.**
-  `vintage_datetime` is a genuine dead end: the FRED `economy.fred_series` payload
-  returns only `date` + value plus descriptive metadata — **no
-  `realtime_start`/`realtime_end`** — and `economy.fred_release_table` returns a
-  **table of contents with no date field at all** (keys are `element_id`,
-  `element_type`, `level`, `line`, `name`, `parent_id`, `symbol` — verified, zero
-  date-like fields), so no reachable route supplies revision timing.
+  `release_datetime` is filled by `publication_dates` — each series' own
+  `last_updated` metadata, read directly with **no join, verified at 42/42
+  registry coverage, 0 transport errors** (measured 2026-09-20). It is the
+  primary source; the events calendar is retained disabled as a fallback. See
+  the CORRECTED note below for how both earlier conclusions were reached.
+
+  `vintage_datetime` **is** a genuine dead end, and the reason is now
+  established rather than inferred. The route that supplies `last_updated` also
+  returns `realtime_start` / `realtime_end`, which *look* like ALFRED vintage
+  bounds — but for every series **both equal today**: they describe the vintage
+  window in force *now*, not the revisions that existed before. Passing
+  `realtime_start=2026-01-01` as a query parameter is **silently ignored**
+  (A/B tested: the two responses differed only in request
+  `timestamp`/`duration`). `economy.fred_series` returns no realtime field at
+  all, and `economy.fred_release_table` returns a table of contents with no date
+  field (keys `element_id`, `element_type`, `level`, `line`, `name`,
+  `parent_id`, `symbol`). Asking "which revision was current on date X" is
+  therefore unanswerable through this installation — a different question from
+  "when did this become public", and only the second is answerable.
 
   > **CORRECTED 2026-09-20.** The original entry here claimed release dates were
   > *also* unreachable, on the evidence that "`economy.calendar` raises
@@ -711,24 +724,44 @@ their own nature, which is why the reasoning object carries the statement.
    `tests/models/test_reasoning_contract.py`, all proven RED by planting
    regressions.
 
-2. **§6 release timing — IMPLEMENTED for release dates; vintage timing remains a
-   measured dead end.**
+2. **§6 release timing — IMPLEMENTED AND COMPLETE for release dates; vintage
+   timing remains a measured dead end.**
    `ObservationPoint` carries optional `release_datetime` / `vintage_datetime`
    and a `has_known_release_timing` predicate; `MacroDataSnapshot` carries
    `decision_cutoff`; `as_of.py`'s docstring states the sufficiency-not-soundness
-   limitation in bold. **`release_datetime` is now populated** — see the
-   CORRECTED note in §K. The original conclusion that release data was
-   *unreachable* rested on trying a single provider of the four that
-   `economy.calendar` accepts; `provider=nasdaq` returns dated US releases and is
-   wired in. **`vintage_datetime` is a genuine dead end:** `economy.fred_series`
-   returns only date + value, and `economy.fred_release_table` returns a table of
-   contents with **no date field at all** (verified: keys are `element_id`,
-   `element_type`, `level`, `line`, `name`, `parent_id`, `symbol`), so it stays
-   modelled-but-`None`. The calendar route is intermittent (and was 403-blocked
-   upstream at last measurement), so the field is populated opportunistically and
-   its absence is flagged rather than hidden. Recommend revisiting
-   `vintage_datetime` when a credentialed revision-history provider (ALFRED-shaped)
-   is available.
+   limitation in bold.
+
+   **`release_datetime` is now populated from an exact source.** Two successive
+   corrections got here. First, the 2026-09-19 conclusion that release data was
+   *unreachable* rested on trying one provider of the four `economy.calendar`
+   accepts; `provider=nasdaq` returns dated US releases and was wired in — but
+   that route is intermittent and is currently edge-blocked (Akamai 403), so it
+   could only ever populate the field opportunistically. Second, enumerating all
+   278 operations of the live OpenAPI spec found a **direct** route that the
+   keyword search had missed: `economy.fred_search` with
+   `search_type=series_id` returns each series' own `last_updated` publication
+   stamp. **Verified at 42/42 registry coverage with 0 transport errors**
+   (2026-09-20), cross-validated against the events calendar (PCEPILFE
+   `last_updated` 2026-08-26 vs Core PCE release 2026-08-27). Live effect: a
+   snapshot build now yields `has_known_release_timing` **True on every point**,
+   where it was previously False everywhere.
+
+   `publication_dates` is the PRIMARY source; the calendar is retained but
+   **disabled by default**, since it would cost 5 retries (~15s) per build on a
+   blocked route while adding nothing the metadata source lacks. Re-enabling is
+   a one-flag change, and the merge rule is primary-wins on conflict.
+
+   **`vintage_datetime` is a genuine dead end, now established rather than
+   inferred:** the same route also returns `realtime_start`/`realtime_end`, but
+   for every series **both equal today** — they describe the vintage window in
+   force now, not past revisions — and passing `realtime_start` as a parameter
+   is **silently ignored** (A/B tested). `economy.fred_series` returns no
+   realtime field at all, and `economy.fred_release_table` returns a table of
+   contents with **no date field** (keys: `element_id`, `element_type`, `level`,
+   `line`, `name`, `parent_id`, `symbol`). So `vintage_datetime` stays
+   modelled-but-`None`. Recommend revisiting only when a credentialed
+   revision-history provider (ALFRED-shaped) is available — this is an
+   authentication/entitlement question, not a routing one.
 
 3. **DEF-001 remains the largest item** — 59 unwired Tier 1–4 functions (7 of them
    Phase 4+ by endpoint). Unchanged by this increment, and correctly so: the directive

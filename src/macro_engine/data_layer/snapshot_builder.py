@@ -42,6 +42,10 @@ import pandas as pd
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
+from macro_engine.data_layer.publication_dates import (
+    PublicationDateError,
+    fetch_publication_dates,
+)
 from macro_engine.data_layer.release_calendar import (
     ReleaseCalendarError,
     ReleaseDateIndex,
@@ -93,6 +97,10 @@ class SnapshotBuildReport:
         self.release_calendar_series: int = 0
         #: Set only when the calendar was enabled but misconfigured.
         self.release_calendar_note: str | None = None
+        #: Which source supplied the release index: "publication_dates"
+        #: (primary, per-series metadata) or "release_calendar" (fallback,
+        #: events join). None when neither answered or neither was enabled.
+        self.release_source: str | None = None
 
     @property
     def is_complete(self) -> bool:
@@ -387,6 +395,77 @@ def _apply_validation(
     return attach_flags(snapshot, aggregate)
 
 
+def _resolve_release_index(report: SnapshotBuildReport) -> ReleaseDateIndex | None:
+    """Resolve release timing from the primary source, falling back to the calendar.
+
+    Returns ``None`` only when no source is enabled — which is a configuration
+    choice, not a failure, and is recorded as such. The two sources are merged
+    with **primary winning on conflict**, because the primary is the provider's
+    own statement for that series while the calendar is an inferred join; where
+    both have an opinion, the direct one is the better fact.
+
+    ``release_source`` on the report records which source supplied the index, so
+    a reader can tell "43 series from metadata" apart from "3 from the events
+    calendar" without re-running anything.
+    """
+    registry = get_registry()
+
+    primary: ReleaseDateIndex | None = None
+    if registry.publication_dates.enabled:
+        try:
+            primary = fetch_publication_dates()
+        except PublicationDateError as exc:
+            logger.error("publication-date source misconfigured: %s", exc)
+            report.release_calendar_note = f"publication_dates misconfigured: {exc}"
+        except Exception as exc:
+            # An unexpected fault in an OPTIONAL enrichment must never take the
+            # snapshot down with it. This is broader than the other handlers
+            # here deliberately: the value of this source is real but not
+            # load-bearing, so the blast radius of a bug in it is bounded to
+            # "release timing unknown" rather than "no snapshot".
+            logger.exception("publication-date source failed unexpectedly: %s", exc)
+            report.release_calendar_note = f"publication_dates error: {type(exc).__name__}"
+
+    if primary is not None and primary.route_read:
+        report.release_source = "publication_dates"
+        report.release_calendar_read = True
+        report.release_calendar_series = len(primary.dates)
+
+    fallback: ReleaseDateIndex | None = None
+    if registry.release_calendar.enabled:
+        try:
+            fallback = fetch_release_dates()
+        except ReleaseCalendarError as exc:
+            logger.error("release calendar misconfigured: %s", exc)
+            report.release_calendar_note = f"release_calendar misconfigured: {exc}"
+        else:
+            if fallback.route_read and report.release_source is None:
+                report.release_source = "release_calendar"
+                report.release_calendar_read = True
+                report.release_calendar_series = len(fallback.dates)
+            elif not fallback.route_read and report.release_source is None:
+                report.release_calendar_read = False
+
+    if primary is not None and fallback is not None and primary.route_read:
+        # Primary wins per-series; the fallback fills only what it lacks.
+        merged = {**fallback.dates, **primary.dates}
+        return ReleaseDateIndex(
+            dates=merged,
+            match_counts={
+                name: primary.match_counts.get(name, 0) or fallback.match_counts.get(name, 0)
+                for name in merged
+            },
+            route_read=True,
+        )
+    if primary is not None and primary.route_read:
+        return primary
+    if fallback is not None:
+        return fallback
+    if primary is not None:
+        return primary
+    return None
+
+
 def build_snapshot(
     country: str = "us",
     *,
@@ -446,26 +525,22 @@ def build_snapshot(
     report = SnapshotBuildReport()
     report.requested = list(requested)
 
-    # Section 6: read the release calendar ONCE, before any series fetch, so
-    # every point in the snapshot is labelled against a single read. A failure
-    # here is tolerated rather than fatal — an unreadable calendar leaves
-    # release_datetime None (UNKNOWN), which is the documented outcome roughly
-    # half the time, and it must not cost the caller the whole snapshot.
+    # Section 6: resolve release timing ONCE, before any series fetch, so every
+    # point in the snapshot is labelled against a single read.
+    #
+    # Two sources, in a deliberate order. `publication_dates` is PRIMARY because
+    # it is direct — the provider states `last_updated` on the series' own
+    # metadata record, verified at 42/42 registry coverage — rather than
+    # inferring a series' release from a scheduled events calendar through a
+    # hand-maintained event-name join. `release_calendar` is the FALLBACK: it
+    # covers series the metadata route misses, and it is the only source for
+    # event-driven series with no provider symbol.
+    #
+    # A failure in either is tolerated rather than fatal — an unreadable source
+    # leaves `release_datetime` None (UNKNOWN), and it must not cost the caller
+    # the whole snapshot.
     if release_index is None:
-        calendar = get_registry().release_calendar
-        if calendar.enabled:
-            try:
-                release_index = fetch_release_dates()
-            except ReleaseCalendarError as exc:
-                # Misconfiguration: enabling the calendar without an event map
-                # is a defect, but it is recorded as a report fact rather than
-                # raised, because the snapshot is buildable without it.
-                logger.error("release calendar misconfigured: %s", exc)
-                report.release_calendar_note = f"misconfigured: {exc}"
-            else:
-                report.release_calendar_read = release_index.route_read
-                if release_index.route_read:
-                    report.release_calendar_series = len(release_index.dates)
+        release_index = _resolve_release_index(report)
 
     start = _lookback_start()
     snapshot = MacroDataSnapshot(country=country, as_of=utc_now())

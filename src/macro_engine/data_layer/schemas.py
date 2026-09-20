@@ -65,25 +65,28 @@ class ObservationPoint(BaseModel):
     release-side fields are **optional and default to ``None``, which means
     UNKNOWN — never "same as observation_date"**.
 
-    ``release_datetime`` IS populated when the release calendar can be read.
-    An earlier audit concluded no reachable route returned it and left the
-    field permanently ``None``; that finding was half wrong. ``economy.calendar``
-    accepts four providers, only ``fred`` was tried (it times out), and
-    ``nasdaq`` works — it returns dated US releases including the CPI/PCE/PPI
-    prints this system consumes. See ``release_calendar.py``.
+    ``release_datetime`` IS populated, from the most direct source available:
+    ``publication_dates`` reads each series' own ``last_updated`` metadata —
+    verified at 42/42 registry coverage, 0 transport errors — so it needs no
+    event-name join and is the primary source. (An earlier audit concluded no
+    route returned release dates at all; that was wrong twice over. First
+    ``economy.calendar`` was tried with only one of its four providers, and
+    ``provider=nasdaq`` works. Then enumerating all 278 live OpenAPI operations
+    found ``economy.fred_search``, whose ``search_type=series_id`` lookup
+    returns the publication stamp directly. See ``publication_dates.py``.)
 
-    The route is INTERMITTENT, so ``release_datetime`` is best understood as
-    "known when the calendar answered this build, ``None`` otherwise". The
-    distinction matters: ``as_of`` filtering uses ``observation_date``
-    (Section 6's O-7), which is a *sufficient but not sound* point-in-time
-    proxy. A month's CPI print is knowable only around mid-*following*-month,
-    so an ``as_of`` of the observation date itself admits data that had not
-    been published yet. Consumers must treat any observation dated within one
-    reporting lag of the cutoff as **possibly not yet public** unless
-    ``has_known_release_timing`` says otherwise — see that property.
+    The consequence is that ``has_known_release_timing`` is now True on every
+    point for which the metadata route resolved a series, rather than False
+    everywhere. Where it is still False, timing is UNKNOWN — which is a
+    different statement from "published at the observation date".
 
-    ``vintage_datetime`` remains unpopulated: no route reachable from this
-    installation returns ALFRED-style revision timing, so it stays ``None``.
+    ``vintage_datetime`` remains unpopulated, and this is now established rather
+    than assumed. The same route returns ``realtime_start`` / ``realtime_end``,
+    but for every series both equal *today*: they describe the vintage window in
+    force now, not which revisions existed before. Passing ``realtime_start`` as
+    a query parameter is silently ignored (A/B tested). So "when did this become
+    public" is answerable and "which revision is this" is not — different
+    questions, and only the first can be filled here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -98,9 +101,9 @@ class ObservationPoint(BaseModel):
         default=None,
         description=(
             "When the value became public. None = UNKNOWN (not 'equal to "
-            "observation_date'). Populated from the release calendar when that "
-            "route can be read; the route is intermittent, so None also covers "
-            "'the calendar did not answer this build' (Section 6)."
+            "observation_date'). Populated from the series' own `last_updated` "
+            "metadata (primary) or the release calendar (fallback); when both "
+            "are unavailable it stays None rather than being guessed (Section 6)."
         ),
     )
     vintage_datetime: datetime | None = Field(
@@ -108,7 +111,8 @@ class ObservationPoint(BaseModel):
         description=(
             "Which revision of the value this is (ALFRED-style realtime_start). "
             "None = UNKNOWN, i.e. the value is treated as the latest vintage only. "
-            "No reachable route returns this, so it is always None today."
+            "No reachable route distinguishes past revisions from the current "
+            "one, so this is always None today (Section 6)."
         ),
     )
 

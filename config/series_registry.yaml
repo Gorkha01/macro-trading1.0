@@ -1228,15 +1228,25 @@ blocked:
 # `enabled: false` would be the conservative choice given the block. It is left
 # `true` so the route is exercised and its health is observable rather than
 # silently dormant — and the consequence is made explicit in the snapshot: a
-# build in which the read fails carries
-#   RELEASE_TIMING_UNKNOWN:release_calendar_unreadable
-# in `data_quality_flags`. That flag is a TOLERATED INFO condition (asserted as
-# such in `tests/data_layer/test_phase1_data_layer.py`), because it describes the
-# availability of an optional enrichment rather than a fault in the snapshot's
-# own data. Setting `enabled: false` raises no flag at all — "we did not ask" is
-# a configuration choice, not a data-quality fact.
+# `enabled: false` is now the default, because a better source exists.
+# `publication_dates` (below) is PRIMARY: it reads each series' own
+# `last_updated` metadata, needs no event-name join, and was verified at 42/42
+# registry coverage with 0 transport errors. This calendar is retained as the
+# FALLBACK for series the metadata route cannot reach, and is what a caller
+# should re-enable if `publication_dates` ever loses coverage.
+#
+# Leaving it `true` would impose 5 retries (~15s of sleeps) on EVERY snapshot
+# build for a route that is currently edge-blocked, to add nothing the primary
+# source does not already provide. The honest description of that is a dead
+# cost, not resilience. When the upstream block lifts, flipping this to `true`
+# re-enables the merge, and the primary-wins conflict rule keeps the direct
+# facts authoritative either way.
+#
+# With it disabled, a build carries no RELEASE_TIMING_UNKNOWN flag unless the
+# PRIMARY source fails — "we did not ask the fallback" is a configuration
+# choice, not a data-quality fact.
 release_calendar:
-  enabled: true
+  enabled: false
   provider: nasdaq
   endpoint: economy.calendar
   # The provider's own retry budget, separate from the series client's: this
@@ -1275,3 +1285,50 @@ release_calendar:
     "Retail Sales": retail_sales
     "Durable Goods Orders": durable_goods_orders
     "Industrial Production": industrial_production
+
+# ---------------------------------------------------------------------------
+# publication_dates — Section 6's EXACT route for release_datetime (PRIMARY)
+# ---------------------------------------------------------------------------
+# Each series' own metadata carries `last_updated`: the instant the source last
+# wrote that series. Read directly, no join, no scheduled-date inference — so it
+# is a better fact than an events-calendar match, and it is the primary source.
+#
+# VERIFIED LIVE 2026-09-20 — 42/42 registry symbols returned `last_updated`,
+# 0 transport errors:
+#
+#   GET /api/v1/economy/fred_search
+#       ?provider=fred&query=<SYMBOL>&search_type=series_id&limit=1000
+#   -> results[0].last_updated = "2026-09-11T08:37:49-05:00"    # CPIAUCSL
+#
+# Why `search_type: series_id` and `limit: 1000` are not arbitrary:
+#   * series_id search is a PREFIX match. At limit=5, `UNRATE`, `GDP` and
+#     `GDPC1` each returned 5 longer siblings (UNRATECTH, GDPC1CTH, ...) and NO
+#     exact match; at limit=1000 all three surfaced. The reader still requires
+#     exact `series_id` equality, so the high limit costs bandwidth, not
+#     correctness.
+#   * `search_type: full_text` is NOT usable for lookup: a 100-row full-text
+#     search for "Unemployment Rate" did not contain UNRATE at all.
+#
+# WHAT THIS IS NOT — read before assuming it fills vintage_datetime:
+# The route also returns `realtime_start` / `realtime_end`, which look like
+# ALFRED vintage bounds. They are not. For every series both equal TODAY: they
+# describe the vintage window in force now, not the revisions that existed
+# before. Passing `realtime_start=2026-01-01` is silently IGNORED (A/B tested —
+# the two responses differed only in request `timestamp`/`duration`).
+# So this fills `release_datetime` and CANNOT fill `vintage_datetime`, which
+# stays None: "when did this become public" and "which revision is this" are
+# different questions, and only the first is answerable here.
+#
+# Cross-validated against the events calendar: PCEPILFE reports last_updated
+# 2026-08-26 where the calendar dated the Core PCE release 2026-08-27. A one-day
+# gap in that direction is exactly the "source wrote it" vs "release happened"
+# pair, which confirms the field is a publication timestamp and not an
+# observation period.
+publication_dates:
+  enabled: true
+  provider: fred
+  endpoint: economy.fred_search
+  search_type: series_id
+  limit: 1000
+  max_attempts: 3
+  backoff_seconds: 1.0

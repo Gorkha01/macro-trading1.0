@@ -1074,6 +1074,83 @@ class ReleaseCalendar(BaseModel):
     )
 
 
+class PublicationDates(BaseModel):
+    """Per-series publication timestamps read from series metadata.
+
+    Section 6's **exact** route for ``release_datetime``, and the one that
+    supersedes ``ReleaseCalendar`` as the primary source.
+
+    **Why a second source exists.** ``release_calendar`` fills a release date by
+    joining a *scheduled events calendar* to a series through a hand-written
+    event-name map. That join is indirect and lossy: it only covers series whose
+    release appears as a named event, and the map must be maintained by hand. It
+    then turned out to be served by a route that is intermittent and currently
+    edge-blocked (see ``release_calendar.py``).
+
+    This source is direct. Every FRED series carries ``last_updated`` in its own
+    metadata — the instant the source last wrote that series. It needs no event
+    map, no join, and no scheduled-date inference: the provider states the
+    publication time on the record itself.
+
+    **Verified live 2026-09-20** — 42 of 42 registry symbols returned a
+    ``last_updated``, 0 transport errors:
+
+        GET /api/v1/economy/fred_search
+            ?provider=fred&query=<SYMBOL>&search_type=series_id&limit=1000
+        -> results[0].last_updated = "2026-09-11T08:37:49-05:00"   # CPIAUCSL
+
+    Cross-validated against the calendar source: ``PCEPILFE`` reported
+    ``last_updated`` 2026-08-26 where the events calendar dated the Core PCE
+    release 2026-08-27 — a one-day gap consistent with a release date versus a
+    write timestamp, which is exactly the distinction Section 6 draws.
+
+    **This is NOT a vintage.** ``fred_search`` also returns ``realtime_start``
+    and ``realtime_end``, but for every series both equal *today*: they describe
+    the vintage window in force now, not which revisions existed in the past.
+    Passing ``realtime_start`` as a query parameter is silently ignored (A/B
+    tested: the response differed only in request ``timestamp``/``duration``).
+    So this route populates ``release_datetime`` and **cannot** populate
+    ``vintage_datetime``, which remains ALFRED-only and unreachable here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "On by default, unlike `release_calendar`: this route is working and "
+            "has full registry coverage, so it is the accurate source rather "
+            "than an opportunistic one. It costs one request per resolved "
+            "series, so a caller that wants a build with no metadata traffic "
+            "can disable it."
+        ),
+    )
+    provider: str = "fred"
+    endpoint: str = "economy.fred_search"
+    search_type: str = Field(
+        default="series_id",
+        description=(
+            "The provider's search mode. 'series_id' is REQUIRED for exact "
+            "lookup: 'full_text' does not reliably surface an exact symbol "
+            "(verified — a 100-row full-text search for 'Unemployment Rate' "
+            "did not contain UNRATE), so using it would silently drop series."
+        ),
+    )
+    limit: int = Field(
+        default=1000,
+        gt=0,
+        description=(
+            "'series_id' search is a PREFIX match, so an exact symbol can be "
+            "crowded out by longer siblings within the limit (UNRATE lost to "
+            "UNRATECTH/UNRATECTL at limit=5). A high limit is how the exact row "
+            "is reached; the reader still discards everything but an exact "
+            "series_id match, so a large limit costs bandwidth, not correctness."
+        ),
+    )
+    max_attempts: int = Field(default=3, gt=0)
+    backoff_seconds: float = Field(default=1.0, ge=0.0)
+
+
 class SeriesRegistry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1082,6 +1159,7 @@ class SeriesRegistry(BaseModel):
     series: dict[str, RegistrySeries]
     blocked: list[BlockedSeries] = Field(default_factory=list)
     release_calendar: ReleaseCalendar = Field(default_factory=ReleaseCalendar)
+    publication_dates: PublicationDates = Field(default_factory=PublicationDates)
 
     @model_validator(mode="after")
     def _apply_defaults_to_series(self) -> SeriesRegistry:
