@@ -430,20 +430,21 @@ def test_snapshot_round_trips_through_long_frame() -> None:
 
 def test_empty_snapshot_still_produces_a_frame() -> None:
     """An empty fetch is an audit fact, not a missing record."""
-    from macro_engine.data_layer.persistence import long_frame_from_snapshot
+    from macro_engine.data_layer.persistence import _LONG_COLUMNS, long_frame_from_snapshot
 
     frame = long_frame_from_snapshot(make_snapshot())
     assert frame.empty
-    assert list(frame.columns) == [
-        "country",
-        "snapshot_as_of",
-        "field",
-        "series_id",
-        "observation_date",
-        "value",
-        "source",
-        "retrieved_at",
-    ]
+    # Read the expected columns from the module's own schema constant rather than
+    # hardcoding them again. The previous version restated the list here, so
+    # adding the two Section 6 release-side columns made an *empty-snapshot* test
+    # fail — the assertion was pinning a duplicate of the schema, not the
+    # behaviour under test. D-035: a test's expectation must not be a second copy
+    # of the thing it is checking.
+    assert list(frame.columns) == list(_LONG_COLUMNS)
+    # And the two release-side columns must actually be part of the schema, since
+    # their absence is the defect this increment fixes.
+    assert "release_datetime" in _LONG_COLUMNS
+    assert "vintage_datetime" in _LONG_COLUMNS
 
 
 # ---------------------------------------------------------------------------

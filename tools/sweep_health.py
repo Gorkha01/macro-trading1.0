@@ -72,6 +72,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -348,17 +349,54 @@ def _call_gate(gate: Any, native: list[Any]) -> list[str]:
     return list(result)
 
 
+def _is_mutant_shape(stripped: str) -> bool:
+    """Does this stripped source line carry a mutant shape?
+
+    Two shapes, and the second is the one that nearly cost this gate its
+    credibility:
+
+    * ``# MUTANT`` — the trailing comment every replacement text in this project
+      carries, which is how a mutation that is not a branch inversion is
+      recognised.
+    * A **branch-inversion or identity control**. The original test here was
+      ``stripped.startswith(("if False:", "if True:"))``. That catches the bare
+      forms but **misses the compound ones**, and the compounds are what this
+      project actually writes: ``if not deep and True:`` (``M10.1``, the honesty
+      control in ``routes_health.py``) and ``if x or False:`` are identity
+      controls whose whole point is to be semantically identical to the shipped
+      code, so applying one changes no behaviour and no test can detect it. The
+      ``and True`` / ``and False`` / ``or True`` / ``or False`` suffix is only
+      ever written by a sweep.
+
+    Measured live: an interrupted ``mutation_api_layer.py`` run left
+    ``if not deep and True:`` applied in ``routes_health.py``. The prefix test
+    above did not see it, so this tool printed ``0`` shape hits and **SWEEP
+    HEALTH: OK** on a tree that had a control mutant on disk. The independent
+    ``grep`` did see it, which is how the false OK was caught. A gate that can
+    print OK on a mutated tree is worse than no gate, because it is trusted —
+    so the detection is now by *structure* rather than by prefix.
+    """
+    if "MUTANT" in stripped:
+        return True
+    if stripped.startswith(("if False:", "if True:")):
+        return True
+    # The compound identity form: ``... and True`` / ``... or False`` at the end
+    # of a condition. Matching the bare boolean literal is what makes this safe
+    # to widen -- ``and True`` is not something a person writes in a condition
+    # they intend, and a sweep is the only other writer.
+    return bool(re.search(r"\s(?:and|or)\s(?:True|False)\s*:", stripped))
+
+
 def _whole_tree_mutant_scan() -> list[str]:
     """O-83's remedy: find mutant SHAPES anywhere, with no catalogue.
 
     The per-sweep leftover check is scoped to each sweep's own declarations, so
     a mutant left in a shared file by a *different* sweep is invisible. This
     scan does not care which sweep wrote it, or whether its catalogue still
-    exists — it looks for the two shapes every sweep in this project uses:
-
-    * ``if False:`` / ``if True:`` — the branch-inversion form.
-    * ``# MUTANT`` — the comment every replacement text carries, which is how a
-      mutation that is not a branch inversion is recognised.
+    exists — it looks for the shapes every sweep in this project uses. Those
+    shapes are defined by ``_is_mutant_shape``: the ``# MUTANT`` comment, a
+    branch inversion, and the compound identity form (``and True`` etc.) that
+    the original prefix test missed.
 
     ``if True:`` is a mutant shape here because the project's sweeps use
     ``if not deep and True:`` style identities as **controls**, and a control
@@ -374,7 +412,7 @@ def _whole_tree_mutant_scan() -> list[str]:
     for path in sorted((REPO / "src").rglob("*.py")):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             stripped = line.strip()
-            if "MUTANT" in line or stripped.startswith(("if False:", "if True:")):
+            if _is_mutant_shape(stripped):
                 hits.append(f"{path.relative_to(REPO)}:{lineno}: {stripped}")
     return hits
 

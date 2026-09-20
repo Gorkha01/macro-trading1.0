@@ -13,6 +13,7 @@ import math
 import pytest
 
 from macro_engine.models.risk import (
+    _Z_QUANTILES,
     ParametricVaRInputs,
     RealizedVolInputs,
     ReturnsInputs,
@@ -177,6 +178,79 @@ def test_z_score_refuses_to_extrapolate_beyond_the_table() -> None:
     """
     with pytest.raises(ValueError, match="exceeds the tabulated maximum"):
         z_score_for_confidence(0.9999)
+
+
+def test_z_score_refuses_to_extrapolate_below_the_table() -> None:
+    """The lower refusal is symmetric with the upper one, and it has to be.
+
+    An earlier version of this function extended the FIRST segment by scaling
+    the LAST tabulated point — ``3.0902 * c / 0.999`` — which is the secant
+    through the origin and the 0.999 point, not the 0.90->0.95 segment. At
+    ``confidence=0.899`` it returned 2.7809 where the true normal quantile is
+    1.2789: a 2.17x overstatement, in the same direction as the upper-boundary
+    error the refusal exists to prevent. The interpolation loop below the table
+    was never exercised because the tabulated points (0.90/0.95/0.99) and the
+    upper boundary were the only confidences any test used, so the branch
+    survived to feed ``parametric_var`` with a doubled z. Asserting the refusal
+    pins the behaviour at the value that used to be wrong.
+    """
+    for confidence in (0.899, 0.85, 0.80, 0.50):
+        with pytest.raises(ValueError, match="below the tabulated minimum"):
+            z_score_for_confidence(confidence)
+
+
+def test_z_score_is_continuous_at_the_tabulated_boundaries() -> None:
+    """No jump between a tabulated point and an interpolated neighbour.
+
+    The defect above was a discontinuity, not just an error: ``z(0.90)`` was
+    1.2816 while ``z(0.899)`` was 2.7809. A piecewise-linear interpolation is
+    continuous by construction, so the property to pin is that stepping a tiny
+    distance across a knot changes the value by no more than that segment's own
+    slope times the step. An absolute tolerance will not do: the top segment
+    (0.995->0.999) is legitimately steep at 0.129 per 0.001, so anything tight
+    enough to catch a real jump would also flag the honest slope there.
+
+    Every tabulated point is tested on both sides; the segment on each side
+    supplies its own bound, and confidences below the minimum are refused.
+    """
+    points = sorted(_Z_QUANTILES.items())
+    for index, (c, _z) in enumerate(points):
+        for delta in (1e-4, 1e-6):
+            for neighbour in (index - 1, index + 1):
+                if not 0 <= neighbour < len(points):
+                    continue
+                n_c, n_z = points[neighbour]
+                if abs(n_c - c) < 1e-12:
+                    continue
+                # Slope of the segment this step moves along, in z per unit c.
+                slope = abs(n_z - _z) / abs(n_c - c)
+                bound = slope * delta * 1.5  # 1.5x headroom for float noise
+                if neighbour < index:
+                    gap = abs(z_score_for_confidence(c - delta) - z_score_for_confidence(c))
+                else:
+                    gap = abs(z_score_for_confidence(c + delta) - z_score_for_confidence(c))
+                assert gap <= bound, (
+                    f"discontinuity at {c} moving toward {n_c} "
+                    f"(delta={delta}, gap={gap}, bound={bound})"
+                )
+
+    # The minimum is the knot the original defect sat on, and it is the one
+    # place a ``c - delta`` probe cannot reach because the value below it must
+    # either continue the first segment smoothly or be refused. Both are
+    # acceptable; a third outcome — a large jump to an unrelated value — is what
+    # the old ``3.0902 * c / 0.999`` formula did (1.2816 at 0.90, 2.7809 at
+    # 0.899). Assert that the step across the minimum is either a refusal or
+    # small, which is exactly the choice the fix makes explicit.
+    c_min, z_min = points[0]
+    for delta in (1e-4, 0.001):
+        try:
+            below = z_score_for_confidence(c_min - delta)
+        except ValueError:
+            continue  # refused: the honest behaviour
+        assert abs(below - z_min) <= 1e-2, (
+            f"discontinuity below the tabulated minimum {c_min}: "
+            f"z({c_min})={z_min} but z({c_min - delta})={below}"
+        )
 
 
 def test_z_score_rejects_an_impossible_confidence() -> None:

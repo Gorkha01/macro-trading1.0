@@ -87,6 +87,16 @@ MAPPING_SERIES_FIELDS: tuple[str, ...] = ("fx_spot", "commodity_spot", "equity_i
 
 # Long-format schema. One row per (series, date) observation, plus snapshot-level
 # columns denormalized onto every row so a single file is self-describing.
+#
+# ``release_datetime`` and ``vintage_datetime`` are part of this schema because
+# they are part of an observation, and Section 6's whole point is that the four
+# timestamps are NOT interchangeable. They were previously omitted, which meant
+# a snapshot could carry a populated ``release_datetime``, be written to the
+# audit trail, and read back with every release stamp silently dropped — the
+# exact "declared, consumed, unreachable" class this project keeps finding. The
+# write path dropped them and the read path could not restore them, so no test
+# that stopped at ``build_snapshot()`` could see it. Nullable by design: NULL
+# means UNKNOWN, never "equal to observation_date".
 _LONG_COLUMNS: tuple[str, ...] = (
     "country",
     "snapshot_as_of",
@@ -96,6 +106,8 @@ _LONG_COLUMNS: tuple[str, ...] = (
     "value",
     "source",
     "retrieved_at",
+    "release_datetime",
+    "vintage_datetime",
 )
 
 
@@ -200,7 +212,14 @@ def _iter_series(snapshot: MacroDataSnapshot) -> list[tuple[str, list[Observatio
 
 
 def long_frame_from_snapshot(snapshot: MacroDataSnapshot) -> pd.DataFrame:
-    """Render a snapshot as a long-format frame for Parquet storage."""
+    """Render a snapshot as a long-format frame for Parquet storage.
+
+    The two release-side timestamps are carried through as nullable columns.
+    ``None`` is written as a genuine NULL rather than being coerced to
+    ``observation_date``, because Section 6 forbids exactly that substitution —
+    and a NULL round-tripped correctly is what lets a reader tell "release
+    timing known" from "unknown" after the fact.
+    """
     rows: list[dict[str, Any]] = []
     for field_name, points in _iter_series(snapshot):
         for point in points:
@@ -214,6 +233,8 @@ def long_frame_from_snapshot(snapshot: MacroDataSnapshot) -> pd.DataFrame:
                     "value": point.value,
                     "source": point.source,
                     "retrieved_at": point.retrieved_at,
+                    "release_datetime": point.release_datetime,
+                    "vintage_datetime": point.vintage_datetime,
                 }
             )
 
@@ -227,6 +248,14 @@ def long_frame_from_snapshot(snapshot: MacroDataSnapshot) -> pd.DataFrame:
     frame["observation_date"] = pd.to_datetime(frame["observation_date"]).dt.date
     frame["retrieved_at"] = pd.to_datetime(frame["retrieved_at"], utc=True)
     frame["snapshot_as_of"] = pd.to_datetime(frame["snapshot_as_of"], utc=True)
+    # Both stamp columns are normalised to UTC on the way to disk, matching
+    # ``retrieved_at`` and ``snapshot_as_of`` above. The instant is the fact;
+    # the source's offset (``_extract_exact`` keeps it, e.g.
+    # ``2026-09-11T08:37:49-05:00``) is presentation. Normalising here means a
+    # reader never has to wonder which offset a stored stamp carries, and an
+    # unknown stamp stays NaT — never coerced to the observation date.
+    frame["release_datetime"] = pd.to_datetime(frame["release_datetime"], utc=True)
+    frame["vintage_datetime"] = pd.to_datetime(frame["vintage_datetime"], utc=True)
     return frame[list(_LONG_COLUMNS)]
 
 
@@ -281,6 +310,23 @@ def snapshot_from_long_frame(frame: pd.DataFrame) -> MacroDataSnapshot:
     country = str(frame["country"].iloc[0])
     as_of = pd.Timestamp(frame["snapshot_as_of"].iloc[0]).to_pydatetime()
 
+    def optional_timestamp(value: Any) -> datetime | None:
+        """Read a nullable timestamp column, preserving SQL NULL as ``None``.
+
+        ``pd.isna`` covers both ``NaT`` (how pandas stores a missing datetime)
+        and ``None``. It must be tested BEFORE ``to_pydatetime``, because
+        ``NaT.to_pydatetime()`` raises rather than returning ``None`` — the
+        failure that would otherwise surface as "the audit trail is corrupt"
+        when in fact the snapshot legitimately had no release stamp.
+
+        Typed ``Any`` rather than ``object``: the value comes from a pandas row
+        accessor, whose static type is ``Any``, and narrowing it to ``object``
+        only pushes the ``isna``/``Timestamp`` overload mismatch onto this line.
+        """
+        if value is None or pd.isna(value):
+            return None
+        return pd.Timestamp(value).to_pydatetime()
+
     def points_for(field_name: str) -> list[ObservationPoint]:
         subset = frame[frame["field"] == field_name]
         return [
@@ -290,6 +336,8 @@ def snapshot_from_long_frame(frame: pd.DataFrame) -> MacroDataSnapshot:
                 series_id=str(row["series_id"]),
                 source=str(row["source"]),
                 retrieved_at=pd.Timestamp(row["retrieved_at"]).to_pydatetime(),
+                release_datetime=optional_timestamp(row.get("release_datetime")),
+                vintage_datetime=optional_timestamp(row.get("vintage_datetime")),
             )
             for _, row in subset.iterrows()
         ]

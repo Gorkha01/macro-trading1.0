@@ -97,6 +97,12 @@ class SnapshotBuildReport:
         self.release_calendar_series: int = 0
         #: Set only when the calendar was enabled but misconfigured.
         self.release_calendar_note: str | None = None
+        #: Which release-timing source went dark, when one did. Only set when
+        #: ``release_calendar_read`` is False, i.e. a source was ASKED and could
+        #: not be read. Recorded because "the calendar returned nothing" and
+        #: "the per-series metadata route returned nothing" have completely
+        #: different causes and fixes, and the flag alone cannot tell them apart.
+        self.release_timing_outage_source: str | None = None
         #: Which source supplied the release index: "publication_dates"
         #: (primary, per-series metadata) or "release_calendar" (fallback,
         #: events join). None when neither answered or neither was enabled.
@@ -135,7 +141,13 @@ class SnapshotBuildReport:
         #            INFO line on every snapshot and train readers to ignore the
         #            list, which is the failure mode the flag list exists to avoid.
         if self.release_calendar_read is False:
-            flags.append("RELEASE_TIMING_UNKNOWN:release_calendar_unreadable")
+            # Name the source: an outage of the per-series metadata route and an
+            # unreadable events calendar are the same *condition* (release
+            # timing unknown) with different causes, and a flag that cannot say
+            # which sent the reader to the wrong place.
+            flags.append(
+                f"RELEASE_TIMING_UNKNOWN:{self.release_timing_outage_source or 'source_unreadable'}"
+            )
         if self.release_calendar_note is not None:
             flags.append(f"RELEASE_CALENDAR_MISCONFIGURED:{self.release_calendar_note}")
         return flags
@@ -462,6 +474,24 @@ def _resolve_release_index(report: SnapshotBuildReport) -> ReleaseDateIndex | No
     ``release_source`` on the report records which source supplied the index, so
     a reader can tell "43 series from metadata" apart from "3 from the events
     calendar" without re-running anything.
+
+    The three report states are deliberately distinct, and the primary path used
+    to collapse two of them
+    ----------------------------------------
+    ``release_calendar_read`` is tri-state, and ``as_flags`` relies on that:
+    ``True`` means a source answered, ``False`` means a source was **asked and
+    could not be read** (release timing is UNKNOWN everywhere, which a consumer
+    reading only flags must be able to see), and ``None`` means **nobody asked**
+    (disabled, or an index was injected), which is a config choice and raises no
+    flag.
+
+    The primary path only ever set ``True``. So when ``publication_dates`` was
+    enabled and asked but came back with nothing — a total outage of the source
+    that carries 42/42 coverage — the flag stayed ``None`` and the snapshot
+    reported no release-timing problem at all. That is the exact conflation this
+    module exists to prevent, one level up: a silent gap reading as a clean
+    snapshot. A partial read is not an outage (``route_read`` is True when *any*
+    series answered), so only the zero-of-42 case marks the flag False.
     """
     registry = get_registry()
 
@@ -485,6 +515,20 @@ def _resolve_release_index(report: SnapshotBuildReport) -> ReleaseDateIndex | No
         report.release_source = "publication_dates"
         report.release_calendar_read = True
         report.release_calendar_series = len(primary.dates)
+    elif primary is not None:
+        # Enabled, asked, and not one series came back. This is an OUTAGE, and it
+        # is the state that used to be invisible: no flag was raised, so a
+        # snapshot whose release timing was unknown for all 42 series looked
+        # exactly like one where the calendar was switched off on purpose.
+        logger.warning(
+            "publication_dates was enabled and queried but returned no series; "
+            "release timing is UNKNOWN for every series (%s)",
+            report.release_calendar_note or "no per-series reason recorded",
+        )
+        report.release_calendar_read = False
+        report.release_timing_outage_source = "publication_dates"
+        if report.release_calendar_note is None:
+            report.release_calendar_note = "publication_dates returned no series"
 
     fallback: ReleaseDateIndex | None = None
     if registry.release_calendar.enabled:
@@ -500,6 +544,7 @@ def _resolve_release_index(report: SnapshotBuildReport) -> ReleaseDateIndex | No
                 report.release_calendar_series = len(fallback.dates)
             elif not fallback.route_read and report.release_source is None:
                 report.release_calendar_read = False
+                report.release_timing_outage_source = "release_calendar"
 
     if primary is not None and fallback is not None and primary.route_read:
         # Primary wins per-series; the fallback fills only what it lacks.

@@ -106,18 +106,76 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
     ``started`` event is emitted *before* the call and the client sees motion
     during the wait. Pre-computing would make the trace an animation over a
     frozen result — the same fabrication as the hardcoded literals, one layer up.
+
+    The outer guard, and why the per-step handlers are not enough
+    -------------------------------------------------------------
+    Each slow stage (``get_snapshot``, ``snapshot_to_thesis_inputs``,
+    ``build_us_macro_thesis``) has its own ``except`` that yields an ``error``
+    frame. Between and after them sit calls that were **not** guarded:
+    ``build_policy_gap`` (which raises ``TypeError`` by design when
+    ``derive_market_implied_policy_path`` changes shape and ``ValueError`` on a
+    zero gap), every ``_event(...)`` frame-formatting call, and the attribute
+    reads that build each ``detail`` string. If any of those raises, the async
+    generator propagates mid-stream and the client receives a **truncated SSE
+    body with no terminal event** — contradicting this module's own contract
+    that ``[DONE]`` always ends the stream.
+
+    So the whole body runs inside one outer ``try`` whose ``finally`` emits the
+    terminator. The per-stage handlers stay because they produce *specific*
+    messages ("country not implemented", "field X could not be read"); the outer
+    handler is the backstop for failures nobody enumerated.
+
+    What the guard does and does not cover. An exception raised inside
+    ``_reasoning_frames`` is caught here and becomes an ``internal/error`` frame.
+    An exception raised *inside the ``except`` body itself* — i.e. by the
+    ``_event(...)`` call that formats the failure message — would not be, but
+    the ``finally`` still runs, so the client gets ``[DONE]`` and a cleanly
+    terminated stream without a diagnosis. That is the right degradation: a
+    terminated stream with a missing explanation beats a truncated one with no
+    way to tell truncation from completion.
+
+    A note on the heartbeat: no keepalive frame is emitted here. An SSE
+    ``: comment`` line would keep an intermediary from dropping an idle
+    connection, but it cannot be sent while the synchronous build holds the
+    event loop — the frame would be buffered, not flushed. Fixing that is a
+    concurrency change (move the build off the loop), not a formatting one, and
+    adding a heartbeat that provably cannot flush would be a comment asserting a
+    guarantee the code does not provide.
     """
+    try:
+        async for frame in _reasoning_frames(country):
+            yield frame
+    except Exception as exc:  # the contract backstop, see docstring
+        # Reaching here means a stage failed that no per-stage handler covered.
+        # The message names the exception type because a bare repr can be huge
+        # (pydantic ValidationErrors) and this frame must stay a single line.
+        yield _event(
+            "internal",
+            "error",
+            f"the reasoning chain failed outside a handled stage: "
+            f"{type(exc).__name__}: {str(exc)[:300]}",
+        )
+    finally:
+        # Always terminate — on the success path, on every handled error path,
+        # and on the unhandled path above. A client can therefore treat
+        # ``[DONE]`` as the single signal that the stream ended deliberately.
+        # This is also why no per-stage handler yields its own terminator any
+        # more: one ``finally`` is the one place that can guarantee "exactly
+        # once", which N spreads-out yields cannot.
+        yield "data: [DONE]\n\n"
+
+
+async def _reasoning_frames(country: str) -> AsyncIterator[str]:
+    """The per-stage trace. Split out so the outer guard can wrap it whole."""
     yield _event("fetch_data", "started", f"Loading the {country} macro snapshot via OpenBB")
 
     try:
         snapshot, provenance = get_snapshot(country)
     except NotImplementedError as exc:
         yield _event("fetch_data", "error", f"country '{country}' is not implemented: {exc}")
-        yield "data: [DONE]\n\n"
         return
     except SnapshotUnavailableError as exc:
         yield _event("fetch_data", "error", f"the snapshot could not be built: {exc}")
-        yield "data: [DONE]\n\n"
         return
 
     if provenance.from_cache:
@@ -163,7 +221,6 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
             "error",
             f"a required series could not be read (fields={list(exc.fields)}): {exc}",
         )
-        yield "data: [DONE]\n\n"
         return
     yield _event(
         "derive_inputs",
@@ -218,7 +275,6 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
         )
     except Exception as exc:
         yield _event("build_thesis", "error", f"the builder raised {type(exc).__name__}: {exc}")
-        yield "data: [DONE]\n\n"
         return
 
     fired = _fired(thesis.warnings)
@@ -253,7 +309,9 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
             f"thesis_id={thesis.thesis_id}",
         )
 
-    yield "data: [DONE]\n\n"
+    # No trailing ``[DONE]`` here: ``reasoning_step_generator``'s ``finally``
+    # emits exactly one terminator on every exit path. Yielding it here as well
+    # would put two on the success path.
 
 
 @router.get("/{country}/stream")

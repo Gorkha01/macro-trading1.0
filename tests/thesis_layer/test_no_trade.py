@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from macro_engine.config import get_settings
 from macro_engine.models.policy_rules import MarketPricingGap
 from macro_engine.thesis_layer.invalidation import (
     InvalidationAssessment,
@@ -375,6 +376,67 @@ def test_is_marginal_flags_a_zero_or_epsilon_elapsed() -> None:
         "clearly", trigger="gap_below_dispersion", gap=_gap(raw_gap=0.01, dispersion=0.42)
     )
     assert clearly_inside.is_marginal is False
+
+
+def test_is_marginal_uses_a_basis_point_tolerance_and_is_reachable() -> None:
+    """The defect this pins: ``is_marginal`` could never be ``True`` for a real gap.
+
+    The old implementation compared the shortfall in **percentage points**
+    against the literal ``1e-9`` — i.e. ``1e-11`` of a basis point — while
+    ``raw_gap`` is rounded to 4 decimals upstream. A gap can therefore never be
+    that close, so the near-miss distinction the field exists to draw was
+    unreachable in production even though a unit test at ``elapsed == 0.0``
+    passed. The tolerance is now ``policy.ensemble.near_miss_tolerance_bp`` and
+    the comparison converts pp -> bp explicitly.
+
+    The expected values are derived from the *config leaf* rather than read from
+    the same property the code uses, per D-035, so a change to the leaf is
+    observable here instead of silently shifting the boundary.
+    """
+    tolerance_bp = get_settings().policy.ensemble.near_miss_tolerance_bp_value
+    assert tolerance_bp > 0.0, "a zero tolerance makes the flag unreachable again"
+
+    # Just inside the tolerance: the shortfall in bp is half the tolerance.
+    inside_shortfall_pp = (tolerance_bp / 2.0) / 100.0
+    inside = no_trade_thesis(
+        "near miss",
+        trigger="gap_below_dispersion",
+        gap=_gap(raw_gap=0.42 - inside_shortfall_pp, dispersion=0.42),
+    )
+    assert inside.elapsed == pytest.approx(inside_shortfall_pp)
+    assert inside.is_marginal is True, (
+        "a shortfall inside the configured bp tolerance must read as marginal; "
+        "this is the case the 1e-9 literal made unreachable"
+    )
+
+    # Just outside: twice the tolerance.
+    outside_pp = (tolerance_bp * 2.0) / 100.0
+    outside = no_trade_thesis(
+        "clear miss",
+        trigger="gap_below_dispersion",
+        gap=_gap(raw_gap=0.42 - outside_pp, dispersion=0.42),
+    )
+    assert outside.elapsed == pytest.approx(outside_pp)
+    assert outside.is_marginal is False
+
+    # The boundary itself: bp distance equal to the tolerance is inclusive.
+    at_tolerance = no_trade_thesis(
+        "exactly at tolerance",
+        trigger="gap_below_dispersion",
+        gap=_gap(raw_gap=0.42 - tolerance_bp / 100.0, dispersion=0.42),
+    )
+    assert at_tolerance.is_marginal is True
+
+
+def test_is_marginal_never_fires_for_a_negative_elapsed() -> None:
+    """``elapsed`` is a distance inside the floor, so it cannot be negative.
+
+    The property guards the lower bound as well as the upper one: a negative
+    shortfall would mean the gap was *outside* the floor and should not have
+    stood down at all, and reporting it as a near-miss would compound the error.
+    """
+    decision = NoTradeDecision(trigger="gap_below_dispersion", reason="x", elapsed=-0.01)
+    assert decision.is_marginal is False
 
 
 def test_is_marginal_is_false_when_elapsed_does_not_apply() -> None:

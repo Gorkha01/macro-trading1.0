@@ -552,65 +552,65 @@ series:
   fed_total_assets:
     provider: fred
     symbol: WALCL
-    not_a_snapshot_field: true
     description: >
       Federal Reserve total assets, weekly (Wednesday), in MILLIONS of dollars.
-      Module 4.1's `balance_sheet_level`. NOT a MacroDataSnapshot field: the
-      model takes raw floats and qe_qt_stance's own live check fetches it.
+      Module 4.1's `balance_sheet_level`.
 
-      Last 6,740,619 ($6.74T) against a peak of 8,965,000 ($8.97T). The 13-week
-      change is what decides the stance, and it is measured as a PERCENTAGE of
-      the level because the raw change is never exactly zero -- see the note on
-      `neutral_band_pct`.
+      PROMOTED to a MacroDataSnapshot field 2026-09-21 (D-085) from
+      `not_a_snapshot_field: true`. The exclusion had been justified on the
+      grounds that "the model takes raw floats and qe_qt_stance's own live check
+      fetches it" — a premise that stopped holding when `qe_qt_stance` was wired
+      into the orchestration: a model reachable only from a script and a test is
+      the D-037 "declared, consumed, unreachable" class, and the fix is to give
+      it a snapshot source rather than to leave it orphaned. See
+      docs/DECISIONS.md D-085.
+
+      Last 6,746,548 ($6.75T) against a peak of 8,965,000 ($8.97T), re-verified
+      2026-09-21. The 13-week change is what decides the stance, and it is
+      measured as a PERCENTAGE of the level because the raw change is never
+      exactly zero -- see the note on `neutral_band_pct`.
     frequency: weekly
     units: millions_usd
     status: verified
-    verified_on: 2026-09-17
-    verified_value: 6740619.0
-    verified_observation_date: 2026-09-09
+    verified_on: 2026-09-21
+    verified_value: 6746548.0
+    verified_observation_date: 2026-09-16
     plausible_range: [500000.0, 12000000.0]
 
   reserve_balances:
     provider: fred
     symbol: WRESBAL
-    not_a_snapshot_field: true
     description: >
       Reserve balances with Federal Reserve Banks, weekly, in MILLIONS of
-      dollars. Module 4.1's `reserve_balances`. Last 2,991,310 ($2.99T) against
-      a peak of 4,276,000.
+      dollars. Module 4.1's `reserve_balances`. Re-verified 2026-09-21:
+      3,013,794 ($3.01T) against a peak of 4,276,000.
+
+      PROMOTED to a MacroDataSnapshot field 2026-09-21 (D-085) with
+      `fed_total_assets`, for the same reason: the scarcity comparison needs a
+      snapshot source now that `qe_qt_stance` is reachable from the thesis path.
 
       This is the series the September 2019 repo spike was about: reserves can
       reach scarcity faster than the balance sheet suggests, because while the
       ON RRP facility holds a buffer, QT drains THAT first. See
-      `on_rrp_level`.
+      `on_rrp_volume_bn`.
     frequency: weekly
     units: millions_usd
     status: verified
-    verified_on: 2026-09-17
-    verified_value: 2991310.0
-    verified_observation_date: 2026-09-09
+    verified_on: 2026-09-21
+    verified_value: 3013794.0
+    verified_observation_date: 2026-09-16
     plausible_range: [0.0, 6000000.0]
 
-  on_rrp_level:
-    provider: fred
-    symbol: RRPONTSYD
-    not_a_snapshot_field: true
-    description: >
-      Overnight reverse repurchase agreements, DAILY, in BILLIONS of dollars --
-      note the different unit from the two series above. The buffer that
-      absorbs QT before reserves are touched.
-
-      Last 5.4 against a peak of 2,553.7 ($2.55T). It is now essentially
-      drained, which means further balance-sheet contraction drains reserves
-      DIRECTLY rather than drawing down the facility -- the configuration that
-      produced the September 2019 repo spike.
-    frequency: daily
-    units: billions_usd
-    status: verified
-    verified_on: 2026-09-17
-    verified_value: 5.4
-    verified_observation_date: 2026-09-16
-    plausible_range: [0.0, 3000.0]
+  # DELETED 2026-09-21 (D-085): `on_rrp_level` was a DUPLICATE of
+  # `on_rrp_volume_bn` -- the same FRED series `RRPONTSYD`, the same units (USD
+  # billions), the same role (ON-RRP outstanding volume) -- bound under a second
+  # name. It was the copy `qe_qt_stance` read, while being
+  # `not_a_snapshot_field: true`, so no snapshot ever carried it: the model's
+  # input could not be satisfied from the data layer at all. The model now reads
+  # `on_rrp_volume_bn`, which IS a snapshot field carrying the same number, and
+  # the duplicate is removed rather than kept as a second source of one series.
+  # Two names for one series is how the model ended up reading a field nothing
+  # populated. Full reasoning in docs/DECISIONS.md D-085.
 
   sloos_net_tightening:
     provider: fred

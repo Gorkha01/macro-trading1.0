@@ -130,7 +130,12 @@ from macro_engine.models.labor_synthesis import (
     inflation_breadth_score,
     labor_tightness_score,
 )
-from macro_engine.models.policy_rules import FirstDifferenceInputs, TaylorRuleInputs
+from macro_engine.models.policy_rules import (
+    BalanceSheetInputs,
+    FirstDifferenceInputs,
+    TaylorRuleInputs,
+    qe_qt_stance,
+)
 from macro_engine.models.regime import RegimeInputs, classify_regime_rule_based
 from macro_engine.models.yield_curve import (
     BreakevenInputs,
@@ -140,6 +145,13 @@ from macro_engine.models.yield_curve import (
 )
 from macro_engine.thesis_layer.builder import EconomyReads
 from macro_engine.thesis_layer.schemas import ProductionUniverse
+
+#: The balance-sheet change window, in WEEKLY observations (thirteen weeks ~ one
+#: quarter). An index offset on a weekly series, not a calendar subtraction: a
+#: ``-3 months`` on a Wednesday series lands between two prints and pairs rows
+#: thirteen or fourteen weeks apart depending on month length. Same constant the
+#: live check uses, so the two agree by construction rather than by coincidence.
+_QE_CHANGE_WINDOW_WEEKS = 13
 
 __all__ = [
     "DerivationNote",
@@ -231,6 +243,12 @@ class ThesisInputs:
     #: results, and empty when the curve is absent — a data condition, not a
     #: refusal, because the slope is a read rather than a gate. See ``_curve_leg``.
     curve: tuple[ModelResult, ...] = ()
+    #: Module 4.1's ``qe_qt_stance``. ``None`` means the balance-sheet series were
+    #: absent from the snapshot, which the model's own ``NOT_COMPUTED`` note
+    #: records — see ``_balance_sheet_leg``. Carried separately from ``reads``
+    #: because §16.2's ``EconomyReads`` is exactly three reads and this is the
+    #: second policy *lever*, not a fourth economy read (D-085).
+    balance_sheet: ModelResult | None = None
     notes: tuple[DerivationNote, ...] = ()
     #: Every warning raised while deriving, so the thesis can carry them.
     #: Collected here rather than dropped because a warning about an input is
@@ -1438,9 +1456,197 @@ def _curve_leg(
     return results, notes
 
 
+def _balance_sheet_leg(
+    snapshot: MacroDataSnapshot,
+    *,
+    as_of: datetime,
+) -> tuple[ModelResult | None, list[DerivationNote]]:
+    """Module 4.1's ``qe_qt_stance`` fed from the snapshot (D-085).
+
+    **The defect this closes.** ``qe_qt_stance`` was implemented, unit-tested,
+    mutation-swept and carried in ``__all__`` — and reachable from nothing in
+    ``src/``. ``BalanceSheetInputs`` was constructed only in
+    ``tests/models/test_policy_rules.py`` and ``scripts/live_labor_check.py``, so
+    no thesis ever carried a balance-sheet read and Section 22.11's QT/
+    repo-stress chain had no live input. This is the D-037/D-045/D-048 class the
+    project keeps finding: **declared, consumed, unreachable**.
+
+    **Why the data had to move rather than the caller.** The registry marked
+    ``fed_total_assets`` (WALCL) and ``reserve_balances`` (WRESBAL)
+    ``not_a_snapshot_field: true``, justifying it with "the model takes raw
+    floats and ``qe_qt_stance``'s own live check fetches it". That premise held
+    while the only caller was a script; it stopped holding the moment the model
+    needed to run inside a thesis build, because this module consumes a snapshot
+    and performs no network I/O. The two series are promoted to snapshot fields
+    (and ``on_rrp_level``, a duplicate binding of ``on_rrp_volume_bn``'s own
+    symbol, is deleted) rather than having the orchestration reach around the
+    data layer.
+
+    **The unit contract is 1000x and is asserted, not assumed.** ``WALCL`` and
+    ``WRESBAL`` are in MILLIONS; ``RRPONTSYD`` is in BILLIONS. The spent level is
+    the *denominator* of the relative change that decides the stance, so a units
+    error there moves the classification while every printed number stays
+    plausible — the failure mode Section 21.0 rule 4 exists to stop. The
+    magnitudes are checked before anything is combined.
+
+    **The three-month window is thirteen weekly observations.** The series are
+    weekly (Wednesday), so "3mo" is thirteen rows back, not a calendar
+    subtraction: a calendar ``-3 months`` on a Wednesday series lands between two
+    prints and silently pairs rows thirteen or fourteen weeks apart depending on
+    month length. The index offset is exact and reproducible; the note records
+    both endpoint dates so the arithmetic is auditable.
+
+    **``None`` only when the balance sheet itself is unavailable.** The RRP leg is
+    optional by the model's own signature (``on_rrp_level: float | None``), and
+    when it is absent the model says so in its own warnings — so a missing RRP
+    degrades the scarcity assessment rather than suppressing the stance, and the
+    note records which case applied.
+    """
+    notes: list[DerivationNote] = []
+
+    assets = _realised_or_none(snapshot.fed_total_assets, as_of=as_of, field="fed_total_assets")
+    reserves = _realised_or_none(snapshot.reserve_balances, as_of=as_of, field="reserve_balances")
+    if assets is None or reserves is None:
+        absent = "fed_total_assets" if assets is None else "reserve_balances"
+        notes.append(
+            DerivationNote(
+                name="qe_qt_stance",
+                value="NOT_COMPUTED",
+                source=(
+                    f"{absent} is empty, so the balance-sheet stance cannot be "
+                    f"judged; reported as not computed rather than substituting a "
+                    f"zero level, which would make the relative change divide by "
+                    f"zero or read as a full expansion (Section 21.4)"
+                ),
+                window="no observations",
+            )
+        )
+        return None, notes
+
+    # Pair on COMMON weekly dates. The two series are both weekly-Wednesday and
+    # normally share every date, but a holiday-shifted or revised vintage can
+    # leave one short; pairing on the intersection keeps the 13-row offset
+    # meaningful rather than measuring one series against another's calendar.
+    assets_by_date = {p.observation_date: p.value for p in assets}
+    reserves_by_date = {p.observation_date: p.value for p in reserves}
+    common = sorted(set(assets_by_date) & set(reserves_by_date))
+
+    window_weeks = _QE_CHANGE_WINDOW_WEEKS
+    if len(common) <= window_weeks:
+        notes.append(
+            DerivationNote(
+                name="qe_qt_stance",
+                value="NOT_COMPUTED",
+                source=(
+                    f"only {len(common)} common weekly observation(s); the stance "
+                    f"needs at least {window_weeks + 1} to form a "
+                    f"{window_weeks}-week change"
+                ),
+                window=f"common dates {common[0].isoformat() if common else 'none'}"
+                f"..{common[-1].isoformat() if common else 'none'}",
+            )
+        )
+        return None, notes
+
+    latest_week = common[-1]
+    prior_week = common[-1 - window_weeks]
+    level = assets_by_date[latest_week]
+    prior_level = assets_by_date[prior_week]
+    reserve_level = reserves_by_date[latest_week]
+    prior_reserve = reserves_by_date[prior_week]
+
+    # (1) Units, asserted before combination — the 1000x trap. The bounds are
+    #     config leaves (validation.*) rather than literals: a threshold a
+    #     reviewer cannot find is one they cannot check (O-25).
+    units = get_settings().validation
+    if not level > units.fed_total_assets_min:
+        raise OrchestrationError(
+            f"fed_total_assets reads {level:,.0f} on {latest_week}; the series is "
+            f"in MILLIONS and a level this small means the provider switched units. "
+            f"The spent level is the denominator of the stance test, so a 1000x error "
+            f"here moves the classification while every number stays plausible.",
+            fields=("fed_total_assets",),
+        )
+    if not reserve_level > units.reserve_balances_min:
+        raise OrchestrationError(
+            f"reserve_balances reads {reserve_level:,.0f} on {latest_week}; the "
+            f"series is in MILLIONS (same unit as fed_total_assets).",
+            fields=("reserve_balances",),
+        )
+    if not level > reserve_level:
+        raise OrchestrationError(
+            f"total assets ({level:,.0f}mn) are not above reserves "
+            f"({reserve_level:,.0f}mn) on {latest_week}; the two series may be "
+            f"mapped to each other's symbols.",
+            fields=("fed_total_assets", "reserve_balances"),
+        )
+
+    # (2) The ON-RRP buffer, optional. Read from the snapshot field the registry
+    #     populates (on_rrp_volume_bn, BILLIONS) — the duplicate on_rrp_level was
+    #     deleted in D-085 precisely so there is one source for this number.
+    rrp_points = _realised_or_none(snapshot.on_rrp_volume_bn, as_of=as_of, field="on_rrp_volume_bn")
+    rrp_level: float | None = None
+    if rrp_points:
+        as_of_rrp = _value_on_or_before(rrp_points, latest_week)
+        if as_of_rrp is not None:
+            rrp_level = as_of_rrp.value
+            if not rrp_level < units.on_rrp_volume_max:
+                raise OrchestrationError(
+                    f"on_rrp_volume_bn reads {rrp_level:,.1f} on "
+                    f"{as_of_rrp.observation_date}; the series is in BILLIONS, so a "
+                    f"value this large means the provider switched to MILLIONS and "
+                    f"the drained-threshold comparison is a 1000x error.",
+                    fields=("on_rrp_volume_bn",),
+                )
+
+    inputs = BalanceSheetInputs(
+        balance_sheet_level=level,
+        balance_sheet_change_3mo=level - prior_level,
+        reserve_balances=reserve_level,
+        reserve_balances_change_3mo=reserve_level - prior_reserve,
+        on_rrp_level=rrp_level,
+    )
+    result = qe_qt_stance(inputs)
+
+    change_mn = level - prior_level
+    notes.append(
+        DerivationNote(
+            name="qe_qt_stance",
+            value=str(result.value.get("stance")) if isinstance(result.value, dict) else "?",
+            source=(
+                f"balance sheet {prior_level:,.0f} -> {level:,.0f}mn over "
+                f"{window_weeks} weekly observations ({prior_week.isoformat()} -> "
+                f"{latest_week.isoformat()}), reserves {prior_reserve:,.0f} -> "
+                f"{reserve_level:,.0f}mn, ON RRP "
+                + (f"{rrp_level:,.1f}bn" if rrp_level is not None else "NOT AVAILABLE")
+                + ". Units asserted before combination: WALCL/WRESBAL millions, "
+                "RRPONTSYD billions."
+            ),
+            window=(
+                f"{prior_week.isoformat()}..{latest_week.isoformat()} "
+                f"({window_weeks} weeks, {change_mn:+,.0f}mn)"
+            ),
+        )
+    )
+    if rrp_level is None:
+        notes.append(
+            DerivationNote(
+                name="qe_qt_rrp_buffer",
+                value="NOT_AVAILABLE",
+                source=(
+                    "on_rrp_volume_bn carried no observation on or before the latest "
+                    "common week, so the ON-RRP buffer could not be read and the "
+                    "drained-buffer assessment is incomplete — the model discloses "
+                    "this itself rather than assuming a full facility"
+                ),
+                window=f"at or before {latest_week.isoformat()}",
+            )
+        )
+    return result, notes
+
+
 def _nairu_from_config() -> tuple[float, str]:
     """``u*``, which is unobservable, plus a source string naming that fact.
-
     Section 21.4 item 13 lists the natural rate among the quantities this system
     is required to admit it does not know. It is a config value with
     ``calibration_status: uncalibrated_illustrative``, tracked to CBO's published
@@ -1646,6 +1852,16 @@ def snapshot_to_thesis_inputs(
     for curve_result in curve_results:
         warnings.extend(str(w) for w in curve_result.warnings)
 
+    # -- Module 4.1's QE/QT stance (Section 20.4). The balance sheet is the
+    #    SECOND policy lever the policy rate alone misses. ``qe_qt_stance`` had
+    #    no caller in src/ at all before D-085 — it was reachable only from a
+    #    test and a script, so the QT/repo-stress chain of Section 22.11 had no
+    #    live input. See `_balance_sheet_leg` for the unit contract.
+    balance_sheet, balance_notes = _balance_sheet_leg(snapshot, as_of=as_of)
+    notes.extend(balance_notes)
+    if balance_sheet is not None:
+        warnings.extend(str(w) for w in balance_sheet.warnings)
+
     policy_rate, policy_described = _policy_rate(snapshot, as_of=as_of)
     notes.append(
         DerivationNote(
@@ -1730,6 +1946,7 @@ def snapshot_to_thesis_inputs(
         regime=regime,
         national_accounts=national_accounts,
         curve=tuple(curve_results),
+        balance_sheet=balance_sheet,
         notes=tuple(notes),
         warnings=tuple(warnings),
     )

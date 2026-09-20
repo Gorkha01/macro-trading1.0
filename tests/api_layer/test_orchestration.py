@@ -198,6 +198,24 @@ def consistent_snapshot() -> MacroDataSnapshot:
             series_id="jolts_quits",
         ),
         iorb=_monthly([4.0] * 13, series_id="iorb"),
+        # --- Module 4.1 balance sheet (D-085). 14 weekly points so the 13-week
+        #     change has both endpoints. WALCL/WRESBAL in MILLIONS, RRPONTSYD in
+        #     BILLIONS — the 1000x trap the leg asserts against.
+        #
+        #     assets:    6,700,000 -> 6,750,000 over 13 weeks = +50,000mn
+        #     change_pct = 50,000 / 6,750,000 * 100 = +0.740740...%  -> QE (>0.5)
+        #     reserves:  3,050,000 -> 3,000,000 = -50,000mn (draining)
+        #     RRP:       5.0bn, far below the drained threshold -> drained
+        #     => QE_EXPANDING, reserves falling, RRP gone: the scarcity shape.
+        fed_total_assets=_weekly(
+            [6_700_000.0, *[6_720_000.0] * 12, 6_750_000.0],
+            series_id="fed_total_assets",
+        ),
+        reserve_balances=_weekly(
+            [3_050_000.0, *[3_040_000.0] * 12, 3_000_000.0],
+            series_id="reserve_balances",
+        ),
+        on_rrp_volume_bn=_weekly([5.0] * 14, series_id="on_rrp_volume_bn"),
         yield_curve=YieldCurveSnapshot(
             as_of=date(2026, 9, 15),
             tenors={"3mo": 4.6, "1yr": 4.5, "2yr": 4.25, "10yr": 4.1, "30yr": 4.5},
@@ -1541,3 +1559,216 @@ def test_the_curve_leg_abstains_when_its_long_tenor_is_unmappable(
     note = next(n for n in inputs.notes if n.name == "curve_slope")
     assert note.value == "NOT_COMPUTED"
     assert "not a key on the live curve" in note.source
+
+
+# ---------------------------------------------------------------------------
+# Module 4.1 — the balance-sheet leg (D-085)
+# ---------------------------------------------------------------------------
+#
+# ``qe_qt_stance`` had NO caller in ``src/`` before this increment: it was
+# reachable only from ``tests/models/test_policy_rules.py`` and
+# ``scripts/live_labor_check.py``, so no thesis carried a balance-sheet read and
+# Section 22.11's QT/repo-stress chain had no live input. The leg below closes
+# that, and these tests pin the four things that can silently go wrong:
+#
+#   1. the 13-RESULT window is weekly rows, not a calendar subtraction;
+#   2. the units are MILLIONS for WALCL/WRESBAL and BILLIONS for RRPONTSYD, and
+#      the leg refuses a 1000x mismatch rather than classifying on it;
+#   3. an absent balance sheet abstains with a NOT_COMPUTED note rather than
+#      substituting zero (which would divide by zero or read as full expansion);
+#   4. an absent RRP buffer degrades the scarcity disclosure, not the stance.
+
+
+def test_balance_sheet_leg_classifies_from_the_snapshot(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The fixture's round numbers produce QE_EXPANDING by hand arithmetic.
+
+    assets 6,700,000 -> 6,750,000 over thirteen weekly rows is +50,000mn, and
+    50,000 / 6,750,000 * 100 = **+0.740740...%**, which is above the `qe_qt`
+    neutral band, so the stance is QE_EXPANDING. Reserves fall 50,000mn over the
+    same window, so the direct-reserve-drain disclosure must be present — but
+    only *with* QT, which is the branch that must NOT fire here.
+    """
+    inputs = snapshot_to_thesis_inputs(consistent_snapshot)
+
+    assert inputs.balance_sheet is not None, "the leg abstained on a full snapshot"
+    value = inputs.balance_sheet.value
+    assert isinstance(value, dict)
+    assert value["stance"] == "QE_EXPANDING"
+    assert _model_float(value["balance_sheet_change_3mo"]) == pytest.approx(50_000.0)
+    # ``qe_qt_stance`` publishes ``balance_sheet_change_pct`` rounded to FOUR
+    # decimal places (see the ``round(change_pct, 4)`` in the model's value
+    # dict), so the published precision — not full float precision — is what the
+    # leg's output is allowed to carry. Asserting at ``rel=1e-6`` against the
+    # unrounded quotient fails on 0.7407 vs 0.7407407407407408: the leg is
+    # correct and the assertion was wrong. Pin the rounding contract instead, so
+    # a future change that silently drops digits still fails here.
+    assert _model_float(value["balance_sheet_change_pct"]) == round(
+        50_000.0 / 6_750_000.0 * 100.0, 4
+    )
+    assert value["on_rrp_supplied"] is True
+
+    note = next(n for n in inputs.notes if n.name == "qe_qt_stance")
+    assert note.value == "QE_EXPANDING"
+    # The window is 13 WEEKLY rows: 2026-06-13 -> 2026-09-12 given the fixture's
+    # weekly helper. Asserting the note names both endpoints keeps the offset
+    # auditable rather than implied.
+    assert "13 weeks" in (note.window or "")
+
+
+def test_balance_sheet_leg_refuses_a_units_swap(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A 1000x unit error must refuse, not classify.
+
+    WALCL in BILLIONS reads ~6,750 instead of ~6,750,000. The relative change is
+    unaffected by a uniform scale, so the *stance* would come out identical while
+    every published magnitude is wrong by 1000x — the exact failure mode the
+    guard exists for. The expectation is a refusal naming the field.
+    """
+    swapped = consistent_snapshot.model_copy(
+        update={
+            "fed_total_assets": _weekly(
+                [6_700.0, *[6_720.0] * 12, 6_750.0], series_id="fed_total_assets"
+            )
+        }
+    )
+    with pytest.raises(OrchestrationError, match="fed_total_assets"):
+        snapshot_to_thesis_inputs(swapped)
+
+
+def test_balance_sheet_leg_refuses_assets_below_reserves(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The cross-series check: total assets must exceed reserves.
+
+    Catches the two series being mapped to each other's symbols, which is
+    otherwise invisible because both are plausible millions figures.
+    """
+    crossed = consistent_snapshot.model_copy(
+        update={
+            "fed_total_assets": _weekly(
+                [3_000_000.0, *[3_010_000.0] * 12, 3_020_000.0],
+                series_id="fed_total_assets",
+            ),
+            "reserve_balances": _weekly(
+                [6_700_000.0, *[6_720_000.0] * 12, 6_750_000.0],
+                series_id="reserve_balances",
+            ),
+        }
+    )
+    with pytest.raises(OrchestrationError, match="not above reserves"):
+        snapshot_to_thesis_inputs(crossed)
+
+
+def test_balance_sheet_leg_abstains_when_the_series_are_absent(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """No data -> NOT_COMPUTED, never a zero-substituted stance.
+
+    A zero level would make the relative change divide by zero; a zero *change*
+    would read as NEUTRAL_HOLD, which is a fabricated verdict rather than a
+    disclosed absence. The expectation is the abstention plus its note.
+    """
+    empty = consistent_snapshot.model_copy(update={"fed_total_assets": [], "reserve_balances": []})
+    inputs = snapshot_to_thesis_inputs(empty)
+
+    assert inputs.balance_sheet is None
+    note = next(n for n in inputs.notes if n.name == "qe_qt_stance")
+    assert note.value == "NOT_COMPUTED"
+    assert "Section 21.4" in note.source
+
+
+def test_balance_sheet_leg_abstains_on_too_short_a_window(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """Thirteen rows cannot yield a thirteen-week change; thirteen is needed.
+
+    The boundary is inclusive of the change window, so 13 common rows is one
+    short and 14 is the minimum. Feeding exactly 13 pins the ``<=`` rather than
+    letting an off-by-one through as a one-week-short change.
+    """
+    short = consistent_snapshot.model_copy(
+        update={
+            "fed_total_assets": _weekly([6_700_000.0] * 13, series_id="fed_total_assets"),
+            "reserve_balances": _weekly([3_050_000.0] * 13, series_id="reserve_balances"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(short)
+
+    assert inputs.balance_sheet is None
+    note = next(n for n in inputs.notes if n.name == "qe_qt_stance")
+    assert note.value == "NOT_COMPUTED"
+    assert "at least 14" in note.source
+
+
+def test_balance_sheet_leg_discloses_a_missing_rrp_buffer(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """A missing ON-RRP buffer degrades the disclosure, not the stance.
+
+    ``BalanceSheetInputs.on_rrp_level`` is optional by the model's own signature
+    because the stance is decidable without it — but ``rrp_drained`` is then
+    unknown, and the leg must say so rather than let the model's scarcity
+    warning imply a buffer it never read.
+    """
+    without_rrp = consistent_snapshot.model_copy(update={"on_rrp_volume_bn": []})
+    inputs = snapshot_to_thesis_inputs(without_rrp)
+
+    assert inputs.balance_sheet is not None
+    value = inputs.balance_sheet.value
+    assert isinstance(value, dict)
+    assert value["on_rrp_supplied"] is False
+    assert value["on_rrp_level"] is None
+
+    note = next(n for n in inputs.notes if n.name == "qe_qt_rrp_buffer")
+    assert note.value == "NOT_AVAILABLE"
+
+
+def test_balance_sheet_leg_measures_thirteen_rows_back_not_to_the_first_row(
+    consistent_snapshot: MacroDataSnapshot,
+) -> None:
+    """The 13-week window must be the *offset*, and only a bent fixture can prove it.
+
+    The ``consistent_snapshot`` fixture is a straight line whose early values are
+    identical to its recent ones, so a regression that paired the latest week
+    against ``common[0]`` instead of ``common[-14]`` would publish the *same*
+    change and pass every assertion above — the "13 weeks" string is built from
+    ``window_weeks`` and never from ``prior_week``, so it cannot catch it. This
+    mutation was tried: swapping in ``common[0]`` left all six sibling tests
+    green. The guard was fine; the fixture was too flat to see the defect.
+
+    So give the series a shape the offset can be read off: a **strictly
+    increasing** balance sheet longer than the window. The length matters and is
+    the part that is easy to get wrong — with a series of exactly 14 rows,
+    ``common[-1 - 13]`` *is* ``common[0]``, so the correct offset and the naive
+    ``common[0]`` pairing are the same date and no assertion can separate them.
+    Twenty rows put the correct prior week in the middle of the series, so any
+    other offset names a different date and therefore a different change.
+    """
+    # 20 rows, strictly increasing by 10,000mn: rows 0..19 read 6,300,000 ..
+    # 6,490,000. The correct 13-row window is row 6 -> row 19:
+    #   6,490,000 - 6,360,000 = +130,000mn.
+    # The naive common[0] pairing would report 6,490,000 - 6,300,000 = +190,000mn,
+    # so the two readings differ by a clearly non-round number of millions.
+    assets = [6_300_000.0 + 10_000.0 * index for index in range(20)]
+    bent = consistent_snapshot.model_copy(
+        update={
+            "fed_total_assets": _weekly(assets, series_id="fed_total_assets"),
+            "reserve_balances": _weekly([3_050_000.0] * 20, series_id="reserve_balances"),
+        }
+    )
+    inputs = snapshot_to_thesis_inputs(bent)
+
+    assert inputs.balance_sheet is not None
+    value = inputs.balance_sheet.value
+    assert isinstance(value, dict)
+    # exactly row19 - row6, which is the 13-row offset into a 20-row series
+    assert _model_float(value["balance_sheet_change_3mo"]) == pytest.approx(130_000.0)
+    # and the window's own endpoints name those two rows — an off-by-one offset
+    # or a common[0] pairing reports a different pair and fails here.
+    note = next(n for n in inputs.notes if n.name == "qe_qt_stance")
+    assert "6,360,000 -> 6,490,000mn" in note.source
+    assert "6,300,000" not in note.source
+    assert (note.window or "").endswith("(13 weeks, +130,000mn)"), note.window

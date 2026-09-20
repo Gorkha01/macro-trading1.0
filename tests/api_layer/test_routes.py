@@ -50,6 +50,8 @@ from fastapi.testclient import TestClient
 
 from macro_engine.api_layer import snapshot_provider
 from macro_engine.api_layer.app import create_app
+from macro_engine.api_layer.orchestration import OrchestrationError
+from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError
 from macro_engine.data_layer.persistence import SnapshotStoreEmptyError, load_snapshot
 from macro_engine.data_layer.schemas import (
     MacroDataSnapshot,
@@ -437,6 +439,86 @@ def test_dashboard_does_not_publish_a_verdict(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A renamed snapshot field must be visible, not a silent null panel
+# ---------------------------------------------------------------------------
+#
+# ``_points_for``/``_curve_panel`` use ``getattr(..., None)`` with silent ``[]``
+# and ``None`` fallbacks. That is correct for degrading gracefully, but it means
+# two different situations produce byte-identical responses:
+#
+#   * the field exists and this snapshot has no observations  -> a DATA gap
+#   * the field does not exist on the schema at all           -> a CODE defect
+#
+# The client sees ``"tips_curve": null`` either way and ``warnings`` is empty,
+# so it renders an empty chart and cannot tell "no data configured" from "the
+# field was renamed". D-005 records ``treasury_curve`` -> ``yield_curve`` alias
+# drift as exactly this class, so the detector is not hypothetical.
+
+
+def test_dashboard_warns_when_a_declared_field_is_not_on_the_schema(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """THE regression: a renamed field must raise a warning naming it.
+
+    ``_SERIES_FAMILIES`` is patched to name a field that does not exist on
+    ``MacroDataSnapshot`` — the shape a rename produces in production. Before
+    the fix the response was a 200 with an absent panel and empty warnings.
+    """
+    from macro_engine.api_layer import routes_dashboard
+
+    _seed(monkeypatch, persisted_snapshot)
+    # A plausible typo/rename: the D-005 alias drift, one character off.
+    monkeypatch.setitem(
+        routes_dashboard._SERIES_FAMILIES,
+        "growth",
+        ("gdp_real", "gdp_nominal", "treasury_curve"),
+    )
+    client = TestClient(create_app())
+
+    body = client.get("/dashboard_data").json()
+
+    assert body is not None
+    missing = [w for w in body["warnings"] if w.startswith("DASHBOARD FIELD MISSING")]
+    assert missing, "a renamed field must not degrade silently to a null panel"
+    assert "treasury_curve" in missing[0]
+
+
+def test_dashboard_does_not_cry_wolf_on_a_complete_schema(client: TestClient) -> None:
+    """No renamed field means no warning — the flag list must stay trustworthy.
+
+    A detector that fired on every request would train a reader to ignore the
+    warnings list, which is the failure mode the list exists to avoid. This pins
+    the negative case, so the fix cannot be satisfied by warning unconditionally.
+    """
+    body = client.get("/dashboard_data").json()
+
+    assert not [w for w in body["warnings"] if w.startswith("DASHBOARD FIELD MISSING")]
+
+
+def test_dashboard_does_not_confuse_an_empty_field_with_a_missing_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A declared-but-empty field is a DATA gap, and must NOT raise the code flag.
+
+    ``jolts_quits`` is on the schema and empty in this synthetic snapshot. That
+    is a fetch outcome the provenance flags already describe; flagging it as a
+    missing field would send a reader to fix the code for a provider problem.
+    """
+    sparse = MacroDataSnapshot(
+        country="us",
+        as_of=utc_now(),
+        yield_curve=YieldCurveSnapshot(as_of=utc_now().date(), tenors={"2yr": 4.0}),
+        # jolts_quits intentionally absent while the schema declares it
+    )
+    _seed(monkeypatch, sparse)
+    client = TestClient(create_app())
+
+    body = client.get("/dashboard_data").json()
+
+    assert not [w for w in body["warnings"] if w.startswith("DASHBOARD FIELD MISSING")]
+
+
+# ---------------------------------------------------------------------------
 # /query
 # ---------------------------------------------------------------------------
 
@@ -512,6 +594,136 @@ def test_query_deduplicates_fields_named_by_two_topics(client: TestClient) -> No
 
 
 def test_query_rejects_an_unknown_thesis_type(client: TestClient) -> None:
+    response = client.post("/query", json={"question": "inflation", "thesis_type": "nope"})
+
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /query reports the same failures in the same shapes as /thesis
+# ---------------------------------------------------------------------------
+#
+# Both endpoints call one builder through the same three stages. Before these
+# tests, ``/query`` wrapped all three in a single ``try`` and one 502 — so
+# "the source did not answer" and "the data arrived and was unusable" produced
+# one message, and a *builder* raise matched no branch at all and escaped as a
+# bare 500 with a stack trace and no ``detail``. The mapping now comes from
+# ``routes_thesis._http_status_for`` so the two endpoints cannot disagree.
+
+
+def _query_with_builder_failure(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot, exc: Exception
+) -> tuple[int, object]:
+    """Seed a snapshot, make the builder raise, and call ``/query``."""
+    from macro_engine.api_layer import routes_query
+
+    _seed(monkeypatch, persisted_snapshot)
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise exc
+
+    monkeypatch.setattr(routes_query, "build_us_macro_thesis", _boom)
+    client = TestClient(create_app())
+    response = client.post("/query", json={"question": "what does the policy gap say"})
+    return response.status_code, response.json()
+
+
+def test_query_maps_a_builder_failure_to_500_with_a_detail(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """A builder raise must be a diagnosable 500, not an unhandled traceback.
+
+    ``/thesis`` already reported this as "500 + detail naming the exception
+    type". ``/query`` let it escape: the client got a 500 from FastAPI's default
+    handler with no ``detail``, so it could not tell a service defect from a
+    malformed request.
+    """
+    status, body = _query_with_builder_failure(
+        monkeypatch, persisted_snapshot, TypeError("shape changed")
+    )
+
+    assert status == 500
+    assert isinstance(body, dict)
+    assert "TypeError" in body["detail"]
+    assert "shape changed" in body["detail"]
+
+
+def test_query_distinguishes_an_unavailable_source_from_unusable_data(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """The two 502 classes are deliberately distinct and must stay distinct.
+
+    ``SnapshotUnavailableError`` (the source did not answer) and
+    ``OrchestrationError`` (the data arrived and a required field was unusable)
+    both map to 502, but their messages name different causes — and before the
+    split, ``/query`` produced one message for both.
+    """
+    _, unavailable = _query_with_builder_failure(
+        monkeypatch, persisted_snapshot, SnapshotUnavailableError("no answer")
+    )
+    # ``fields`` is part of OrchestrationError's contract; the message must name
+    # them, so the caller learns WHAT could not be read.
+    _, orchestration = _query_with_builder_failure(
+        monkeypatch,
+        persisted_snapshot,
+        OrchestrationError("jolts_quits unusable", fields=("jolts_quits",)),
+    )
+
+    assert isinstance(unavailable, dict) and isinstance(orchestration, dict)
+    assert unavailable["detail"] != orchestration["detail"]
+    assert "jolts_quits" in orchestration["detail"]
+
+
+def test_query_publishes_the_orchestration_warnings_not_only_provenance(
+    client: TestClient, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """``/query`` must carry the orchestration's disclosures, as ``/thesis`` does.
+
+    Publishing only ``provenance.warnings()`` dropped everything the
+    orchestration learned while deriving inputs — ignored curve legs, unit
+    traps, fields it could not read. Those are the disclosures a caller uses to
+    judge how much of the thesis to trust, and ``/query`` was the one endpoint
+    withholding them.
+
+    The assertion is an EQUALITY against the union the orchestration itself
+    produced, not a "warnings is non-empty" smoke check. ``provenance.warnings()``
+    is non-empty on this fixture, so a weaker check would pass even with the
+    union removed — verified by mutation: narrowing the list back to
+    ``provenance.warnings()`` alone left a non-emptiness assertion green.
+    """
+    body = client.post("/query", json={"question": "what does the policy gap say"}).json()
+
+    from macro_engine.api_layer.orchestration import snapshot_to_thesis_inputs
+
+    inputs = snapshot_to_thesis_inputs(persisted_snapshot)
+    assert inputs.warnings, "precondition: this snapshot produces orchestration disclosures"
+
+    warnings = body["warnings"]
+    assert len(warnings) == len(set(warnings)), "the warning union must deduplicate"
+    # Every orchestration disclosure must be present, which is only true if the
+    # union was actually built.
+    missing = [w for w in inputs.warnings if w not in warnings]
+    assert not missing, f"orchestration disclosures were withheld from /query: {missing[:2]}"
+
+
+def test_query_does_not_restate_the_stale_flag_as_prose(
+    client: TestClient,
+) -> None:
+    """One fact, one representation: STALE travels as the structured warning.
+
+    It used to be appended to ``answer`` behind a substring match on the warning
+    text, so a client had to parse prose for one form and read ``warnings`` for
+    the other — and the two could disagree the moment the wording changed.
+    """
+    body = client.post("/query", json={"question": "what does the policy gap say"}).json()
+
+    assert "STALE" not in body["answer"]
+
+
+def test_query_rejects_an_unknown_thesis_type_after_the_refactor(
+    client: TestClient,
+) -> None:
+    """The 422 guard must still fire — the refactor moved the stages below it."""
     response = client.post("/query", json={"question": "inflation", "thesis_type": "nope"})
 
     assert response.status_code == 422
@@ -727,3 +939,129 @@ def test_stream_emits_an_error_frame_when_the_orchestration_refuses(
     assert errors, "a refused orchestration must surface as an error frame"
     assert "jolts_quits" in errors[0]["detail"]
     assert response.text.rstrip().endswith("data: [DONE]")
+
+
+# ---------------------------------------------------------------------------
+# The SSE terminator is UNCONDITIONAL — including for unhandled raises
+# ---------------------------------------------------------------------------
+#
+# The generator's cheap, unguarded region is real and reachable: ``build_policy_gap``
+# raises TypeError by design when ``derive_market_implied_policy_path`` changes
+# shape, and ValueError on a zero gap, and every ``_event(...)`` formatting call
+# sits outside any per-stage handler. Before the outer guard, one raise there
+# propagated out of the async generator and the client got a **truncated body
+# with no terminal event**.
+#
+# These tests drive the generator directly rather than through HTTP, because the
+# trigger is a raise in a stage, and a monkeypatched raiser is how that is
+# expressed deterministically. HTTP-level coverage of the happy path and the
+# handled stages lives above.
+
+
+def _drain(country: str = "us") -> list[str]:
+    """Run the SSE generator to exhaustion and return its frames."""
+    import asyncio
+
+    from macro_engine.api_layer.reasoning_stream import reasoning_step_generator
+
+    async def collect() -> list[str]:
+        return [frame async for frame in reasoning_step_generator(country)]
+
+    return asyncio.run(collect())
+
+
+def _terminator_count(frames: list[str]) -> int:
+    return sum(1 for frame in frames if frame.strip() == "data: [DONE]")
+
+
+def test_stream_terminator_is_emitted_exactly_once_on_success(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """One success path must yield exactly one ``[DONE]`` — not zero, not two.
+
+    The terminator moved from four scattered ``yield`` sites into one ``finally``.
+    A single ``[DONE]`` is the contract; two would make a naive client think the
+    stream had ended twice, and the count is what proves the consolidation was
+    complete rather than additive.
+    """
+    _seed(monkeypatch, persisted_snapshot)
+    frames = _drain()
+
+    assert _terminator_count(frames) == 1
+    assert frames[-1].strip() == "data: [DONE]"
+    assert any("build_thesis" in frame for frame in frames)
+
+
+def test_unhandled_raise_still_terminates_the_stream(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """THE regression: a raise outside a handled stage must not truncate the body.
+
+    ``build_policy_gap`` is called bare in the middle of the trace. Raising from
+    it used to propagate out of the generator, so the trailing ``[DONE]`` was
+    never reached and the client could not tell the stream had died.
+    """
+    from macro_engine.api_layer import reasoning_stream
+
+    _seed(monkeypatch, persisted_snapshot)
+    monkeypatch.setattr(
+        reasoning_stream,
+        "build_policy_gap",
+        lambda *a, **k: (_ for _ in ()).throw(TypeError("shape changed")),
+    )
+
+    frames = _drain()
+    events = _events("".join(frames))
+
+    assert _terminator_count(frames) == 1, "an unhandled raise truncated the stream"
+    assert frames[-1].strip() == "data: [DONE]"
+    assert any(e["status"] == "error" and "shape changed" in e["detail"] for e in events), (
+        "the failure must be diagnosable, not just terminated"
+    )
+
+
+def test_terminator_survives_a_raise_from_the_error_path_itself(
+    monkeypatch: pytest.MonkeyPatch, persisted_snapshot: MacroDataSnapshot
+) -> None:
+    """Even a raise inside the error frame's own formatting must still terminate.
+
+    The outer ``except`` body is not itself covered by that ``except``, so a
+    failure while formatting the diagnostic propagates — but the ``finally``
+    still runs, so the terminator is emitted before the exception leaves the
+    generator. A terminated stream with a missing explanation beats a truncated
+    one, and this pins that ordering.
+
+    ``pytest.raises`` wraps the drain because the RuntimeError genuinely escapes:
+    the assertion is that ``[DONE]`` was collected *before* it did. Whether
+    Starlette surfaces that as a 200 with a clean terminator or a reset
+    connection is the framework's business; that the generator emitted the
+    terminator first is this module's.
+    """
+    import asyncio
+
+    from macro_engine.api_layer import reasoning_stream
+
+    _seed(monkeypatch, persisted_snapshot)
+    monkeypatch.setattr(
+        reasoning_stream,
+        "build_policy_gap",
+        lambda *a, **k: (_ for _ in ()).throw(TypeError("shape changed")),
+    )
+    monkeypatch.setattr(
+        reasoning_stream,
+        "_event",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("symbol table exploded")),
+    )
+
+    frames: list[str] = []
+
+    async def collect() -> None:
+        async for frame in reasoning_stream.reasoning_step_generator("us"):
+            frames.append(frame)
+
+    with pytest.raises(RuntimeError, match="symbol table exploded"):
+        asyncio.run(collect())
+
+    assert any(frame.strip() == "data: [DONE]" for frame in frames), (
+        "the terminator was skipped because the error message could not be built"
+    )

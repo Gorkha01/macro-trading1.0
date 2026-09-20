@@ -93,7 +93,19 @@ class CurvePanel(BaseModel):
 
     as_of: str
     tenors: dict[str, float] = Field(description="Tenor label -> yield in PERCENT.")
-    units: str = "percent"
+    units: str = Field(
+        default="percent",
+        description=(
+            "Always 'percent'. This is a SCHEMA INVARIANT, not a measurement: "
+            "``YieldCurveSnapshot.tenors`` is documented and validated as "
+            "percent (4.35 means 4.35%), and the snapshot carries no per-curve "
+            "unit field to read. Declaring it here is honest labelling of a "
+            "fixed convention; reading it from the snapshot would require a "
+            "field that does not exist. If a basis-point curve is ever added, "
+            "that curve needs its own panel type with its own units — not a "
+            "second value in this string."
+        ),
+    )
 
 
 class DashboardData(BaseModel):
@@ -183,6 +195,21 @@ async def dashboard_data(
             families[family] = panels
 
     warnings = list(provenance.warnings())
+
+    # A field the family table names but the schema does not carry is a CODE
+    # defect, not a data gap: the panel can never render whatever the provider
+    # returns, and the two look identical to a client that only sees
+    # ``"tips_curve": null``. Naming them is what turns a silently-missing panel
+    # into a fixable one.
+    absent_fields = _declared_but_absent(snapshot)
+    if absent_fields:
+        warnings.append(
+            f"DASHBOARD FIELD MISSING: {len(absent_fields)} field(s) named by the "
+            f"family table are not on the snapshot schema ({absent_fields}) — these "
+            f"panels cannot render regardless of what the provider returns, which "
+            f"means the field was renamed or removed and this table was not updated."
+        )
+
     truncated = sorted(
         panel.field for panels in families.values() for panel in panels if panel.points_withheld
     )
@@ -212,11 +239,45 @@ def _points_for(snapshot: MacroDataSnapshot, field: str) -> list[ObservationPoin
     the family table above names fields as *strings* — which is what makes the
     grouping declarative — and a renamed snapshot field must degrade to an
     absent panel rather than an ``AttributeError`` on a dashboard request.
+
+    Degrading silently is only half the contract, though. ``[]`` is returned for
+    two very different situations — "the field is declared and has no data in
+    this snapshot" and "there is no such field on the schema at all" — and the
+    caller cannot tell them apart from the return value. The second is a code
+    defect: the family table above names a field that no longer exists, which
+    D-005 records as exactly how ``treasury_curve`` → ``yield_curve`` alias drift
+    happened. So ``_missing_fields`` reports the second case separately, and the
+    handler turns it into a warning.
     """
     value = getattr(snapshot, field, None)
     if isinstance(value, list):
         return value
     return []
+
+
+def _declared_but_absent(snapshot: MacroDataSnapshot) -> list[str]:
+    """Fields named by the family table that the snapshot schema does not carry.
+
+    This is the renamed-field detector. ``hasattr`` on the *model* — not on the
+    instance's populated values — is the right test: a field the schema declares
+    and the fetch left empty is a data gap, which the existing
+    ``EMPTY_SERIES``/provenance flags already describe, whereas a field the
+    schema does not declare at all means the panel can never appear no matter
+    what the provider does, and only the code can fix it.
+    """
+    missing: list[str] = []
+    for field in _all_declared_fields():
+        if not hasattr(snapshot, field):
+            missing.append(field)
+    for curve_field in ("yield_curve", "tips_yields"):
+        if not hasattr(snapshot, curve_field):
+            missing.append(curve_field)
+    return sorted(set(missing))
+
+
+def _all_declared_fields() -> list[str]:
+    """Every series field the family table names, in declaration order."""
+    return [field for fields in _SERIES_FAMILIES.values() for field in fields]
 
 
 def _curve_panel(snapshot: MacroDataSnapshot, field: str) -> CurvePanel | None:

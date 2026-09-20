@@ -37,8 +37,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from macro_engine.api_layer.orchestration import OrchestrationError, snapshot_to_thesis_inputs
-from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError, get_snapshot
+from macro_engine.api_layer.orchestration import snapshot_to_thesis_inputs
+from macro_engine.api_layer.routes_thesis import _http_status_for
+from macro_engine.api_layer.snapshot_provider import get_snapshot
 from macro_engine.models.instrument_selection import ThesisType
 from macro_engine.thesis_layer.builder import build_us_macro_thesis
 from macro_engine.thesis_layer.schemas import MacroThesis
@@ -207,9 +208,34 @@ async def query(
                 ),
             ) from exc
 
+    # Three stages, three handlers, three messages.
+    #
+    # These used to share one ``try`` and one 502. That collapsed two facts that
+    # are deliberately distinct — "the data source did not answer" versus "the
+    # data arrived and could not be used" — into one message, and it did not
+    # catch a *builder* failure at all: ``build_us_macro_thesis`` raises on
+    # inputs it rejects, which is a defect in this service rather than a data
+    # condition, and an uncaught raise here escaped as a stack trace with no
+    # ``detail``. ``/thesis`` already reported all three correctly; one builder
+    # with two failure shapes across two endpoints is one too many.
+    #
+    # The mapping now lives in ``routes_thesis._http_status_for`` and is imported
+    # rather than restated, so the two endpoints cannot drift apart again. (It is
+    # underscore-private by this package's convention and already the single
+    # shared mapping — ``tests/api_layer/test_strictness.py`` exercises it
+    # directly — so re-exporting it as a second public name would create two
+    # entry points to one function.) Each stage re-raises through it.
     try:
         snapshot, provenance = get_snapshot(req.country, force_refresh=fresh)
+    except Exception as exc:
+        raise _http_status_for(exc, country=req.country) from exc
+
+    try:
         inputs = snapshot_to_thesis_inputs(snapshot, thesis_type=resolved_type)
+    except Exception as exc:
+        raise _http_status_for(exc, country=req.country) from exc
+
+    try:
         thesis = build_us_macro_thesis(
             inputs.reads,
             inputs.taylor_inputs,
@@ -219,14 +245,16 @@ async def query(
             short_yield=inputs.short_yield,
             regime=inputs.regime,
         )
-    except NotImplementedError as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
-    except (SnapshotUnavailableError, OrchestrationError) as exc:
+    except Exception as exc:
+        # Same 500-with-detail shape ``/thesis`` uses, for the same reason: the
+        # builder rejecting its own orchestration's output is a bug here, and a
+        # 502 would blame the data for it.
         raise HTTPException(
-            status_code=502,
+            status_code=500,
             detail=(
-                f"the thesis this query routes into could not be built: {exc}. "
-                f"Reported as a failure rather than as 'no matching data'."
+                f"the thesis builder raised {type(exc).__name__}: {exc}. The "
+                f"orchestration produced inputs the builder rejected, which is a "
+                f"defect in this service rather than a data condition."
             ),
         ) from exc
 
@@ -251,10 +279,23 @@ async def query(
             f" {len(unmatched)} token(s) matched no topic ({unmatched}) — the retrieval is partial."
         )
 
-    warnings = list(provenance.warnings())
-    if provenance.age_exceeds_max:
-        note += " The snapshot is STALE; see warnings."
+    # The same union ``/thesis`` publishes: the provenance warnings AND the
+    # orchestration's own disclosures. Publishing only ``provenance.warnings()``
+    # silently dropped everything the orchestration learned while deriving the
+    # inputs — the curve legs it had to ignore, the unit traps it asserted, the
+    # fields it could not read. Those are exactly the disclosures a caller needs
+    # to judge how much of the thesis to trust, and ``/query`` was the one
+    # endpoint that withheld them. Deduplicated in order, as ``/thesis`` does,
+    # because the two lists overlap by design.
+    warnings: list[str] = []
+    for warning in [*provenance.warnings(), *inputs.warnings]:
+        if warning not in warnings:
+            warnings.append(warning)
 
+    # The STALE disclosure travels as the structured warning above and nowhere
+    # else. It used to be appended to ``note`` as prose too, behind a substring
+    # check on the warning text — two representations of one fact, which can
+    # disagree the moment the wording changes. A client parses the list.
     return QueryResponse(
         answer=f"Keyword routing for {req.question!r}." + note,
         is_keyword_routing=True,

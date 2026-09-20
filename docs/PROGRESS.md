@@ -42,31 +42,40 @@ not re-open it. Its recorded state: `_apply_risk_axis` in
 `thesis_layer/builder.py`; **9 applied / 8 killed / 1 control survived —
 CERTIFIES**; live check **PASSED exit 0**.
 
-**GATES AT D-073's CLOSE — these exact numbers are the baseline you inherit.**
+**GATES AT D-085's CLOSE — these exact numbers are the baseline you inherit.**
 Any deviation is either your change or a defect; do not assume drift.
 
 ```
 ruff check src tests tools scripts        ->  All checks passed
-ruff format --check src tests tools scripts ->  218 files already formatted
-mypy --strict src tests tools scripts     ->  no issues in 218 source files
-pytest -q                                 ->  2329 passed, 1 skipped
-tests/thesis_layer/test_risk_axis.py      ->  17 passed
+ruff format --check src tests tools scripts ->  227 files already formatted
+mypy --strict src tests tools scripts     ->  no issues in 227 source files
+pytest -q                                 ->  2507 passed, 1 skipped, 0 failed
+scripts/mutation_api_layer.py             ->  42 applied / 39 killed / 3 survivors
+                                               (M1.5 + M4.3 proven inert; M10.1 = the
+                                                honesty CONTROL, which must survive)
+                                               CERTIFIES
 scripts/mutation_risk_axis.py             ->  9 applied / 8 killed / 1 survived  CERTIFIES
-scripts/live_risk_axis_check.py           ->  PASSED, exit 0
+tools/sweep_health.py                     ->  40 sweeps, 0 leftovers, 0 failures
 ```
 
-**The count is 218 = 218** — ruff-format's file count equals mypy's (D-035).
-**The single skip is pre-existing**: `tests/models/test_output_gap.py:255`, a
-Phase-5-gated confidence constant, not a D-073 skip. **O-84 no longer fails** —
-it is a live-marked data-layer test and is excluded from the default run; it
-still fails under `-m live` and has **not** been fixed.
+**The count is 227 = 227** — ruff-format's file count equals mypy's (D-035; was
+**218** at D-073's close, so D-085's fixes added 9 files).
 
 **STEP 0 OF ANY SESSION — do this before anything else:**
 1. `uv run python tools/sweep_health.py` — inherit a clean tree, or find a leftover
    mutant from an interrupted sweep. **Never run the suite while a sweep is in
    flight** (lesson 5bi): the sweep mutates `src/` per mutant, so failures are
-   phantoms.
-2. `grep -rn "if False:\|if True:" src/macro_engine/` — must print **nothing**.
+   phantoms. **Never kill a sweep with a pipe or a timeout** — on `win32` no
+   Python signal handler runs, so the `finally` never restores and *every* mutant
+   applied so far stays on disk (D-085 measured **five**: M8.1, M8.4, M8.6, M9.1,
+   M10.1). The sweep now writes `.sweepbackup` sidecars before its first mutation
+   and heals from them on the next run.
+2. `grep -rn "MUTANT\|if False:\|if True:\|and True:\|or False:" src/macro_engine/`
+   — must print **nothing**. **The narrower grep the project used until D-085 was
+   `"if False:\|if True:"`, which MISSES the compound identity form
+   (`if not deep and True:`).** That is the shape the project writes its honesty
+   controls as, so it is exactly the shape a kill leaves behind — and it was on
+   disk, undetected, while this step reported the tree clean. Use the wide form.
 3. Read `AGENTS.md` (the SINGLE authority), then this file, then `REFERENCE.md`.
 
 **THE FIVE THINGS THAT WILL COST YOU THE MOST TIME IF YOU DO NOT KNOW THEM:**
@@ -204,14 +213,14 @@ below was executed in this increment; none is carried forward (O-88).
 
 | Gate | Result |
 |---|---|
-| `uv run ruff check src tests tools scripts` | **All checks passed** (**218** files; was 196 before D-073. The **scoped** path is the project gate — a **bare** `ruff check` reports errors because ruff has no `files` key and walks `.probe/`; see **O-63**) |
-| `uv run ruff format --check src tests tools scripts` | **218 files already formatted** (matches the mypy count exactly — the gate-count discipline, D-035) |
-| `uv run mypy --strict src tests tools scripts` | **no issues in 218 source files** (was 196 before D-073, 196 before D-070, 182 before D-069) |
-| `uv run pytest -q` | **2329 passed, 1 skipped** — **zero failures.** (Was 2043/1/**1 failed** at D-070; the failure was O-84, a `live`-marked data-layer test excluded from the default run, so the default suite is now clean rather than repaired.) The one skip is the pre-existing `tests/models/test_output_gap.py:255` Phase-5-gated confidence constant |
-| `uv run pytest tests/thesis_layer/test_risk_axis.py -q` | **17 passed, 0 skipped** — D-073's own suite. **Run 1 was 14 passed / 3 failed / 1 skipped**; the failures were mine (a wrong status literal and a fixture that flipped the status *string* while keeping bp-denominated payoffs, which `KellyInputs` rejects as *"beyond a total loss"*). **The skip is what exposed the increment's finding** — see below |
-| `uv run python scripts/mutation_risk_axis.py` | **9 applied / 8 killed / 1 survived — CERTIFIES** (the survivor is the M5 honesty control). **Run 1 was 8/6/2** and both survivors were **real test gaps**: `M1.2` (the axis's local bound vs the config leaf — the tests read the leaf) and `M4.1` (`<=` → `<` — no test landed a size exactly on the bound). Both got a new test rather than an exemption |
-| `uv run python scripts/live_risk_axis_check.py` | **PASSED, exit 0** — reproduces the reachable size set exactly and confirms that a 0.03 bound demotes **1 of 6** measured asymmetric scenarios |
-| `uv run python tools/sweep_health.py` | **OK — 38 sweeps checked, 0 failures, 0 leftovers, 0 mutant shapes** (unchanged count from D-070; read critically per lesson **5bl** and **not** a bare green) |
+| `uv run ruff check src tests tools scripts` | **All checks passed** (**227** files; was 218 before D-085, 196 before D-073. The **scoped** path is the project gate — a **bare** `ruff check` reports errors because ruff has no `files` key and walks `.probe/`; see **O-63**) |
+| `uv run ruff format --check src tests tools scripts` | **227 files already formatted** (matches the mypy count exactly — the gate-count discipline, D-035) |
+| `uv run mypy --strict src tests tools scripts` | **no issues in 227 source files** (was 218 before D-085, 196 before D-073, 196 before D-070, 182 before D-069) |
+| `uv run pytest -q` | **2507 passed, 1 skipped, 0 failed** (was 2329/1/0 at D-073). The one skip is the pre-existing `tests/models/test_output_gap.py:255` Phase-5-gated confidence constant. **A first run failed on `tests/test_reachability_gate.py` — correctly**, because D-085's `_balance_sheet_leg` gave `qe_qt_stance` a pipeline caller and the baseline was stale; committed with `--write-baseline` (orphans 35 → 34) and the size tripwire updated 59 → 58 **on purpose**, per that test's own instruction |
+| `uv run python scripts/mutation_api_layer.py` | **42 applied / 39 killed / 3 survivors — CERTIFIES.** The 3 are `M1.5` and `M4.3` (both `[inert]`, each with a **measured** proof of an overlapping second guard) and **`M10.1`, the honesty CONTROL, which SURVIVED as it must.** **This is the run that had to be re-derived:** a previous run reported `M10.1` KILLED and refused to certify — it was running on a tree poisoned by five leftover mutants, so the suite was already red and every mutant on a shared test looked "killed" |
+| `uv run pytest tests/test_reachability_gate.py -q` | **6 passed** — after the baseline was committed and its size tripwire moved 59 → 58 |
+| `uv run python scripts/mutation_risk_axis.py` | **9 applied / 8 killed / 1 survived — CERTIFIES** (the survivor is the M5 honesty control) |
+| `uv run python tools/sweep_health.py` | **OK — 40 sweeps checked, 0 failures, 0 leftovers, 0 mutant shapes.** **Read critically**: this tool printed **OK while a control mutant was on disk** (O-107 — its shape scan could not see `if not deep and True:`), so its green is now backed by the widened `_is_mutant_shape()` **and** an independent `git diff` |
 
 ### ⚠️ D-073's finding — the demotion bound could never fire, and a SKIP hid it
 
@@ -4111,3 +4120,129 @@ populate `vintage_datetime` at all rather than fill it with a plausible wrong va
 revision. This system consumes a published `gdp_potential`, so that cause is
 **inherited, disclosed, and not mitigated**; the Phase 5 Kalman-filter item is its
 remedy. **No code changed** - the first research pass in this audit to come back clean.
+
+---
+
+## 2026-09-20 — OpenBB local-API utilization audit (D-084)
+
+**The question:** is the engine leaving the local OpenBB surface unused, and is it
+writing custom data-access code where a command already exists? **Answer: yes to the
+first, and one place on the second.** Report: **`docs/OPENBB_UTILIZATION_AUDIT.md`**.
+
+**Measured, never assumed.** The live spec was re-fetched fresh (**2,424,179 bytes**);
+a stale Sep-16 copy found in `/tmp` was **deliberately not used**. Surface:
+**278 paths · 575 schemas · 201 commands · 32 providers**, of which **77** are
+macro-relevant. Every capability claim was *called*, not read — 25 routes probed, all
+responses kept under `.workbuddy-ai/audit/probes/`.
+
+| measurement | result |
+| --- | --- |
+| OpenBB commands the engine uses | **2 of 201** (`fred_series`, `fred_search`) |
+| registry series + curves routed through them | **45 + 2 curves (16 tenors)** |
+| macro-relevant commands unused | **~14 probed live, all `200`** |
+| dedicated command exists for a registry field | **at least 12** |
+| FRED-namespaced routes available / used | **4 / 2** |
+
+**The three findings that matter.**
+
+1. **The curve is 11 calls where 1 would do.** `federal_reserve/…/yield_curve` returns
+   all 11 tenors in **one** call with `maturity_years` typed. Verified **numerically
+   equal, not merely similar**: FRED `DGS10` = **4.94** (2026-09-17) vs Fed
+   `treasury_rates.year_10` = **0.0494** — same value, same source (the Fed's H.15).
+2. **A genuine duplication.** `catalysts.py` scrapes `federalreserve.gov` HTML for FOMC
+   dates; `economy/fomc_documents` returns **34 dated rows with `doc_type` as a field**,
+   including `projections` — the dot plot — which the scrape must recover by stripping a
+   `*` from `"27-28*"`. Re-measured, the scrape also returns meetings back to **2021**,
+   so it is **strictly worse**. The FRED-release scrape half is **not** duplication and
+   must stay: its OpenBB alternative is broken (below).
+3. **The calendar fails on transport, not coverage.** All four providers dead: `fred`
+   **400 TimeoutError 3/3**, `tradingeconomics`/`fmp` missing credentials, `nasdaq`
+   **500 TimeoutError**. Root cause is OpenBB's own `aiohttp` client being
+   fingerprint-filtered by FRED — so the honest record is
+   **`AVAILABLE_BUT_PROVIDER_LIMITED` on transport grounds**, not "OpenBB has no
+   calendar". The brief's question (`actual`/`forecast`/`previous`) is
+   **untestable, because the route never returns a body.**
+
+**The vintage question is closed, at the granularity asked.** Four independent live
+confirmations — `realtime_start`/`realtime_end` are request parameters on **0 routes**;
+`vintage_dates` has **0 occurrences**; all 6 `vintage` hits are the **SEC** provider's;
+and an **A/B test** differing only by `realtime_start=1990-01-01&realtime_end=1990-12-31`
+returned **byte-identical data**. Conclusion: *standard FRED observations available;
+historical vintage selection unavailable through the current local route* — **not** the
+overstated "FRED vintages unavailable", which would have wrongly licensed deleting sound
+PIT logic.
+
+**No code was changed.** `src/` is byte-identical to `HEAD` (`git diff --stat HEAD --
+src/` empty) and `AGENTS.md` is untouched — the brief asked for the *minimal changes*,
+not their application, and several are one-way doors. The five are proposed in the
+report's §8. **Recorded:** D-083, D-084 (+ 6 sub-entries), **O-104** (2-of-201 usage /
+the FOMC duplication), **O-105** (calendar transport), **O-106** (the `realtime_start`
+decoy now on 3 command families). **Also fixed:** a duplicated **O-103** row in
+`OPEN_ISSUES.md` (byte-identical, written twice).
+
+---
+
+## D-085 — the production-grade fix pass (defect / logic / reasoning bugs)
+
+**Scope:** the findings from `docs/CODE_REVIEW_PHASE0-4.md`, fixed at production
+grade against **live local OpenBB data** (`http://127.0.0.1:6901`). Five defect
+classes, every fix mutation-proven.
+
+**What was fixed**
+
+1. **`z_score_for_confidence` extrapolated below its table** (`models/risk.py`).
+   The below-0.90 branch bound `upper = points[-1]` (0.999) and returned
+   `3.0902·c/0.999`, so a confidence of 0.0 produced a finite z instead of a
+   refusal. Now raises `ValueError` symmetrically with the above-0.999 branch.
+2. **`_signed_scalar` lost its finiteness guard** (`thesis_layer/invalidation.py`).
+   A `NaN` or `inf` model value passed through as a float, contradicting the
+   sibling in `signals.py` (D-063/D-078 drift). Guard restored; a 40-case parity
+   test now drives both implementations through the same probe values.
+3. **`is_marginal` used `0.0 <= elapsed <= 0.01`, a hardcoded threshold** that
+   ignored O-25. Now reads
+   `get_settings().policy.ensemble.near_miss_tolerance_bp_value` (5.0bp, a
+   `CalibratedValue`), and a reachability test pins that it can actually fire.
+4. **`qe_qt_stance` was declared, consumed, and unreachable** — the
+   D-037/D-045/D-048/O-48/D-073 class, tenth instance. `build_policy_gap`
+   computed a `balance_sheet` `ModelResult` that **nothing published**, because
+   `fed_total_assets`/`reserve_balances` were `not_a_snapshot_field: true` in the
+   registry. Promoted both (WALCL, WRESBAL), added unit-guard config leaves
+   (`validation.fed_total_assets_min_millions` etc. — the 1000× trap), added
+   `_balance_sheet_leg()` with a **13-week** window, and wired it into
+   `ThesisInputs`. **Live-verified:** `NEUTRAL_HOLD`, window
+   `2026-06-17..2026-09-16 (13 weeks, +10,124mn)`, 1226 observations.
+   **Reachability moved: orphans 35 → 34.**
+5. **Release-timing outages were conflated with "never attempted"**
+   (`snapshot_builder.py`) and **`release_datetime`/`vintage_datetime` were
+   dropped on persist** (`persistence.py`). Both fixed; the outage flag now names
+   the dead source, and a real Parquet round-trip test pins the columns.
+6. **Four API failure-grammar defects:** the SSE stream emitted `[DONE]` on four
+   paths instead of exactly once (now one `finally`); `/query` collapsed all
+   failures into one opaque 502 (now per-stage with a distinct `_http_status_for`,
+   plus 500-with-detail on a builder fault); the warning list was rebuilt rather
+   than unioned; and the dashboard silently omitted renamed fields (now emits
+   `DASHBOARD FIELD MISSING`).
+
+**The gate defect this pass found (O-107).** An interrupted sweep left **five**
+mutants on disk. `tools/sweep_health.py` printed **OK** anyway, because its shape
+scan matched `if True:` **by prefix** and the project's controls are written
+`if not deep and True:`. The same blind spot sat in the sweep's own leftover
+check **and in `PROGRESS.md`'s Step-0 grep** — the first command any session
+runs. Fixed by `_is_mutant_shape()`, a structural test, in all three places, and
+the API sweep now writes `.sweepbackup` sidecars before its first mutation
+(O-103's remedy) so a kill can never again leave a mutant behind on `win32`.
+
+**The reasoning lesson, recorded because it cost the most time:** the poisoned
+tree made a full sweep report **`M10.1` (the honesty control) as killed** and
+refuse to certify. Re-run clean, it **SURVIVED** — the control was right and the
+run was wrong. **Three checks disagreed; the tiebreaker was `git diff HEAD`,
+the one scope-free check** (O-102, lesson 5ck).
+
+**Gates at close:** ruff `All checks passed` = format **227** = mypy **227**
+(D-035 parity; 218 → 227), suite **2507 passed / 1 skipped / 0 failed**,
+`mutation_api_layer.py` **42/39/3 CERTIFIES**, `sweep_health.py` **40 sweeps /
+0 leftovers / 0 failures**, reachability gate **6 passed**, and a **live
+end-to-end thesis build** from the local OpenBB API: 24/24 fields, a real
+`WATCH`/`NO_SIGNAL` stand-down on a `+0.26%` gap inside `0.86pp` dispersion.
+Full text: `DECISIONS.md` **D-085** (incl. **D-085.8**, the correction to
+D-085.6), `OPEN_ISSUES.md` **O-107** (and the O-103 update).

@@ -305,6 +305,31 @@ class MacroDataSnapshot(BaseModel):
     # briefly declared twice when on_rrp_volume_bn was added; mypy's no-redef
     # caught it, and a duplicate field is exactly the kind of silent shadowing
     # that would make one of the two declarations unreachable.
+    fed_total_assets: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "FRED WALCL — Fed total assets, WEEKLY, in MILLIONS of dollars. Module 4.1's "
+            "``balance_sheet_level`` and the denominator of the relative change that "
+            "decides the QE/QT stance. Promoted from ``not_a_snapshot_field`` when the "
+            "balance-sheet leg was wired into the thesis path: the registry justified the "
+            "exclusion on the grounds that only ``qe_qt_stance``'s own live check fetched "
+            "it, and that premise stopped holding once ``qe_qt_stance`` became reachable "
+            "from the orchestration. UNIT TRAP: millions here, BILLIONS in "
+            "``on_rrp_volume_bn`` — a 1000x error in either direction produces plausible "
+            "numbers, so both are asserted at the point of combination."
+        ),
+    )
+    reserve_balances: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "FRED WRESBAL — reserve balances with Federal Reserve Banks, WEEKLY, in "
+            "MILLIONS of dollars (same unit as ``fed_total_assets``). The series that "
+            "distinguishes a QT absorbed by the ON-RRP buffer from one draining reserves "
+            "directly — the September 2019 configuration. A NEGATIVE 13-week change "
+            "alongside an active QT is the scarcity signal ``qe_qt_stance`` discloses."
+            "Promoted from ``not_a_snapshot_field`` with ``fed_total_assets``."
+        ),
+    )
 
     # --- Cross-asset (Modules 9, 10, 11) ---
     fx_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)

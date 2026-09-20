@@ -1355,6 +1355,7 @@ class PolicyEnsembleThresholds(BaseModel):
 
     convergence_threshold_bp: CalibratedValue
     uncertainty_threshold_bp: CalibratedValue
+    near_miss_tolerance_bp: CalibratedValue
 
     @property
     def convergence_threshold_bp_value(self) -> float:
@@ -1363,6 +1364,10 @@ class PolicyEnsembleThresholds(BaseModel):
     @property
     def uncertainty_threshold_bp_value(self) -> float:
         return float(self.uncertainty_threshold_bp.value)
+
+    @property
+    def near_miss_tolerance_bp_value(self) -> float:
+        return float(self.near_miss_tolerance_bp.value)
 
 
 class MarketImpliedPolicySettings(BaseModel):
@@ -3782,6 +3787,21 @@ class ValidationSettings(BaseModel):
     max_plausible_yield_pct: CalibratedValue
     implausible_long_end_inversion_bp: CalibratedValue
     scenario_probability_tolerance: CalibratedValue
+    fed_total_assets_min_millions: CalibratedValue
+    reserve_balances_min_millions: CalibratedValue
+    on_rrp_volume_max_billions: CalibratedValue
+
+    @property
+    def fed_total_assets_min(self) -> float:
+        return float(self.fed_total_assets_min_millions.value)
+
+    @property
+    def reserve_balances_min(self) -> float:
+        return float(self.reserve_balances_min_millions.value)
+
+    @property
+    def on_rrp_volume_max(self) -> float:
+        return float(self.on_rrp_volume_max_billions.value)
 
     @property
     def unemployment_bounds(self) -> tuple[float, float]:

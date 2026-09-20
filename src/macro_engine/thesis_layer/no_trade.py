@@ -144,6 +144,7 @@ from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from macro_engine.config import get_settings
 from macro_engine.models.policy_rules import MarketPricingGap
 from macro_engine.thesis_layer.invalidation import InvalidationAssessment
 from macro_engine.thesis_layer.schemas import MacroThesis, ThesisStatus, TradeIdea
@@ -279,8 +280,22 @@ class NoTradeDecision(BaseModel):
         case. ``None`` elapsed returns ``False`` because "not close" is the safe
         reading when the question does not apply — publishing ``True`` would
         invent a near-miss.
+
+        The comparison is in **basis points**, converted explicitly from the
+        percentage points ``elapsed`` carries. This is not cosmetic: the previous
+        implementation compared the pp shortfall against the literal ``1e-9``,
+        which is ``1e-11`` bp — unreachable, because ``raw_gap`` is rounded to 4
+        decimals upstream and a shortfall that small cannot occur. Every real
+        stand-down therefore reported ``is_marginal=False`` and the near-miss
+        distinction this field exists to draw could never fire. The tolerance now
+        lives in config (``policy.ensemble.near_miss_tolerance_bp``) so it is a
+        reviewable judgement rather than a buried constant, and the ``* 100`` is
+        the same unit conversion the ensemble's own bands use.
         """
-        return self.elapsed is not None and 0.0 <= self.elapsed <= 1e-9
+        if self.elapsed is None:
+            return False
+        tolerance_bp = get_settings().policy.ensemble.near_miss_tolerance_bp_value
+        return 0.0 <= self.elapsed * 100.0 <= tolerance_bp
 
 
 class _Rendered(NamedTuple):

@@ -41,6 +41,7 @@ from macro_engine.data_layer.release_calendar import (
     fetch_release_dates,
     release_dates_for_series,
 )
+from macro_engine.data_layer.snapshot_builder import SnapshotBuildReport
 from macro_engine.models.contracts import utc_now
 
 AS_OF = date(2026, 9, 20)
@@ -712,13 +713,22 @@ def test_build_report_flags_release_timing_unknown_when_calendar_unread() -> Non
     A consumer reading only ``data_quality_flags`` — which is the documented
     contract for "this snapshot has a gap" — must be able to see that release
     timing is unknown, rather than having to inspect the calendar object.
+
+    The flag names the **source that went dark** rather than a generic
+    "unreadable", because the per-series metadata route and the events calendar
+    fail for entirely different reasons and send a reader to different places.
+    When no source is recorded the fallback label keeps the flag well-formed.
     """
     from macro_engine.data_layer.snapshot_builder import SnapshotBuildReport
 
     report = SnapshotBuildReport()
     report.release_calendar_read = False
     flags = report.as_flags()
-    assert "RELEASE_TIMING_UNKNOWN:release_calendar_unreadable" in flags
+    # Source unset -> generic label, never a half-built "…:" flag.
+    assert "RELEASE_TIMING_UNKNOWN:source_unreadable" in flags
+
+    report.release_timing_outage_source = "publication_dates"
+    assert "RELEASE_TIMING_UNKNOWN:publication_dates" in report.as_flags()
 
 
 def test_build_report_does_not_flag_when_the_calendar_was_read() -> None:
@@ -775,6 +785,172 @@ def test_build_report_flags_a_misconfigured_calendar() -> None:
     flags = report.as_flags()
 
     assert any(f.startswith("RELEASE_CALENDAR_MISCONFIGURED") for f in flags)
+
+
+# ---------------------------------------------------------------------------
+# A total outage of the PRIMARY route must not read as "never asked"
+# ---------------------------------------------------------------------------
+#
+# The defect this pins (review finding 3.4): the primary ``publication_dates``
+# route is the one carrying 42/42 registry coverage. ``fetch_publication_dates``
+# returns ``route_read=bool(dates)``, so when EVERY series exhausts its retry
+# budget the index comes back with ``route_read=False`` — enabled, queried, and
+# completely dead. The resolver only ever set ``release_calendar_read = True`` on
+# the primary path, so that case left the flag at ``None``: no flag raised, and a
+# snapshot whose release timing was unknown for all 42 series was flagged clean.
+#
+# The tests below drive ``_resolve_release_index`` with the fetchers stubbed, so
+# they assert the RESOLVER's bookkeeping rather than any network behaviour. That
+# is the layer that was wrong, and it is reachable without a live route.
+
+
+def _stub_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    primary: object | None,
+    primary_enabled: bool = True,
+    fallback: object | None = None,
+    fallback_enabled: bool = False,
+) -> SnapshotBuildReport:
+    """Run ``_resolve_release_index`` against stubbed fetchers and registry."""
+    from macro_engine.data_layer import snapshot_builder
+
+    class _Block:
+        def __init__(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    class _Registry:
+        publication_dates = _Block(primary_enabled)
+        release_calendar = _Block(fallback_enabled)
+
+    monkeypatch.setattr(snapshot_builder, "get_registry", lambda: _Registry())
+    monkeypatch.setattr(snapshot_builder, "fetch_publication_dates", lambda: primary, raising=False)
+    monkeypatch.setattr(snapshot_builder, "fetch_release_dates", lambda: fallback, raising=False)
+
+    report = snapshot_builder.SnapshotBuildReport()
+    snapshot_builder._resolve_release_index(report)
+    return report
+
+
+def _dead_primary() -> object:
+    from macro_engine.data_layer.release_calendar import ReleaseDateIndex
+
+    # What fetch_publication_dates returns when every series fails: empty dates,
+    # route_read False. Enabled, asked, and silent.
+    return ReleaseDateIndex(dates={}, match_counts={}, route_read=False)
+
+
+def test_total_primary_outage_is_flagged_not_treated_as_never_attempted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE regression: 0-of-42 from the primary route is an OUTAGE, not a config choice."""
+    report = _stub_resolver(monkeypatch, primary=_dead_primary())
+
+    assert report.release_calendar_read is False, (
+        "a total outage of the primary release-timing route left the tri-state "
+        "flag at None, so it was indistinguishable from 'nobody asked'"
+    )
+    assert report.release_timing_outage_source == "publication_dates"
+    assert "RELEASE_TIMING_UNKNOWN:publication_dates" in report.as_flags()
+
+
+def test_primary_outage_does_not_report_release_timing_as_known(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And it must not claim a source answered, either."""
+    report = _stub_resolver(monkeypatch, primary=_dead_primary())
+
+    assert report.release_source is None
+    assert report.release_calendar_series == 0
+
+
+def test_a_partial_primary_read_is_not_an_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One series answering is a successful read, not a 100% failure.
+
+    ``route_read`` is True when *any* series was read, and that is the honest
+    signal for a per-series route: a single symbol FRED does not carry must not
+    mark the whole snapshot's release timing as unknown.
+    """
+    from macro_engine.data_layer.release_calendar import ReleaseDateIndex
+
+    partial = ReleaseDateIndex(
+        dates={"cpi_headline": datetime(2026, 8, 12)},
+        match_counts={"cpi_headline": 1},
+        route_read=True,
+    )
+    report = _stub_resolver(monkeypatch, primary=partial)
+
+    assert report.release_calendar_read is True
+    assert report.release_source == "publication_dates"
+    assert report.release_calendar_series == 1
+    assert report.release_timing_outage_source is None
+    assert not any(f.startswith("RELEASE_TIMING_UNKNOWN") for f in report.as_flags())
+
+
+def test_primary_never_attempted_still_raises_no_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disabled primary keeps the flag at None — the config-choice case.
+
+    This is the state it is legitimate for ``None`` to represent, and it must not
+    be collateral damage from the fix above.
+    """
+    report = _stub_resolver(monkeypatch, primary=None, primary_enabled=False)
+
+    assert report.release_calendar_read is None
+    assert report.release_timing_outage_source is None
+    assert not any(f.startswith("RELEASE_TIMING_UNKNOWN") for f in report.as_flags())
+
+
+def test_a_dead_fallback_names_itself_as_the_outage_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback path already set False; it must now also name the source."""
+    from macro_engine.data_layer.release_calendar import ReleaseDateIndex
+
+    dead_calendar = ReleaseDateIndex(dates={}, match_counts={}, route_read=False)
+    report = _stub_resolver(
+        monkeypatch,
+        primary=None,
+        primary_enabled=False,
+        fallback=dead_calendar,
+        fallback_enabled=True,
+    )
+
+    assert report.release_calendar_read is False
+    assert report.release_timing_outage_source == "release_calendar"
+    assert "RELEASE_TIMING_UNKNOWN:release_calendar" in report.as_flags()
+
+
+def test_a_dead_primary_does_not_shadow_a_working_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the calendar answers and metadata does not, timing IS known.
+
+    The outage flag exists to say "we asked and learned nothing". A working
+    fallback means we did learn something, so marking the flag False here would
+    be a false alarm — and a false alarm on a flag list is how the list stops
+    being read.
+    """
+    from macro_engine.data_layer.release_calendar import ReleaseDateIndex
+
+    working_fallback = ReleaseDateIndex(
+        dates={"cpi_headline": datetime(2026, 8, 13)},
+        match_counts={"cpi_headline": 1},
+        route_read=True,
+    )
+    report = _stub_resolver(
+        monkeypatch,
+        primary=_dead_primary(),
+        fallback=working_fallback,
+        fallback_enabled=True,
+    )
+
+    assert report.release_source == "release_calendar"
+    assert report.release_calendar_read is True
+    assert not any(f.startswith("RELEASE_TIMING_UNKNOWN") for f in report.as_flags())
 
 
 # ---------------------------------------------------------------------------

@@ -96,12 +96,14 @@ class TestBaselineIsCurrent:
     def test_baseline_size_is_stable(self, baseline: set[str]) -> None:
         """A tripwire on the headline number, so it has to be changed on purpose.
 
-        The count has moved only when legs were wired (63 to 59). Any other
-        movement means either new unwired work or a silent un-wiring, and both
-        deserve a human looking at the diff rather than a green build.
+        The count has moved only when legs were wired (63 to 59, then 59 to 58
+        when D-085's ``_balance_sheet_leg`` gave ``qe_qt_stance`` its pipeline
+        caller). Any other movement means either new unwired work or a silent
+        un-wiring, and both deserve a human looking at the diff rather than a
+        green build.
         """
-        assert len(baseline) == 59, (
-            f"Reachability baseline is {len(baseline)} entries, expected 59. "
+        assert len(baseline) == 58, (
+            f"Reachability baseline is {len(baseline)} entries, expected 58. "
             "A change here is a change to the audit's headline number — "
             "confirm it is intended, then update this expectation and the "
             "figures quoted in docs/."

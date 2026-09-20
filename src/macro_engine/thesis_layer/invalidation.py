@@ -72,6 +72,7 @@ checkable, not so it is automated.
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -185,10 +186,29 @@ def _signed_scalar(value: object) -> float | None:
     ``bool`` is excluded **first**, and it has to be: ``isinstance(True, int)`` is
     ``True``, so a boolean-valued result would otherwise read as a tightness
     score of ``1.0`` and produce a confident falsifier from a flag.
+
+    A non-finite float is excluded for the same reason as ``bool``, and it is the
+    *same* defect (D-078, and the drift D-063 warns against): ``nan`` **is** an
+    ``int``/``float`` instance, so it passed the type test and reached
+    ``_condition_for_scalar``, where ``nan > crossing`` and ``nan < crossing`` are
+    both ``False`` and the branch fell through to ``None`` — reporting the input
+    as **neutral**, i.e. "sits exactly on the crossing", from a value that was
+    never computed. ``inf`` was worse: ``inf > crossing`` is ``True``, so it
+    emitted a confident ``crosses_back_negative`` falsifier ("crosses back below
+    0.5") from an unbounded reading. Both were published on the
+    ``InvalidationAssessment`` and reached the no-trade decision's evidence.
+
+    This function and ``thesis_layer/signals.py``'s ``_signed_scalar`` are
+    deliberately identical twins, and its docstring states the rule: the two
+    "sit in one layer and must not drift". The ``isfinite`` guard was added to
+    the signals twin when D-078 was fixed and was **not** mirrored here, which is
+    precisely the drift the note predicts. Any change to either guard belongs in
+    both, and ``tests/thesis_layer/test_signed_scalar_parity.py`` now fails if
+    they disagree.
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and isfinite(value):
         return float(value)
     return None
 
@@ -217,6 +237,12 @@ def _condition_for_scalar(
     Returns ``None`` when the value **is** the crossing: a signal at exactly the
     balance point has no direction to reverse from, and inventing one would be
     reporting absence of evidence as evidence.
+
+    ``value`` is required to be finite by construction — ``_signed_scalar`` is the
+    only caller and it now refuses ``nan``/``inf``. The guard is stated because
+    the two outcomes are not equivalent: a finite value equal to ``crossing`` is a
+    *measurement* at the balance point, whereas a non-finite value is a missing
+    measurement that must never reach this function and be rendered as one.
     """
     if value > crossing:
         trigger: InvalidationTrigger = "crosses_back_negative"

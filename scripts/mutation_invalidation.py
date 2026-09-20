@@ -161,8 +161,17 @@ _ALLOWED_ANCHOR_OWNERS: dict[str, frozenset[str]] = {
 
 # --- M1: the narrowing (the crash class) ------------------------------------
 _SIGNED_BOOL_GUARD = "    if isinstance(value, bool):\n        return None"
+#: The guarded numeric narrowing, post-D-078. The anchor carries BOTH guards —
+#: the ``bool`` exclusion and the ``isfinite`` bound — because the mutant's job
+#: is to remove the narrowing, and the narrowing is now the pair. Before the
+#: D-078 fix this constant named the unguarded ``isinstance(value, (int, float))``
+#: form, which the fix replaced; the anchor moved with the code rather than the
+#: mutant being retired, because "anything floatable is a score" is still the
+#: defect the test must keep catching.
 _SIGNED_NUMERIC = (
-    "    if isinstance(value, (int, float)):\n        return float(value)\n    return None"
+    "    if isinstance(value, (int, float)) and isfinite(value):\n"
+    "        return float(value)\n"
+    "    return None"
 )
 _AGREEMENT_DICT_GUARD = "    if not isinstance(value, dict):\n        return None"
 _AGREEMENT_MEMBERSHIP = (

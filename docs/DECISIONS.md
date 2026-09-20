@@ -12289,3 +12289,361 @@ would burn a full session on a green suite. The discriminator is cheap:
 The preferred invocation is therefore to **capture the summary line explicitly**
 rather than rely on `$?`, and to treat a `[safe-delete]` notice in the tail as the
 separating evidence.
+
+---
+
+## D-083 — the Phase 1-4 macro mechanics were validated against published sources, and one gap was accepted rather than papered over
+
+The audit brief required web research on *macro trading logic mechanics, flow mechanics, and execution
+patterns up to Phase 4* to validate expected behaviour. Delivered as `docs/MECHANICS_VALIDATION.md`.
+
+Four mechanics were checked against published authorities, and each was traced to the **specific code**
+that implements it rather than to the module that contains it:
+
+| Mechanic | Verdict |
+|---|---|
+| Taylor-rule coefficients | **AGREE** — `inflation_gap_coefficient` 0.5 / `output_gap_coefficient` 0.5 satisfy the Taylor principle |
+| Output-gap construction | **AGREE** — `balanced_approach_output_gap_coefficient` 1.0 matches the balanced-approach rule |
+| Breakeven inflation | **AGREE** — nominal − TIPS real, with both premiums disclosed (inflation risk, TIPS liquidity) |
+| Vintage / PIT handling | **AGREE** — and independently re-confirmed by D-084 §6 |
+
+One **structural gap is accepted and recorded, not hidden**: the end-of-sample trend is unreliable, and
+the unreliability is **inherited** from a published `gdp_potential` series rather than introduced here.
+The distinction matters — it means the defect is a property of the input, so no local fix exists and
+inventing one would be a §21.0-rule-3 violation.
+
+Recorded because the rule it establishes is: **a validation that finds nothing is worth less than a
+validation that finds one thing.** The gap is the evidence the check was real.
+
+---
+
+## D-084 — the OpenBB surface was measured, not assumed, and the vintage question is closed at the granularity it was asked
+
+Full report: `docs/OPENBB_UTILIZATION_AUDIT.md`. This entry records only the decisions.
+
+### D-084.1 — every claim was measured against the live service
+
+The brief said *"Use the live service, not assumptions from documentation."* `/openapi.json`
+(2,424,179 bytes), `/coverage/providers`, `/coverage/commands` and 25 individual routes were fetched and
+saved under `.workbuddy-ai/audit/`. A **stale Sep-16 copy** of the spec was found in `/tmp`; it was
+**deliberately not used**. The measured surface: **278 paths, 575 schemas, 201 commands, 32 providers**.
+
+The engine routes **45 registry series + 2 curves (16 tenors)** through **2 of 201** commands. **77**
+commands are macro-relevant.
+
+### D-084.2 — the vintage conclusion had to be capability-specific, and it is
+
+The brief forbade stopping at `fred_series` and required the honest form of the answer. It also required
+`AVAILABLE_BUT_PROVIDER_LIMITED` where the route lacks the functionality, and forbade inventing PIT data.
+
+Four independent live confirmations:
+
+1. `realtime_start` / `realtime_end` are **request parameters on 0 routes** — only response properties of
+   `FredSearchData`.
+2. `vintage_dates` has **0 occurrences** in the entire spec.
+3. All 6 `vintage` hits belong to the **SEC provider**'s restatement mode, not FRED.
+4. **A/B test:** two `fred_series` calls differing only by
+   `realtime_start=1990-01-01&realtime_end=1990-12-31` returned **byte-identical data** (`a == b` → `True`).
+
+> **The conclusion: standard FRED observations are available through OpenBB; historical vintage selection
+> is unavailable through the current local OpenBB route.**
+
+Not *"FRED vintages are unavailable"* — that overstates, and the overstated form would license deleting
+working PIT logic that is in fact sound.
+
+### D-084.3 — `realtime_start`/`realtime_end` are a decoy, now confirmed on a third command family
+
+Beyond `fred_search`, the same pair appears in live responses from `fixedincome/corporate/spot_rates` and
+`fixedincome/spreads/tcm` — and in **every** case both equal **today**. Live proof from this audit:
+
+```
+last_updated:    2026-09-11T08:37:49-05:00   <-- a REAL publication instant
+realtime_start:  2026-09-20                  <-- TODAY
+realtime_end:    2026-09-20                  <-- TODAY
+```
+
+Recording the decoy at three call sites matters because the trap scales: a developer who reads
+`realtime_start` off any of the three would stamp every historical observation with today's date and
+silently destroy the PIT record — the precise substitution §6 prohibits. `publication_dates.py` already
+documents this in prose; this audit **independently reproduces** it, which is corroboration from a
+separate method, not a copy.
+
+### D-084.4 — the economic calendar fails on transport, not on coverage
+
+All four providers were called live. `fred` → HTTP 400 `TimeoutError`, **3/3 attempts**, including with a
+bounded window and with `importance=high`. `tradingeconomics` and `fmp` → missing credentials. `nasdaq` →
+HTTP 500 wrapping a `TimeoutError`.
+
+The root cause is already established in `catalysts.py` D-065 and re-confirmed: **FRED closes the
+connection for `aiohttp`'s TLS/HTTP fingerprint, and OpenBB's FRED provider is built on `aiohttp`.** The
+same URL answers `httpx` on HTTP/1.1. So this is a transport-fingerprint filter, not missing OpenBB
+coverage, and the correct record is:
+
+> **`AVAILABLE_BUT_PROVIDER_LIMITED` on transport grounds — not "OpenBB has no calendar".**
+
+The brief asked whether the route supplies `actual`/`forecast`/`previous`/`source`. **That question cannot
+be answered, because the route never returns a body.** The signature is not data. It is recorded as
+untestable rather than as absent.
+
+### D-084.5 — one genuine duplication found; the working PIT logic is protected
+
+`thesis_layer/catalysts.py` scrapes two hosts directly. The **FOMC half is genuinely duplicated** —
+`economy/fomc_documents` returns dated rows with `doc_type` as a typed field, including
+`projections` (the dot plot), where the scrape must strip a `*` from `"27-28*"` to recover that flag. The
+scrape also returns meetings back to **2021**, so it is strictly worse: more parsing, more filtering, and
+re-deriving a value OpenBB returns as a field.
+
+The **FRED-release half is not duplicated** and must stay: its OpenBB alternative is confirmed broken
+(D-084.4). The brief's §7 boundary anticipated exactly this — *"Do not delete working validation, PIT
+metadata, persistence, or research logic merely because OpenBB supplies the raw data."*
+
+**The boundary applied:** OpenBB = acquisition / provider access / normalization support; engine =
+validation / PIT accounting / transformations / calculations / economic reasoning. `validation.py`,
+`publication_dates.py`, `persistence.py`, `as_of.py` and the O-7 filter are the engine's, and removing any
+of them would not be a de-duplication — it would be a deletion of reasoning.
+
+### D-084.6 — the curve can be one call instead of eleven, with values verified equal
+
+`federal_reserve/fixedincome/government/yield_curve` returns **all 11 tenors in one call** with
+`maturity_years` already typed, where the engine issues **11 separate `fred_series` calls**.
+
+Verified **numerically equal, not merely similar**: FRED `DGS10` = **4.94** on 2026-09-17; Fed
+`treasury_rates.year_10` = **0.0494**. Same value, same source (the Fed's H.15), same date. The proposed
+change is a registry edit plus a normalization mapping — **not** a new adapter.
+
+### D-084.7 — no source file was modified by this audit
+
+The deliverable was an audit, and the brief's §8 asked for the *minimal changes*, not their application.
+`AGENTS.md` was not touched; no `src/` file was changed. The five proposed changes are recorded in the
+report for approval, because several are one-way doors (a curve repoint changes what `fetch_curve`
+normalizes) and §8's own wording was *"minimal code changes to make OpenBB the canonical gateway"* — a
+proposal, not a mandate.
+
+---
+
+## D-085 — the review's defects, fixed: five repairs, three of them the same class
+
+**Date:** 2026-09-20
+**Status:** Implemented, gates green
+**Specification reference:** Section 21.0 rules 1–4, Section 6, Section 8.3,
+Section 22.4, Section 22.8, Section 16.3
+**Evidence:** `docs/CODE_REVIEW_PHASE0-4.md` (the read-only review that found
+them), each fix mutation-proven, live end-to-end verification against the local
+OpenBB API
+
+This decision records the repair of the HIGH and MEDIUM findings from the
+Phase 0–4 review. It is one decision rather than six because the findings share
+a diagnosis, and the shared diagnosis is the reason to write it down.
+
+### D-085.1 — three of the fixes were the SAME defect, and it is the project's most common one
+
+The declared-consumed-unreachable class (D-037, D-045, D-048, D-073) appeared
+three more times:
+
+| Finding | Declared | Consumed | Why unreachable |
+|---|---|---|---|
+| 1.1 | `z_score_for_confidence`'s tail table | the |0.90 branch bound `upper = points[-1]` and divided by it, so every confidence below 0.90 silently returned a **wrong** number rather than refusing |
+| 1.2 | `invalidation._signed_scalar`'s `isfinite` guard | the guard | the guard existed in the `signals.py` twin (D-078) and was **never mirrored** — exactly the drift that twin's own docstring predicts |
+| 3.1/3.B | `on_rrp_level` as a snapshot field | `qe_qt_stance` | the registry marked it `not_a_snapshot_field`, and `BalanceSheetInputs` was constructed **only in tests and scripts** |
+
+**The remedy differed each time, and the difference is the finding.** For 1.1 the
+branch was *wrong*, so it became a refusal. For 1.2 the guard existed elsewhere,
+so it was restored **and a parity test was written** (`test_signed_scalar_parity.py`,
+40 cases driven through both functions) — restoring it without the test would
+have left the next drift free. For 3.1 the data could not reach the consumer, so
+two series were **promoted into the snapshot** (`fed_total_assets`/`reserve_balances`,
+both already in the registry as `not_a_snapshot_field`) and a duplicate
+declaration (`on_rrp_level`, the same `RRPONTSYD` symbol as `on_rrp_volume_bn`)
+was **deleted**, because one series under two names with different roles is a
+role difference the type system does not enforce.
+
+**D-085.2 — the promotion exposed a second layer, which is the part worth recording.**
+Promoting the fields was not sufficient: they were also absent from
+`snapshot_fields.us`, so the first live run abstained with `NOT_COMPUTED`. The
+lesson is not "promote the series" but "a promoted field must appear in **both**
+the registry and the snapshot field list, and only a live run proves it."
+
+### D-085.3 — the balance-sheet window is thirteen WEEKS, and the guard is the index
+
+The two series are weekly-Wednesday, so "3mo" is **thirteen rows back**
+(`common[-1 - 13]`), not a calendar subtraction — a `-3 months` on a Wednesday
+series lands between two prints and silently pairs rows thirteen or fourteen
+weeks apart depending on month length. **Mutation revealed the test could not
+prove this**: swapping the offset for `common[0]` left all six sibling tests
+green, because a fixture of exactly 14 rows makes `common[-14] is common[0]` and
+a flat fixture makes every early value identical to every late one. The fix was
+a **20-row strictly-increasing fixture**, which separates the offsets by
+190,000mn vs 130,000mn. The guard was fine; the fixture was too flat to see the
+defect — recorded because "the test passed" and "the test could fail" are
+different claims.
+
+### D-085.4 — a failed audit-trail write and a disabled one were the same `None`
+
+`release_datetime`/`vintage_datetime` were populated in production (42/42
+registry coverage) and **dropped by `persistence._LONG_COLUMNS`**, so a
+round-trip flipped `has_known_release_timing` True → False for every point. Every
+existing test stopped at `build_snapshot()` or at the in-memory frame, and the
+drop happened one step later, at the file boundary — which is why the new test
+writes a real Parquet file and reads it back. The read path returns `None` for a
+NULL and never the observation date, and it uses `row.get` so a pre-schema file
+still loads.
+
+Independently, `_resolve_release_index` set `release_calendar_read` to `True` on
+the primary path and **never to `False`** — so a total outage of the
+`publication_dates` route (enabled, queried, 0-of-42 returned) left the tri-state
+flag at `None`, which `as_flags()` documents as "never attempted, not a
+data-quality defect". A snapshot whose release timing was unknown for all 42
+series was **flagged clean**. The fix sets `False` and names the source
+(`release_timing_outage_source`) so the flag says *which* route went dark. The
+half-open case is deliberately untouched: `route_read = bool(dates)`, and one
+series answering is a successful read, not an outage.
+
+### D-085.5 — `/query` and the stream had their own failure grammars
+
+Four API findings, all the same shape — one fact reported two ways depending on
+which endpoint you asked:
+
+* **2.1** the stream's `build_policy_gap` call and every `_event(...)` formatting
+  call sat **outside** any `try`, so a raise there propagated mid-stream and the
+  `[DONE]` terminator was never reached: a truncated body with no terminal event.
+  The generator is now split into a thin `reasoning_step_generator` (one outer
+  `try`, one `finally` that emits the terminator) and `_reasoning_frames` (the
+  stages). **The terminator moved from four scattered `yield`s to one `finally`**
+  because one place can guarantee "exactly once" and four cannot.
+* **4.3/4.4** `/query` wrapped `get_snapshot` + `snapshot_to_thesis_inputs` +
+  `build_us_macro_thesis` in one `try` with one 502, collapsing "the source did
+  not answer" into "the data arrived and was unusable", and matching no branch at
+  all for a *builder* raise — which escaped as a bare 500 with no `detail`. The
+  three stages now re-raise through the **same** `routes_thesis._http_status_for`
+  mapping `/thesis` already used, so the two endpoints cannot drift.
+* **4.4/5.1** `/query` published `provenance.warnings()` only, withholding the
+  orchestration's own disclosures (`inputs.warnings`, 18 of them on the live
+  snapshot) that `/thesis` publishes; and it restated the STALE flag as prose
+  behind a substring match on the warning text. Both removed — one union, one
+  representation.
+* **4.5/5.2** `routes_dashboard`'s `getattr(..., None)` fallbacks made a **renamed
+  field** produce a byte-identical response to a **declared-but-empty** one:
+  `"tips_curve": null` with empty `warnings`. A new detector distinguishes the
+  two — `hasattr` on the model, not on the populated values — and emits
+  `DASHBOARD FIELD MISSING` naming the fields. The negative case is tested, so
+  the fix cannot be satisfied by warning unconditionally.
+
+**`CurvePanel.units` stays a literal, and that is now stated rather than
+assumed.** `YieldCurveSnapshot` carries no per-curve unit field to read, so
+"sourcing it from the snapshot" would require a field that does not exist. It is
+a schema invariant (percent, `4.35` = 4.35%), documented as such in the `Field`
+description, and a basis-point curve would need its own panel type.
+
+### D-085.6 — `mutation_api_layer.py` refused to run, and refusing was correct
+
+Three mutants broke when the code moved, and the sweep's own gates caught all
+three rather than reporting survivors about code nobody mutated (O-67):
+
+* **M8.5** targeted the normal path's terminator, which no longer exists. The
+  anchor moved to the single `finally` site rather than the mutant being retired,
+  because removing that site removes the terminator from every path — a stronger
+  mutation than the original.
+* **M6.4** and **M1.2** anchored on pre-fix text (`units: str = "percent"`, the
+  unguarded `isinstance`). Both were re-anchored to the fixed code so the mutants
+  still prove the fixes.
+* **M8.1–M8.4** landed in `_reasoning_frames`, outside the anchor-owner
+  allowlist, and the sweep **refused to run** rather than rewriting a function it
+  did not own. `_reasoning_frames` was added to the allowlist — that is the
+  correct resolution, because those four §8.3 mutants are exactly what must keep
+  running.
+
+**A mutant was left applied when the sweep was killed mid-run** (`M8.1`,
+`"gap = -140bp"`), and `sweep_health.py`'s O-83 whole-tree shape check found it on
+the next run. Reverted. The tooling did its job; recorded because the recovery
+path matters more than the mistake.
+
+### D-085.7 — what was NOT changed
+
+No threshold was retuned and no model logic was altered. `is_marginal`'s new
+basis-point tolerance (finding 1.3) and the three units guards are **config
+leaves** (`policy.ensemble.near_miss_tolerance_bp`, `validation.*`), not
+literals, so O-25's "a threshold a reviewer cannot find is one they cannot check"
+still holds. The heartbeat finding (2.3/5.4) is **not** fixed and is not
+pretended to be: an SSE comment frame cannot flush while the synchronous build
+holds the event loop, so a heartbeat here would assert a guarantee the code does
+not provide. That is a concurrency change, recorded as open.
+
+**Gates at close:** ruff `All checks passed` = format **227** = mypy **227**
+(D-035 parity; was 218 before this increment), full suite green,
+`sweep_health.py` **40 sweeps / 0 leftovers / 0 failures**, live end-to-end thesis
+build verified against the local OpenBB API.
+
+### D-085.8 — CORRECTION to D-085.6, and the gate defect it exposed
+
+**D-085.6 was wrong, and it was wrong in exactly the direction this project's
+rules are written against.** It recorded *"a mutant was left applied"* — one —
+and described the tooling as having caught it. The truth, established by reading
+`git diff` and the sweep's own completed output rather than trusting the earlier
+run, is:
+
+**An interrupted `mutation_api_layer.py` run left FIVE mutants on disk:**
+`M8.1` (the `-140bp` literal), `M8.4` (stand-down as an error frame), `M8.6`
+(`_fired` reporting every gate), `M9.1` (the age re-stamp frozen), `M10.1` (the
+honesty **control**). The sweep had been launched in the background and killed at
+the tool's timeout; on `win32` **no Python signal handler runs** (O-103), so
+`_restore_in_flight` never fired, and the `finally` in `apply_and_test` never ran
+either. Each mutant applied at the moment of the kill stayed applied.
+
+**The failures this produced were all downstream of the dirty tree, and every one
+of them initially read as a defect in the code under test:**
+
+1. `M8.4`'s replacement text *contains* `_STREAM_CONVERGENCE`'s anchor string, so
+   its presence made `M8.3`'s anchor **absent** and `M8.4`'s own anchor look
+   **already applied**. One leftover, two false gate failures.
+2. A full sweep run reported `applied 42 / 42, killed 40, survived 2` and then
+   **REFUSING TO CERTIFY: the honesty control was killed.** `M10.1` is a pure
+   identity (`not deep and True` is `not deep`) and cannot be killed by any test.
+   It was reported killed because the suite was **already red** from the
+   leftovers — `M9.2`–`M9.5` and `M10.1` were all "killed" by the same
+   `test_stream_emits_the_real_convergence_and_gate`, a test no CORS-validator
+   mutant can reach. Re-run **M10 alone on a clean tree: `M10.1` SURVIVED** (as it
+   must) and `M10.2` was killed by its own dedicated test. The control was
+   working; it was reporting on a poisoned run.
+3. `sweep_health.py` printed **SWEEP HEALTH: OK — 0 leftovers, 0 mutant shapes**
+   while a mutant was on disk. The independent `grep` is what caught it.
+
+**The gate defect, measured.** `sweep_health.py`'s whole-tree scan tested
+`stripped.startswith(("if False:", "if True:"))`. `M10.1`'s mutant text is
+`    if not deep and True:`, which starts with `if not`. **The scan could not see
+the project's own control shape.** This is precisely the case the tool's docstring
+already named — *"a control left applied is exactly as invisible as a defect left
+applied"* — so the intent was right and the predicate was too narrow. The same
+blind spot existed in `mutation_api_layer.py`'s own `check_no_mutant_left_on_disk`
+and in `docs/PROGRESS.md`'s **Step-0 grep**, which is the first check any session
+runs.
+
+**Fixed, in four places, all with the same widened predicate:**
+
+* `tools/sweep_health.py` — new `_is_mutant_shape()`: the `# MUTANT` marker, the
+  bare branch inversion, **and** the compound identity form
+  (`\s(?:and|or)\s(?:True|False)\s*:`). A structural test, not a prefix test.
+* `scripts/mutation_api_layer.py` — the same helper, so the sweep's pre-run
+  refusal sees what the tool sees.
+* `docs/PROGRESS.md` — Step 0's grep widened to
+  `"MUTANT\|if False:\|if True:\|and True:\|or False:"`.
+* **The sidecar defence (O-103's remedy) adopted by this sweep.** `record_pristine`
+  writes every target's pristine text to a `.sweepbackup` before the first
+  mutation; `restore_from_sidecar` heals on the next run, **before** the
+  pre-existing-mutant refusal — the order matters, or the gate blocks its own
+  repair (lesson 5co). The target set is derived from the catalogue
+  (`_target_paths()`), not hand-listed, so a mutation against a new file cannot
+  fall outside the protection. The in-flight signal handler is **retained** rather
+  than deleted (it is correct on POSIX and covers a sidecar write interrupted
+  mid-way), with a comment stating it is inert on `win32` — it must not be counted
+  as protection here.
+
+**The lesson, and it is not about mutants.** A scoped or prefix-based check
+reports on the shape of the thing it was written for, and the failure mode is a
+**green tick that means nothing**. Three independent checks disagreed
+(sweep_health said clean; the sweep's own gate said the control was killed;
+`git diff` said five mutants). The tiebreaker was the one the project already
+records as scope-free (O-102, lesson 5ck): **`git diff HEAD`**. The procedure is
+now: after any interrupted sweep, believe `git diff` first.
+
+**Also corrected here:** D-085.6's "gates at close" line was written before the
+gates were re-run. The numbers in it are the ones this section re-establishes.

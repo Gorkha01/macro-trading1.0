@@ -129,6 +129,21 @@ policy:
       value: 100.0
       calibration_status: uncalibrated_illustrative
       note: Section 6.1's "high dispersion (>100bp) = policy uncertainty" band.
+    near_miss_tolerance_bp:
+      value: 5.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        How close to the significance bar a gap must fail by to count as a
+        NEAR-MISS rather than a comfortable stand-down, in BASIS POINTS.
+        `NoTradeDecision.is_marginal` compares the gap's shortfall against this.
+        Unit is basis points for the same reason as the bands above: the shortfall
+        is measured in percentage points, so the conversion is explicit at the
+        comparison. The previous implementation compared the pp shortfall against
+        the literal 1e-9, which is 1e-11 bp and therefore unreachable — every real
+        stand-down reported is_marginal=False and the near-miss distinction the
+        field exists for could never fire. Set to one tenth of
+        `convergence_threshold_bp` so a gap inside the rules' own "agree" band is
+        the marginal case by construction; recalibrate with the bands.
 
   market_implied:
     term_premium_available_confidence:
@@ -3473,6 +3488,35 @@ validation:
     calibration_status: conventional
     note: Allowed absolute deviation of scenario probabilities from 1.0.
 
+  # Module 4.1's unit guards (D-085). The balance-sheet leg combines three series
+  # whose UNITS differ by 1000x (WALCL/WRESBAL in millions, RRPONTSYD in
+  # billions), and a units swap produces plausible numbers while moving the
+  # stance classification. These are order-of-magnitude floors/ceilings, not
+  # economic thresholds: they detect a provider unit change, not a market state.
+  # They live in config rather than inline because a threshold a reviewer cannot
+  # find is a threshold that cannot be reviewed (O-25's rule).
+  fed_total_assets_min_millions:
+    value: 1000000.0
+    calibration_status: conventional
+    note: >
+      WALCL floor, in MILLIONS. The series has ranged $0.7T..$9.0T, so any
+      reading below $1T means the provider switched to BILLIONS (a 1000x error
+      in the denominator of the stance test).
+  reserve_balances_min_millions:
+    value: 100000.0
+    calibration_status: conventional
+    note: >
+      WRESBAL floor, in MILLIONS. Same unit as WALCL. Set an order of magnitude
+      below any historical reserve level so it catches a unit change without
+      tripping on a genuinely low reading.
+  on_rrp_volume_max_billions:
+    value: 10000.0
+    calibration_status: conventional
+    note: >
+      RRPONTSYD ceiling, in BILLIONS. The facility peaked near $2.55T = 2550bn,
+      so a reading above 10,000 means the provider switched to MILLIONS and the
+      drained-threshold comparison becomes a 1000x error.
+
 # ---------------------------------------------------------------------------
 # Bootstrap fetch list. Which registry fields a default US snapshot pulls.
 # Kept in config so adding a series to the snapshot is a config edit, not a
@@ -3508,6 +3552,16 @@ snapshot_fields:
     - iorb
     - on_rrp_rate
     - on_rrp_volume_bn
+    # fed_total_assets (WALCL) and reserve_balances (WRESBAL) are Module 4.1's
+    # balance-sheet inputs. Added 2026-09-21 (D-085) when `qe_qt_stance` was
+    # wired into the orchestration: both back the second policy lever (QE/QT)
+    # that the policy rate alone misses, and both were previously
+    # `not_a_snapshot_field: true` so no snapshot carried them. Omitting them
+    # here is the SAME failure the `gdi` note above records — the series would
+    # be declared in five places and fetched in none, and the balance-sheet leg
+    # would abstain on every build while looking like a missing data source.
+    - fed_total_assets
+    - reserve_balances
     - treasury_curve
     - tips_yields
     - credit_spread_hy

@@ -100,6 +100,20 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# The platform-independent interrupt defence (O-103). `install_signal_restore`
+# is a no-op on win32, and this project's sweeps are run on win32, so a kill
+# leaves mutated source with no chance to unwind. The sidecar is the mechanism
+# that survives that: pristine text is written to a `.sweepbackup` next to each
+# target BEFORE the first mutation, and the next run restores from it. Adopted
+# here after an interrupted run of THIS sweep left five mutants on disk (M8.1,
+# M8.4, M8.6, M9.1, M10.1) which then poisoned a full sweep into reporting the
+# honesty control as killed.
+from _sweep_gate import (
+    install_signal_restore,
+    record_pristine,
+    restore_from_sidecar,
+)
+
 REPO = Path(__file__).resolve().parent.parent
 
 ORCH = REPO / "src/macro_engine/api_layer/orchestration.py"
@@ -249,7 +263,21 @@ _ALLOWED_ANCHOR_OWNERS: dict[str, frozenset[str]] = {
         }
     ),
     "reasoning_stream.py": frozenset(
-        {"_event", "_fired", "reasoning_step_generator", "stream_thesis_reasoning", "<module>"}
+        {
+            "_event",
+            "_fired",
+            "reasoning_step_generator",
+            # The per-stage trace body. ``reasoning_step_generator`` is now the
+            # terminator guard that delegates to this function (finding-2.1), and
+            # the M8 frame mutants anchor on the frames emitted here. Listing it
+            # is what lets those mutants keep running: without it the sweep
+            # refuses (O-67) rather than rewriting a function it does not own,
+            # which is the correct failure mode but would silently retire four
+            # §8.3 mutants.
+            "_reasoning_frames",
+            "stream_thesis_reasoning",
+            "<module>",
+        }
     ),
     "routes_health.py": frozenset({"HealthResponse", "health", "<module>"}),
     "config.py": frozenset({"ApiSettings", "<module>"}),
@@ -405,7 +433,7 @@ _DASHBOARD_WITHHELD = "        points_withheld=available - len(kept),"
 _DASHBOARD_EMPTY = "        if any(panel.points_available for panel in panels):"
 
 #: The curve is published in PERCENT and labelled so.
-_CURVE_UNITS = '    units: str = "percent"'
+_CURVE_UNITS = '    units: str = Field(\n        default="percent",'
 
 
 # === M7: the query endpoint is keyword routing and says so ===================
@@ -468,8 +496,18 @@ _STREAM_CONVERGENCE = """        yield _event(
             "done",
             f"Thesis stood down by {', '.join(fired)}: status={thesis.status.value}, \""""
 
-#: Every path ends with the terminator.
-_STREAM_DONE = '    yield "data: [DONE]\\n\\n"\n\n\n@router.get("/{country}/stream")'
+#: The terminator is emitted ONCE, from the outer guard's ``finally``, so this
+#: anchor names that single site. Before the finding-2.1 fix the terminator was
+#: written at four separate ``yield`` points (one per exit path) and this anchor
+#: targeted the normal-path one, matched by its trailing ``@router.get``.
+#:
+#: The anchor had to move rather than the design: the ``finally`` is what
+#: *guarantees* "exactly once" across every exit path, including the unhandled
+#: ones the old spread-out yields could not cover. A mutant that deletes the
+#: terminator from the normal path no longer describes a reachable defect —
+#: removing this site removes it from every path at once, which is the stronger
+#: mutation anyway.
+_STREAM_DONE = """        yield "data: [DONE]\\n\\n\""""
 
 #: A stand-down is a COMPLETED analysis. Emitting an error frame for it would
 #: make a real failure indistinguishable from a no-trade verdict (Section 16.3).
@@ -913,13 +951,17 @@ def build_mutations() -> list[Mutation]:
             name="M6.4 the curve panel is unlabelled as to units",
             path=DASH,
             old=_CURVE_UNITS,
-            new='    units: str = "bp"  # MUTANT: the curve is labelled in basis points',
+            new='    units: str = Field(\n        default="bp",',
             intent=(
                 "The published values ARE percent (4.35 means 4.35%); labelling "
                 "them bp makes every consumer that trusts the label draw a yield "
                 "chart 100x too tall, and a reader comparing it against a "
                 "published curve sees a factor-of-100 error with no cause. Killed "
-                "by test_dashboard_reports_the_curve_in_percent."
+                "by test_dashboard_reports_the_curve_in_percent. The anchor is the "
+                "Field(default=...) form rather than the old bare 'units: str = "
+                '"percent"\': that literal was replaced with a Field carrying the '
+                "schema-invariant rationale, so the mutant now targets the default "
+                "value itself."
             ),
         ),
         # =====================================================================
@@ -1285,6 +1327,17 @@ def check_anchor_landings(mutations: list[Mutation], *, verbose: bool = True) ->
     return problems
 
 
+def _target_paths() -> set[Path]:
+    """Every source file this sweep can mutate.
+
+    Derived from the catalogue rather than hand-listed: a new mutation against a
+    new file that nobody remembered to add to a literal would otherwise mutate
+    outside the sidecar's protection, which is the one case where the defence
+    silently does not apply.
+    """
+    return {mt.path for mt in build_mutations()}
+
+
 def check_no_mutant_left_on_disk() -> list[str]:
     """O-83's remedy: scan the WHOLE tree for mutant shapes, not per-catalogue.
 
@@ -1300,19 +1353,38 @@ def check_no_mutant_left_on_disk() -> list[str]:
     independently of any catalogue. This runs BEFORE the sweep applies anything
     and AFTER it restores, so a mutant this sweep writes can never be mistaken
     for a pre-existing one.
+
+    The shape test is shared with ``tools/sweep_health.py`` in spirit and was
+    widened for the same measured reason: the original prefix test
+    (``startswith("if False:", "if True:")``) misses the **compound identity
+    form** this project's controls use — ``M10.1`` replaces ``if not deep:`` with
+    ``if not deep and True:``, which starts with ``if not``. An interrupted run
+    left exactly that text on disk, and this scanner reported clean.
     """
     problems: list[str] = []
     for path in sorted((REPO / "src").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
         for lineno, line in enumerate(text.splitlines(), start=1):
             stripped = line.strip()
-            if stripped.startswith(("if False:", "if True:")):
-                problems.append(f"{path.relative_to(REPO).as_posix()}:{lineno}: '{stripped[:60]}'")
-            elif "# MUTANT" in line:
-                problems.append(
-                    f"{path.relative_to(REPO).as_posix()}:{lineno}: MUTANT marker left on disk"
-                )
+            rel = path.relative_to(REPO).as_posix()
+            if _is_mutant_shape(stripped):
+                problems.append(f"{rel}:{lineno}: '{stripped[:60]}'")
     return problems
+
+
+def _is_mutant_shape(stripped: str) -> bool:
+    """Is this stripped line a mutant shape? (O-83's scan, widened.)
+
+    Two shapes: the ``# MUTANT`` marker, and a branch inversion — including the
+    compound ``... and True`` / ``... or False`` identity form, which is what
+    this project's honesty controls are written as and which a bare
+    ``startswith("if True:")`` cannot see.
+    """
+    if "# MUTANT" in stripped or "MUTANT" in stripped:
+        return True
+    if stripped.startswith(("if False:", "if True:")):
+        return True
+    return bool(re.search(r"\s(?:and|or)\s(?:True|False)\s*:", stripped))
 
 
 def check_tests_collect() -> list[str]:
@@ -1507,6 +1579,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    install_signal_restore()
+    # Keep the sweep's own handler as well: on POSIX it restores from the
+    # in-flight copy (faster than the sidecar, and it covers the case where the
+    # sidecar write itself was interrupted). On win32 neither handler runs, which
+    # is why the sidecar above is the load-bearing defence here (O-103).
     signal.signal(signal.SIGTERM, _restore_in_flight)
     signal.signal(signal.SIGINT, _restore_in_flight)
 
@@ -1514,6 +1591,17 @@ def main() -> int:
     print("mutation sweep: api_layer (D-070)")
     print("FOREGROUND ONLY -- this rewrites files under src/ while it runs.")
     print("=" * 78)
+
+    # Heal a previous kill FIRST, before the pre-existing-mutant refusal below.
+    # The order matters: a leftover is exactly what that refusal looks for, so
+    # refusing before healing would make the gate block its own repair (O-103,
+    # lesson 5co).
+    targets = _target_paths()
+    restored = restore_from_sidecar(sorted(targets))
+    if restored:
+        for path in restored:
+            print(f"RESTORED {path.name} from sidecar (previous run was killed)")
+        print()
 
     # O-83's remedy, run FIRST: a mutant already on disk from an earlier sweep
     # would be indistinguishable from one of ours, and the sweep would then
@@ -1577,6 +1665,13 @@ def main() -> int:
             print(f"no mutations in group {args.group}")
             return 2
         print(f"restricted to group {args.group}: {len(mutations)} mutation(s)")
+
+    # Record the pristine text of every target BEFORE the first mutation, so a
+    # kill with no chance to unwind (which is every kill on win32, where
+    # install_signal_restore cannot fire) is restorable by the next run. Written
+    # here rather than at the top so a `--list` or a gate refusal — neither of
+    # which mutates anything — does not leave sidecars behind on a clean tree.
+    record_pristine({p: p.read_text(encoding="utf-8") for p in sorted(targets)})
 
     results: list[Result] = []
     for mt in mutations:
@@ -1656,6 +1751,12 @@ def main() -> int:
         for p in post_sweep:
             print(f"  !! {p}")
         return 2
+
+    # The run completed and the tree is clean, so the sidecars have served their
+    # purpose. Consuming them here keeps a certified tree free of stale sidecars:
+    # a sidecar left on disk is not itself a mutant, but the NEXT run would
+    # restore from it and silently revert whatever landed in between.
+    restore_from_sidecar(sorted(targets))
 
     print("RESULT: every survivor is either expected or proven inert,")
     print("        and no mutant shape remains on disk (O-83).")

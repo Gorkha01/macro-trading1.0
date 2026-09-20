@@ -67,7 +67,6 @@ price_bond
 price_change_with_convexity
 project_inflation_trajectory
 project_shelter_cpi
-qe_qt_stance
 quantity_theory_implied_inflation
 real_policy_rate
 realized_vol_simple

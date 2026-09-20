@@ -93,6 +93,54 @@ def _calls_in(node: ast.AST) -> set[str]:
     return found
 
 
+def _stream_body_node() -> ast.FunctionDef | ast.AsyncFunctionDef:
+    """The stream function whose body actually emits the trace frames.
+
+    ``reasoning_step_generator`` is the SSE entry point, but its body is now a
+    thin outer guard: it wraps ``_reasoning_frames`` in a ``try``/``finally``
+    that guarantees the ``[DONE]`` terminator is emitted exactly once on every
+    exit path (the finding-2.1 fix). The stages, the interpolated details and the
+    calls to the derivation module all live in ``_reasoning_frames``.
+
+    These guards are about *what the stream emits and from where*, not about
+    which function object holds the code, so they follow the indirection rather
+    than pinning a function name. Pinning the name would make a pure refactor —
+    one that changed nobody's behaviour — look like a violation, which is how a
+    guard starts manufacturing findings.
+
+    Resolved structurally: ``reasoning_step_generator`` must iterate the result
+    of exactly one other top-level function, and that function is the body. If
+    no such function exists (someone flattened the two back together), fall back
+    to the entry point itself so the guards still apply.
+    """
+    entry = _function_node(_STREAM_SOURCE, "reasoning_step_generator")
+    candidate = _iterated_local_function(entry)
+    if candidate is not None:
+        return _function_node(_STREAM_SOURCE, candidate)
+    return entry
+
+
+def _iterated_local_function(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    """The name of the top-level function ``node`` iterates over, if any.
+
+    Looks for ``async for ... in <name>(...)`` / ``for ... in <name>(...)`` where
+    ``<name>`` is a bare identifier — the shape the outer guard uses to delegate.
+    """
+    for child in ast.walk(node):
+        if not isinstance(child, (ast.For, ast.AsyncFor)):
+            continue
+        target = child.iter
+        if (
+            isinstance(target, ast.Call)
+            and isinstance(target.func, ast.Name)
+            and target.func.id != node.name
+        ):
+            return target.func.id
+    return None
+
+
 def _module_docstring(tree: ast.Module) -> str:
     """The module docstring, which is prose ABOUT the code rather than code.
 
@@ -207,7 +255,7 @@ def test_the_stream_never_assembles_a_gap_or_convergence_from_a_constant() -> No
     call** — the mutant ``M8.2`` is exactly that shape, and it is the one
     §8.3 mutation a naive "does it interpolate" check would let through.
     """
-    generator = _function_node(_STREAM_SOURCE, "reasoning_step_generator")
+    generator = _stream_body_node()
 
     constant_only: list[str] = []
     count_only: list[str] = []
@@ -622,9 +670,14 @@ def test_the_stream_and_the_rest_endpoint_share_the_orchestration_entry_point() 
     half is ``test_routes.py``'s cross-check against a separately built thesis.
     """
     thesis_calls = _calls_in(_function_node(_THESIS_SOURCE, "get_thesis"))
-    stream_calls = _calls_in(_function_node(_STREAM_SOURCE, "reasoning_step_generator"))
+    # Follow the delegation: the derivation call lives in the stream's body
+    # function, which the outer terminator guard wraps. See ``_stream_body_node``.
+    stream_calls = _calls_in(_stream_body_node())
 
-    for name, calls in (("get_thesis", thesis_calls), ("reasoning_step_generator", stream_calls)):
+    for name, calls in (
+        ("get_thesis", thesis_calls),
+        ("the stream's body function", stream_calls),
+    ):
         assert "snapshot_to_thesis_inputs" in calls, (
             f"{name} does not call snapshot_to_thesis_inputs(); it must obtain the "
             f"builder's six required arguments from the one derivation module."

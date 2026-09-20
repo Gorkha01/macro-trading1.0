@@ -167,15 +167,26 @@ def z_score_for_confidence(confidence: float) -> float:
     """One-sided standard-normal quantile at ``confidence``.
 
     Interpolates linearly between tabulated points and refuses to extrapolate
-    beyond the table's range. Extrapolation would be the tempting shortcut and
-    it is exactly wrong here: the quantile grows without bound as confidence
-    approaches 1, so a linear extension beyond 0.999 would materially
-    understate the tail — in a function whose entire purpose is tail magnitude.
+    beyond the table's range **in either direction**. Extrapolation would be the
+    tempting shortcut and it is exactly wrong here.
+
+    The refusal is symmetric and that symmetry is the point. Above the table the
+    quantile grows without bound as confidence approaches 1, so a linear
+    extension past 0.999 would materially understate the tail — in a function
+    whose entire purpose is tail magnitude. Below the table the failure is the
+    mirror image and just as severe: an earlier version of this function
+    extended the *first* segment by scaling the **last** tabulated point
+    (``3.0902 · c / 0.999``), which is the secant through the origin and the
+    0.999 point rather than the 0.90→0.95 segment. That produced 2.7809 at
+    ``confidence=0.899`` where the true normal quantile is 1.2789 — a 2.17x
+    overstatement, discontinuous with the tabulated 1.2816 at exactly 0.90, and
+    wrong in the same direction as the upper-boundary error it was written to
+    avoid. A caller needing a quantile outside the table must extend the table
+    deliberately, which keeps the approximation visible rather than hidden.
 
     Raises:
-        ValueError: if ``confidence`` is outside the tabulated range. A caller
-            needing 0.9999 must extend the table deliberately, which keeps the
-            approximation visible rather than hidden.
+        ValueError: if ``confidence`` is outside the tabulated range, in either
+            direction.
     """
     if not 0.0 < confidence < 1.0:
         raise ValueError(f"confidence must be in (0, 1); got {confidence}.")
@@ -187,9 +198,18 @@ def z_score_for_confidence(confidence: float) -> float:
     points = sorted(_Z_QUANTILES.items())
     lower, upper = points[0], points[-1]
     if confidence < lower[0]:
-        # Below 0.90 the normal quantile is small and well-behaved, so the
-        # linear interpolation extending the first segment is acceptable.
-        return upper[1] * confidence / upper[0]
+        # Refused rather than extrapolated, for the same reason as the upper
+        # bound: a linear extension of a convex-in-the-tail quantile carries no
+        # guarantee of accuracy, and the earlier attempt to extend it was wrong
+        # by more than a factor of two (see the docstring). Extending the table
+        # with a real quantile is the honest fix, not extrapolating this one.
+        raise ValueError(
+            f"confidence {confidence} is below the tabulated minimum "
+            f"{lower[0]}. Extrapolating a normal quantile below this point is "
+            f"not accurate — the quantile is convex in the tail, so a linear "
+            f"extension understates or overstates it depending on direction. "
+            f"Extend _Z_QUANTILES with a real quantile instead."
+        )
     if confidence > upper[0]:
         raise ValueError(
             f"confidence {confidence} exceeds the tabulated maximum "
