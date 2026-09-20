@@ -414,12 +414,35 @@ def test_every_public_name_is_reexported_or_documented() -> None:
 
 def test_the_builder_module_has_no_dependencies_outside_the_permitted_direction() -> None:
     """``thesis_layer -> models`` is the permitted direction (D-058's rule). The
-    builder must not import from ``macro_engine.api`` or a sibling layer above."""
+    builder must not import from ``macro_engine.api`` or a sibling layer above.
+
+    **Amended in D-073, and the amendment is the point rather than a relaxation.**
+    This guard originally also forbade ``macro_engine.portfolio``, with the
+    reason *"it is a Phase 4+ layer; the builder must not depend on it"*. The
+    prohibition was a statement about **schedule**, not about architecture: in
+    Phase 3 the risk layer did not exist, so importing it would have built a
+    Phase 4 layer early.
+
+    Phase 4 has now arrived and Section 17.4 mandates exactly this edge — the
+    risk axis must feed a sizing finding back into the thesis lifecycle — so
+    keeping the prohibition would forbid the specification. The rule that
+    survives is the one that was always load-bearing: **the dependency runs one
+    way.** A layer may depend on what is *below* it and never on what is *above*,
+    which is why ``macro_engine.api`` stays forbidden unconditionally (the API
+    sits above the thesis layer and calls it) while ``portfolio`` is now
+    permitted.
+
+    What is NOT relaxed: the *specific* names the builder may take from
+    ``portfolio``. The sibling guard,
+    ``test_integrity_gates.test_kelly_is_not_reachable_from_the_thesis_or_api_layers``,
+    still inspects every import that resolves into ``risk_budget`` and now
+    asserts the builder takes only the **translation** names — never
+    ``apply_fractional_kelly`` or ``KellyInputs``. So this amendment widens the
+    allowed *layer* while the sibling keeps the allowed *surface* narrow, and
+    the second test is what would catch a future ``import *`` here.
+    """
     imports = {(node.module or "") for node in ast.walk(TREE) if isinstance(node, ast.ImportFrom)}
     for module in imports:
         assert not module.startswith("macro_engine.api"), (
             f"{module} is above the thesis layer; the dependency must run one way"
-        )
-        assert not module.startswith("macro_engine.portfolio"), (
-            f"{module} is a Phase 4+ layer; the builder must not depend on it"
         )

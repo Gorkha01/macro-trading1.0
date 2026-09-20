@@ -122,6 +122,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from macro_engine.config import get_settings
 from macro_engine.models.contracts import ModelResult, utc_now
 from macro_engine.models.convergence import ConvergenceInputs, classify_convergence
 from macro_engine.models.instrument_selection import (
@@ -143,6 +144,12 @@ from macro_engine.models.policy_rules import (
     taylor_rule,
 )
 from macro_engine.models.probability import scenario_distribution_status
+from macro_engine.portfolio.risk_budget import (
+    ProposedPosition,
+    RiskBudgetTarget,
+    ThesisPositionInputs,
+    translate_thesis_to_position,
+)
 from macro_engine.thesis_layer.catalysts import CatalystSourceError, next_catalyst_calendar
 from macro_engine.thesis_layer.invalidation import (
     InvalidationAssessment,
@@ -718,6 +725,7 @@ def build_us_macro_thesis(
     unattributed: Sequence[UnattributedWarning] = (),
     catalyst_calendar: Sequence[str] | None = None,
     regime: ModelResult | None = None,
+    risk_budget_target: RiskBudgetTarget | None = None,
 ) -> MacroThesis:
     """Section 7.2 / 16.2: build the US macro thesis, or stand down.
 
@@ -767,6 +775,33 @@ def build_us_macro_thesis(
         (D-043/D-045) rather than a guessed state. The default pipeline supplies
         it; before this parameter existed, ``regime.state`` was ``None`` on
         every thesis ever produced (``docs/DEFECTS_2026-09-19.md``, DEF-003).
+    risk_budget_target:
+        Section 17.4's **risk axis** — this instrument's budgeted share of total
+        portfolio risk, if the caller has a book to allocate against. ``None``
+        (the default) means **no book was supplied**, and it is the default for
+        a measured reason rather than for convenience: ``AGENTS.md`` §21.1
+        defines five source types for every input, and a **portfolio holding is
+        none of them** — there is no series, no derivation, no config leaf and
+        no manual path for "what the book currently holds". A builder that
+        invented a book would violate §21.0 rule 3, so the absence is a
+        supported input with a *disclosed* meaning rather than a guessed one.
+
+        When it **is** supplied, Section 17.4's feedback rule runs: the thesis
+        is translated into a proposed size via
+        ``portfolio/risk_budget.py``'s ``translate_thesis_to_position`` (D-072)
+        and, if the proposal clips to near-zero against ``RiskLimits``, the
+        thesis is **demoted** — a position that cannot be sized meaningfully is
+        not actionable regardless of conviction (the LTCM lesson, encoded).
+
+        The demotion is **not** a refusal and **not** a silent edit: the status
+        moves and the reason is published as a warning, because a status field
+        that changed without a stated cause is the failure direction O-86 names.
+
+        It is also **not reached** on the shipped pipeline. Measured on today's
+        data: all seven ``ThesisType`` members stand down at Q6/Q7/Q8, so no
+        thesis reaches the sizing path at all — this parameter is inert until a
+        thesis survives every gate. That is a fact about the world, printed by
+        ``scripts/live_risk_axis_check.py`` rather than assumed here.
 
     Returns
     -------
@@ -898,7 +933,52 @@ def build_us_macro_thesis(
         convergence=convergence,
     )
 
-    return MacroThesis(
+    # -- Q12 (the risk half). Section 17.4's feedback rule. ---------------
+    #
+    # WHAT THIS BLOCK IS FOR, AND WHAT IT DELIBERATELY DOES NOT DO
+    # -----------------------------------------------------------
+    # Section 17.4 is the only rule in the specification that carries a
+    # *risk-layer* finding back into the thesis LIFECYCLE:
+    #
+    #   "A thesis whose sizing_logic output (once Phase 4+ auto-sizing exists)
+    #    clips to near-zero against RiskLimits ... should have its status
+    #    automatically demoted ... a thesis that can't be sized meaningfully
+    #    isn't actionable, regardless of conviction."
+    #
+    # Three things about that sentence drive the code below:
+    #
+    # 1. **The sizing is not computed here.** ``translate_thesis_to_position``
+    #    (D-072) owns it, and ``_risk_axis`` **calls** it rather than
+    #    re-deriving anything. Re-implementing the Kelly/limit arithmetic in the
+    #    builder would create a second definition of the size, and the two would
+    #    drift.
+    #
+    # 2. **The thesis must exist BEFORE it can be sized**, so the object is
+    #    constructed first and the risk axis is applied to it. An earlier draft
+    #    of this hook tried to size from the builder's local variables before
+    #    construction and had to declare four parameters it could not consume —
+    #    which is the declared-unconsumed shape this project keeps finding
+    #    (D-045/D-046/D-048, O-53). Constructing first removes the temptation
+    #    and lets the axis read the **published** object rather than a
+    #    reconstruction of it.
+    #
+    # 3. **``None`` is the shipped state, and it is disclosed, not silent.**
+    #    ``risk_budget_target`` is ``None`` unless the caller supplies a book.
+    #    In that case the risk axis DID NOT RUN, and the thesis says so — a
+    #    reader must be able to tell "we sized it and it is fine" from "we did
+    #    not size it", which is the distinction ``translate_thesis_to_position``
+    #    itself makes for a missing budget.
+    #
+    # The demotion target is ``WATCH``, and Section 17.4's own wording says
+    # ``CANDIDATE`` -> ``WATCH``. Measured: **nothing in the shipped system
+    # produces ``CANDIDATE``** — the builder emits ``DRAFT`` and every
+    # stand-down emits ``WATCH``. So the rule as literally written describes a
+    # transition this system cannot be in. The choice made here is to demote
+    # **to ``WATCH``** (the status that means "not actionable", which is the
+    # property Section 17.4 protects) rather than to invent a ``CANDIDATE``
+    # producer for it to be demoted *from* — that would be manufacturing a
+    # lifecycle stage to satisfy a sentence. Recorded as **O-96**.
+    thesis = MacroThesis(
         thesis_id=new_thesis_id(as_of=stamp),
         country="us",
         created_at=stamp,
@@ -924,6 +1004,7 @@ def build_us_macro_thesis(
         warnings=warnings,
         independent_source_families=_family_count(reads),
     )
+    return _apply_risk_axis(thesis, risk_budget_target)
 
 
 # ---------------------------------------------------------------------------
@@ -1337,3 +1418,111 @@ def _thesis_warnings(
 
     _ = reads  # the reads reach `warnings` through `summary`, not directly
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Section 17.4 — the risk axis, and the one place a risk finding moves a status
+# ---------------------------------------------------------------------------
+
+
+def _apply_risk_axis(thesis: MacroThesis, target: RiskBudgetTarget | None) -> MacroThesis:
+    """Section 17.4: does this thesis survive being sized? Returns the thesis.
+
+    Runs **after** the thesis is constructed, which is what makes it honest: the
+    rule turns on the *proposed size*, and a size can only be proposed for an
+    object that exists. An earlier draft evaluated the rule from the builder's
+    local variables, before construction, and had to accept four parameters it
+    could not consume — the declared-unconsumed shape this project has found
+    eight times (D-045/D-046/D-048, O-53). Constructing first removes it.
+
+    The sizing itself is ``translate_thesis_to_position``'s (D-072) and is
+    **called**, never re-derived. That function has four gates of its own, and a
+    builder that reproduced any of them would be a second definition of the same
+    predicate — precisely the defect §16.2's own sample commits, where
+    ``is_meaningful`` is computed twice from different inputs.
+
+    What it does with the result
+    ----------------------------
+    * **``refused_*``** — the translation declined to size. The thesis keeps
+      ``DRAFT`` and the refusal is published. A refusal is **not** a demotion:
+      Section 17.4 demotes a thesis whose size is *too small*, and a translation
+      that declined for a different stated reason has said something else. The
+      two must not collapse into one status or the reason stops travelling.
+    * **Sized, above the bound** — ``DRAFT``, with the proposal's own reason
+      attached so the size is legible next to the thesis that produced it.
+    * **Sized, at or below ``risk.thesis_demotion_fraction``** — **demoted to
+      ``WATCH``**, because Section 17.4's LTCM lesson is that a correct idea you
+      cannot survive-size is not yet a trade.
+
+    ``target is None`` short-circuits to a **disclosed absence** rather than a
+    silent pass. ``AGENTS.md`` §21.1 defines five source types for every input
+    and a portfolio holding is **none of them** — no series, no derivation, no
+    config leaf, no manual path. So the builder cannot obtain a book, and
+    inventing one would violate §21.0 rule 3. The warning says the check did not
+    run, because "unchecked" and "checked and clear" must not read alike.
+    """
+    if target is None:
+        return thesis.model_copy(
+            update={
+                "warnings": [
+                    *thesis.warnings,
+                    "[Q12 risk] No portfolio-level risk budget was supplied, so "
+                    "Section 17.4's sizing feedback DID NOT RUN. A DRAFT here "
+                    "means 'not yet sized against a book', NOT 'sized and "
+                    "verified' — §21.1 defines no source for portfolio holdings, "
+                    "so a caller holding a book must pass `risk_budget_target`.",
+                ]
+            }
+        )
+
+    translation = translate_thesis_to_position(
+        ThesisPositionInputs(thesis=thesis, risk_budget_target=target)
+    )
+    value = translation.value
+    assert isinstance(value, dict)
+    proposal = ProposedPosition.model_validate(value)
+
+    demotion = get_settings().risk.thesis_demotion_fraction
+    if proposal.outcome.startswith("refused_"):
+        return thesis.model_copy(
+            update={
+                "warnings": [
+                    *thesis.warnings,
+                    f"[Q12 risk] The risk budget was supplied but the position "
+                    f"could not be sized: {proposal.outcome} — {proposal.reason} "
+                    f"This is a REFUSAL, not a demotion: Section 17.4 demotes a "
+                    f"thesis whose size is too small, and this is a different "
+                    f"finding.",
+                ]
+            }
+        )
+
+    if proposal.fraction_of_capital <= demotion:
+        return thesis.model_copy(
+            update={
+                "status": ThesisStatus.WATCH,
+                "warnings": [
+                    *thesis.warnings,
+                    f"[Q12 risk] DEMOTED to WATCH by Section 17.4: the proposed "
+                    f"notional is {proposal.fraction_of_capital:.4f} of capital, "
+                    f"at or below the {demotion:.4f} near-zero bound (binding "
+                    f"constraint: {proposal.binding_constraint!r}). A thesis "
+                    f"that cannot be sized meaningfully is not actionable "
+                    f"regardless of conviction — the LTCM lesson, encoded. The "
+                    f"view may be right; it is not yet a trade.",
+                ],
+            }
+        )
+
+    return thesis.model_copy(
+        update={
+            "warnings": [
+                *thesis.warnings,
+                f"[Q12 risk] Sized by Section 17.4: proposed "
+                f"{proposal.fraction_of_capital:.4f} of capital in "
+                f"{proposal.instrument} (binding constraint: "
+                f"{proposal.binding_constraint!r}, permitted risk contribution: "
+                f"{proposal.permitted_risk_contribution:.4f}). {proposal.reason}",
+            ]
+        }
+    )

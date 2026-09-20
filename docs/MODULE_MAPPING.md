@@ -1251,3 +1251,136 @@ GROWTHS: 3 of 3`) so the disclosure is **measured**, not asserted.
 and `mypy --strict` does not see it: both are types, both construct, and a test
 that imports one of them passes. It is D-045's property-vs-field collision one
 level up.
+
+### The risk-budget seam — two functions that never appear in the tiers, and should not
+
+**`compute_risk_parity_weights` (D-071) and `translate_thesis_to_position` (D-072)
+are Module 17.1 / 17.4 functions, not tier functions, and the tier tables above
+correctly do not list them.** Tier 3 closed at 15 / 15 at **D-057** with
+`apply_fractional_kelly` as its last member; Tier 4 closed at 11 / 11 at
+**D-069**. Adding these two to either count would be the same defect this mapping
+exists to prevent — a **declared** membership that the code does not have. They
+live in `portfolio/risk_budget.py`, the same file as D-054/D-055/D-056/D-057, and
+the generator note above (`portfolio/*.py` must be in the `ast` roots, **D-054**)
+applies to them for the same reason.
+
+**What the seam exposes is a *shape* contradiction, and it is the fourth
+cross-layer shape this mapping has recorded.** The three prior ones were
+D-064 (`scenarios.py` ↔ Kelly's unit contract, closing **O-50**), D-069
+(`select_instrument` returning a dict on executable routes and a bare sentinel
+string on refused ones, **O-87**), and D-063's `NoTradeDecision`. This one is
+arithmetic rather than structural:
+
+| Layer | Quantity | Defined by |
+|---|---|---|
+| Module 17.1 | **risk share** — `RC_i = w_i (Σw)_i / σ_p²` | needs `Σ` |
+| §9.3 | **notional share** — what the position size may be | takes `MacroThesis` + a risk budget, **no covariance** |
+
+**§9.3's signature cannot supply the covariance §17.1's identity requires**, and
+the two quantities are not equal. Measured on a real two-asset book, the naive
+conversion (risk share used directly as notional share) is **6.7x wrong**: `0.018`
+where the correct answer is `0.12`. **This is the strongest argument in the
+codebase for §9.3's own output contract** — that `translate_thesis_to_position`
+returns a **proposed** position requiring human sign-off and never a sized order.
+The `SIGN_OFF_REQUIRED` sentinel is not a formality; it is the composition of two
+specification sections that cannot be composed numerically.
+
+**The second current in this seam is the declared-consumed-unreachable class
+(D-045/D-046/D-048, O-53) — for the sixth and seventh time.** `PositionTranslationOutcome`
+is a six-member `Literal`, and the file's docstring makes a *counting* claim about
+it. **The claim shipped saying "nine members" for a `Literal` that had six.** The
+sweep's first run proved it was changeable to any number with every test green
+(`M10.2`, `M10.3` both SURVIVED — `get_args` reads the type; a docstring is a
+string), and the repair is a test that recounts the members and the gates from the
+docstring itself. **A docstring claim about a type is a claim, and it needs a
+receipt (lesson 5bo, extending O-88 from gate rows to prose).**
+
+**The gates are four, and the count is now pinned.** The removed fifth gate is
+recorded in the file as a comment, not as code, and the docstring states the rule
+the deletion established: **"There are four, not five: a gate that cannot stop a
+proposal is not a gate."** The sweep's `M10.3` mutant flips that sentence's
+numerals and is now killed.
+
+**Defect class this increment added to the mapping's vocabulary: "the right outcome
+with the wrong reason."** Several refusals returned the correct `outcome` while
+naming a **different gate's** reason. No numeric assertion can see it — the
+outcome, the size and the struct all match — and only the reason phrase differs.
+It is D-056's (false confidence) neighbour on the *diagnostic* axis rather than the
+numeric one, and it is why `scripts/live_thesis_position_check.py` re-reads the
+reason on **all seven** paths instead of checking only the outcome.
+
+**The instrument universe is a real measured object, not a fixture.**
+`ProductionUniverse().permits` returns `True` for `TY futures`, `EURUSD` and
+`"NONE"`, and `False` for `SPY`, `TLT`, `GLD`, credit and
+`ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`. **All four US thesis families**
+(`policy_path_gap`, `curve_shape_gap`, `inflation_expectations_gap`,
+`equity_macro`) produce `status=WATCH`, `instrument="NONE"`, an empty
+`scenario_distribution` and `scenario_sizing_permitted=False` **on today's data**,
+so they all refuse at **gate 1**. The measured 24-cell census had **8 schema-refused
+and 16 measured** cells. That is the Section 21.0 record for this increment, and it
+is why the sweep needs hand-built fixtures to reach gates 2–4: **the live pipeline
+cannot reach them, and a sweep that only ran green paths would certify nothing.**
+
+**O-93 is the documentation half of the same seam.** Two no-instrument sentinels
+are **different strings**, and **four documentation sites** asserted they were the
+same. The correction is sharper than the original claim: `is_trade` returns `True`
+for the sentinel, so it reads as a **live trade in an unexecutable instrument**.
+`§16.2` Q12's **exposure** half is computed nowhere (**O-94**) and needs Module 18.
+
+### The §17.4 axis — the third layer that consumes the seam, and the bound that could not bind (D-073)
+
+**`_apply_risk_axis` (D-073) is not a Module 17 function either.** It lives in
+`thesis_layer/builder.py`, not in `portfolio/risk_budget.py`, and it is **consumed
+from a distance**: §17.4 asks the *thesis layer* to read a *risk-layer* output and
+change a *lifecycle* decision. The mapping's three-layer picture therefore gains a
+back-edge:
+
+| Layer | Reads | Writes |
+|---|---|---|
+| `portfolio/risk_budget.py` (Module 17.1/17.4) | a thesis + a risk budget | a proposed size, or a refusal |
+| `thesis_layer/builder.py`'s `_apply_risk_axis` (§17.4) | that proposal **and** its outcome | the thesis's **`status`** |
+
+**This is the only back-edge in the system**, and it is why O-96 is worth a row:
+the rule that defines it names `CANDIDATE → WATCH`, and **`CANDIDATE` is a state
+nothing in the tree produces.** The edge therefore operates on `DRAFT`, the state
+that actually reaches sizing. **A back-edge whose source state has no producer is
+the declared-consumed-unreachable class in a new vocabulary** — the mapping has now
+recorded it through a guard (D-045/D-046/D-048), an instrument sentinel (O-53) and
+a lifecycle state (O-96), and the third one was only visible by asking *"who writes
+this value?"* rather than *"does this branch run?"*
+
+**The bound is a config leaf whose validity depends on the model's OUTPUT, and that
+is a mapping consequence, not a tuning one.** `thesis_demotion_fraction` is only
+meaningful relative to the set of sizes the pipeline can publish — and that set is
+**six discrete values**, not an interval:
+
+```
+0.02941 · 0.03472 · 0.042735 · 0.069445 · 0.125 · 0.15
+```
+
+The reason is Module 17's own shape: **full Kelly is the argmax of expected log
+growth**, and for a two-branch distribution with a positive edge that objective is
+**monotone in `f`**, so `f*` pins at the search-domain edge and the Module 17.3
+position cap (`0.15`) produces the number. **Only asymmetric branch sets land
+strictly inside the domain.** The bound shipped at `0.02` — **below every reachable
+value** — so §17.4 could not fire and the test that would have caught it **skipped**.
+The bound is now `0.03`, and the three constraints it carries are: `> 0`,
+`< max_position_fraction` (`0.15`), and **`>= the smallest reachable size`
+(`0.02941`)**.
+
+**The mapping rule this adds: a config leaf whose valid range depends on another
+module's reachable OUTPUT cannot be validated at the config layer.** It needs a
+consumer that re-derives that output — here
+`scripts/live_risk_axis_check.py`, which recomputes the six values and fails if the
+bound stops splitting them. **D-035's gate-count discipline, one layer up: a bound
+is a CLAIM about a set the config cannot see.**
+
+**The two amended guards are mapping consequences too.** `thesis_layer/` now
+legitimately imports `macro_engine.portfolio` (§17.4 requires it), so the
+strictness guard forbidding that edge was removed with a written reason — **a guard
+forbidding the wiring the specification mandates is a guard against the
+specification.** And the Kelly guard in `test_integrity_gates.py` was
+**strengthened**, not relaxed: it now enumerates the **permitted** consumer surface
+(`translate_thesis_to_position` being the one sanctioned route to Kelly per §25)
+instead of merely testing where Kelly is called.
+

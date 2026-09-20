@@ -113,6 +113,16 @@ ignore = [
 # the code does not do. Scoping the exemption to the file (rather than a
 # `# noqa` per line) keeps the rule live everywhere else (D-067).
 "tests/data_layer/test_release_calendar.py" = ["DTZ001"]
+# Mutation sweeps quote SHIPPED SOURCE TEXT verbatim as their `old` anchors, and
+# `check_targets` refuses to run unless each anchor matches the file exactly
+# (D-048). A line-length rule therefore cannot be satisfied without either
+# reflowing the anchor -- which would make it stop matching the source it is
+# supposed to pin -- or exempting the rule here. Scoping it to the sweep
+# directory keeps E501 live everywhere else, which is the same choice D-067
+# records for `tests/portfolio/test_release_calendar`'s naive datetimes. The
+# sweeps' own logic is not exempt: only the transcribed string constants are
+# long, and `ruff format` still governs the rest of each file.
+"scripts/mutation_*.py" = ["T20", "E501"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

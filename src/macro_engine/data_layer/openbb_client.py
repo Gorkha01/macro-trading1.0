@@ -1,7 +1,7 @@
 """Resilient OpenBB data gateway (AGENTS.md Section 5.1).
 
 Implements the two-path fetch strategy: try the **local OpenBB Platform API**
-first (``http://127.0.0.1:6900``) for lower latency and to avoid re-initialising
+first (``http://127.0.0.1:6901``) for lower latency and to avoid re-initialising
 the SDK per call, then **fall back to the Python package** if the local API is
 unreachable. After retries are exhausted it attempts the *other* path once
 before giving up.
@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import date
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -48,6 +49,34 @@ logger = logging.getLogger(__name__)
 # OpenBB's normalized frame contract. Anything else is a parse failure and
 # must surface as OpenBBFetchError rather than a downstream KeyError.
 NORMALIZED_COLUMNS: tuple[str, ...] = ("date", "value", "series_id", "source", "retrieved_at")
+
+#: Which transport actually served a request. Recorded as provenance rather
+#: than inferred from ``use_local_api_first``, because the cross-path fallback
+#: means the two can disagree (see ``_normalize``).
+_PATH_LOCAL_API = "local_api"
+_PATH_PACKAGE = "package"
+
+
+def _is_non_finite(value: object) -> bool:
+    """Whether a value is a float that is neither finite nor a true null.
+
+    ``dropna`` and this predicate are deliberately different tests, and the
+    difference is the whole point: ``nan``/``inf`` are **not** null, so
+    ``dropna`` leaves them in the frame. A provider that writes ``inf`` as its
+    "no data" sentinel therefore delivers a value that is present, testable,
+    and impossible to reject with a range comparison.
+
+    A genuine ``None``/``np.nan`` is *not* reported here — it is ``dropna``'s
+    job, and reporting it twice would double-log every ordinary gap.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, (int, float)):
+        # A non-numeric cell is `to_numeric(errors="coerce")`'s business; it has
+        # already become nan by the time this runs, and this predicate only
+        # classifies values that survived as numbers.
+        return False
+    return not isfinite(value)
 
 
 class OpenBBFetchError(RuntimeError):
@@ -243,7 +272,7 @@ class OpenBBClient:
             raw: Any = payload["results"]
         else:
             raw = payload
-        return self._normalize(raw, series_label)
+        return self._normalize(raw, series_label, served_by=_PATH_LOCAL_API)
 
     def _fetch_via_package(
         self, endpoint: str, params: dict[str, Any], series_label: str
@@ -260,13 +289,21 @@ class OpenBBClient:
                 ) from exc
         result = target(**params)
         if hasattr(result, "to_df"):
-            return self._normalize(result.to_df(), series_label)
-        return self._normalize(result, series_label)
+            return self._normalize(result.to_df(), series_label, served_by=_PATH_PACKAGE)
+        return self._normalize(result, series_label, served_by=_PATH_PACKAGE)
 
     # -- normalization -----------------------------------------------------
 
-    def _normalize(self, raw: Any, series_label: str) -> pd.DataFrame:
+    def _normalize(self, raw: Any, series_label: str, *, served_by: str) -> pd.DataFrame:
         """Coerce an OpenBB response into the normalized frame contract.
+
+        ``served_by`` is the path that **actually** answered this request
+        (``_PATH_LOCAL_API`` or ``_PATH_PACKAGE``), passed by the caller rather
+        than inferred from ``use_local_api_first``. The two differ whenever the
+        cross-path fallback fires, and reporting the *preferred* path as the
+        *serving* path would attach a wrong provenance fact to every value
+        fetched during a degradation — precisely when an operator needs to know
+        which path produced the data. Missing is recoverable; wrong is not.
 
         Handles the shapes OpenBB actually produces, verified against the live
         FRED provider during Phase 0:
@@ -333,14 +370,38 @@ class OpenBBClient:
         out = out.dropna(subset=["value"])
         out["value"] = pd.to_numeric(out["value"], errors="coerce")
         out = out.dropna(subset=["value"])
+        # `dropna` removes nulls only. A coerced `inf`/`nan` is NOT null, so it
+        # survives both drops above — `pd.to_numeric` preserves non-finite
+        # floats, and a provider that exports `inf` as its "no data" sentinel
+        # would otherwise deliver a poisoned value that every downstream range
+        # check passes (`nan < min` and `nan > max` are both False). The row is
+        # dropped, never repaired to 0 or to an interpolated value: a dropped
+        # row makes the series shorter, whereas an invented value makes it
+        # wrong (Section 21.0 rule 2).
+        non_finite_mask = out["value"].map(_is_non_finite)
+        if bool(non_finite_mask.any()):
+            dropped = int(non_finite_mask.sum())
+            logger.warning(
+                "Dropped %d non-finite value(s) from %s: %s. A non-finite value is "
+                "not missing data and is never repaired to a number.",
+                dropped,
+                series_label,
+                out.loc[non_finite_mask, "date"].tolist(),
+            )
+            out = out[~non_finite_mask]
         if out.empty:
             raise OpenBBFetchError(f"All values were null/unparseable for {series_label}")
 
         out["date"] = pd.to_datetime(out["date"]).dt.date
         out["series_id"] = series_label
+        # The path that SERVED this request, not the configured preference.
+        # They differ whenever the cross-path fallback fired (see
+        # `_fetch_series`), and a fallback is exactly when provenance matters:
+        # `use_local_api_first=True` with the package having answered would
+        # otherwise be recorded as "openbb:http://..." — a wrong fact.
         out["source"] = (
             f"openbb:{self.config.local_api_base_url}"
-            if self.config.use_local_api_first
+            if served_by == _PATH_LOCAL_API
             else "openbb:package"
         )
         out["retrieved_at"] = utc_now()

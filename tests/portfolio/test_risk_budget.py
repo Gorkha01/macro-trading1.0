@@ -374,6 +374,82 @@ def test_the_shipped_config_parses_through_its_accessor() -> None:
 
 
 # --------------------------------------------------------------------------
+# D-078 — an empty ladder is legal, but it must not report a phantom threshold
+# --------------------------------------------------------------------------
+
+
+def test_an_absent_tiers_key_is_still_refused() -> None:
+    """D-078 — ``drawdown_thresholds`` itself is required; only ``tiers`` may be empty.
+
+    The distinction this test and its two siblings exist to pin:
+
+    * ``drawdown_thresholds`` MISSING — a malformed ``risk`` block. Refused, and
+      already refused by ``extra="forbid"`` on ``RiskSettings`` before any change
+      (the key is non-optional).
+    * ``drawdown_thresholds.tiers: []`` — **legal**: "never de-risk", an explicit
+      pre-commitment that no drawdown triggers a rule. Pinned by
+      ``test_an_empty_tier_list_configures_a_silent_ladder``.
+
+    A first version of this increment refused the empty list too. That was
+    wrong: it overrode an intentional, tested design decision, and the existing
+    test caught it. The real defect was narrower — the empty ladder's
+    *interpretation* named a threshold that does not exist (see the phantom test
+    below).
+    """
+    settings = get_settings()
+    stripped = settings.risk.model_dump()
+    stripped.pop("drawdown_thresholds")
+
+    with pytest.raises(Exception, match="drawdown_thresholds"):
+        RiskSettings.model_validate(stripped)
+
+
+def test_an_empty_ladder_never_reports_a_nan_threshold() -> None:
+    """D-078 REGRESSION — the phantom threshold.
+
+    With ``tiers: []`` the rule takes its ``no_action`` branch and reported:
+
+        "no risk-reduction rule triggered (the least severe configured
+         threshold is nan%)"
+
+    It reached ``nan`` through ``min((...), default=float("nan"))`` — a default
+    that invents a number rather than admitting the ladder is empty. An empty
+    ladder is legal ("never de-risk"), but "the least severe configured
+    threshold" is then a threshold that does not exist, and printing ``nan%``
+    dressed as a measurement is exactly the invented-default class this project
+    forbids. The absence must be stated, not formatted.
+    """
+    result = evaluate_drawdown_rules(
+        DrawdownState(high_water_mark=1_000_000.0, current_value=800_000.0),
+        rules=[],
+    )
+
+    assert as_str(result, key="outcome") == "no_action"
+    text = result.interpretation
+    assert "nan" not in text.lower(), f"a phantom threshold was formatted: {text}"
+    assert "NO TIERS ARE CONFIGURED" in text, (
+        f"the empty ladder must be stated as the reason, not described as a "
+        f"threshold comparison; got: {text}"
+    )
+
+
+def test_a_populated_ladder_still_names_its_least_severe_threshold() -> None:
+    """The guard is inert when tiers exist — the message must not change shape.
+
+    Pinned because a fix that suppresses the threshold line entirely would pass
+    the phantom test while silently dropping information from the normal case.
+    """
+    result = evaluate_drawdown_rules(
+        DrawdownState(high_water_mark=1_000_000.0, current_value=990_000.0),
+        rules=DEFAULT_TIERS,
+    )
+    assert as_str(result, key="outcome") == "no_action"
+    text = result.interpretation
+    assert "least severe configured threshold is 10.00%" in text, text
+    assert "NO TIERS ARE CONFIGURED" not in text
+
+
+# --------------------------------------------------------------------------
 # Defect 2 — the missing bounds (covered above) and defect 3 — ordering
 # --------------------------------------------------------------------------
 
@@ -993,11 +1069,17 @@ def test_confidence_names_the_heuristic_marker_rather_than_hiding_it() -> None:
 # --------------------------------------------------------------------------
 
 
-# The Module 17.2/17.3 hard-limit leaves (D-056). `RiskSettings` requires them,
-# and these tests are about the *ladder* accessors, so their values are
-# deliberately the shipped ones: a fixture that changed them would move two
-# concerns at once and a failure would not say which.
-_HARD_LIMIT_LEAVES: dict[str, CalibratedValue] = {
+# The Module 17.2/17.3 hard-limit leaves (D-056) and the Module 17.1
+# risk-parity leaves (D-071). `RiskSettings` requires them, and these tests are
+# about the *ladder* accessors, so their values are deliberately the shipped
+# ones: a fixture that changed them would move two concerns at once and a
+# failure would not say which.
+#
+# The risk-parity leaves live in this dict rather than in each fixture because
+# the *source* they guard is identical — they exist so this class can be
+# constructed at all. A test that wants to perturb them builds its own settings
+# object, which is exactly what `test_risk_parity.py` does.
+_ENVELOPE_LEAVES: dict[str, CalibratedValue] = {
     "max_position_pct_of_portfolio": CalibratedValue(
         value=0.15, calibration_status="institutional_convention"
     ),
@@ -1010,6 +1092,23 @@ _HARD_LIMIT_LEAVES: dict[str, CalibratedValue] = {
     ),
     "vol_target_reflexivity_scale": CalibratedValue(
         value=0.8, calibration_status="institutional_convention"
+    ),
+    "risk_parity_annualization_periods_value": CalibratedValue(
+        value=252, calibration_status="mechanical_rule"
+    ),
+    "risk_parity_tolerance_value": CalibratedValue(
+        value=1e-10, calibration_status="mechanical_rule"
+    ),
+    "risk_parity_stress_shift_threshold_value": CalibratedValue(
+        value=0.05, calibration_status="uncalibrated_illustrative"
+    ),
+    # Section 17.4's near-zero bound (D-073). Added here because this dict is
+    # the SHARED envelope fixture: `RiskSettings` has `extra="forbid"` and every
+    # leaf is required, so a new leaf means every explicit construction in this
+    # file needs it. Adding it once here is why the failure count did not grow
+    # with the number of tests that build a `RiskSettings`.
+    "thesis_demotion_fraction_value": CalibratedValue(
+        value=0.03, calibration_status="uncalibrated_illustrative"
     ),
 }
 
@@ -1042,7 +1141,7 @@ def test_the_accessor_reads_its_leaves_not_the_shipped_literals() -> None:
                 {"drawdown_pct": 11.0, "risk_reduction_pct": 60.0},
             ],
         },
-        **_HARD_LIMIT_LEAVES,
+        **_ENVELOPE_LEAVES,
     )
     assert [t.drawdown_pct for t in perturbed.drawdown_tiers] == [7.0, 11.0]
     assert [t.risk_reduction_pct for t in perturbed.drawdown_tiers] == [30.0, 60.0]
@@ -1076,7 +1175,7 @@ def test_the_accessor_sorts_rather_than_returning_file_order() -> None:
                 {"drawdown_pct": 15.0, "risk_reduction_pct": 75.0},
             ]
         },
-        **_HARD_LIMIT_LEAVES,
+        **_ENVELOPE_LEAVES,
     )
     assert [t.drawdown_pct for t in shuffled.drawdown_tiers] == [10.0, 15.0, 20.0]
 
@@ -1124,7 +1223,7 @@ def test_an_empty_tier_list_configures_a_silent_ladder() -> None:
         ),
         rebalancing_drift=CalibratedValue(value=0.10, calibration_status="mechanical_rule"),
         drawdown_thresholds={"tiers": []},
-        **_HARD_LIMIT_LEAVES,
+        **_ENVELOPE_LEAVES,
     )
     assert empty.drawdown_tiers == []
 
@@ -1144,6 +1243,24 @@ def test_the_module_exports_what_it_declares() -> None:
     with the fractional-Kelly increment. Pinning the set means a rename or a
     silently dropped re-export fails here rather than at an import site in a
     downstream consumer.
+
+    **D-072's group is the one to read carefully**, because its zero-risk entries
+    are not zero-information:
+
+    * ``ThesisPositionInputs`` and ``ProposedPosition`` are the two new *types* —
+      the input envelope and the published proposal.
+    * ``PositionTranslationOutcome`` and ``PositionBinding`` are the two
+      taxonomies a caller branches on.
+    * ``SIGN_OFF_REQUIRED`` is Section 9.3's contract term, exported as a
+      **constant** so a consumer can assert the gate is present without
+      re-typing the sentence.
+    * **``RiskBudgetTarget`` is deliberately absent from this group** — it was
+      already exported by the rebalancing increment, and re-exporting a name is
+      not a change. It appears once, above.
+    * ``propose_no_position`` / ``no_position_outcome`` are **absent by design**:
+      a no-trade thesis is refused through ``translate_thesis_to_position``, and
+      a second constructor for the same result would be a second place for the
+      sign-off warning to be forgotten.
     """
     from macro_engine.portfolio import risk_budget
 
@@ -1164,6 +1281,20 @@ def test_the_module_exports_what_it_declares() -> None:
         "SizingOutcome",
         "generalized_kelly_fraction",
         "apply_fractional_kelly",
+        # Module 17.1's risk-budgeted weight construction (D-071, Section 9.2).
+        "RiskBudgetInputs",
+        "compute_risk_parity_weights",
+        "risk_contributions",
+        "sample_covariance",
+        "stress_correlations",
+        "DEFAULT_RISK_PARITY_TOLERANCE",
+        # Module 17.4's thesis -> position translation (D-072, Section 9.3).
+        "SIGN_OFF_REQUIRED",
+        "PositionBinding",
+        "PositionTranslationOutcome",
+        "ProposedPosition",
+        "ThesisPositionInputs",
+        "translate_thesis_to_position",
     }
     for name in risk_budget.__all__:
         assert hasattr(risk_budget, name)

@@ -316,11 +316,16 @@ class OutputGapSeriesReport(BaseModel):
     """Which observations `output_gap_from_snapshot` used, and which it withheld.
 
     Carried out of the adapter rather than logged into the void because the
-    truncation is a material fact about the answer. ``withheld_forward_points``
-    is 53 on a live 2026-09-16 snapshot (52 CBO projections plus the one
-    realised potential quarter that runs ahead of the latest actual-GDP print);
-    0 would mean the projection block vanished from the series, which is worth
-    noticing.
+    truncation is a material fact about the answer. On a live 2026-09-20
+    snapshot ``withheld_forward_points`` is 41 (the CBO projection block, which
+    runs to 2036-10-01) and ``withheld_unpaired_points`` is 1 (the realised
+    2026-07-01 potential estimate, waiting on its actual-GDP print); the two are
+    reported separately and sum via ``withheld_potential_points``. 0 forward
+    points would mean the projection block vanished from the series, which is
+    worth noticing.
+
+    The two counts were once a single sum (D-076). See
+    ``withheld_potential_points`` for why a stored total was the wrong shape.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -330,6 +335,9 @@ class OutputGapSeriesReport(BaseModel):
     potential_date: str
     actual_value: float
     potential_value: float
+    #: Points dated strictly AFTER as_of — the forward-dated CBO projection
+    #: block. This is the category the O-7 horizon filter exists to exclude, and
+    #: it is `observation_as_of(...).withheld` verbatim.
     withheld_forward_points: int
     withheld_horizon: str | None = None
     #: Points dated on or before as_of but excluded because they post-date the
@@ -344,6 +352,20 @@ class OutputGapSeriesReport(BaseModel):
     #: potential estimate by more than one quarter, which indicates a stale
     #: actual-GDP fetch rather than a normal publication lag.
     staleness_quarters: int = 0
+
+    @property
+    def withheld_potential_points(self) -> int:
+        """Every point the adapter withheld from ``gdp_potential``.
+
+        The sum of the two reasons, which are disjoint by construction: a point
+        is either dated after ``as_of`` (a projection) or dated on or before it
+        (realised). Kept as a derived property rather than stored, because a
+        stored total is a second number that can disagree with its parts — and
+        did (D-076): ``withheld_forward_points`` held this sum while its name
+        and its warning said "forward-dated", reporting 42 projections where
+        the series contained 41.
+        """
+        return self.withheld_forward_points + self.withheld_unpaired_points
 
     def warnings(self) -> list[str]:
         """Every condition this adapter exists to make visible.
@@ -574,7 +596,7 @@ def output_gap_from_snapshot(
         potential_date=potential.observation_date.isoformat(),
         actual_value=actual.value,
         potential_value=potential.value,
-        withheld_forward_points=potential_series.withheld + withheld_unpaired,
+        withheld_forward_points=potential_series.withheld,
         withheld_horizon=(
             potential_series.withheld_horizon.isoformat()
             if potential_series.withheld_horizon

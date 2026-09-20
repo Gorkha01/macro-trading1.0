@@ -794,7 +794,7 @@ def _warning_mutations() -> list[tuple[str, Path, str, str]]:
                     "MX5f the base-state share is dropped from the CONFLICTED warning",
                     SRC,
                     '            f"of a four-pillar read: {conflicted_base_share:.1%} of the "\n'
-                    '            "admissible input space classifies this way, so the verdict alone "\n'  # noqa: E501  # must match the source byte for byte
+                    '            "admissible input space classifies this way, so the verdict alone "\n'  # must match the source byte for byte
                     '            "does not identify this read as unusual."',
                     '            "of a four-pillar read."',
                 )
@@ -803,8 +803,8 @@ def _warning_mutations() -> list[tuple[str, Path, str, str]]:
                 (
                     "MX5g the MUST-block sentence is removed from the warning",
                     SRC,
-                    '            "CONFLICTED — the pillars point opposite ways. This MUST block trade "\n'  # noqa: E501  # must match the source byte for byte
-                    '            "construction (Module 12.2). Note that CONFLICTED is the BASE STATE "',  # noqa: E501  # must match the source byte for byte
+                    '            "CONFLICTED — the pillars point opposite ways. This MUST block trade "\n'  # must match the source byte for byte
+                    '            "construction (Module 12.2). Note that CONFLICTED is the BASE STATE "',  # must match the source byte for byte
                     '            "CONFLICTED — the pillars point opposite ways. "',
                 )
             )

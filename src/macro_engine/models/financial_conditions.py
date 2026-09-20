@@ -59,6 +59,7 @@ skips it cannot mistake silence for corroboration.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -114,15 +115,31 @@ class FCIComponent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    value: float = Field(description="The component's current reading, in its own units.")
+    value: float = Field(
+        allow_inf_nan=False,
+        description=(
+            "The component's current reading, in its own units. MUST be finite: "
+            "the composite is `sum(contribution)`, and `sum` propagates NaN, so "
+            "one non-finite component silently destroys the whole index — and "
+            "because `nan > 0` is False, `tighter_than_average` would silently "
+            "read as 'looser than average'. Missing data is represented by the "
+            "component being ABSENT, never by a non-finite sentinel."
+        ),
+    )
     mean: float = Field(
-        description="Mean over the standardization window, in the same units as `value`."
+        allow_inf_nan=False,
+        description="Mean over the standardization window, in the same units as `value`.",
     )
     std: float = Field(
         gt=0.0,
+        allow_inf_nan=False,
         description=(
             "Standard deviation over the same window and in the same units. Must "
-            "be positive: it is the z-score divisor."
+            "be positive and FINITE: it is the z-score divisor. `gt=0.0` alone "
+            "does not reject `inf` (an infinite divisor yields a z-score of 0.0, "
+            "inventing a neutral reading), and it does not reject `nan` for the "
+            "right reason either — a NaN comparison is False, so the constraint "
+            "passes by accident rather than by design."
         ),
     )
 
@@ -208,6 +225,21 @@ def compute_fci(inputs: FCIInputs) -> ModelResult:
     contributions: dict[FCIComponentName, float] = {}
     for name, component in components.items():
         z = component.z_score
+        # `FCIComponent` refuses a non-finite value/std, but this is the point
+        # of USE and the component may have arrived via `model_construct`, a
+        # pickle, or a cache read. `sum` propagates NaN and a NaN comparison is
+        # False, so a poisoned component would not raise — it would report a
+        # fabricated "looser than average" verdict. Check the derived quantity,
+        # not the input, because `z` is what the composite actually consumes.
+        if not isfinite(z):
+            raise ValueError(
+                f"FCI component {name!r} produced a non-finite z-score ({z!r}) from "
+                f"value={component.value!r}, mean={component.mean!r}, "
+                f"std={component.std!r}. The composite is a sum, so one non-finite "
+                "term would silently make the whole index nan and its "
+                "'tighter_than_average' verdict False — a conclusion drawn from "
+                "no data (Section 21.0 rule 2)."
+            )
         sign = -1.0 if name in _NEGATED_COMPONENTS else 1.0
         z_scores[name] = z
         contributions[name] = sign * weights[name] * z

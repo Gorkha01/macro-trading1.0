@@ -16,6 +16,53 @@ Per-function completion record (AGENTS.md Section 21.0 / 21.2 Step 9).
 
 
 
+## Quality gates - measured 2026-09-20, after the Phase 0-4 final audit (`D-074`)
+
+```
+ruff check src tests tools scripts ->  All checks passed!
+ruff format --check               ->  221 files already formatted
+mypy (strict, python_version 3.12)->  Success: no issues found in 221 source files
+                                      (src, tests, scripts AND tools all typed)
+                                      [221 = 221, D-035 count parity satisfied]
+pytest -q                         ->  2358 passed, 1 skipped, 0 failed   (exit 0)
+                                      (+29 tests vs the 2329 baseline; 0 regressions)
+                                      the 1 skip is the pre-existing Phase-5-gated
+                                      tests/models/test_output_gap.py case
+uv run python tools/sweep_health.py -> 40 sweeps checked, 0 leftovers,
+                                      2 INHERITED failures (mutation_regime.py M8d,
+                                      mutation_lei_proxy.py M8e) - unchanged,
+                                      DO NOT FIX (targets absent by design)
+grep -rn "if False://|if True:"  src/macro_engine/  ->  nothing (required)
+```
+
+### Live OpenBB validation - `http://127.0.0.1:6901` (D-074)
+
+```
+snapshot   -> 22 fields populated, 0 failed, is_complete=True, assert_finite() PASS
+validation -> 2 INFO findings, 0 errors, 0 warnings
+              (FORWARD_LOOKING_HORIZON, SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK)
+thesis     -> status WATCH / convergence NO_SIGNAL / instrument NONE
+              11 warnings; gap 0.26 inside the rules' own dispersion 0.86
+              => NO TRADE, and that is the correct outcome
+```
+
+Real observations captured: `cpi_headline 334.131 @ 2026-08-01` (released
+2026-09-11), `cpi_core 337.765`, `pce_core 130.658`, `unemployment_rate 4.1`,
+`fed_funds_rate 3.63`, `gdp_real 24269.613`, `gdp_potential` projected to
+`2036-10-01` (forward-dated CBO projections correctly withheld from the
+snapshot field and preserved as an INFO flag), `sofr 3.85` vs `iorb 3.90`
+(corridor intact), `credit_spread_hy 2.70` > `ig 0.78` (ordering intact).
+Curve: 10YR-2YR slope `+27.0`bp; breakevens 5yr 2.32% / 7yr 2.34% / 10yr 2.33%
+/ 20yr 2.45% / 30yr 2.25%.
+
+### Audit scope, stated honestly (D-074)
+
+**Four defects found and fixed** (three code, one deployment); **one prescribed
+procedure proven not to exist** and documented as a negative finding; **eight
+classes of suspected defect investigated and confirmed already correct.** No
+Phase 5+ code was introduced, the architecture was not changed, and
+`AGENTS.md` was not modified. Full text: `docs/DECISIONS.md` **D-074**.
+
 ## Quality gates — measured 2026-09-18, after Module 15.1 (`D-059`)
 
 ```
@@ -6116,7 +6163,7 @@ false executability), and it is guarded on the executable side by the
 
 | ID | Item |
 |---|---|
-| **O-53** | **NEW (severity 2).** Two `ThesisType` members (`CROSS_COUNTRY_DIVERGENCE`, `EM_VULNERABILITY`) are declared and routable but return a sentinel by construction; and `"NONE"` is a legal `TradeIdea.instrument` value, so the sentinel is confusable with an instrument. |
+| **O-53** | **NEW (severity 2).** Two `ThesisType` members (`CROSS_COUNTRY_DIVERGENCE`, `EM_VULNERABILITY`) are declared and routable but return a sentinel by construction. **CORRECTED (D-071):** the row originally added *"and `"NONE"` is a legal `TradeIdea.instrument` value, so the sentinel is confusable with an instrument"* — the sentinel is **not** `"NONE"` in the shipped code and never was, and the corrected fact is worse: `is_trade` returns `True` for it, so the sentinel reads as a **live trade in an unexecutable instrument**. See **O-93**. |
 | **O-54** | **NEW (severity 1).** The `InstrumentUniverse` `Protocol` is not runtime-enforced; conformance is demonstrated by hand-written test stand-ins, not validated. |
 | **O-55** | **NEW (severity 1).** A third inert-proof flavour (**invariant**) now exists across four exemptions in three classes, and the harness reports presence, not class. |
 | **O-52** | Sharpened: three flavours now, and the taxonomy is still a single boolean in the summary. |
@@ -7631,3 +7678,319 @@ run if either re-inlines a literal path — verified by planting the regression.
 | **O-92** | **NEW (severity 2).** Both production HTTP clients default to `trust_env=True`, so loopback OpenBB traffic and FRED calls honour `HTTP_PROXY`. The provider works here (21/21 fields) but that is the proxy forwarding loopback, not design. Mitigated **for the live check only** (`trust_env=False` + the new guard); the data-layer fix is deferred. |
 | **O-87** | Unmoved (a `select_instrument` contract question). |
 | **O-85 / O-86** | Unmoved, with D-069's reductions still in force. |
+
+---
+
+## Module 17.1 / 17.4 — the risk-budget seam (`D-071`, `D-072`) — **PHASE 4, 2 of 4**
+
+**Files:** `src/macro_engine/portfolio/risk_budget.py` (the file both functions
+live in — Module 17 has been one file since D-054) plus two new scripts and one
+new test module.
+
+**Spec:** §9.2 (`compute_risk_parity_weights`), §9.3 (`translate_thesis_to_position`),
+§17.1 (the risk-share identity), §17.4 (the hook), §20.12C (the two-asset
+helpers this builds on), §21.0 (the no-prototyping rule), §22.6 (the Kelly cap it
+composes with).
+
+### D-071 — `compute_risk_parity_weights`, and the identity it does *not* give you
+
+`compute_risk_parity_weights` solves `w_i (Σw)_i = w_j (Σw)_j` by iteration, so
+that every asset contributes **equal risk** rather than equal notional. It is
+correct, and on its own it is useless to the thing that wanted it.
+
+**The finding is the gap between §17.1's two quantities.** Module 17.1 defines the
+risk contribution `RC_i = w_i (Σw)_i / σ_p²`. §9.3's job is to turn a
+**risk-budget share** into a **notional fraction**. Those are not the same
+number and the conversion is *not* the identity — it needs a covariance matrix,
+and **§9.3's signature does not supply one** (it takes a `MacroThesis` and a
+portfolio risk budget, nothing else). The naive conversion — using the risk share
+directly as the notional share — was measured **6.7x wrong** on a real two-asset
+book: it returned **0.018** where the correct answer was **0.12**. This is the
+increment's headline number, and it is why §9.3's output is a *proposed* size
+that a human signs off, never a sized order.
+
+### D-072 — `translate_thesis_to_position`: four gates, and a meta-gate
+
+`translate_thesis_to_position` takes a `MacroThesis` and one instrument's budgeted
+risk share and returns a `ProposedPosition` — or, more often, a refusal. The
+docstring's own framing, which the sweep now pins: **"There are four, not five:
+a gate that cannot stop a proposal is not a gate."**
+
+| # | Gate | Outcome member | Condition |
+|---|---|---|---|
+| 1 | sentinel / no production instrument | `refused_no_trade_thesis` | the thesis carries `NO_PRODUCTION_INSTRUMENT` or status `empty_no_trade` |
+| 2 | scenario distribution uncalibrated | `refused_scenarios_uncalibrated` | `scenario_sizing_permitted` is `False` |
+| 3 | universe does not permit the instrument | `refused_instrument_out_of_universe` | `ProductionUniverse().permits(...)` is `False` |
+| 4 | budget below the minimum | `refused_budget_too_small` | the share (or its implied size) is below the configured floor |
+
+**The declared member set is now pinned against the code.** `PositionTranslationOutcome`
+is a six-member `Literal` and the file's docstring makes a *counting* claim about
+it ("The six members are exhaustive"). The sweep proved that claim **was changeable
+to any number with every test green** — because `get_args` reads the type and a
+docstring is a string (mutants **M10.2**, **M10.3** both SURVIVED the first run).
+That is not hypothetical: the type docstring **shipped saying "nine members" for a
+`Literal` that had six**. Repaired by
+`test_the_docstrings_agree_with_the_literal_they_describe`, which recounts the
+members and the gates from the docstring itself.
+
+**The meta-gate finding — the right outcome with the wrong reason.** Several
+refusals returned the *correct* `outcome` while naming a *different* gate's reason
+in the `reason` phrase. No numeric assertion can see this; only the reason string
+can. The sweep's M2 group exists for exactly this and is the reason the live check
+re-reads the reason on **all seven** paths rather than only the outcome.
+
+**`binding_constraint` must track its producer.** Gate 4 carries a published bound
+(`max_position_pct_of_portfolio`, **0.15**, a *fraction* despite `_pct`) and a
+divisor (**2.0**). The live check drives **eight** budgets from 0.01 to 1.00 and
+asserts the returned `binding_constraint` changes with the input that produced it,
+rather than printing a constant.
+
+### Verification — all gates green at **215 files**
+
+| Gate | Result |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` | **215 files already formatted** |
+| `mypy --strict` | **no issues in 215 source files** (D-035: matches the line above) |
+| `pytest -m "not live"` | **2295 passed / 1 skipped / 0 failed** |
+| `tests/portfolio/test_thesis_position.py` | **45 passed** (was 44) |
+| `scripts/mutation_thesis_position.py` | **22 applied / 21 killed / 1 survived (the control)** — **CERTIFIES** |
+| `scripts/live_thesis_position_check.py` | **PASSED (exit 0)** over the **real** pipeline, all four US families |
+| Reachability audit `--check-baseline` | **PASS — 59 = 59, no regressions** |
+| `tools/sweep_health.py` | **0 leftovers, 0 mutant shapes**, 2 failures — both **inherited** (`mutation_regime.py` M8d, `mutation_lei_proxy.py` M8e) |
+
+### Why no API path supplies a book — checked, and it is spec-conformant
+
+**Measured:** none of the three production call sites passes `risk_budget_target` —
+`routes_thesis.py:200`, `routes_query.py:213`, `reasoning_stream.py:210` all rely on
+the default. So **every API path reaches §17.4 with `target is None`** and the axis
+publishes *"DID NOT RUN"*.
+
+**This was verified against §17.4's own text rather than assumed, and it is
+correct:**
+
+1. **The rule is explicitly conditional.** `AGENTS.md:3836` scopes it to *"once
+   Phase 4+ auto-sizing exists"* — and supplies one. §17.4 is written for a system
+   that has auto-sizing, and this build has a **proposal** path, not an auto-sizing
+   one.
+2. **It requires `RiskLimits`**, a portfolio-level object §17.4's own second bullet
+   assigns to **Phase 5+** (Module 18.3). The book does not exist yet.
+3. **No honest source exists for a book.** §21.1's five source types are LIVE /
+   DERIVED / CONFIG / MANUAL / BLOCKED; a portfolio holding is **none of them**, and
+   §21.0 rule 3 forbids inventing an input. So the correct behaviour is the
+   **disclosed absence** the axis already produces.
+
+**The disclosure was then checked to reach a consumer, not merely to exist.**
+Verified four properties by inspection of the live modules: the route returns the
+**thesis object itself** (`thesis=thesis`); `MacroThesis.warnings` is a first-class
+schema field; the axis writes into `thesis.warnings` rather than returning a sibling
+value; and `_apply_risk_axis` returns a `MacroThesis`. **A consumer that reads only
+`status` sees `DRAFT` and cannot tell "unsized" from "sized and clear" — which is
+exactly why the warning exists, and why it travels inside the object rather than
+beside it.**
+
+**What this leaves open is O-97:** the wiring is complete at the builder and absent
+at the API, by design. The open part is **enforcement, not behaviour** — when
+Phase 5 supplies a book, these three call sites are where it must be passed, and
+`risk_budget_target` is **optional**, so a future caller who forgets it gets the
+same "DID NOT RUN" path rather than an error. Closing it needs the object that does
+not exist, so it is recorded rather than fixed.
+
+### The increment's highest-value defect — the gate was reading its sources differently from every sweep
+
+`tools/sweep_health.py` reported **13 `[FAIL]` sweeps**. Ten of them targeted
+`src/macro_engine/config.py`. Every one of those 13 sweeps was *correct*;
+`sweep_health.py` was wrong.
+
+> `_own_target_check` and the leftover scan both used
+> `Path.read_bytes().decode("utf-8")`. Every sweep anchors with bare `\n` and
+> reads with `Path.read_text()`. `read_text` applies **universal-newline
+> translation**; `read_bytes().decode()` does **not**.
+
+`config.py` is the **only CRLF file among the 69 under `src/`** (4292 CRLF, 0 bare
+LF), and it is the target of all 13 failures. Reproduced on the same file with both
+readers: **bytes form → 45 problems; translated form → 6**. **87% of the report was
+line-ending artefact.**
+
+**And the noise was masking a real defect.** With the reader fixed, the scan
+immediately surfaced **`MX3c`** — a leftover mutant in
+`src/macro_engine/models/yield_curve.py`, **O-61's fifth recurrence**. The working
+tree held `adjusted = base_rate + min(adjustment, settings.ceiling)` where `HEAD`
+has `adjusted = min(uncapped, settings.ceiling)`. The false positive and the true
+positive were **the same line**. Three tests caught it
+(`test_inversion_adjustment_ceiling_binds_at_the_shipping_base_rate` + 2 siblings);
+it was also **destroying the anchors of its own sweep's `MX3a`–`MX3d` mutants**,
+which had been reporting "target ABSENT" — a symptom that had been read as stale
+anchors. Restored from `HEAD`; line endings verified preserved (1748 bare LF, 0
+CRLF); the suite returned to **2295 passed**. Filed as **O-95**.
+
+### The second finding — two sentinels, documented as one
+
+The increment's live check had to distinguish "no instrument" from "instrument not
+in the universe". They are **two different strings**; **four documentation sites**
+asserted they were the same. Corrected in place with `**CORRECTED (D-071/D-072)**`
+markers. Filed as **O-93**, with the sharper consequence the correction exposed:
+`is_trade` returns `True` for the sentinel, so it reads as a **live trade in an
+unexecutable instrument**.
+
+### The remaining Phase 4 item — **not** in this increment
+
+The **risk-axis hook** (§17.4, handoff §3b item 4): `thesis_layer/builder.py` must
+gain a risk-budget parameter **whose default preserves today's behaviour**, and the
+orchestrator must supply a **real book**. It is deliberately separate — it changes
+the builder's signature, which every builder test and D-069's sweep anchor read.
+Also outstanding from the same section: **O-94** — §16.2 Q12's exposure half is
+computed nowhere and needs Module 18.
+
+---
+
+## Module 17.4 (§17.4) — the risk-axis hook, and a bound that could never fire (`D-073`) — **PHASE 4 COMPLETE, 4 of 4**
+
+**Files:** `src/macro_engine/thesis_layer/builder.py` (`_apply_risk_axis`, the
+`risk_budget_target` parameter, the live-path restructuring), `config/settings.yaml`
+(`thesis_demotion_fraction_value`, **0.02 → 0.03**), `src/macro_engine/config.py`
+(the accessor's docstring), plus one new test module, one new sweep and one new
+live check.
+
+**Spec:** §17.4 (*"feedback into thesis validity"*), §21.0 (the no-prototyping
+rule), §21.1 (the source-type vocabulary), §21.4 (a gap must be stated, not
+papered over), §25 (the scenario-probability gate), §22.13 (a schema change is its
+own increment).
+
+### The wiring — three outcomes, and none of them is silent
+
+`build_us_macro_thesis` gained `risk_budget_target: RiskBudgetTarget | None = None`.
+The live path now constructs the thesis first and returns
+`_apply_risk_axis(thesis, target)`; the **stand-down path returns before the axis**,
+which was **measured** correct rather than assumed — §17.4 governs only theses that
+reach sizing, and a stand-down has no size to demote.
+
+| Situation | `status` after | What the warning says |
+|---|---|---|
+| no budget supplied (`target is None`) | `DRAFT` (unchanged) | *"§17.4's sizing feedback **DID NOT RUN**. A `DRAFT` here means 'not yet sized against a book', NOT 'sized and verified'."* — **§21.1 defines no source for portfolio holdings**, so no honest book exists and §21.0 rule 3 forbids inventing one |
+| the translator **refused** | `DRAFT` (unchanged) | *"This is a **REFUSAL**, not a demotion: §17.4 demotes a thesis whose size is **too small**, and this is a different finding."* |
+| sized at or below `risk.thesis_demotion_fraction` | **`WATCH`** | *"**DEMOTED to `WATCH`** by §17.4: … (binding constraint: …)"* |
+| sized above the bound | `DRAFT` | *"Sized by §17.4: …"* |
+
+**The refusal/demotion split is the design point.** Collapsing them would publish a
+*refusal* (no position exists) as a *risk verdict* (a position was measured and
+found too small) — and §17.4's whole content is the *second* statement, so a fused
+warning would attribute a finding to the rule that the rule did not make.
+
+### THE FINDING — the near-zero bound shipped at a value no input could reach
+
+**`thesis_demotion_fraction` was `0.02`. The smallest published
+`fraction_of_capital` any input can produce is `0.02941`.** So §17.4 — the single
+place the risk layer writes back into the thesis lifecycle, the rule that encodes
+the LTCM lesson — was **declared, consumed, and structurally incapable of firing**.
+
+**How it surfaced: a test that SKIPPED.** `test_a_demoted_thesis_moves_to_watch_and_says_why`
+ran, skipped, and was reported as a **green tick**.
+
+**The reachable set is six discrete values, not an interval — measured:
+
+```
+0.02941 · 0.03472 · 0.042735 · 0.069445 · 0.125 · 0.15
+```
+
+`0.02941` is full `f*` `0.05882` divided by `kelly.fractional_divisor` `2.0`.
+
+**Why discrete.** Full Kelly is the argmax of expected log growth. For a
+**two-branch** distribution with a positive edge that objective is **monotone in
+`f`**, so `f*` pins at the edge of the search domain and the *position cap*
+(`max_position_fraction` `0.15`) produces the published number rather than the
+Kelly fraction. Only **asymmetric** branch sets land strictly inside the domain —
+six such pairs were measured and are the six values above.
+
+**The bound now carries three constraints, and the third is the find:**
+
+1. `> 0` — a zero bound demotes every sized thesis.
+2. `< max_position_fraction` (`0.15`) — a bound above the cap can never bind.
+3. **`>= the smallest reachable size` (`0.02941`)** — a bound below it is
+   **unreachable**, which is the state this increment found `0.02` in.
+
+`0.03` satisfies all three (inside `[0.02941, 0.15)`). **The remedy is not a better
+number**: `scripts/live_risk_axis_check.py` **recomputes the reachable set** and
+fails if the bound stops splitting it, because a config bound whose validity
+depends on the model's output is only safe if something re-derives that output.
+
+**This is the ninth instance of the project's declared-consumed-unreachable class**
+(D-045/046/048, O-53, O-27, twice inside D-072) and the **third distinct
+vocabulary** it has appeared in — a **lifecycle state**, after a guard and an
+instrument sentinel.
+
+### O-96 — §17.4's literal `CANDIDATE → WATCH` names an unreachable transition
+
+§17.4 reads *"demoted from `CANDIDATE` back to `WATCH`."* **Measured: nothing in the
+tree produces `CANDIDATE`.** `build_us_macro_thesis` assigns `DRAFT` to a thesis
+that reaches sizing and `WATCH` on all three stand-down paths; promotion to
+`CANDIDATE`/`ACTIVE` is a **human** act by design, so it has no producer in an
+automated build. The axis therefore operates on **`DRAFT`**, the state that actually
+reaches sizing, and its warning **names both the state it demoted from and the
+state it demoted to verbatim** so no consumer must infer the lifecycle point.
+Recorded as **O-96** rather than reinterpreted silently: the two readings differ
+downstream, and an implementer's choice between two lifecycle points is exactly
+what this ledger exists to record (cf. **O-86**, where `WATCH` already carries two
+meanings).
+
+### Verification — all gates green at **218 files**
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | **All checks passed** |
+| `ruff format --check src tests tools scripts` | **218 files already formatted** |
+| `mypy --strict src tests tools scripts` | **no issues in 218 source files** (D-035: matches the line above) |
+| `pytest -q` | **2329 passed / 1 skipped / 0 failed** (the skip is the pre-existing Phase-5-gated `test_output_gap.py:255`) |
+| `tests/thesis_layer/test_risk_axis.py` | **17 passed, 0 skipped** — run 1 was **14 passed / 3 failed / 1 skipped** |
+| `scripts/mutation_risk_axis.py` | **9 applied / 8 killed / 1 survived (the honesty control)** — **CERTIFIES**. Run 1 was **8/6/2**, both survivors **real test gaps** |
+| `scripts/live_risk_axis_check.py` | **PASSED (exit 0)** — reproduces the six reachable sizes and confirms a 0.03 bound demotes **1 of 6** |
+| `tools/sweep_health.py` | **38 sweeps, 0 failures, 0 leftovers, 0 mutant shapes** |
+
+### The sweep refused to certify on its first run — two survivors, both real gaps
+
+| Mutant | What it changed | Why it survived | Killer added |
+|---|---|---|---|
+| **M1.2** | the axis's **local** bound → `1.0` | the bound tests read the **config leaf**; the mutation changed the **local variable**. Both were "the bound" and neither test touched the other — **O-29's mis-target class one level up: not a mutation aimed at the wrong function, but tests asserting on the wrong copy of the same value** | `test_the_bound_the_axis_actually_uses_splits_the_reachable_set` — drives the axis and reads the **outcome**, never re-reads the setting |
+| **M4.1** | `<=` → `<` on the demotion comparison | every demotion test landed a size **below** the bound, and `<=`/`<` differ on **exactly one value** — if no input produces it, the two operators are the same function and no test can tell them apart | `test_the_demotion_fires_at_the_boundary_not_only_below_it` — plants a size **exactly on** the bound (via `monkeypatch` on the `thesis_demotion_fraction_value` **leaf**, since the property is read-only) |
+
+Both closed by **adding tests, never by exempting a mutant**. Second run
+**9 / 8 / 1** with the survivor being the M5 honesty control → **CERTIFIES**.
+
+### Two guards amended, not deleted (D-067), each with a written reason
+
+- **`test_integrity_gates.py`'s Kelly guard — STRENGTHENED.** It now **forbids raw
+  primitives**, **enumerates the permitted surface**
+  (`translate_thesis_to_position` is the one sanctioned consumer per §25), and adds
+  a **behavioural receipt**
+  (`test_section_25_gate_precedes_kelly_on_the_translation_path`). Re-checking §25
+  showed the original guard was narrower than the section: it tested *where Kelly
+  is called*, not *what the gate order guarantees*.
+- **`test_builder_strictness.py`'s `macro_engine.portfolio` prohibition — REMOVED.**
+  The §17.4 hook **requires** that import from `thesis_layer/builder.py`. **A guard
+  forbidding the wiring the specification mandates is a guard against the
+  specification.** The removal carries its reason in the test's own docstring, so a
+  later reader does not restore it as an obvious tidy-up.
+
+### Where this increment leaves Phase 4
+
+**Phase 4 is COMPLETE (4 of 4).** Items 1–2 closed at D-071/D-072; item 3
+(`portfolio_volatility_two_asset` / `marginal_risk_contributions`, §20.12C) closed
+at D-072; **item 4 — this hook — closed here.** The Phase-4 instrument functions
+themselves (`evaluate_drawdown_rules`, `check_rebalancing_drift`,
+`volatility_target_scaling`, `kelly_position_size`) shipped earlier under Tier 4
+(D-058–D-062) and are counted there.
+
+**Phase 5 is NOT started, by explicit instruction.** Its entry point is the **13
+Tier-5 deferrals**, each of which §22.3 requires to bring **its own verified
+data-source registry, its own central-bank reaction function** (the ECB's 20-country
+compromise, the BoJ's deflation-scar bias and the PBoC's non-Western rule are
+genuinely different logic, not the Fed's Taylor Rule relabelled), and **its own
+instrument set**.
+
+**Carried into Phase 5:** **O-96** (above), **O-94** (Q12's exposure half — needs
+Module 18, which Phase 5 builds), **O-95** (the `sweep_health.py` reader mismatch is
+fixed; the residual question is whether any *other* tool compares source text
+against anchors with a different reader — `tools/reachability_audit.py` is the next
+one to check), **O-93**, **O-92 · O-90 · O-91 · O-87 · O-86 · O-84**, and the two
+inherited sweep failures (`mutation_regime.py` `M8d`, `mutation_lei_proxy.py` `M8e`).
+

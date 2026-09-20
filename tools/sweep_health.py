@@ -251,11 +251,38 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
     ``str.replace(old, new, 1)`` takes the FIRST occurrence, so an ``old``
     appearing twice silently rewrites the wrong site and the sweep reports a
     surviving test — a conclusion about code nobody mutated (D-048).
+
+    **The read must translate newlines, and the shipped version did not.** This
+    function read files with ``read_bytes().decode("utf-8")``, which returns the
+    bytes as they sit on disk, while every sweep anchors its ``old`` strings with
+    ``\\n``. Python's ``Path.read_text`` and ``open()`` in text mode apply
+    **universal-newline translation** (CRLF and CR both become LF); the bytes
+    form does not. On a CRLF file every LF anchor therefore matched **zero**
+    times and this function reported it ABSENT.
+
+    Measured on the tree as shipped: ``src/macro_engine/config.py`` is the **only**
+    CRLF file among 69 under ``src/`` (4 292 CRLF, 0 bare LF) — and **every one of
+    the 13 sweeps this tool reported ``[FAIL]``** targets it. Reproduced with both
+    readers over the whole directory: the bytes form reports **45 problems**, the
+    translated form reports **6**, so **39 of 45 findings (87%) were artefacts of
+    the line endings** and not one of them described the code.
+
+    This is the failure mode this tool's own docstring warns about — a gate
+    manufacturing findings (lesson 80) — and it is the **second** time it has
+    happened here: the first version returned a single target path for a
+    multi-file catalogue and reported five false ABSENTs (see
+    ``_legacy_targets``). The lesson is the same both times: **a check that
+    produces a large, homogeneous block of failures is more likely to be broken
+    than the thing it is checking**, and the way to tell is to reproduce the
+    finding with a second, independent reader rather than to trust the first.
     """
     problems: list[str] = []
     for name, target, old, new in catalogue:
         try:
-            text = Path(target).read_bytes().decode("utf-8")
+            # `read_text` (not `read_bytes().decode`) — see the docstring. Any
+            # reader the SWEEPS do not use would reintroduce this: a sweep reads
+            # its source with `Path.read_text`, so this must match it exactly.
+            text = Path(target).read_text(encoding="utf-8")
         except OSError:
             continue
         if old == new:
@@ -368,7 +395,16 @@ def main() -> int:
         unverifiable = 0
         for name, target, old, new in catalogue:
             try:
-                text = target.read_bytes().decode("utf-8")
+                # `read_text`, for the reason `_own_target_check`'s docstring
+                # gives: the sweeps read their sources with universal-newline
+                # translation and the bytes form does not. Here the mismatch
+                # moves the test in the OPPOSITE direction from the ABSENT
+                # false positives -- on a CRLF file `old not in text` is
+                # permanently True, so any mutation whose replacement text is
+                # also LF would be reported **STILL APPLIED** on a clean tree.
+                # A leftover check that cries wolf is worse than a missing one:
+                # it trains the operator to ignore the one real hit (O-61/O-83).
+                text = target.read_text(encoding="utf-8")
             except OSError:
                 continue
             if not new.strip():

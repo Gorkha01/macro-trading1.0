@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
+from math import isfinite
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.schemas import (
@@ -163,6 +164,32 @@ def validate_observations(
     tolerated_future_dates: list[date] = []
 
     for point in points:
+        # --- finiteness ----------------------------------------------------
+        # FIRST, because every following check is a comparison and a NaN
+        # compares False against all of them: `nan < min`, `nan > max` and
+        # `nan == any_date` are all False, so a NaN passes range, duplicate and
+        # ordering checks unchallenged. `+inf`/`-inf` are caught by a bound
+        # only when the relevant bound is supplied, and 2 of the registry's 45
+        # series declare no `plausible_range` at all. Finiteness is therefore
+        # the one property that must be checked directly rather than inferred
+        # from a threshold (Section 21.0 rule 2).
+        if not isfinite(point.value):
+            report.findings.append(
+                ValidationFinding(
+                    series_id=series_id,
+                    code="NON_FINITE_VALUE",
+                    severity=Severity.ERROR,
+                    detail=(
+                        f"value {point.value!r} is not finite. A non-finite value is "
+                        "not a missing value: it is present and testable, so no "
+                        "downstream check rejects it and the model silently "
+                        "propagates nan. The row must be dropped at the source or "
+                        "the series reported unavailable."
+                    ),
+                    observation_date=point.observation_date,
+                )
+            )
+
         # --- future dating -------------------------------------------------
         # Compared in UTC-equivalent terms: observation_date is a calendar date
         # and retrieved_at is timezone-aware UTC. A provider stamping tomorrow's

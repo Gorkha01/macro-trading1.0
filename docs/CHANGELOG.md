@@ -10,6 +10,348 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-075 / D-078 - Phase 0-4 audit: two sweeps that had stopped gating, and `nan` as a readable value
+
+**No Phase 5 work. No architecture change. `AGENTS.md` unchanged.** An audit of
+the shipped Phase 0-4 build, under the standing rule that **missing data must
+never become `0`, `False`, neutral, unchanged, empty-but-successful or an
+invented default.**
+
+**Two findings, both active, both fixed with RED->GREEN tests.**
+
+**Fixed - two mutation sweeps had silently stopped gating (D-075)**
+
+- **`mutation_drawdown.py` CX5** anchored `raw = self.drawdown_thresholds.get("tiers")`;
+  the live accessor reads `get("tiers", [])` - a defensive default added after
+  the anchor was written. **0 occurrences**, so CX5 could not be applied and its
+  mutants were invisible.
+- **`mutation_regime.py` M8d** pinned two lines as **adjacent**; a four-line
+  comment block was later inserted between them. **0 occurrences.**
+- Neither mutation surface had changed - both were **stale anchors**, not lost
+  tests. `tools/sweep_health.py` went from **2 failures to 0**: 40 sweeps,
+  0 leftovers, 0 mutant shapes, **0 failures**. The previously documented
+  "2 INHERITED failures, do-not-fix (M8d, M8e)" was **stale in both directions**
+  (measured: `CX5` + `M8d`; `M8e` never failed; neither was a genuine
+  do-not-fix limitation).
+
+**Fixed - `nan` was a READABLE value in all four verdict-producing paths (D-078)**
+
+- **`classify_regime_rule_based(output_gap=nan)`** returned
+  `growth_axis='above_trend'`, `state='reflation'` - a **bullish regime invented
+  from an absent headline input**, because `_growth_axis` is a fallthrough and
+  `nan` satisfies neither threshold test, so it lands in the most expansionary
+  bucket.
+- **`inflation_trend_3m=nan`** returned `'flat'` - a missing reading published
+  as a measurement.
+- **`taylor_rule(pi_current=nan)`** returned `value=nan`, which every "is the
+  prescribed rate above actual?" test reads as `False` - *"the Fed is not behind
+  the curve"*, from a value it could not compute.
+- **`MarketPricingGap(raw_gap=nan)`** returned **`direction='aligned'`,
+  `is_meaningful=False`** - *"the model and the market agree, insignificantly"*:
+  **a silent NO-TRADE manufactured from absent data**, in the one class the
+  whole pipeline exists to build a *disagreement* from.
+- **`_direction_for(nan, +1)`** returned **`'contradicts'`** - an active
+  disagreement, and the exact outcome `test_signals.py`'s documented defects 1
+  and 2 exist to prevent, arriving **through the readability gate those fixes
+  sit behind**, because `nan` **is** a `float` instance.
+
+**The fix shape: guard the input DOMAIN, not the range.** A `model_validator` on
+`RegimeInputs` (on the object, so `regime_tension` and the trilemma check are
+covered too) - a shared `_FiniteInputs` base for `TaylorRuleInputs` and
+`FirstDifferenceInputs` - `allow_inf_nan=False` on `MarketPricingGap`'s four
+numeric fields - and `isfinite` in `_signed_scalar`, so a non-finite signal is
+**reported in the `unreadable` census** rather than silently neutralised.
+
+**Also recorded:** three code fixes already on disk cited `(D-076)` and
+`(D-077)` while **neither decision entry existed in any record file**; both are
+now written at the numbers their docstrings asserted.
+
+**Tests:** +43 this session (36 in the new
+`tests/models/test_non_finite_inputs.py`, 11 in `tests/thesis_layer/test_signals.py`),
+each parametrized over `nan`/`+inf`/`-inf` with a "finite input unchanged"
+control.
+
+**Gates:** `ruff check` clean - `ruff format --check` **224** - `mypy --strict`
+**224 source files, no issues** (224 = 224, D-035) - `pytest -q` **2401 passed,
+1 skipped, 0 failed** - `sweep_health.py` **0 failures**.
+
+### D-074 - Phase 0-4 final audit: four defects every existing gate could not see
+
+**No Phase 5 work. No architecture change. `AGENTS.md` unchanged.** An external
+audit directive asked for a defect hunt across code, logic, economic reasoning,
+missing-data handling, PIT discipline, source identity and test assumptions,
+under one binding rule: **never convert missing data into `0`, `False`, neutral,
+unchanged, empty-but-successful or an invented default.**
+
+**Four defects found, all fixed, each with a RED->GREEN regression test. The
+common thread: every one was a MISSING-DATA conversion, and every one was
+invisible to the existing gates.**
+
+**Fixed**
+
+- **Non-finite values passed every gate.** `dropna()` removes nulls, not
+  `inf`; Pydantic's `float` accepts `nan`/`inf` by default; and the
+  plausibility check is **made of comparisons, and every comparison is `False`
+  for `NaN`** - so a poisoned series reported **CLEAN**. `+/-inf` was caught
+  only when the series carried a `plausible_range`, and **2 of 45 registered
+  series carry none**. Fixed at four layers: normalisation drops non-finite
+  rows; `ObservationPoint.value` is `allow_inf_nan=False`;
+  `MacroDataSnapshot.assert_finite()` runs before persistence; and a
+  `NON_FINITE_VALUE` `Severity.ERROR` is now the **first** validation check,
+  because every check after it is a comparison.
+- **One `NaN` FCI component silently inverted the composite.**
+  `sum()` propagates `NaN`; `NaN > 0.0` is `False`; the model then reported
+  *"looser than average"* **from absent data**. `std = inf` produced
+  `z_score == 0.0`, an invented "exactly average". Fixed in `FCIComponent`
+  (`allow_inf_nan=False`, `gt=0.0` on `std`) and at the point of use in
+  `compute_fci` (a component may arrive via `model_construct` or a cache and
+  never face field validation).
+- **Provenance recorded the preference, not the path.** On a cross-path
+  fallback the frame was labelled `openbb:http://127.0.0.1:6901` although the
+  in-process package served it - a **fabricated transport fact**. Fixed with a
+  **mandatory keyword-only** `served_by` on `_normalize`, so the type system
+  refuses a call that does not say which path answered.
+- **Config pointed at `:6900`** against an explicit "do not use `6900`". Both
+  ports served identical live instances - an ambiguity, not an outage, which is
+  why nothing had failed. Repinned `config/settings.yaml`,
+  `src/macro_engine/deployment.py` and the client docstring to `:6901`.
+
+**Documented (no code change - the code was already correct)**
+
+- **The prescribed vintage route does not exist on this deployment.** Measured
+  five ways: 278 live OpenAPI operations, **zero** with `vintage` in any path;
+  **zero** with any `realtime*` parameter; sending `realtime_start`/
+  `realtime_end` anyway returns **HTTP 200, `warnings: null`, and 1947 data -
+  the parameters are silently dropped**; the in-process SDK has no
+  `obb.economy.fred` namespace; ALFRED returns 404 and `fredgraph.csv?
+  vintage_date=` ignores the parameter. `config.py`, `publication_dates.py`
+  and `schemas.py` already document the absence correctly. Evidence appended
+  to **O-6**. Also confirmed the engine requires **no `FRED_API_KEY` of its
+  own** - it reaches FRED only through OpenBB.
+
+**Verified correct, deliberately unchanged**
+
+`datetime.utcnow()` appears **only in docstrings** (production uses the
+timezone-aware `utc_now()`); `raw_kelly = ev / 100` is **not implemented
+anywhere** and a test forbids it; `SnapshotStoreEmptyError` distinguishes an
+absent store from an empty snapshot; `validate_snapshot` is genuinely
+registry-driven; `marginal_risk_contributions` refuses on `variance <= 0`;
+Phase 4+ stubs raise rather than returning neutral values; no hidden numeric
+defaults, hardcoded scenario probabilities or placeholder arithmetic in
+production paths.
+
+**Measured after the fixes**
+
+```
+ruff check src tests tools scripts  ->  All checks passed!
+ruff format --check                 ->  221 files already formatted
+mypy --strict src tests tools scripts -> Success: no issues found in 221 source files
+pytest -q                           ->  2358 passed, 1 skipped, 0 failed   (+29 tests)
+tools/sweep_health.py               ->  40 sweeps, 0 leftovers, 2 INHERITED failures (unchanged)
+grep "if False://|if True:"          ->  nothing (required)
+live :6901 snapshot                 ->  22 fields, is_complete=True, assert_finite() PASS
+live :6901 thesis                   ->  WATCH / NO_SIGNAL / instrument NONE  (NO TRADE, correct)
+```
+
+The live thesis correctly returned **NO TRADE** on real data: gap `0.26` inside
+the policy rules' own dispersion `0.86`, so Q6 stands the trade down. That is
+the audit's intended result - *real data -> correct calculation -> correct
+economic interpretation -> traceable reasoning -> honest uncertainty* -
+**including when the honest answer is to do nothing.**
+
+### D-073 - A demotion bound that no input could reach, and a SKIP that hid it
+
+**Phase 4 - COMPLETE (4 of 4 items).** The §17.4 risk-budget hook. `build_us_macro_thesis`
+gained `risk_budget_target: RiskBudgetTarget | None = None`, and a new
+`_apply_risk_axis(thesis, target)` in `src/macro_engine/thesis_layer/builder.py`
+runs it on the live path, after the thesis is constructed and before it is
+returned. The stand-down path returns **before** the axis — measured correct rather
+than assumed, since §17.4 governs only theses that reach sizing.
+
+**§17.4 is the only rule that carries a risk-layer finding back into the thesis
+lifecycle**, and it is the only back-edge in the system. It has **three outcomes,
+none of them silent:**
+
+- **No budget supplied** — the thesis keeps `DRAFT` and a warning states *"§17.4's
+  sizing feedback **DID NOT RUN**"* and that a `DRAFT` here means *"not yet sized
+  against a book"*, **not** *"sized and verified"*. §21.1 defines **no source** for
+  portfolio holdings, so no honest book exists and §21.0 rule 3 forbids inventing
+  one.
+- **The translator refused** — the thesis keeps `DRAFT` and the warning says *"This
+  is a **REFUSAL**, not a demotion: §17.4 demotes a thesis whose size is **too
+  small**, and this is a different finding."* Fusing the two would publish a
+  *refusal* (no position exists) as a *risk verdict* (a position was measured and
+  found too small) — attributing to the rule a finding the rule did not make.
+- **A size at or below the bound** — **DEMOTED to `WATCH`**, naming the binding
+  constraint.
+
+**The finding: `thesis_demotion_fraction` shipped at `0.02`, and the smallest
+published `fraction_of_capital` any input can produce is `0.02941`.** §17.4 — the
+rule that encodes the LTCM lesson — was therefore **declared, consumed, and
+structurally incapable of firing**, and the test that would have caught it
+**skipped**, which a suite renders as a green tick.
+
+Measured, the reachable set is **six discrete values**, not an interval:
+`0.02941 · 0.03472 · 0.042735 · 0.069445 · 0.125 · 0.15`. It is discrete because
+**full Kelly is the argmax of expected log growth** and, for a two-branch
+distribution with a positive edge, that objective is **monotone in `f`** — so `f*`
+pins at the edge of the search domain and the *position cap* produces the published
+number. Only asymmetric branch sets land strictly inside. `0.02941` is full `f*`
+`0.05882` over `kelly.fractional_divisor` `2.0`.
+
+The bound is now **`0.03`**, inside `[0.02941, 0.15)`, and carries **three**
+constraints where it previously carried one implicitly: `> 0`;
+`< max_position_fraction` (`0.15`); and **`>= the smallest reachable size`
+(`0.02941`)** — the third being this increment's find. **The remedy is not a better
+number:** `scripts/live_risk_axis_check.py` **recomputes the reachable set** and
+fails if the bound stops splitting it.
+
+**This is the ninth instance of the project's declared-consumed-unreachable class**
+(D-045/D-046/D-048, O-53, O-27, twice inside D-072) and the **third distinct
+vocabulary** — a lifecycle state, after a guard and an instrument sentinel.
+
+**O-96 — §17.4's literal `CANDIDATE → WATCH` names an unreachable transition.**
+Nothing in the tree produces `CANDIDATE`: the builder assigns `DRAFT` to a thesis
+that reaches sizing and `WATCH` on all three stand-down paths, and promotion is a
+human act by design. The axis operates on `DRAFT` and its warning names **both the
+state demoted from and the state demoted to verbatim**. Recorded rather than
+silently reinterpreted, because the two readings differ downstream.
+
+**The mutation sweep refused to certify on its first run — 8 applied / 6 killed / 2
+survived, and both survivors were real test gaps.**
+
+- **`M1.2`** moved the axis's **local** bound while the tests asserted on the
+  **config leaf** — both were "the bound" and neither test touched the other.
+  **O-29's mis-target class one level up: not a mutation aimed at the wrong
+  function, but tests asserting on the wrong copy of the same value.** Killed by
+  `test_the_bound_the_axis_actually_uses_splits_the_reachable_set`, which drives the
+  axis and reads the **outcome** instead of re-reading the setting.
+- **`M4.1`** changed `<=` to `<` and survived because every demotion test landed a
+  size **below** the bound. `<=` and `<` differ on **exactly one value**; if no
+  input produces it they are the same function and no test can separate them.
+  Killed by `test_the_demotion_fires_at_the_boundary_not_only_below_it`, which
+  plants a size **exactly on** the bound.
+
+Both closed by **adding tests, never by exempting a mutant.** Second run
+**9 applied / 8 killed / 1 survived** (the honesty control) — **CERTIFIES**.
+
+**Two guards amended, not deleted (D-067), each with a written reason.** The Kelly
+guard in `test_integrity_gates.py` was **strengthened**: it now forbids raw
+primitives, **enumerates the permitted consumer surface**
+(`translate_thesis_to_position` is the one sanctioned route per §25), and adds a
+behavioural receipt. The `macro_engine.portfolio` prohibition in
+`test_builder_strictness.py` was **removed**, because the §17.4 hook *requires* that
+import — **a guard forbidding the wiring the specification mandates is a guard
+against the specification.**
+
+**Gates at close:** `ruff check` clean; `ruff format` **218** = `mypy --strict`
+**218** (D-035 parity); `pytest -q` **2329 passed / 1 skipped / 0 failed** (the skip
+is the pre-existing Phase-5-gated `test_output_gap.py:255`);
+`tests/thesis_layer/test_risk_axis.py` **17 passed, 0 skipped**;
+`scripts/mutation_risk_axis.py` **9/8/1 CERTIFIES**;
+`scripts/live_risk_axis_check.py` **PASSED, exit 0**;
+`tools/sweep_health.py` **38 sweeps, 0 failures, 0 leftovers**.
+
+**Phase 5 is NOT started, by explicit instruction.** Its entry point is the 13
+Tier-5 deferrals, each of which §22.3 requires to bring its own verified
+data-source registry, its own central-bank reaction function, and its own
+instrument set.
+
+### D-072 - A risk budget that is not a notional, and a gate that was reading its sources differently from every sweep
+
+**Phase 4 - 2 of 4 items complete.** Two functions in
+`src/macro_engine/portfolio/risk_budget.py`, which has held Module 17 since D-054:
+`compute_risk_parity_weights` (§9.2, **D-071**) and `translate_thesis_to_position`
+(§9.3, **D-072**). No new module; the file is already the shared home of the
+§6.6c ladder, the §15.18 drift check, `volatility_target_scaling` and
+`apply_fractional_kelly`.
+
+**A risk share is not a notional share, and §9.3's signature cannot make it one.**
+Module 17.1 defines the risk contribution `RC_i = w_i (Σw)_i / σ_p²` — that needs a
+covariance matrix. §9.3 takes a `MacroThesis` and a portfolio risk budget and
+**nothing else**. The conversion between the two quantities is therefore not
+available, and the naive substitution (risk share used directly as notional share)
+was measured **6.7x wrong** on a real two-asset book: **0.018** where the correct
+answer is **0.12**. This is not a bug to fix — it is the reason §9.3's output is a
+**proposed** position carrying `SIGN_OFF_REQUIRED`, never a sized order. Two
+specification sections that cannot be composed numerically is the finding.
+
+**Four gates, and the count is now pinned to the type it describes.** Every gate
+can only *stop* a proposal: gate 1 the sentinel / no-production-instrument path,
+gate 2 an uncalibrated scenario distribution, gate 3 an instrument outside the
+universe, gate 4 a budget below the floor. The docstring states the rule the
+deletion of the fifth gate established — **"There are four, not five: a gate that
+cannot stop a proposal is not a gate."**
+
+**The declared member set shipped a false counting claim.** `PositionTranslationOutcome`
+is a six-member `Literal`; the type's docstring said **"nine members"**. The
+sweep's first run proved the claim was changeable to *any* number with the entire
+suite green (`M10.2`, `M10.3` both **SURVIVED**) — `get_args` reads the type and a
+docstring is a string. Repaired with
+`test_the_docstrings_agree_with_the_literal_they_describe`, which recounts the
+members and the gates from the docstring itself; both mutants are now killed.
+**A docstring claim about a type is a claim, and it needs a receipt** — O-88
+extended from gate rows to prose.
+
+**The increment's highest-value defect was in the tooling, and it was masking a
+live mutant.** `tools/sweep_health.py` reported **13 `[FAIL]` sweeps**; ten of them
+targeted `src/macro_engine/config.py`. Every one of those sweeps was right.
+
+> `_own_target_check` and the leftover scan read with
+> `Path.read_bytes().decode("utf-8")`. Every sweep anchors with bare `\n` and reads
+> with `Path.read_text()`. **`read_text` applies universal-newline translation;
+> `read_bytes().decode()` does not.**
+
+`config.py` is the **only CRLF file among the 69 under `src/`** (4292 CRLF, 0 bare
+LF) and is the target of all 13 failures. Reproduced with both readers on that same
+file: **bytes form -> 45 problems, translated form -> 6**. **87% of the report was
+line-ending artefact.** Fixed both readers; 13 failures -> 2, both inherited.
+
+**And the noise was hiding a real leftover mutant.** `src/macro_engine/models/yield_curve.py`
+held `adjusted = base_rate + min(adjustment, settings.ceiling)` where `HEAD` has
+`adjusted = min(uncapped, settings.ceiling)` — **O-61's fifth recurrence**. It was
+also destroying the anchors of its own sweep's `MX3a`-`MX3d` mutants, which had
+been reporting "target ABSENT" and were being read as stale anchors. The false
+positive and the true positive were the **same line**. Restored from `HEAD` (line
+endings verified: 1748 bare LF, 0 CRLF); three tests caught it; the suite returned
+to **2295 passed**. Filed as **O-95**.
+
+**Two sentinels documented as one.** Four documentation sites asserted the
+no-instrument sentinel and the not-in-universe path were the same string. They are
+different, and the corrected fact is worse than the original claim: `is_trade`
+returns `True` for the sentinel, so it reads as a **live trade in an unexecutable
+instrument**. Filed as **O-93**; four sites corrected in place with
+`**CORRECTED (D-071/D-072)**` markers.
+
+**New defect class recorded: "the right outcome with the wrong reason."** Several
+refusals returned the correct `outcome` while naming a **different gate's** reason.
+No numeric assertion can see it — outcome, size and struct all match. It is why the
+live check re-reads the reason on **all seven** paths rather than only the outcome.
+
+**Verification - all gates green at 215 files (D-035 parity):** `ruff check` clean;
+`ruff format --check` **215**; `mypy --strict` **215** (matches); `pytest -m "not live"`
+**2295 passed / 1 skipped / 0 failed**; `tests/portfolio/test_thesis_position.py`
+**45 passed**; the sweep **22 applied / 21 killed / 1 survived (the control) —
+CERTIFIES**; `scripts/live_thesis_position_check.py` **PASSED at exit 0** over the
+real pipeline; the reachability audit **PASS, 59 = 59**; `tools/sweep_health.py`
+**0 leftovers, 0 mutant shapes**, 2 failures both **inherited**.
+
+**The live check's Section 21.0 record, measured not asserted:** all four US thesis
+families (`policy_path_gap`, `curve_shape_gap`, `inflation_expectations_gap`,
+`equity_macro`) produce `status=WATCH`, `instrument="NONE"`, an empty
+`scenario_distribution` and `scenario_sizing_permitted=False` on today's data, so
+all four refuse at **gate 1**. The 24-cell census had **8 schema-refused and 16
+measured** cells. `ProductionUniverse().permits` returns `True` for `TY futures`,
+`EURUSD` and `"NONE"`. **A sweep that only ran green paths would have certified
+nothing** — hence the hand-built fixtures for gates 2-4.
+
+**Not in this increment:** the **risk-axis hook** (§17.4, handoff §3b item 4) —
+`thesis_layer/builder.py` must gain a risk-budget parameter whose default preserves
+today's behaviour, and the orchestrator must supply a real book. It is deliberately
+separate: it changes the builder's signature, which every D-069 test and sweep
+anchor reads. **O-94** also remains — §16.2 Q12's exposure half is computed nowhere
+and needs Module 18.
+
 ### D-070 - The API layer, and a mutation sweep that certified a selection it never ran
 
 **Phase 3 - 0/2 -> 2/2. PHASE 3 IS COMPLETE.** Eight new modules under
@@ -1260,7 +1602,13 @@ code** — and **the failure direction is new again: toward false executability.
   annotate the universe **without importing `thesis_layer/`**),
   `_parse_tenor_years`, `_build_curve_instrument`, `_sentinel_result`,
   `_selection_value`, the constants `ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`
-  (`"NONE"`) and `BLOCKED_MULTI_COUNTRY_NOT_BUILT`.
+  (`"ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT"`) and
+  `BLOCKED_MULTI_COUNTRY_NOT_BUILT`.
+  **CORRECTED (D-071):** this line claimed the sentinel's value was `"NONE"`.
+  Measured against every commit in the history, the constant has *always* been
+  the self-naming string above; the parenthetical was wrong in the original
+  entry and the error propagated into **O-53**'s statement of the risk. See
+  **O-93**.
 - `tests/models/test_instrument_selection.py` — **63 tests**: the routing
   contract, the `gap_direction` **consumption** path, config-sourced curve legs
   (including **custom** legs), degenerate leg pairs parameterised on the
@@ -1345,9 +1693,16 @@ pairs through the **real** `ProductionUniverse`, confirms both sentinels carry a
 **config**. Print: `LIVE CHECK PASSED`.
 
 **Opened:** **O-53** (sev 2 — two `ThesisType` members return sentinels by
-construction, and `"NONE"` is a legal `TradeIdea.instrument` value, so the
-sentinel is confusable with an instrument); **O-54** (sev 1 — the `Protocol` is
+construction, and the sentinel reaches `TradeIdea.instrument` as an unrecognised
+string, so the two "no instrument" spellings are confusable with an instrument
+and with each other); **O-54** (sev 1 — the `Protocol` is
 not runtime-enforced); **O-55** (sev 1 — a third inert class with no tag).
+**CORRECTED (D-071):** this sentence originally read *"`"NONE"` is a legal
+`TradeIdea.instrument` value"*, which is true of `NO_PRODUCTION_INSTRUMENT` but
+**not** of this sentinel — the two are different strings in the shipped code.
+The corrected risk is the *opposite* one and is worse: not a sentinel that reads
+as a no-trade, but a sentinel that reads as **nothing the system recognises**.
+See **O-93**.
 
 ### D-057 — Kelly's real formula replaces a labelled placeholder, and the unit trap moves three modules away
 

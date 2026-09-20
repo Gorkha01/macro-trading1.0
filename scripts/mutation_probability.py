@@ -91,7 +91,7 @@ _NON_POSITIVE_WARNING = (
 _TOTAL_PROBABILITY = "    total_probability = sum(scenario.probability for scenario in scenarios)"
 _EV = "    ev = sum(scenario.probability * scenario.payoff_estimate for scenario in scenarios)"
 _WORST = "    worst = min(scenarios, key=lambda scenario: scenario.payoff_estimate)"
-_TAIL_DOMINATES = "    tail_dominates = ev > 0.0 and worst.payoff_estimate < -settings.tail_loss_multiple * abs(ev)"  # noqa: E501 — must match the source byte-for-byte
+_TAIL_DOMINATES = "    tail_dominates = ev > 0.0 and worst.payoff_estimate < -settings.tail_loss_multiple * abs(ev)"
 _TOLERANCE = "    if abs(total_probability - 1.0) > settings.probability_sum_tolerance:"
 
 # --- M5: the published components -----------------------------------------
@@ -106,7 +106,7 @@ _PRIOR_BOUND = "    prior: float = Field(\n        ge=0.0,\n        le=1.0,"
 _PROBABILITY_BOUND = "    probability: float = Field(\n        ge=0.0,\n        le=1.0,"
 
 # --- M7: confidence --------------------------------------------------------
-_BAYES_HEURISTIC = '            is_heuristic_not_calibrated=True,\n            source_independence_count=0,\n        )\n    )\n\n    return ModelResult(\n        model_name="bayesian_update",'  # noqa: E501 — must match the source byte-for-byte
+_BAYES_HEURISTIC = '            is_heuristic_not_calibrated=True,\n            source_independence_count=0,\n        )\n    )\n\n    return ModelResult(\n        model_name="bayesian_update",'
 
 # --- config accessors ------------------------------------------------------
 _BAND_PROP = "        return float(self.uninformative_lr_band_value.value)"
@@ -216,7 +216,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "M4c the tail comparison made non-strict",
         SRC,
         _TAIL_DOMINATES,
-        "    tail_dominates = ev > 0.0 and worst.payoff_estimate <= -settings.tail_loss_multiple * abs(ev)",  # noqa: E501 — must match the source byte-for-byte
+        "    tail_dominates = ev > 0.0 and worst.payoff_estimate <= -settings.tail_loss_multiple * abs(ev)",
     ),
     (
         "M4d the sum tolerance ignored (any sum accepted)",

@@ -144,6 +144,8 @@ Q7's full answer here would otherwise over-read the list.
 
 from __future__ import annotations
 
+from math import isfinite
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from macro_engine.models.contracts import ModelResult
@@ -234,10 +236,25 @@ def _signed_scalar(value: object) -> float | None:
     ``1.0`` and a direction would be published from a flag. This is the same
     narrow-first rule ``thesis_layer/invalidation.py`` uses (D-063), stated here
     separately because the two functions sit in one layer and must not drift.
+
+    A non-finite float is excluded for the same reason as ``bool``, and it is
+    the *same* defect (D-078): ``nan`` **is** an ``int``/``float`` instance, so
+    it passes the type test and reaches ``_direction_for``, where
+    ``(nan > 0) == (gap_sign > 0)`` evaluates to ``False`` and the signal is
+    published as **``contradicts``** — a directional claim, and specifically the
+    claim that a model *disagrees* with the thesis, drawn from a value that
+    carries no direction at all. The caller above already declines to publish a
+    direction for a value it cannot read ("an unreadable value [must not
+    masquerade] as a contradiction"); a non-finite value is exactly such a
+    value, and it was reaching the classifier through the type test.
+
+    ``inf`` is admitted for the same reason: ``inf > 0`` is ``True``, so it
+    would publish ``confirms`` — an unbounded reading silently agreeing with
+    whatever the thesis says.
     """
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and isfinite(value):
         return float(value)
     return None
 

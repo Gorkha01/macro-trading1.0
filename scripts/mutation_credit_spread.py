@@ -199,7 +199,7 @@ _BASE_RATE_WARNING = (
     # The next source line is 108 characters, and the fragment must match it
     # byte-for-byte: shortening the fragment would leave the rest of the warning
     # alive and make this mutation inert (D-035). Hence the E501 suppression.
-    '        f"five-day windows, volatility rose past {settings.equity_vol_spike_threshold_pct:.0f}% "\n'  # noqa: E501
+    '        f"five-day windows, volatility rose past {settings.equity_vol_spike_threshold_pct:.0f}% "\n'
     '        f"in {settings.base_rates.equity_vol_spike_rate:.1%} of them and the high-yield "\n'
     '        f"spread widened at all in {settings.base_rates.widening_rate:.1%}. A widening "\n'
     "        f\"is the slightly LESS likely outcome, so 'spreads widened' alone is not evidence.\","

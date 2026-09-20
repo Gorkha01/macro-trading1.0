@@ -19,6 +19,7 @@ mandated elsewhere in the document:
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import isfinite
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -92,7 +93,17 @@ class ObservationPoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     observation_date: date
-    value: float
+    value: float = Field(
+        allow_inf_nan=False,
+        description=(
+            "The observed value. MUST be finite: a `nan` or `inf` is not a "
+            "missing value, it is a poisoned one — every downstream guard sees "
+            "a present, testable float, so nothing degrades to "
+            "INSUFFICIENT_DATA and the model silently computes `nan`. Missing "
+            "data is represented by the row being ABSENT, never by a non-finite "
+            "sentinel (Section 21.0 rule 2)."
+        ),
+    )
     series_id: str
     source: str = "openbb"
     retrieved_at: datetime = Field(default_factory=utc_now)
@@ -143,7 +154,16 @@ class YieldCurveSnapshot(BaseModel):
     as_of: date
     tenors: dict[str, float] = Field(
         default_factory=dict,
-        description="Tenor label -> yield in PERCENT. e.g. {'2yr': 4.35, '10yr': 4.12}",
+        description=(
+            "Tenor label -> yield in PERCENT. e.g. {'2yr': 4.35, '10yr': 4.12}. "
+            "Every value MUST be finite: pydantic's `float` accepts `nan` and "
+            "`inf` by default, and `validate_yield_curve`'s checks are all "
+            "comparisons (`yld <= 0.0`, `yld > max`), every one of which is "
+            "False for `nan` — so a poisoned tenor would report the curve CLEAN. "
+            "`allow_inf_nan=False` is expressed on the ANNOTATED ITEM type "
+            "because the constraint belongs to the dict's values, not to the "
+            "mapping (D-074.1's mechanism, applied to the curve)."
+        ),
     )
     retrieved_at: datetime = Field(default_factory=utc_now)
 
@@ -154,6 +174,16 @@ class YieldCurveSnapshot(BaseModel):
         if unknown:
             raise ValueError(
                 f"Unrecognized tenor label(s) {unknown}. Permitted: {list(CANONICAL_TENORS)}"
+            )
+        non_finite = sorted(name for name, yld in v.items() if not isfinite(float(yld)))
+        if non_finite:
+            raise ValueError(
+                f"Non-finite yield(s) for tenor(s) {non_finite}. A `nan`/`inf` is "
+                "not a missing tenor: it is present and testable, so no range "
+                "check rejects it (`nan <= 0.0` and `nan > max` are both False) "
+                "and the curve reports CLEAN. A missing tenor is represented by "
+                "the tenor being ABSENT, never by a non-finite value "
+                "(Section 21.0 rule 2, D-074.1)."
             )
         return v
 
@@ -302,3 +332,80 @@ class MacroDataSnapshot(BaseModel):
             "Step 6 real-data validation records."
         ),
     )
+
+    def iter_scalar_series(self) -> list[tuple[str, list[ObservationPoint]]]:
+        """Every populated ``ObservationPoint`` list, with its field name.
+
+        Used by the finiteness guard so it covers **every** series the schema
+        declares, rather than a hand-maintained subset — the same
+        pluggability contract ``validate_observations`` follows. Adding a
+        series field to this schema puts it under the guard automatically.
+        """
+        out: list[tuple[str, list[ObservationPoint]]] = []
+        for name in type(self).model_fields:
+            points = getattr(self, name)
+            if (
+                isinstance(points, list)
+                and points
+                and all(isinstance(p, ObservationPoint) for p in points)
+            ):
+                out.append((name, points))
+        return out
+
+    def iter_curves(self) -> list[tuple[str, YieldCurveSnapshot]]:
+        """Every populated curve field, with its field name.
+
+        The companion to ``iter_scalar_series``. Curve fields hold a
+        ``YieldCurveSnapshot`` rather than a list, so they are invisible to a
+        selector written for lists — which is exactly how they escaped
+        ``assert_finite`` until now. Derived from the schema rather than named,
+        so a new curve field is covered the moment it is declared.
+        """
+        out: list[tuple[str, YieldCurveSnapshot]] = []
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, YieldCurveSnapshot):
+                out.append((name, value))
+        return out
+
+    def assert_finite(self) -> None:
+        """Raise if any observation or curve tenor carries a non-finite value.
+
+        A belt-and-braces guard, deliberately *not* the only line of defence.
+        ``ObservationPoint.value`` and ``YieldCurveSnapshot.tenors`` both refuse
+        a non-finite value at construction, but a snapshot can also arrive from a
+        path that never runs field validation — ``model_construct``, a pickle, a
+        parquet round-trip, or a cache read. Those paths are exactly where a
+        poisoned sentinel would survive, so finiteness is re-checked at the point
+        of use.
+
+        **Both shapes are covered.** An earlier version iterated only the
+        scalar lists, so a ``nan`` tenor — which ``validate_yield_curve`` cannot
+        reject, because every one of its comparisons is False for ``nan`` —
+        passed the guard and reported the curve CLEAN. A guard that covers one
+        of two shapes is a guard with a hole exactly where the second shape is.
+
+        Raises ``ValueError`` naming **every** offending field:point so a
+        reader can see the full extent rather than the first failure.
+        """
+        offenders: list[str] = []
+        for field_name, points in self.iter_scalar_series():
+            for point in points:
+                if not isfinite(point.value):
+                    offenders.append(
+                        f"{field_name}[{point.observation_date}]={point.value!r} "
+                        f"({point.series_id})"
+                    )
+        for curve_name, curve in self.iter_curves():
+            for tenor, yld in curve.tenors.items():
+                if not isfinite(float(yld)):
+                    offenders.append(f"{curve_name}.tenors[{tenor}]={yld!r} @{curve.as_of}")
+        if offenders:
+            detail = "; ".join(offenders)
+            raise ValueError(
+                f"Snapshot carries {len(offenders)} non-finite observation(s): {detail}. "
+                "A non-finite value is not missing data — a missing value is an "
+                "absent row (or an absent tenor). It must be dropped at the source "
+                "or the series reported unavailable, never carried as a float "
+                "(Section 21.0 rule 2, Section 21.4)."
+            )

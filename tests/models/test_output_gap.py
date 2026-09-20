@@ -432,8 +432,10 @@ def test_output_gap_from_snapshot_ignores_forward_projections() -> None:
 
     # The projection block must be accounted for, not silently discarded.
     # 4 projections dated after as_of, plus 1 realised-but-unpaired quarter.
-    assert report.withheld_forward_points == 5
+    # Reported separately (D-076): only the first is "forward-dated".
+    assert report.withheld_forward_points == 4
     assert report.withheld_unpaired_points == 1
+    assert report.withheld_potential_points == 5
     assert (
         report.withheld_horizon
         == _quarter_start(_FORWARD_DATE.year, _FORWARD_DATE.month, offset=3).isoformat()
@@ -447,6 +449,61 @@ def test_output_gap_from_snapshot_warns_about_withheld_projections() -> None:
     warnings = report.warnings()
     assert any("forward-dated CBO projection(s)" in w for w in warnings)
     assert any("withheld" in w for w in warnings)
+
+
+def test_withheld_forward_points_counts_only_forward_dated_points() -> None:
+    """D-076 REGRESSION — the forward-dated count must not absorb the unpaired one.
+
+    Found by running the whole system end to end and comparing two numbers that
+    were supposed to agree. The live thesis warned of
+
+        "gdp_potential: 42 forward-dated CBO projection(s) to 2036-10-01 withheld"
+
+    while an independent count of ``gdp_potential`` points dated after the
+    snapshot's ``as_of`` was 41. Neither number was wrong in isolation; the
+    *label* was. ``withheld_forward_points`` was defined as
+
+        potential_series.withheld + withheld_unpaired
+
+    which folds two categories with different meanings into one figure:
+
+    * 41 points dated AFTER as_of — genuinely forward-dated CBO projections,
+      excluded by the O-7 horizon filter; and
+    * 1 point dated 2026-07-01, which is *on or before* as_of and is therefore
+      NOT forward-dated at all. It is withheld only because the matching actual
+      GDP quarter (2026-07-01) has not been published, so it cannot be paired
+      (D-009). It is a completed quarter whose actual print is pending.
+
+    Calling the second category a "projection" is the defect: it tells a reader
+    that 42 of 62 points are future estimates when the true count is 41, and it
+    makes the number irreconcilable with any direct count of the series.
+
+    The two figures are therefore split, and this test pins both — plus the
+    warning text, which must never describe a realised-but-pending quarter as a
+    forward-dated projection.
+    """
+    snapshot = _live_shaped_snapshot()
+    _result, report = output_gap_from_snapshot(snapshot)
+
+    # The fixture carries 4 points dated after as_of and 1 realised point that
+    # post-dates the paired quarter. They are two different things.
+    assert report.withheld_forward_points == 4, (
+        "withheld_forward_points must count ONLY points dated after as_of"
+    )
+    assert report.withheld_unpaired_points == 1, (
+        "the realised-but-unpairable quarter is a separate category"
+    )
+    assert report.withheld_potential_points == 5, (
+        "the total withheld from the potential series is the sum of the two"
+    )
+
+    warnings = report.warnings()
+    forward = [w for w in warnings if "forward-dated" in w]
+    assert len(forward) == 1
+    assert "4 forward-dated" in forward[0], (
+        f"the warning must report 4 forward-dated points, not 5; got: {forward[0]}"
+    )
+    assert "5 forward-dated" not in forward[0]
 
 
 @pytest.mark.warning_path

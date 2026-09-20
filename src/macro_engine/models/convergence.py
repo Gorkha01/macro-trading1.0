@@ -284,7 +284,20 @@ def classify_convergence(inputs: ConvergenceInputs) -> ModelResult:
             "classify_convergence cannot proceed without a measured family count."
         )
     untagged = census_value.get("untagged")
-    untagged_count = untagged if isinstance(untagged, int) else 0
+    if not isinstance(untagged, int):  # pragma: no cover - contract guard
+        raise TypeError(
+            "count_independent_families returned no integer `untagged`; "
+            "classify_convergence cannot report a provenance share it did not "
+            "measure. A missing key and a measured zero are different facts."
+        )
+    # The census runs over the DIRECTIONAL signals, where `with_source_family`
+    # guarantees a family — so its `untagged` is structurally 0 and is NOT the
+    # figure to publish. A neutral signal is the only kind that can lack a
+    # family (the provenance guard refuses None for a directional one), and the
+    # census deliberately excludes neutral signals. Counting over the WHOLE list
+    # is what the disclosure below has always claimed to do ("of {total}
+    # signal(s)"); reading the census made that disclosure unfireable (D-077).
+    untagged_count = sum(1 for s in signals if s.source_family is None)
 
     # Families present only among the neutral signals. Counted and published so
     # the reader can see what was set aside, not folded into the verdict.

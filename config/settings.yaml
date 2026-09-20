@@ -20,11 +20,18 @@ version: 1
 # ---------------------------------------------------------------------------
 openbb:
   local_api_base_url:
-    value: "http://127.0.0.1:6900"
+    value: "http://127.0.0.1:6901"
     calibration_status: institutional_convention
     note: >
-      OpenBB Platform API default port. Override via the OPENBB_API_URL
-      environment variable in deployments where the API runs elsewhere.
+      OpenBB Platform API base URL. MEASURED 2026-09-20: the deployment in
+      use serves on :6901, and :6901 is the address this project's live
+      checks and the operator's OpenBB session both target. The OpenBB
+      package default is :6900 and a second instance was found still bound
+      there, so :6900 is not an error — but it is NOT the service this
+      engine is pointed at, and two live instances make "which one answered"
+      ambiguous. Pinned to :6901 to remove that ambiguity. Override via the
+      OPENBB_API_URL environment variable in deployments where the API runs
+      elsewhere.
   use_local_api_first:
     value: false
     calibration_status: institutional_convention
@@ -32,7 +39,7 @@ openbb:
       MEASURED 2026-09-16, not assumed. The original rationale was "local API
       first avoids re-initialising the SDK per call" — that reasoning is wrong
       for this workload. Timing a full 21-field snapshot build against a
-      HEALTHY local server on :6900: local-first 223.6s vs in-process package
+      HEALTHY local server: local-first 223.6s vs in-process package
       9.5s, a ~23x difference, with identical results (21/21 fields, no
       failures, byte-identical values). The package path keeps OpenBB
       initialised in-process, whereas every local-API call is a fresh HTTP
@@ -1449,6 +1456,140 @@ risk:
       operator. Probed over 20 000 plausible weight wobbles on a realistic
       4-instrument covariance, drift trips 10.8% of the time — `balanced` is
       modal, which is what a maintenance check should look like.
+
+  # --- Module 17.1 — risk-budgeted weight construction (Section 9.2) ------
+  #
+  # The three leaves below parameterise `compute_risk_parity_weights`. They are
+  # NOT policy preferences dressed as numbers: each one changes the ANSWER, so
+  # each one is measurable and the measurement is recorded in the note.
+
+  risk_parity_annualization_periods_value:
+    value: 252
+    calibration_status: mechanical_rule
+    note: >
+      Trading days per year used to annualise the sample covariance. 252 is the
+      same convention `realized_vol_simple` and the vol-target block use; the
+      annualisation must MATCH across the risk stack or a book's risk budget
+      and its vol target are computed on two different clocks. Not an estimate
+      — a calendar convention, hence `mechanical_rule`.
+
+  risk_parity_tolerance_value:
+    value: 1.0e-10
+    calibration_status: mechanical_rule
+    note: >
+      Convergence tolerance for the cyclical coordinate descent solve: the
+      solver stops when max |RC_i - b_i| falls below this, checked in absolute
+      terms on the risk-contribution SHARES (which sum to 1, so an absolute
+      tolerance is well-scaled). 1e-10 is chosen against the double-precision
+      floor, not against an economic judgement: the CCD step is a closed-form
+      Newton update so it converges quadratically, and on the 5-instrument live
+      panel it reaches 1e-10 in ~12 sweeps and stops moving entirely (the
+      residual is 0.0 to full float precision) well before the iteration cap.
+      A looser 1e-6 would leave the printed 6 dp weight digits decided by the
+      stopping rule rather than by the solution — the same failure mode the
+      `kelly.grid_points` note records for the argmax grid.
+
+  risk_parity_stress_shift_threshold_value:
+    value: 0.025
+    # A FRACTION of notional (0.025 = 2.5 percentage points), NOT a percent and
+    # NOT a relative move. Compared against the largest single-instrument
+    # weight change between the sample-covariance solve and the correlated-
+    # stress solve.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far a single weight must move under the Section 21.1 stressed
+      correlation before the LTCM warning is escalated from "report the shift"
+      to "warn that the book's diversification is conditional on a correlation
+      regime".
+
+      MEASURED, because the first value written here was 0.05 and it was DEAD
+      CODE. On the live 5-ETF book (SPY/TLT/IEF/GLD/UUP, equal 20% risk budget,
+      stress rho=0.9) the largest single-leg shift is 1.40% / 2.98% / 3.80% /
+      5.28% / 5.69% / 5.75% / 5.16% / 5.48% at lookbacks 126 / 189 / 252 / 378
+      / 504 / 756 / 1004 / 1260 sessions — range 1.40%..5.75%, median 5.22%. The
+      shipped 0.05 therefore sat ABOVE the median and the escalation branch
+      never fired on the configuration most likely to be used. 0.025 is below
+      every lookback of 189 sessions or more, so the branch is live, and it is
+      still a sixth of the 0.15 position limit — i.e. material relative to the
+      largest position the hard limits permit.
+
+      Illustrative rather than calibrated because the breakpoint is a judgement
+      call: nothing in the data says 2.5% is where diversification risk becomes
+      actionable. What the measurement DOES establish is the range the threshold
+      has to sit inside to discriminate at all, which is the part that was
+      guessed wrong the first time.
+
+      A concentrated budget shifts MORE (6.997% on a 60/10/10/10/10 budget) and
+      a short window shifts less, so this threshold is a floor for alerting, not
+      a constant: a caller with a concentrated book will see it fire routinely.
+
+  # --- Section 17.4 — the risk axis feeding back into thesis validity ------
+  #
+  # Section 17.4 is the only place the specification closes the loop from the
+  # RISK layer back into the THESIS lifecycle, and it states the rule as a
+  # principle before it states a number:
+  #
+  #     "A thesis whose sizing_logic output (once Phase 4+ auto-sizing exists)
+  #      clips to near-zero against RiskLimits ... should have its status
+  #      automatically demoted from CANDIDATE back to WATCH — a thesis that
+  #      can't be sized meaningfully isn't actionable, regardless of conviction
+  #      (directly encodes the LTCM lesson: a 'correct' idea you can't
+  #      survive-size isn't a trade yet)."
+  #
+  # "near-zero" is the only unquantified word in that rule, so it is the one
+  # thing that has to live in config. Everything else in the sentence is
+  # structure: which field is read, which status it lands on, and that the
+  # demotion is automatic.
+  thesis_demotion_fraction_value:
+    value: 0.03
+    # A FRACTION of capital (0.03 = 3%), NOT a percent. Compared against
+    # `ProposedPosition.fraction_of_capital`.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The near-zero bound for Section 17.4's demotion: a live thesis whose
+      PROPOSED notional is at or below this fraction of capital is demoted to
+      WATCH, because a position that small cannot carry its own decision —
+      transaction costs, the monitoring burden and the headline risk all attach
+      to the trade regardless of size, while the payoff is rounding error.
+
+      0.03 is chosen against the MEASURED reachable range, not against a round
+      number. The first draft used 0.02 and it was wrong: it never fired. The
+      sized fraction is not continuous. Full Kelly is the argmax of expected
+      log growth over the scenario set, and for a binary bet with a positive
+      edge that objective is monotone, so f* pins at the domain EDGE (1.0) and
+      the published number becomes the position cap; only a handful of
+      asymmetric two-branch sets land strictly inside. Sweeping the reachable
+      space (`scripts/live_risk_axis_check.py` recount) gives six distinct
+      published fractions:
+
+          0.02941  0.03472  0.042735  0.069445  0.125  0.15
+
+      The smallest POSITIVE size Kelly can produce on this configuration is
+      therefore 0.02941 (full f* = 0.05882, halved by `kelly.fractional_divisor`
+      = 2.0). A 0.02 bound sits BELOW every reachable value, so no input could
+      demote — Section 17.4 was a declaration with no consumer, which is the
+      O-53 class this project has recorded eight times. The rule's own wording
+      says "clips to near-zero", and a threshold beneath the reachable minimum
+      is not a near-zero bound at all.
+
+      What the measurement establishes is the RANGE the threshold must sit
+      inside to discriminate. It must be strictly ABOVE the smallest reachable
+      positive fraction (0.02941 — else it never fires) and strictly BELOW the
+      position cap (0.15 — else every thesis demotes, which is a different bug).
+      0.03 sits in that window and demotes exactly the smallest size, with the
+      `binding_constraint` field naming what produced it. Illustrative rather
+      than calibrated because nothing in the data says 3% is where a position
+      stops being worth carrying; only the range is measured.
+
+      NOT to be confused with `kelly.grid_points`. That leaf sets the resolution
+      of the argmax search (a solution may not be read off the grid's edge);
+      this one judges a PROPOSAL (a solution may exist and still be too small to
+      hold). They are different questions at different layers, and collapsing
+      them would make the Kelly primitive refuse inputs it should size. The
+      `thesis_demotion_fraction_value` check is also NOT a duplicate of
+      `min_fractional_divisor`: the divisor bounds how much of full Kelly may be
+      taken, while this bounds how small the resulting notional may be before
+      the thesis stops being actionable.
 
 kelly:
   # Section 22.6 / Finding #6 — the generalized Kelly solution.

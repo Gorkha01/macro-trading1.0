@@ -65,8 +65,19 @@ class ConfidenceInputs(BaseModel):
     not a feeling about it — which is the entire point of Finding #8.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # The three penalty factors below default to the NO-PENALTY state, so a
+    # caller that omits one gets the highest confidence the formula can return
+    # for that factor. That is the wrong direction for a default (§22.8 exists
+    # to keep confidence from being overstated), and it is deliberate: making
+    # them required would force ~70 call sites to assert `False` — a claim about
+    # the computation — where today they are silent. Silence is the lesser evil
+    # only because `extra="forbid"` now makes a MISS-SPELLED factor
+    # (``is_heuristic_not_calibrated_=True``) an error instead of a silently
+    # ignored argument that leaves the penalty unapplied. The absent factor and
+    # the misspelled one are different failure modes; the first is a deliberate
+    # default, the second is prevented here rather than left to a later reader.
     data_quality_flags_present: bool = Field(
         default=False,
         description="True if any input carried a data_quality_flag (Section 5.4).",

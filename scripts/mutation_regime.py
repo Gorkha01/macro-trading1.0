@@ -429,13 +429,32 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         SRC,
         # Same AMBIGUITY as the two above: `confidence=confidence,` is also in
         # `check_trilemma_tension`. Anchored through the regime-specific key.
+        #
+        # The key and the `confidence=` call are NO LONGER ADJACENT: a comment
+        # block documenting the §21 two-axis disclosure was inserted between
+        # them, and the old two-line anchor matched 0 occurrences. A sweep whose
+        # target is ABSENT cannot see its own mutants (O-95), so this anchor is
+        # pinned to the outer `}` and the `confidence=` line only — the lines
+        # between them are prose and carry no mutation surface.
         (
             '            "rising_inflation_base_rate": axis_base_rate,\n'
+            "            # Section 21: whether BOTH axes decided the label. A "
+            "consumer that\n"
+            "            # treats the state as a two-axis classification reads "
+            "this first.\n"
+            '            "regime_tension": tension,\n'
+            '            "regime_tension_reasons": tension_reasons,\n'
             "        },\n"
             "        confidence=confidence,"
         ),
         (
             '            "rising_inflation_base_rate": axis_base_rate,\n'
+            "            # Section 21: whether BOTH axes decided the label. A "
+            "consumer that\n"
+            "            # treats the state as a two-axis classification reads "
+            "this first.\n"
+            '            "regime_tension": tension,\n'
+            '            "regime_tension_reasons": tension_reasons,\n'
             "        },\n"
             "        confidence=0.5,"
         ),

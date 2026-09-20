@@ -21,6 +21,12 @@ The defects this file exists to pin
 6. **A zero gap makes every comparison meaningless.** The sample would still
    publish ``confirms`` for any nonzero signal, inventing the reference.
    ``test_a_zero_gap_makes_every_signal_neutral``.
+7. **A NON-FINITE value reaches the classifier through the type test it was
+   never meant to pass (D-078).** Defect 1's fix declines to read a value that
+   is not an ``int``/``float``; ``nan`` **is** a ``float``, so it is read, and
+   ``_direction_for`` publishes ``"contradicts"`` — the exact outcome defect 1
+   prevents, arriving through the gate defect 1's fix sits behind.
+   ``test_a_non_finite_value_is_unreadable_not_a_contradiction`` is the pin.
 
 Plus the structural pins: the census counts match the list, the order follows
 the argument order, and the three-outcome vocabulary is the schema's own.
@@ -190,6 +196,91 @@ def test_a_zero_value_is_not_unreadable() -> None:
     )
     assert assessment.unreadable == ()
     assert assessment.neutral == 1
+
+
+# ---------------------------------------------------------------------------
+# Defect 7: a NON-FINITE value is unreadable, not a contradiction (D-078)
+# ---------------------------------------------------------------------------
+#
+# Defects 1 and 2 above are the same wrong outcome reached two ways: a value that
+# carries no direction published as an active ``"contradicts"``. Both fixes work
+# by making the value unreadable (defect 1) or neutral (defect 2) first. A
+# ``nan`` defeats BOTH fixes, because it reaches ``_signed_scalar`` as a genuine
+# ``float`` instance — it passes the type test that defect 1's fix relies on —
+# and then reaches ``_direction_for``, where ``(nan > 0) == (gap_sign > 0)`` is
+# ``False`` for any gap sign. So it is published as ``"contradicts"``: the very
+# outcome defects 1 and 2 exist to prevent, arriving through the one gate they
+# both sit downstream of.
+
+_NON_FINITE_VALUES = (float("nan"), float("inf"), float("-inf"))
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+def test_a_non_finite_value_is_unreadable_not_a_contradiction(bad: float) -> None:
+    """A `nan` signal read as ``negatively`` contradicting the thesis.
+
+    Measured before the fix: ``_direction_for(nan, +1) == "contradicts"`` and
+    ``_direction_for(inf, +1) == "confirms"`` — i.e. a non-finite reading
+    published a **directional verdict about a model's agreement with the
+    thesis**, with no direction in it. §21.0 rule 3: a missing value must never
+    become a substantive claim, and "this model disagrees with you" is about as
+    substantive as a claim gets.
+    """
+    assessment = build_confirmation_signals(
+        _result("output_gap", bad), _result("infl", 0.2), _result("labor", 1.0), _gap(-0.5)
+    )
+    assert _directions(assessment)["output_gap"] == "neutral"
+    assert "output_gap" not in {
+        s.source_model for s in assessment.signals if s.direction == "contradicts"
+    }
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+def test_a_non_finite_value_is_reported_unreadable(bad: float) -> None:
+    """It must be *named* as unreadable, not silently neutralised.
+
+    A silent neutral is nearly as bad as a false contradiction: the reader sees
+    a model that abstained rather than one whose input could not be read at all.
+    The census exists so the difference is visible.
+    """
+    assessment = build_confirmation_signals(
+        _result("output_gap", bad), _result("infl", 0.2), _result("labor", 1.0), _gap(-0.5)
+    )
+    assert assessment.unreadable, f"{bad!r} should have been reported unreadable"
+    assert assessment.unreadable[0].source_model == "output_gap"
+    assert assessment.unreadable[0].value_type == "float"
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE_VALUES)
+def test_a_non_finite_value_does_not_raise(bad: float) -> None:
+    """Reported, never raised — a bad input must not abort the whole thesis."""
+    assessment = build_confirmation_signals(
+        _result("output_gap", bad), _result("infl", 0.2), _result("labor", 1.0), _gap(-0.5)
+    )
+    assert len(assessment.signals) == 3
+
+
+def test_a_finite_value_still_reads_both_directions() -> None:
+    """The guard must not narrow the readable range (no over-reach).
+
+    Pins both signs against both gap signs, so a fix that accidentally dropped
+    the readable set would be caught here rather than in production.
+    """
+
+    def direction(value: float, gap: float) -> str:
+        return _directions(
+            build_confirmation_signals(
+                _result("output_gap", value),
+                _result("infl", 0.2),
+                _result("labor", 1.0),
+                _gap(gap),
+            )
+        )["output_gap"]
+
+    assert direction(0.5, 1.0) == "confirms"
+    assert direction(-0.5, 1.0) == "contradicts"
+    assert direction(-0.5, -1.0) == "confirms"
+    assert direction(0.5, -1.0) == "contradicts"
 
 
 # ---------------------------------------------------------------------------

@@ -31,9 +31,10 @@ conclusion is known.
 
 from __future__ import annotations
 
+from math import isfinite
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
@@ -67,15 +68,52 @@ __all__ = [
 _BP_PER_PP = 100.0
 
 
-class TaylorRuleInputs(BaseModel):
+_NON_FINITE_REMEDY = (
+    "A non-finite value is neither missing nor neutral — it is a value that "
+    "fails EVERY comparison, so it does not merely escape the rule's bounds, it "
+    "silently takes the branch those bounds were written to exclude. Measured "
+    "before this guard (D-078): `taylor_rule(pi_current=nan)` returned "
+    "`value=nan`, and every consumer asking 'is the prescribed rate above the "
+    "actual one?' gets `False` from `nan > actual` — the rule reports *'the Fed "
+    "is not behind the curve'* on the strength of a prescription it could not "
+    "compute. Missing data is represented by refusing to compute (Section 21.0 "
+    "rule 3, D-074.2)."
+)
+
+
+class _FiniteInputs(BaseModel):
+    """Base for the policy-rule input groups: every float must be FINITE.
+
+    Placed here rather than on ``PolicyRuleResult`` because the failure is at
+    the **input**: a prescription of ``nan`` is the symptom, and the rule's
+    arithmetic has no way to distinguish "the arithmetic went wrong" from "the
+    input was never a number". Guarding the input names the offending field in
+    the error and stops the value before it can be mixed with real ones.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _reject_non_finite(self) -> _FiniteInputs:
+        offenders: list[str] = []
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, float) and not isfinite(value):
+                offenders.append(f"{name}={value!r}")
+        if offenders:
+            raise ValueError(
+                f"non-finite policy-rule input(s): {', '.join(offenders)}. {_NON_FINITE_REMEDY}"
+            )
+        return self
+
+
+class TaylorRuleInputs(_FiniteInputs):
     """Inputs shared by the level-based rules.
 
     ``pi_target`` defaults to the configured FOMC objective rather than a
     literal 2.0, because the target is an institutional fact that could change
     and a hardcoded copy here would silently disagree with the config.
     """
-
-    model_config = ConfigDict(extra="forbid")
 
     r_star: float = Field(
         description="Neutral real rate, percent. UNOBSERVABLE — see Section 21.4 item 13."
@@ -97,10 +135,8 @@ class TaylorRuleInputs(BaseModel):
         return get_settings().policy.pi_target_value
 
 
-class FirstDifferenceInputs(BaseModel):
+class FirstDifferenceInputs(_FiniteInputs):
     """Inputs for the speed-limit rule, which needs no ``r*``."""
-
-    model_config = ConfigDict(extra="forbid")
 
     i_prev: float = Field(description="Previous policy rate, percent. Observed, not estimated.")
     pi_current: float = Field(description="Current inflation, percent.")
@@ -176,10 +212,22 @@ class MarketPricingGap(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    model_implied_value: float = Field(description="Median of the three rules, percent.")
-    market_implied_value: float = Field(description="Market-implied path proxy, percent.")
-    raw_gap: float = Field(description="model_implied - market_implied, percentage points.")
-    dispersion: float = Field(description="max - min of the three rules, percentage points.")
+    model_implied_value: float = Field(
+        allow_inf_nan=False,
+        description="Median of the three rules, percent. MUST be finite.",
+    )
+    market_implied_value: float = Field(
+        allow_inf_nan=False,
+        description="Market-implied path proxy, percent. MUST be finite.",
+    )
+    raw_gap: float = Field(
+        allow_inf_nan=False,
+        description="model_implied - market_implied, percentage points. MUST be finite.",
+    )
+    dispersion: float = Field(
+        allow_inf_nan=False,
+        description="max - min of the three rules, percentage points. MUST be finite.",
+    )
     is_meaningful: bool = Field(
         description="abs(raw_gap) > dispersion. False means the gap is inside the noise floor."
     )
@@ -197,6 +245,17 @@ class MarketPricingGap(BaseModel):
         It is a ``property`` rather than a field because a stored copy could
         disagree with ``raw_gap``, and the gap is the one quantity this class
         exists to state.
+
+        ``raw_gap`` is guaranteed finite by the field constraints above, which
+        is what makes this fallthrough safe (D-078). Without them a `nan` gap
+        satisfies neither ``> 0`` nor ``< 0`` and falls to the last branch —
+        reporting **``aligned``**: *"the model and the market agree"* — when in
+        truth the gap was never computed. Measured before the guard: a `nan`
+        ``raw_gap`` returned ``direction='aligned'`` and ``is_meaningful=False``,
+        i.e. **a silent NO-TRADE manufactured from absent data**, in a class
+        whose entire purpose is to detect a disagreement with the market. The
+        comparisons here are structural fallthroughs, so the FINITENESS of the
+        input is the only thing standing between "no gap" and "no disagreement".
         """
         if self.raw_gap > 0:
             return "model_above_market"

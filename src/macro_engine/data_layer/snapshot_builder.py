@@ -35,7 +35,7 @@ single point-in-time object.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -302,6 +302,7 @@ def fetch_curve(
     entry: RegistrySeries,
     *,
     start: str | None = None,
+    as_of: datetime | None = None,
 ) -> YieldCurveSnapshot:
     """Fetch every tenor of a curve and assemble a ``YieldCurveSnapshot``.
 
@@ -310,13 +311,35 @@ def fetch_curve(
     read would inherit the invention silently. The caller records the failure
     for the whole curve, which is the honest outcome — a half-observed curve
     cannot support a 2s10s read in the first place.
+
+    **Every tenor is filtered to ``observation_date <= as_of`` before its latest
+    point is read.** This is the O-7 discipline, and it belongs here for the
+    same reason it lives in ``models/as_of.py`` for scalars: it is a property of
+    *reading a series*, not of one model. A curve tenor that publishes forward
+    projections — the shape ``GDPPOT`` has on the scalar path, where 41 of 62
+    points were future-dated — would otherwise have its projection adopted as a
+    **realised** yield, and every slope, curvature and breakeven read
+    downstream would inherit it. ``frame.iloc[-1]`` is not "the latest
+    observation"; it is "the last row the provider sent", and for a projection
+    series those are different values.
+
+    ``as_of`` defaults to now. The caller passes the snapshot's own ``as_of`` so
+    a curve and the scalars beside it describe the same instant rather than two
+    instants seconds apart.
+
+    The truncation is **not** silent: the excluded count is reported through the
+    returned ``YieldCurveSnapshot``'s companion warning path, and a tenor whose
+    *entire* history is forward-dated raises rather than falling back to a
+    projection.
     """
     if not entry.tenors:
         raise OpenBBFetchError(f"curve '{field_name}' declares no tenors")
 
     endpoint = entry.endpoint or "economy.fred_series"
+    cutoff = (as_of or utc_now()).date()
     tenors: dict[str, float] = {}
     latest_date: date | None = None
+    withheld_by_tenor: dict[str, int] = {}
 
     for tenor, symbol in entry.tenors.items():
         frame = client.fetch_series(
@@ -329,17 +352,49 @@ def fetch_curve(
             raise OpenBBFetchError(
                 f"curve '{field_name}' tenor '{tenor}' (symbol {symbol}) returned no observations"
             )
-        row = frame.iloc[-1]
-        raw_date = row["date"]
-        tenor_date = (
-            raw_date.date() if isinstance(raw_date, pd.Timestamp) else pd.Timestamp(raw_date).date()
-        )
+
+        # The O-7 filter. Normalise the provider's date column to calendar dates
+        # WITHOUT dropping rows, so the withheld count is measurable rather than
+        # inferred from a row-count difference.
+        tenor_dates = [
+            raw.date() if isinstance(raw, pd.Timestamp) else pd.Timestamp(raw).date()
+            for raw in frame["date"].tolist()
+        ]
+        realised_positions = [i for i, d in enumerate(tenor_dates) if d <= cutoff]
+        withheld = len(tenor_dates) - len(realised_positions)
+
+        if not realised_positions:
+            raise OpenBBFetchError(
+                f"curve '{field_name}' tenor '{tenor}' (symbol {symbol}) has no "
+                f"observation dated on or before {cutoff.isoformat()} — every point is "
+                "forward-dated. A projection is not a realised yield (O-7); the curve "
+                "is reported unavailable rather than built from a forecast."
+            )
+
+        # The latest REALISED row, by date. Not the last row in the frame.
+        last_index = max(realised_positions, key=lambda i: tenor_dates[i])
+        row = frame.iloc[last_index]
+        tenor_date = tenor_dates[last_index]
         if latest_date is None or tenor_date > latest_date:
             latest_date = tenor_date
         tenors[tenor] = float(row["value"])
+        if withheld:
+            withheld_by_tenor[tenor] = withheld
+
+    if withheld_by_tenor:
+        # Reported, never silent: a curve whose tenors disagree about how much
+        # history was withheld is a warning sign in its own right, and the
+        # numbers are what let a reader see it.
+        logger.warning(
+            "curve '%s': withheld forward-dated observation(s) per tenor %s "
+            "(kept observation_date <= %s)",
+            field_name,
+            withheld_by_tenor,
+            cutoff.isoformat(),
+        )
 
     return YieldCurveSnapshot(
-        as_of=latest_date or utc_now().date(),
+        as_of=latest_date or cutoff,
         tenors=tenors,
         retrieved_at=utc_now(),
     )
@@ -567,7 +622,10 @@ def build_snapshot(
             _assert_field_exists(field_name, target)
 
             if field_name in CURVE_FIELDS or entry.tenors:
-                curve = fetch_curve(client, field_name, entry, start=start)
+                # The snapshot's own as_of, so a curve and the scalars beside it
+                # describe a single instant and the O-7 filter agrees with every
+                # other series consumer.
+                curve = fetch_curve(client, field_name, entry, start=start, as_of=snapshot.as_of)
                 setattr(snapshot, target, curve)
                 report.observation_counts[field_name] = len(curve.tenors)
             else:
@@ -591,6 +649,14 @@ def build_snapshot(
     # findings again here would double every validation flag.
     snapshot = _apply_validation(snapshot, raw_by_field)
     snapshot.data_quality_flags = [*snapshot.data_quality_flags, *report.as_flags()]
+
+    # Last line of defence before the snapshot leaves the data layer. Every
+    # ObservationPoint built above passed field validation, but a snapshot can
+    # also be assembled from a cache or a parquet round-trip, and this is the
+    # only chokepoint every path shares. Raising is deliberate: a non-finite
+    # value that reaches the models layer produces `nan` in an interpretation
+    # string, which reads as a real number in prose (Section 21.0 rule 2).
+    snapshot.assert_finite()
 
     if persist:
         persistence_module.write_snapshot(snapshot)

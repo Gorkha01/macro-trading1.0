@@ -1540,7 +1540,8 @@ def snapshot_to_thesis_inputs(
             source="output_gap_from_snapshot — the one shipped snapshot-fed helper",
             window=(
                 f"same-quarter pair {gap_report.actual_date} / {gap_report.potential_date}; "
-                f"{gap_report.withheld_forward_points} forward-dated point(s) withheld (O-7)"
+                f"{gap_report.withheld_forward_points} forward-dated point(s) withheld (O-7); "
+                f"{gap_report.withheld_unpaired_points} realised point(s) unpaired (D-009)"
             ),
         )
     )

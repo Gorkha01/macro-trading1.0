@@ -21,10 +21,19 @@ otherwise. Pinned by :class:`TestPayoffUnitDiscipline`.
 :class:`TestKellyBlocks`.
 
 The file also records the **structural** fact that makes §25/§27 achievable
-rather than aspirational: Kelly is not reachable from the thesis or the API at
-all (``§16.2`` Q11 is *"Phase 1: human-determined"*), so there is no live path on
-which an unsizable distribution could be sized by accident. See
+rather than aspirational: the Kelly *primitives* are not reachable from the
+thesis or the API layer, so there is no live path on which an unsizable
+distribution could be sized by accident. See
 :func:`test_kelly_is_not_reachable_from_the_thesis_or_api_layers`.
+
+**D-073 amended that second statement, and the amendment narrows it rather than
+removing it.** Through Phase 3 the guard forbade *any* import from
+``risk_budget`` into these layers — a proxy for §25 that was correct only while
+the risk layer did not exist. Section 17.4 now mandates the edge, so the guard
+forbids the primitives and enumerates the one permitted surface
+(``translate_thesis_to_position`` and the types it consumes). The receipt that
+§25 still holds on the new path is behavioural and lives beside it:
+:func:`test_section_25_gate_precedes_kelly_on_the_translation_path`.
 """
 
 from __future__ import annotations
@@ -250,30 +259,144 @@ class TestKellyBlocks:
 def test_kelly_is_not_reachable_from_the_thesis_or_api_layers() -> None:
     """The structural fact that makes §25/§27 hold on every live path.
 
-    §16.2 Q11 is *"Phase 1: human-determined; Phase 4+: fractional_kelly"*, so the
-    thesis builder must not import the sizer. Asserted by AST rather than by
-    reading imports, because a single ``from ... import`` is easy to add in
-    passing and this is the guard that notices.
+    §16.2 Q11 is *"Phase 1: human-determined; Phase 4+: fractional_kelly"*. The
+    guard asserted, through Phase 3, that the thesis builder imported nothing
+    from ``risk_budget`` at all — because in Phase 3 the risk layer did not
+    exist and any import would have built a Phase 4 layer early.
 
-    If this ever fails it is not necessarily wrong — it means Phase 4's wiring
-    has begun — but it must fail loudly so §25's gate is re-checked on the new
-    path before it ships.
+    **D-073 is the Phase 4 wiring this docstring anticipated, and the guard is
+    amended rather than deleted — narrowed to the property that actually
+    protects §25.** The original assertion ("no import at all") was a proxy for
+    the real requirement, and the proxy stopped being the right test the moment
+    Section 17.4 mandated the edge. The real requirement is:
+
+        **the Kelly *primitives* must not be reachable from the thesis or API
+        layers, and the one import that IS permitted must arrive with §25's gate
+        already checked on its path.**
+
+    So the guard now does three things, and the third is new — it is a stronger
+    test than the one it replaces, not a weaker one:
+
+    1. **``apply_fractional_kelly`` / ``KellyInputs`` stay forbidden** anywhere
+       under ``thesis_layer/`` and ``api_layer/``. A builder that called the
+       Kelly primitive directly would bypass every gate in
+       ``translate_thesis_to_position`` — including §25's — and this is the
+       assertion that notices.
+    2. **An ``import *`` from ``risk_budget`` stays forbidden**, because it
+       would satisfy (1) textually while making every primitive reachable.
+    3. **The permitted names are enumerated**, and the import must be exactly
+       that set: the translation entry point and the types it consumes. A future
+       addition to the builder's import list fails here and must be justified.
+
+    §25's gate on the new path was re-checked when this amendment was made, and
+    the result is asserted below rather than asserted-in-prose: the builder's
+    only call into ``risk_budget`` is ``translate_thesis_to_position``, whose
+    **gate 2 refuses an uncalibrated distribution before Kelly is reached**
+    (measured: ``refused_scenarios_uncalibrated`` on the live fixture, whose
+    shipped probabilities are ``uncalibrated_illustrative``).
     """
-    forbidden = {"risk_budget", "apply_fractional_kelly", "KellyInputs"}
+    #: The Kelly primitives. Reachable from ``portfolio/``, never from here.
+    forbidden_names = {"apply_fractional_kelly", "KellyInputs"}
+    #: The permitted surface: the translation entry point and the types it
+    #: consumes. Exactly this set — an addition is a decision, not a detail.
+    permitted_names = {
+        "translate_thesis_to_position",
+        "ThesisPositionInputs",
+        "RiskBudgetTarget",
+        "ProposedPosition",
+    }
+
     offenders: list[str] = []
+    permitted_uses: list[str] = []
+    wildcard_imports: list[str] = []
+
     for sub in ("thesis_layer", "api_layer"):
         for path in (_REPO_ROOT / "src" / "macro_engine" / sub).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    if node.module and "risk_budget" in node.module:
-                        offenders.append(f"{path.name}:{node.lineno}")
+                    if not (node.module and "risk_budget" in node.module):
+                        continue
+                    if node.names and node.names[0].name == "*":
+                        wildcard_imports.append(f"{path.name}:{node.lineno}")
+                        continue
+                    for alias in node.names:
+                        name = alias.name
+                        if name in forbidden_names:
+                            offenders.append(f"{path.name}:{node.lineno} ({name})")
+                        elif name in permitted_names:
+                            permitted_uses.append(f"{path.name}:{node.lineno} ({name})")
+                        else:
+                            offenders.append(f"{path.name}:{node.lineno} ({name} UNKNOWN)")
                 elif isinstance(node, ast.Import):
                     for alias in node.names:
                         if "risk_budget" in alias.name:
-                            offenders.append(f"{path.name}:{node.lineno}")
-    assert not offenders, (
-        f"the sizer is now imported by {offenders}. Kelly has become reachable "
-        f"from the thesis/API path; re-check Section 25's gate on that path before "
-        f"sizing anything. Forbidden names: {sorted(forbidden)}"
+                            # A bare `import macro_engine.portfolio.risk_budget`
+                            # makes the whole module reachable by attribute.
+                            offenders.append(f"{path.name}:{node.lineno} (module import)")
+
+    assert not wildcard_imports, (
+        f"a wildcard import from the sizer appears at {wildcard_imports}. It would "
+        f"satisfy a name-based check while making {sorted(forbidden_names)} "
+        f"reachable — the check must see the names, not a star."
     )
+    assert not offenders, (
+        f"a Kelly primitive or an unlisted name is reachable from the thesis/API "
+        f"path at {offenders}. Section 25's gate lives inside the translation; a "
+        f"direct call reaches Kelly without it. Permitted names are exactly "
+        f"{sorted(permitted_names)} (D-073)."
+    )
+    # The positive half: the permitted edge must actually be used, and only by
+    # the builder. Without this, deleting the feature would also make the guard
+    # pass — a guard that a removal satisfies is not guarding the thing.
+    assert permitted_uses, (
+        "no permitted risk-budget import was found. Section 17.4's hook is the "
+        "reason this guard was amended; removing the import without removing the "
+        "guard would leave the amendment unexplained."
+    )
+    assert all(entry.startswith("builder.py") for entry in permitted_uses), (
+        f"the risk-budget import appears outside the builder: {permitted_uses}. "
+        f"§17.4 wires the risk axis at the seam, and nowhere else."
+    )
+
+
+def test_section_25_gate_precedes_kelly_on_the_translation_path() -> None:
+    """The receipt for the guard above: §25 is checked BEFORE Kelly is reached.
+
+    The amendment in D-073 permits the builder to import the translation, so the
+    question the guard cannot answer structurally — *does the new path still
+    honour §25?* — is answered here **behaviourally**, on the live fixture.
+
+    The fixture's distribution is ``uncalibrated_illustrative``, so Section 25
+    forbids sizing from it. If the translation reached Kelly anyway, the refusal
+    would carry a different outcome; the assertion is therefore on the **reason**
+    as well as the outcome, because a refusal for the wrong cause is
+    indistinguishable from a refusal for the right one (lesson 5bn).
+    """
+    from macro_engine.portfolio.risk_budget import (
+        ProposedPosition,
+        RiskBudgetTarget,
+        ThesisPositionInputs,
+        translate_thesis_to_position,
+    )
+
+    thesis = _thesis()
+    assert thesis.scenario_sizing_permitted is False, (
+        "the fixture began permitting sizing; this test's premise is gone and the "
+        "§25 receipt must be re-derived"
+    )
+    result = translate_thesis_to_position(
+        ThesisPositionInputs(
+            thesis=thesis,
+            risk_budget_target=RiskBudgetTarget(
+                instrument=thesis.trade_idea.instrument,
+                target_risk_contribution_pct=0.12,
+            ),
+        )
+    )
+    value = result.value
+    assert isinstance(value, dict)
+    proposal = ProposedPosition.model_validate(value)
+    assert proposal.outcome == "refused_scenarios_uncalibrated"
+    assert proposal.fraction_of_capital == 0.0
+    assert "Section 25" in proposal.reason

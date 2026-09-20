@@ -201,7 +201,7 @@ _WARNING_CALLER = "    if rules is not None:"
 
 # --- risk_budget.py, the contract / identity / confidence ------------------
 
-_STATE_CONFIG = '    model_config = ConfigDict(extra="forbid")\n\n    high_water_mark: float = Field(\n        gt=0.0,'  # noqa: E501 — must match the source byte-for-byte
+_STATE_CONFIG = '    model_config = ConfigDict(extra="forbid")\n\n    high_water_mark: float = Field(\n        gt=0.0,'
 _MODEL_NAME = '        model_name="drawdown_rule_check",'
 # `country="us",` appears five times in risk_budget.py; anchored through the
 # model name that precedes it.
@@ -238,6 +238,13 @@ _CFG_FLOOR_REDUCTION = (
 )
 _CFG_TIER_UPPER = "    drawdown_pct: float = Field(gt=0.0, le=100.0)"
 _CFG_ACCESSOR_SORT = "        return sorted(tiers, key=lambda t: t.drawdown_pct)"
+# The accessor was hardened with a default (`get("tiers", [])`) so a settings
+# block that omits the key yields the empty ladder rather than a `KeyError`
+# traceback. The mutation surface is unchanged — "stop reading the YAML" is
+# still what CX5 asserts — so the anchor tracks the current default form. When
+# this anchor was left in its pre-default form it matched 0 occurrences, and a
+# sweep reporting `target ABSENT` cannot detect the mutant it exists to kill
+# (O-95).
 _CFG_ACCESSOR_READS = '        raw = self.drawdown_thresholds.get("tiers", [])'
 
 
@@ -485,7 +492,7 @@ def _published_mutations() -> list[tuple[str, Path, str, str]]:
                 '            "outcome": outcome,\n'
                 '            "drawdown_fraction": round(drawdown, 6),\n'
                 '            "triggered_threshold_fraction": (\n'
-                "                round(trigger.risk_reduction_pct, 6) if trigger is not None else None\n"  # noqa: E501 — mirrors the source line it mutates
+                "                round(trigger.risk_reduction_pct, 6) if trigger is not None else None\n"
                 "            ),"
             ),
         ),
@@ -571,7 +578,7 @@ def _contract_mutations() -> list[tuple[str, Path, str, str]]:
             "M10.1 extra=forbid is dropped from DrawdownState",
             SRC,
             _STATE_CONFIG,
-            '    model_config = ConfigDict(extra="allow")\n\n    high_water_mark: float = Field(\n        gt=0.0,',  # noqa: E501 — must match the source byte-for-byte
+            '    model_config = ConfigDict(extra="allow")\n\n    high_water_mark: float = Field(\n        gt=0.0,',
         ),
         (
             "M10.2 the model name changes",

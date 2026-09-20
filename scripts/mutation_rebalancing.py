@@ -362,7 +362,7 @@ def _missing_instrument_mutations() -> list[tuple[str, Path, str, str]]:
             "M1.4 `missing` is computed from the currents instead of the targets",
             SRC,
             _MISSING,
-            "    missing = [t.instrument for t in targets if t.instrument in current_contributions]",  # noqa: E501 — mirrors the source line it mutates
+            "    missing = [t.instrument for t in targets if t.instrument in current_contributions]",
         ),
         (
             "M1.5 a target of exactly 0.0 is refused rather than budgeted",

@@ -887,6 +887,65 @@ def test_untagged_signals_are_excluded_and_disclosed() -> None:
     assert any("carry no source family" in w for w in result.warnings)
 
 
+def test_untagged_signals_counts_the_whole_list_not_only_the_census() -> None:
+    """D-077 REGRESSION — the untagged count must be a MEASUREMENT, not a constant.
+
+    Found by asking what the number *could* be rather than what it *is*. The
+    census that produces ``untagged`` runs over the DIRECTIONAL signals only
+    (deliberately — §15.19-D, a neutral signal's family cannot back a directional
+    verdict). But ``with_source_family`` REFUSES ``None`` for a non-neutral
+    signal, so a signal that got its direction can never be untagged. The
+    intersection of those two rules is the empty set: the census reports
+    ``untagged=0`` for every input, always.
+
+    ``classify_convergence`` copied that structural zero into the published
+    ``untagged_signals`` field via ``isinstance(untagged, int) else 0`` — the
+    ``else 0`` being the fabrication, since a missing key and a measured zero are
+    different facts. The published field was therefore a constant dressed as a
+    measurement, and its warning could never fire: on the fixture below it would
+    print "0 of 1 signal(s) carry no source family" — asserting hygiene it had
+    not checked, and doing so in the one warning whose entire purpose is to
+    disclose that a verdict rests on unknown provenance.
+
+    The count is now taken over the whole signal list, which is the population
+    the warning's own text ("of {total} signal(s)") already claimed.
+    """
+    # A neutral signal that is genuinely untagged — the only shape of untagged
+    # signal that can exist, and precisely the one the census cannot see.
+    signals = [_signal(1, F.BLS_CPI), _signal(0, None), _signal(0, F.BEA_PCE)]
+    result = _classify(signals)
+
+    assert as_int(result, key="untagged_signals") == 1, (
+        "the untagged count must include the neutral signal the census excludes"
+    )
+    matching = [w for w in result.warnings if "carry no source family" in w]
+    assert len(matching) == 1, f"expected exactly one disclosure, got {matching}"
+    assert "1 of 3 signal(s)" in matching[0], (
+        f"the disclosure must state the true untagged share; got: {matching[0]}"
+    )
+    assert "0 of 3 signal(s)" not in matching[0]
+
+    # And the census is still the DIRECTIONAL one: the neutral signals' families
+    # must not be counted as backing the directional verdict.
+    assert as_int(result, key="independent_families") == 1
+    assert as_int(result, key="non_neutral_signals") == 1
+
+
+def test_an_all_untagged_list_is_measured_as_untagged() -> None:
+    """The floor case of D-077: a list the census sees as empty of families.
+
+    ``count_independent_families([])`` returns ``untagged=0`` — correct for its
+    own (empty) input, but it makes the structural zero unmistakable: every
+    signal in ``signals`` is untagged, so any honest measurement must say 3.
+    """
+    signals = [_signal(1, None), _signal(1, None), _signal(-1, None)]
+    result = _classify(signals)
+
+    assert as_int(result, key="untagged_signals") == 3
+    assert as_int(result, key="independent_families") == 0
+    assert any("3 of 3 signal(s) carry no source family" in w for w in result.warnings)
+
+
 # --------------------------------------------------------------------------
 # Warning paths
 # --------------------------------------------------------------------------

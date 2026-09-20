@@ -169,7 +169,7 @@ _INDEPENDENCE = (
     # anchoring a multi-line target, verify against the file as `ruff format`
     # leaves it, not as it was first written.
     "                    0\n"
-    '                    if corroboration.startswith("disagrees") or corroboration == "unavailable"\n'  # noqa: E501
+    '                    if corroboration.startswith("disagrees") or corroboration == "unavailable"\n'
     "                    else 1"
 )
 
@@ -525,8 +525,8 @@ def build_mutations() -> list[Mutation]:
             group="M10",
             name="M10.2 honesty control: docstring wording only",
             path=MODEL,
-            old='            f"{_SCORE_CEILING:.0f}] scale; got {type(value).__name__} ({value!r})."',  # noqa: E501
-            new='            f"{_SCORE_CEILING:.0f}] scale; received {type(value).__name__} ({value!r})."',  # noqa: E501
+            old='            f"{_SCORE_CEILING:.0f}] scale; got {type(value).__name__} ({value!r})."',
+            new='            f"{_SCORE_CEILING:.0f}] scale; received {type(value).__name__} ({value!r})."',
             intent=(
                 "HONESTY CONTROL. A wording change inside an error message that no "
                 "test matches on. MUST SURVIVE -- if it is killed, a test is "

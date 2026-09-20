@@ -27,7 +27,11 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from macro_engine.models.contracts import ModelResult
+from macro_engine.models.contracts import (
+    ConfidenceInputs,
+    ModelResult,
+    compute_confidence,
+)
 
 
 def _result(**overrides: object) -> ModelResult:
@@ -1004,3 +1008,82 @@ class TestGapProducersAndRoutingArePopulated:
         assert r.decision_relevance, f"{factory} must name its consumer"
         assert r.limitations, f"{factory} must state its limits"
         assert r.decision_prohibition, f"{factory} must state what it forbids"
+
+
+# ---------------------------------------------------------------------------
+# Section 22.8 — the confidence contract's own strictness
+# ---------------------------------------------------------------------------
+
+
+class TestConfidenceInputsStrictness:
+    """``ConfidenceInputs`` is the input to the single confidence rule (§22.8).
+
+    Its three penalty factors default to the no-penalty state, so a caller that
+    omits one silently receives the highest confidence that factor permits. That
+    default is deliberate (requiring it would force every call site to assert a
+    claim it may not have examined) — but it makes the class unusually dependent
+    on a typo NOT being silently absorbed. A misspelled factor must therefore be
+    an error, not an unused keyword argument that leaves the penalty unapplied.
+    """
+
+    def test_a_misspelled_penalty_factor_is_refused_not_ignored(self) -> None:
+        """``extra="forbid"`` on the confidence contract (D-078).
+
+        Every field is supplied with its correct name AND every field is
+        present, so the only thing that can make this raise is the forbid
+        itself. That construction matters: an earlier version of the sibling
+        test in test_auctions.py passed a misspelling for a required field, and
+        with ``extra`` unset Pydantic reports the field as *missing* — a message
+        that also contains the real field name, so the assertion passed and the
+        mutation survived. A complete valid payload plus one extra key has no
+        such ambiguity.
+        """
+        with pytest.raises(ValidationError, match="is_heuristic_not_calibrated_"):
+            ConfidenceInputs(  # type: ignore[call-arg]
+                data_quality_flags_present=True,
+                is_heuristic_not_calibrated=True,
+                source_independence_count=2,
+                depends_on_unobservable=True,
+                is_heuristic_not_calibrated_=True,
+            )
+
+    def test_the_forbid_does_not_change_a_correct_call(self) -> None:
+        """The guard is inert on well-formed input — it only refuses typos."""
+        correct = ConfidenceInputs(
+            data_quality_flags_present=True,
+            is_heuristic_not_calibrated=True,
+            source_independence_count=2,
+            depends_on_unobservable=True,
+        )
+        assert compute_confidence(correct) == compute_confidence(
+            ConfidenceInputs().model_copy(
+                update={
+                    "data_quality_flags_present": True,
+                    "is_heuristic_not_calibrated": True,
+                    "source_independence_count": 2,
+                    "depends_on_unobservable": True,
+                }
+            )
+        )
+
+    def test_the_no_penalty_default_is_the_optimistic_case(self) -> None:
+        """Pin WHY a misspelling is dangerous: the default maximises confidence.
+
+        This is the fact that makes ``extra="forbid"`` load-bearing rather than
+        cosmetic. If the defaults were conservative, an absorbed typo would be
+        harmless; because they are not, an absorbed typo is a silent confidence
+        inflation — the exact failure §22.8 was written to prevent.
+        """
+        bare = compute_confidence(ConfidenceInputs())
+        penalised = compute_confidence(
+            ConfidenceInputs(
+                data_quality_flags_present=True,
+                is_heuristic_not_calibrated=True,
+                depends_on_unobservable=True,
+            )
+        )
+        assert bare > penalised, (
+            "the all-defaults confidence must be the HIGHEST the formula returns, "
+            "otherwise the 'a misspelling is absorbed' risk is overstated and this "
+            "test's premise is wrong"
+        )

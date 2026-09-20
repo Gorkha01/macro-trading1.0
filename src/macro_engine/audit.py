@@ -217,26 +217,62 @@ class AuditLedger:
         Takes the thesis as a mapping rather than importing ``MacroThesis`` to
         avoid a circular import: ``thesis_layer`` imports the audit ledger, so
         the ledger must not import ``thesis_layer``.
+
+        Required keys are **required**: a missing ``thesis_id``, ``country``,
+        ``status``, ``convergence_classification`` or ``regime.state`` raises
+        rather than being recorded as an invented default. D-015 states the
+        governing principle for this table — *"a model computation that succeeds
+        while its audit write silently fails produces a result with no
+        provenance — worse than a failed computation, because the failure is
+        visible and the missing provenance is not."* The same applies to a
+        **wrong** audit row: recording ``status="DRAFT"`` for a thesis that
+        carried no status writes a fabricated provenance fact that a later
+        reader cannot distinguish from a real one. Refusing is recoverable;
+        a false attestation is not.
         """
         if not correlation_id.strip() or not actor.strip():
             raise ValueError("correlation_id and actor are both required.")
 
+        missing = [
+            key
+            for key in (
+                "thesis_id",
+                "country",
+                "status",
+                "convergence_classification",
+            )
+            if key not in thesis
+        ]
+        regime = thesis.get("regime")
+        if not isinstance(regime, dict) or "state" not in regime:
+            missing.append("regime.state")
+        if missing:
+            raise ValueError(
+                "thesis is missing required audit field(s): "
+                + ", ".join(missing)
+                + ". The ledger records what happened; it does not supply a "
+                "default for an absent fact (D-015)."
+            )
+        # The guard above proves `regime` is a dict carrying "state"; mypy cannot
+        # narrow a value it has only seen through `.get`, so the assertion
+        # restates the guarantee the raise already established rather than
+        # weakening the access to a `.get(..., "unknown")` default — which is the
+        # fabrication this method exists to refuse.
+        assert isinstance(regime, dict), "unreachable: guarded above"
+
         moment = utc_now()
-        thesis_id = str(thesis.get("thesis_id", "unknown"))
-        regime = thesis.get("regime") or {}
+        thesis_id = str(thesis["thesis_id"])
         warnings = thesis.get("warnings") or []
 
         with Session(self._engine) as session:
             record = ThesisBuildRecord(
                 correlation_id=correlation_id,
                 thesis_id=thesis_id,
-                country=str(thesis.get("country", "us")),
+                country=str(thesis["country"]),
                 created_at=moment,
-                status=str(thesis.get("status", "DRAFT")),
-                convergence_classification=str(
-                    thesis.get("convergence_classification", "NO_SIGNAL")
-                ),
-                regime_state=str(regime.get("state", "unknown")),
+                status=str(thesis["status"]),
+                convergence_classification=str(thesis["convergence_classification"]),
+                regime_state=str(regime["state"]),
                 model_count=model_count,
                 warning_count=len(warnings),
                 thesis_json=json.dumps(thesis, default=str),

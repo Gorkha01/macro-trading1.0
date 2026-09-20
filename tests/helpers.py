@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from macro_engine.models.contracts import ModelResult
 
-__all__ = ["as_bool", "as_float", "as_float_or_none", "as_int", "as_str"]
+__all__ = ["as_bool", "as_dict", "as_float", "as_float_or_none", "as_int", "as_str"]
 
 
 def as_float(result: ModelResult, *, key: str | None = None) -> float:
@@ -134,3 +134,41 @@ def as_str(result: ModelResult, *, key: str | None = None) -> str:
         f"{result.model_name}: expected a str value, got {type(value).__name__}"
     )
     return value
+
+
+def as_dict(result: ModelResult, *, key: str) -> dict[str, float]:
+    """Narrow a named entry of a dict-valued result to ``dict[str, float]``.
+
+    Needed by the risk-budgeting tests, whose headline output is several
+    **keyed by instrument** (``weights``, ``risk_contributions``,
+    ``notional_vs_risk_gap``, ``stressed_weights``). Without it a test would
+    index the ``ModelResult.value`` union directly — a type error under
+    ``--strict`` — or cast, and a cast would hide a result that returned a bare
+    *vector* where a keyed mapping was promised. A caller must not have to
+    remember a vector's order, so the mapping is the contract and this asserts
+    it.
+
+    The float values are asserted individually rather than the whole mapping,
+    because ``dict[Any, Any]`` would satisfy the return type while allowing a
+    nested object through.
+    """
+    value = result.value
+    assert isinstance(value, dict), (
+        f"{result.model_name}: expected a dict value to read {key!r} from, "
+        f"got {type(value).__name__}"
+    )
+    entry = value[key]
+    assert isinstance(entry, dict), (
+        f"{result.model_name}: value[{key!r}] is {type(entry).__name__}, not a dict"
+    )
+    narrowed: dict[str, float] = {}
+    for name, item in entry.items():
+        assert isinstance(name, str), (
+            f"{result.model_name}: value[{key!r}] has a non-str key ({type(name).__name__})"
+        )
+        assert isinstance(item, (int, float)) and not isinstance(item, bool), (
+            f"{result.model_name}: value[{key!r}][{name!r}] is {type(item).__name__}, "
+            f"neither numeric nor bool-excluded"
+        )
+        narrowed[name] = float(item)
+    return narrowed

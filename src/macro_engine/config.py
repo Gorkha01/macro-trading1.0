@@ -620,6 +620,23 @@ class RiskSettings(BaseModel):
     max_leverage: CalibratedValue
     min_liquidity_days_to_unwind: CalibratedValue
     vol_target_reflexivity_scale: CalibratedValue
+    # Module 17.1's risk-budgeted weight construction (Section 9.2). The
+    # optimiser's numerical settings are calibration, not code: Section 21
+    # keeps them out of the function body so a change to the convergence
+    # standard is a reviewable diff rather than an edit to the algorithm.
+    #
+    # `_value`-suffixed, unlike the leaves above, because the reader property
+    # is named for the *quantity* the caller wants (`risk_parity_tolerance`)
+    # and the field is named for the *envelope* it is stored in. Two leaves in
+    # one class cannot share a name, and the caller-facing name is the one
+    # consumers type.
+    risk_parity_annualization_periods_value: CalibratedValue
+    risk_parity_tolerance_value: CalibratedValue
+    risk_parity_stress_shift_threshold_value: CalibratedValue
+    # Section 17.4's feedback loop — the ONLY rule in the specification that
+    # carries a risk-layer finding back into the thesis LIFECYCLE. `_value`-
+    # suffixed because the reader is named for the quantity the caller wants.
+    thesis_demotion_fraction_value: CalibratedValue
 
     @property
     def vol_target(self) -> float:
@@ -693,6 +710,93 @@ class RiskSettings(BaseModel):
     @property
     def var_lookback_days(self) -> int:
         return int(self.historical_var_lookback_days.value)
+
+    @property
+    def risk_parity_annualization_periods(self) -> int:
+        """Trading days per year for the risk-parity covariance annualisation.
+
+        **This must agree with ``realized_vol_simple`` and with the vol-target
+        block.** If the risk budget annualised at 260 and the vol target at
+        252, the same book would carry two volatilities for the same
+        instrument and the drift between them would look like signal. The
+        agreement is asserted by tests rather than left to convention.
+        """
+        return int(self.risk_parity_annualization_periods_value.value)
+
+    @property
+    def risk_parity_tolerance(self) -> float:
+        """Absolute convergence tolerance on the risk-contribution shares.
+
+        Checked as ``max |RC_i - b_i|`` where the RC shares sum to 1.0, so an
+        *absolute* tolerance is well-scaled and a relative one would need a
+        denominator that is itself near zero for a small-budget instrument.
+        """
+        return float(self.risk_parity_tolerance_value.value)
+
+    @property
+    def risk_parity_stress_shift_threshold(self) -> float:
+        """Largest single-weight move, as a **fraction of notional**, that is
+        tolerated before the correlated-stress result escalates to a warning.
+
+        ``0.025`` means 2.5 percentage points of the book, not 2.5% of the
+        instrument's own weight. A relative test would fire spuriously on a
+        small-budget leg (a 2% weight moving to 4% is a doubling but
+        immaterial), so the test is absolute and stated as such.
+
+        **The shipped value was first written as 0.05 and that made the branch
+        dead code.** Measured on the live 5-ETF book, the largest single-leg
+        shift under ``rho = 0.9`` ranges 1.40%..5.75% across lookbacks of
+        126..1260 sessions with a median of 5.22%, so a 5% threshold sat above
+        the median and never fired. The range is recorded in ``settings.yaml``;
+        the point here is that the accessor's value is a *measured* breakpoint,
+        not a round number.
+        """
+        return float(self.risk_parity_stress_shift_threshold_value.value)
+
+    @property
+    def thesis_demotion_fraction(self) -> float:
+        """Section 17.4's "near-zero" bound, as a **fraction of capital**.
+
+        ``0.03`` means 3% of capital, not 3 percentage points of some other
+        quantity and not a relative test. Section 17.4 requires a live thesis
+        whose proposed notional clips to "near-zero" to be demoted from
+        ``CANDIDATE`` back to ``WATCH``, and "near-zero" is the only
+        unquantified word in the rule — so it is the one thing that belongs
+        here rather than in a function body.
+
+        **The structure of the rule gives three bounds, and the third was
+        found by measurement rather than by reading.** The first draft used
+        ``0.02`` and satisfied the first two while never firing:
+
+        * **Below the position cap.** ``max_position_fraction`` is ``0.15``. A
+          demotion threshold at or above the cap would demote *every* thesis
+          that reached the sizing path, which is not a risk judgement but a
+          broken rule — and because the resulting status is a legal value, it
+          would look like a policy rather than a bug.
+        * **Strictly positive.** A threshold of zero can never fire, which
+          makes Section 17.4 a declaration with no consumer — the
+          declared-consumed-unreachable class this project has recorded eight
+          times (D-045/D-046/D-048, O-53, and twice inside D-072 itself).
+        * **Above the smallest reachable size.** Being positive is not enough:
+          the published fraction is **not continuous**, so a bound can be
+          positive, below the cap, and still beneath every value the sizing
+          path can produce. Full Kelly is the argmax of expected log growth,
+          and for a binary bet with a positive edge that objective is
+          monotone, so ``f*`` pins at the domain edge and the published number
+          becomes the cap; only a few asymmetric sets land strictly inside.
+          The reachable published fractions on this configuration are
+
+              ``0.02941  0.03472  0.042735  0.069445  0.125  0.15``
+
+          so the smallest positive size is ``0.02941`` and any bound below it
+          never fires. This is measured, and reprinted, by
+          ``scripts/live_risk_axis_check.py``.
+
+        All three bounds are asserted by tests against the *other* leaves and
+        against the measured range rather than against literals, so a future
+        change to the cap or to the Kelly divisor moves the constraint with it.
+        """
+        return float(self.thesis_demotion_fraction_value.value)
 
     @property
     def drawdown_tiers(self) -> list[DrawdownTier]:

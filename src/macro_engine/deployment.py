@@ -303,7 +303,7 @@ _VARIABLES: dict[str, EnvironmentVariable] = {
         EnvironmentVariable(
             name="OPENBB_API_URL",
             description="Base URL of the OpenBB Platform API.",
-            yaml_default="http://127.0.0.1:6900",
+            yaml_default="http://127.0.0.1:6901",
         ),
         EnvironmentVariable(
             name="MACRO_DATA_STORE_PATH",

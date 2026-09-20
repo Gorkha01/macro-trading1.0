@@ -30,6 +30,7 @@ import pandas as pd
 import pytest
 
 from macro_engine.data_layer.openbb_client import (
+    _PATH_PACKAGE,
     NORMALIZED_COLUMNS,
     OpenBBClient,
     OpenBBClientConfig,
@@ -193,7 +194,11 @@ def test_normalize_rejects_frame_without_recognizable_date_column() -> None:
     """
     client = OpenBBClient()
     with pytest.raises(OpenBBFetchError, match="date column"):
-        client._normalize([{"period_ending": "2026-01-01", "amount": 1.0}], "test_series")
+        client._normalize(
+            [{"period_ending": "2026-01-01", "amount": 1.0}],
+            "test_series",
+            served_by=_PATH_PACKAGE,
+        )
     client.close()
 
 
@@ -201,7 +206,7 @@ def test_normalize_rejects_empty_frame() -> None:
     """An empty provider response is a failure, not an empty dataset."""
     client = OpenBBClient()
     with pytest.raises(OpenBBFetchError, match="empty frame"):
-        client._normalize(pd.DataFrame(), "test_series")
+        client._normalize(pd.DataFrame(), "test_series", served_by=_PATH_PACKAGE)
     client.close()
 
 

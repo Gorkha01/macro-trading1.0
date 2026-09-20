@@ -1137,3 +1137,86 @@ def test_every_settings_class_was_actually_walked() -> None:
 
     assert len(classes) >= 20, f"only found {len(classes)} settings classes: {sorted(names)}"
     assert ConfidenceSettings in classes
+
+
+# ---------------------------------------------------------------------------
+# D-075: record_thesis must NOT invent defaults for missing fields.
+#
+# The sibling method `record_model` takes a typed `ModelResult` and reads
+# attributes directly, so a missing field is impossible. `record_thesis` takes
+# an untyped `dict` and previously substituted "unknown" / "us" / "DRAFT" /
+# "NO_SIGNAL" for absent keys — the exact `missing -> invented default`
+# conversion D-015 forbids for the audit trail:
+#
+#   "A model computation that succeeds while its audit write silently fails
+#    produces a result with no provenance — worse than a failed computation."
+#
+# An audit row asserting `status="DRAFT"` when the thesis carried no status is
+# worse than no row: it is a fabricated provenance fact that a reader cannot
+# distinguish from a real one.
+# ---------------------------------------------------------------------------
+
+
+def test_record_thesis_refuses_a_thesis_missing_required_fields(
+    ledger: AuditLedger,
+) -> None:
+    """RED before the fix: absent `status` was silently recorded as "DRAFT"."""
+    thesis = {
+        "thesis_id": "us-2026-09-b1",
+        "country": "us",
+        # no `status`, no `convergence_classification`, no `regime`
+    }
+    with pytest.raises(ValueError, match="status"):
+        ledger.record_thesis(
+            thesis, correlation_id="run-missing", actor="thesis-builder", model_count=9
+        )
+
+
+def test_record_thesis_does_not_invent_a_country(ledger: AuditLedger) -> None:
+    """RED before the fix: absent `country` was silently recorded as "us"."""
+    thesis = {
+        "thesis_id": "us-2026-09-b2",
+        "status": "DRAFT",
+        "convergence_classification": "NO_SIGNAL",
+        "regime": {"state": "disinflation"},
+        # no `country`
+    }
+    with pytest.raises(ValueError, match="country"):
+        ledger.record_thesis(
+            thesis, correlation_id="run-nocountry", actor="thesis-builder", model_count=9
+        )
+
+
+def test_record_thesis_does_not_invent_a_thesis_id(ledger: AuditLedger) -> None:
+    """RED before the fix: absent `thesis_id` was silently recorded as "unknown"."""
+    thesis = {
+        "country": "us",
+        "status": "DRAFT",
+        "convergence_classification": "NO_SIGNAL",
+        "regime": {"state": "disinflation"},
+    }
+    with pytest.raises(ValueError, match="thesis_id"):
+        ledger.record_thesis(
+            thesis, correlation_id="run-noid", actor="thesis-builder", model_count=9
+        )
+
+
+def test_record_thesis_still_records_a_complete_thesis(ledger: AuditLedger) -> None:
+    """GREEN guard: the refusal must not break the legitimate path."""
+    thesis = {
+        "thesis_id": "us-2026-09-b3",
+        "country": "us",
+        "status": "WATCH",
+        "convergence_classification": "NO_SIGNAL",
+        "regime": {"state": "disinflation", "confidence": 0.5},
+        "warnings": ["gap inside dispersion"],
+    }
+    entry = ledger.record_thesis(
+        thesis, correlation_id="run-complete", actor="thesis-builder", model_count=9
+    )
+    assert entry.record_id > 0
+    stored = ledger.theses_for("run-complete")
+    assert stored[0]["status"] == "WATCH"
+    # `country` is not a projected column; it lives in the stored payload, which
+    # is the point of storing the thesis by value (D-015).
+    assert stored[0]["thesis"]["country"] == "us"
