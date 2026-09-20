@@ -16,24 +16,125 @@ Per-function completion record (AGENTS.md Section 21.0 / 21.2 Step 9).
 
 
 
-## Quality gates - measured 2026-09-20, after the Phase 0-4 final audit (`D-074`)
+## Quality gates - measured 2026-09-20, after the D-080..D-082 audit-and-fix pass
 
 ```
 ruff check src tests tools scripts ->  All checks passed!
-ruff format --check               ->  221 files already formatted
-mypy (strict, python_version 3.12)->  Success: no issues found in 221 source files
+ruff format --check               ->  225 files already formatted
+mypy (strict, python_version 3.12)->  Success: no issues found in 225 source files
                                       (src, tests, scripts AND tools all typed)
-                                      [221 = 221, D-035 count parity satisfied]
-pytest -q                         ->  2358 passed, 1 skipped, 0 failed   (exit 0)
-                                      (+29 tests vs the 2329 baseline; 0 regressions)
-                                      the 1 skip is the pre-existing Phase-5-gated
-                                      tests/models/test_output_gap.py case
+                                      [225 = 225, D-035 count parity satisfied]
+                                      (the pair moved 224 -> 225 when
+                                       scripts/_sweep_gate.py was added; the
+                                       earlier "224 = 224" was carried forward
+                                       rather than re-measured -- O-88)
+pytest -q                         ->  2432 passed, 1 skipped, 0 failed
+                                      (measured by counting outcome markers --
+                                      2432 dots, 0 F, 0 E -- NOT by exit code:
+                                      the harness's safe-delete guard makes the
+                                      process exit 1 while every test passes; D-082.2)
 uv run python tools/sweep_health.py -> 40 sweeps checked, 0 leftovers,
-                                      2 INHERITED failures (mutation_regime.py M8d,
-                                      mutation_lei_proxy.py M8e) - unchanged,
-                                      DO NOT FIX (targets absent by design)
+                                      0 mutant shapes, 0 failures,
+                                      0 sweeps with NO sweep-owned gate
+                                      (D-075 cured the 2 "INHERITED" failures --
+                                      they were STALE ANCHORS, not by-design
+                                      absences; D-081 fixed the tool's diagnosis;
+                                      D-082 wired the last 14 gates)
+tools/reachability_audit.py --check-baseline -> PASS, 59 = 59
+scripts/live_risk_axis_check.py   ->  PASSED (exit 0)
+scripts/mutation_lei_proxy.py     ->  36/36 killed  (run in full at D-080;
+                                      M8e and M8g both KILLED)
+scripts/mutation_regime.py        ->  gate 40 mutations / 0 problems;
+                                      interrupted run self-heals from sidecar (D-082)
 grep -rn "if False://|if True:"  src/macro_engine/  ->  nothing (required)
 ```
+
+### The interrupt defence does NOT work on this platform (D-082)
+
+`mutation_api_layer.py` installs a `SIGTERM`/`SIGINT` handler to restore a
+mutation left in flight. **On `win32` that handler is never entered** - measured
+with three probes, including a trace wrapper that printed nothing while
+`signal.getsignal` confirmed the handler installed and the payload was armed.
+`os.kill(pid, SIGTERM)` maps to `TerminateProcess`. **The record that credited
+`_restore_in_flight` as a defence is corrected:** it is correct on POSIX and kept
+for that reason, but it protects nothing here.
+
+The defence that does work is `scripts/_sweep_gate.py`'s **sidecar recovery** -
+`record_pristine()` writes pristine text to `<name>.sweepbackup` before the first
+mutation, `restore_from_sidecar()` heals on the next run. It needs only the
+filesystem, so no kill can bypass it, and it is **strictly stronger than
+`repair_leftover_mutations`**, which can only heal a mutation the catalogue still
+recognises. Adopted so far by **`mutation_regime.py` only** - see **O-103**.
+
+### The do-not-fix sweep list is EMPTY, and it was wrong 3 times out of 3 (D-075, D-080)
+
+This file twice recorded sweep failures as *"inherited - targets absent by design -
+DO NOT FIX."* **Both claims are retracted, and so is the category.** Every entry
+was run in full and every one is **KILLED**:
+
+| entry | recorded claim | measured |
+| --- | --- | --- |
+| `mutation_drawdown.py` `CX5` | target absent by design | **stale anchor** (D-075) → sweep now 47/47 |
+| `mutation_regime.py` `M8d` | target absent by design | **stale anchor** (D-075) → sweep now **40/40 killed** |
+| `mutation_lei_proxy.py` `M8e` | target absent by design | **never a limitation** (D-080) → sweep now **36/36 killed** |
+
+**In all three cases the label was an artifact of the CHECK, not a property of the
+code.** The operational rules recorded:
+
+- A `target ABSENT` means **the gate is OFF**. It certifies nothing — it is the
+  O-95 self-concealing class, where a mutation that no longer applies is
+  indistinguishable from one that never existed.
+- A do-not-fix label is an **unverified claim requiring re-derivation**, never a
+  risk acceptance. The list should be treated as a **to-do list**.
+
+**D-080 also exposed a real survivor** — `M8g` — which the do-not-fix noise had
+been sitting next to for two sessions. See below; it is a genuine test gap
+(O-101), closed with a RED→GREEN test and verified `git diff --quiet` clean.
+
+### The "INHERITED" sweep failures were stale anchors (D-075)
+
+`mutation_drawdown.py` `CX5` and `mutation_regime.py` `M8d` were previously
+recorded, in this file and in the handoff memory, as *"targets absent by design -
+DO NOT FIX."* **That claim was wrong and is retracted.** Both were **stale
+anchors**: the mutation surface had not changed, but the source text each anchor
+pinned had drifted (a defensive `get("tiers", [])` default; a four-line comment
+block inserted between two lines the anchor pinned as adjacent). Each anchor
+matched **0 occurrences**, so the sweep reported `target ABSENT` - the O-95
+self-concealing class, where a mutation that no longer applies is indistinguishable
+from a mutation that never existed.
+
+After repair: `mutation_drawdown.py` **47/47 applied, 46 killed, 1 expected control
+survivor**; `mutation_regime.py` **40/40 killed** (including `M8d`). Both EXIT 0.
+The lesson is O-88's, one layer down: *an anchor is a CLAIM about the source text,
+and a claim must be re-measured, not carried forward.*
+
+### The last entry was not a limitation either, and it hid a real gap (D-080)
+
+`mutation_lei_proxy.py` `M8e` was the final do-not-fix entry. Run in full, the
+sweep reported **36/36 killed** — **`M8e` is KILLED**, so the third and last
+do-not-fix claim is retracted too. The single survivor that appeared *before* the
+repair was a **different** mutant, **`M8g`**: deleting `and not forward_looking`
+from the `SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK` guard (`validation.py:314`).
+
+**It survived because the test asserting that property cannot reach the branch.**
+`test_the_tolerance_is_not_applied_to_forward_looking_series` supplies a point
+dated **2030-01-01** against a retrieval of **2026-09-16** with tolerance **1** —
+so the point lands in `future_dates`, **not** `tolerated_future_dates`, and the
+guard is never consulted. **A test can assert the right property and still be
+unable to reach the branch that enforces it** (lesson 5ce). *This is the class the
+do-not-fix noise was sitting next to for two sessions.*
+
+**What it hid:** a **projection** series carrying a tolerated point would emit
+`SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK`, whose own text declares the points
+**"realised data"** — false about the object it is attached to, at INFO severity,
+with no `FORWARD_LOOKING_HORIZON` line to contradict it. Closed with a new test
+(lead **1**, tolerance **3**, plus a positive control); RED→GREEN verified in both
+directions and the source verified `git diff --quiet` clean afterwards, so the
+repair is the **test**, not a source edit. **No production source was changed.**
+
+**Scope: latent, not a live leak.** Only `sofr`/`iorb` declare a non-zero tolerance
+and both are `forward_looking=False`, so the armed cell is unreachable today. The
+new test **pins the silence** so arming it later fails loudly against **O-101**.
 
 ### Live OpenBB validation - `http://127.0.0.1:6901` (D-074)
 
@@ -6614,7 +6715,7 @@ which is what proves a third constructor in the file did not break them.
 | **O-65** | **NEW (severity 2).** `risk.stress_correlation = 0.9` is not reproducible from any measured pair (worst 0.858 / 0.736) and, as §20.12's default, makes the published degradation negative on every real pair. |
 | **O-66** | **NEW (severity 2).** No `ThesisType` names a cross-market RV, so the `select_instrument` seam cannot be closed. |
 | **O-67** | **NEW (severity 2).** `check_targets` proves uniqueness, not landing site; only this sweep has `check_anchor_landings`. |
-| **O-62** | **Partially discharged.** All three broken sweeps repaired; `tools/sweep_health.py` now exists and reports 30 sweeps / 0 failures. Still run by hand, not CI. |
+| **O-62** | **Discharged.** All three broken sweeps repaired; `tools/sweep_health.py` now exists and reports 0 failures. Still run by hand, not CI (which is itself **O-62**'s residual half). |
 | **O-57 / O-59** | **Extended, not resolved.** The `N·D`-vs-`N·P·D` gap is now reproduced in a **third** constructor, and the correction remains two-signed. |
 | **O-61** | **Recurred live and was caught.** An interrupted legacy sweep left `MX3d` applied in `yield_curve.py`; the sweep-health leftover scan found it. |
 | **O-56** | Unchanged. The definitional residual's float-noise margin is **2.6×** here (worst 3.906e-03 against a 0.01 tolerance), tighter than D-059's 10× because this contract's duration pairs are longer. |
@@ -7757,7 +7858,7 @@ rather than printing a constant.
 | `scripts/mutation_thesis_position.py` | **22 applied / 21 killed / 1 survived (the control)** — **CERTIFIES** |
 | `scripts/live_thesis_position_check.py` | **PASSED (exit 0)** over the **real** pipeline, all four US families |
 | Reachability audit `--check-baseline` | **PASS — 59 = 59, no regressions** |
-| `tools/sweep_health.py` | **0 leftovers, 0 mutant shapes**, 2 failures — both **inherited** (`mutation_regime.py` M8d, `mutation_lei_proxy.py` M8e) |
+| `tools/sweep_health.py` | **0 leftovers, 0 mutant shapes** — the 2 failures recorded here as *"inherited"* were **STALE ANCHORS**, cured at **D-075**; both sweeps now certify (see the header block) |
 
 ### Why no API path supplies a book — checked, and it is spec-conformant
 
@@ -7991,6 +8092,15 @@ instrument set**.
 Module 18, which Phase 5 builds), **O-95** (the `sweep_health.py` reader mismatch is
 fixed; the residual question is whether any *other* tool compares source text
 against anchors with a different reader — `tools/reachability_audit.py` is the next
-one to check), **O-93**, **O-92 · O-90 · O-91 · O-87 · O-86 · O-84**, and the two
-inherited sweep failures (`mutation_regime.py` `M8d`, `mutation_lei_proxy.py` `M8e`).
+one to check), **O-93**, **O-92 · O-90 · O-91 · O-87 · O-86 · O-84**, and **O-101**
+(the `M8g` latent silence — armed only if a projection series ever opts into a
+tolerance).
+
+**The sweep-failure carry-over is CLOSED, and the do-not-fix list is now EMPTY.**
+Every entry that was carried as *"inherited / target absent / DO NOT FIX"* has been
+run in full and **every one is KILLED** — `CX5` and `M8d` were stale anchors
+(D-075), and `M8e` was never a limitation at all (D-080). **The label was wrong 3
+times out of 3.** Running `mutation_lei_proxy.py` to settle it also surfaced a
+**real** surviving mutant (`M8g`) that the do-not-fix noise had been adjacent to
+for two sessions — see the section above and O-101.
 

@@ -2587,9 +2587,45 @@ def _check_credit_spread(client: OpenBBClient) -> None:
     for trend, attribution in verdicts.items():
         marker = "  <- DERIVED" if trend == derived_trend else ""
         print(f"    default_rate_trend={trend:8s} -> {attribution}{marker}")
-    assert len(set(verdicts.values())) > 1, (
-        "every trend produced the same attribution, which would mean the trend input "
-        "does not reach the verdict at all"
+
+    # D-079: a live check must not assert a fact about the WIRING using a fact
+    # about TODAY'S MARKET. `credit_spread_attribution` tests `widening_observed`
+    # FIRST, so on a day the HY spread tightens every trend legitimately returns
+    # NO_WIDENING and this check would go red while the model is correct. The
+    # wiring claim is pinned on a WIDENING row below; the live row is reported
+    # above as the market reading.
+    if hy_change_bp <= 0:
+        print(
+            "\n    (the live HY spread TIGHTENED, so every trend reads NO_WIDENING and "
+            "the branch that\n     consults the trend was never reached — the wiring is "
+            "pinned on a widening row below)"
+        )
+    wiring_verdicts: dict[str, str] = {
+        trend: read_str(
+            credit_spread_attribution(
+                CreditSpreadInputs(
+                    hy_spread_bp=hy[today] * 100,
+                    hy_spread_change_bp=1.0,
+                    ig_spread_change_bp=ig_change_bp,
+                    equity_vol_change_pct=vol_change_pct,
+                    default_rate_trend=trend,  # type: ignore[arg-type]
+                )
+            ),
+            "attribution",
+        )
+        for trend in _CREDIT_TRENDS
+    }
+    print("\n  the trend's reach, on a WIDENING row (the wiring, not today's market):")
+    for trend, attribution in wiring_verdicts.items():
+        print(f"    default_rate_trend={trend:8s} -> {attribution}")
+    assert len(set(wiring_verdicts.values())) > 1, (
+        "every trend produced the same attribution on a row where the widening branch "
+        "IS reached, which would mean the trend input does not reach the verdict at all"
+    )
+    assert wiring_verdicts["rising"] == "FUNDAMENTAL", (
+        "a widening spread with a rising default rate must be attributed as "
+        "FUNDAMENTAL; the specific verdict is asserted because 'not all equal' is "
+        "satisfied by any two distinct outputs, including two wrong ones"
     )
 
     # (5) The diagnostic is published, disclaimed, and does not decide.

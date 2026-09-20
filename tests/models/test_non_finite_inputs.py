@@ -36,6 +36,7 @@ from macro_engine.models.policy_rules import (
     MarketPricingGap,
     PolicyRuleResult,
     TaylorRuleInputs,
+    derive_market_implied_policy_path,
     taylor_rule,
 )
 from macro_engine.models.regime import (
@@ -299,3 +300,37 @@ def test_a_finite_gap_still_reports_its_direction() -> None:
         interpretation="x",
     )
     assert exact.direction == "aligned"
+
+
+# ---------------------------------------------------------------------------
+# The market-implied path: a NON-FINITE term premium INVERTS the sign
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE)
+def test_a_non_finite_short_yield_is_refused(bad: float) -> None:
+    """The market path is the reference the entire gap is measured against."""
+    with pytest.raises(ValueError):
+        derive_market_implied_policy_path(short_yield=bad, short_tenor_term_premium=0.0)
+
+
+@pytest.mark.parametrize("bad", _NON_FINITE)
+def test_a_non_finite_term_premium_is_refused(bad: float) -> None:
+    """The adjustment is a SUBTRACTION, so a non-finite premium flips the sign.
+
+    Measured before the fix: ``short_tenor_term_premium=inf`` produced
+    ``value=-inf`` — a market-implied path pointing the **opposite way** from
+    the raw yield it was meant to adjust. The caller's ``isinstance(x, int |
+    float)`` check admits it, because `inf` is a float. A gap computed against
+    such a path is a gap against a market that does not exist.
+    """
+    with pytest.raises(ValueError):
+        derive_market_implied_policy_path(short_yield=3.0, short_tenor_term_premium=bad)
+
+
+def test_a_finite_market_path_is_unchanged() -> None:
+    """Both branches still compute on real values (no over-reach)."""
+    adjusted = derive_market_implied_policy_path(short_yield=5.0, short_tenor_term_premium=1.5)
+    assert adjusted.value == pytest.approx(3.5)
+    raw = derive_market_implied_policy_path(short_yield=3.0, short_tenor_term_premium=None)
+    assert raw.value == pytest.approx(3.0)

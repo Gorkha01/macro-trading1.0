@@ -36,6 +36,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _sweep_gate import (
+    _clear_in_flight,
+    _set_in_flight,
+    check_targets,
+    format_problems,
+    install_signal_restore,
+    record_pristine,
+    restore_from_sidecar,
+    sidecar_for,
+)
+
 SRC = Path("src/macro_engine/models/regime.py")
 CONFIG = Path("src/macro_engine/config.py")
 
@@ -550,7 +561,27 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
+    # A truncated pipe (``| head``, ``| grep``) closes stdout and kills this
+    # process - measured three times in one session, the last of them in THIS
+    # file. Two defences, because the first does not work on Windows:
+    #
+    #   * install_signal_restore() is the POSIX convenience, and on win32 it
+    #     cannot fire at all (see its docstring).
+    #   * record_pristine() writes the pristine text to a sidecar BEFORE the
+    #     first mutation, so a run killed with no chance to unwind is still
+    #     restorable by the next run, by sweep_health, or by hand.
+    install_signal_restore()
+
     originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in {SRC, CONFIG}}
+
+    # Heal a previous kill BEFORE reading anything, so the sweep always starts
+    # from real source rather than from a mutant wearing its costume (D-081).
+    for path in restore_from_sidecar(sorted(originals)):
+        print(f"RESTORED {path.name} from sidecar (previous run was killed)")
+        originals[path] = path.read_text(encoding="utf-8")
+        print()
+
+    record_pristine(originals)
 
     repaired = repair_leftover_mutations(originals)
     if repaired:
@@ -558,6 +589,26 @@ def main() -> int:
         for name in repaired:
             print(f"  reverted -> {name}")
         print()
+
+    # Refuse to measure before anything is mutated (D-048, O-29). An anchor that
+    # drifted reports as a survivor, which reads as "the suite has a hole" when
+    # the truth is "the sweep aimed at the wrong text". A LEFTOVER mutant is
+    # reported as such rather than as a drifted anchor (D-081), because those two
+    # need opposite responses.
+    #
+    # This gate belongs IN the sweep, not only in `tools/sweep_health.py`. The
+    # comment block above `_INDEPENDENCE`/`_UNOBSERVABLE` records that those two
+    # anchors were ambiguous and "worked by luck" until an EXTERNAL tool noticed
+    # — and a gate that lives only in that tool does not protect anyone who runs
+    # this sweep directly, which is the normal case.
+    problems = check_targets(originals, _MUTATIONS)
+    print(f"check_targets: {len(_MUTATIONS)} mutations, {len(problems)} problem(s)")
+    if problems:
+        print(format_problems(problems))
+        print()
+        print("REFUSING TO RUN: fix the anchors above first. A sweep that cannot")
+        print("prove it mutates the site it names certifies nothing.")
+        return 4
 
     survivors: list[tuple[str, str]] = []
     try:
@@ -568,14 +619,20 @@ def main() -> int:
                 survivors.append((name, "pattern-not-found"))
                 continue
             target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
+            _set_in_flight(target, pristine)
             caught = not run_tests()
             target.write_text(pristine, encoding="utf-8", newline="")
+            _clear_in_flight()
             print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
             if not caught:
                 survivors.append((name, "survived"))
     finally:
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8", newline="")
+            # The tree is clean again, so the recovery sidecar is spent. Leaving
+            # it behind would make the NEXT run "restore" a file that never
+            # needed it, silently reverting a legitimate edit made in between.
+            sidecar_for(path).unlink(missing_ok=True)
 
     leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in {SRC, CONFIG}})
     if leftover:

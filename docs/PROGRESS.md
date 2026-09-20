@@ -3689,7 +3689,7 @@ a non-finite signal is **reported** in the `unreadable` census.
 | `ruff check src tests tools scripts` | All checks passed |
 | `ruff format --check …` | **224** files already formatted |
 | `mypy --strict src tests tools scripts` | **224** source files, no issues (**224 = 224**, D-035) |
-| `pytest -q` | **2401 passed, 1 skipped, 0 failed** |
+| `pytest -q` | **2432 passed, 1 skipped, 0 failed** |
 | `tools/sweep_health.py` | 40 sweeps, 0 leftovers, 0 mutant shapes, **0 failures** |
 
 The count moved 221 → 224 because **three test files were added** this session
@@ -3719,3 +3719,395 @@ most extreme label the helper can produce. **Any function ending in a bare
 **5cc — a type test is not a validity test.** `isinstance(x, (int, float))` is
 `True` for `nan`. `bool` was excluded by hand because someone noticed `True` is
 an `int`; `nan` was not, for the same reason.
+
+### D-079 — a live check asserted a property of TODAY'S MARKET as a property of the WIRING
+
+Running all **28** `scripts/live_*.py` checks against live `:6901`: **27 passed,
+`live_labor_check.py` failed.**
+
+The failing assertion looped `default_rate_trend` over `{rising, stable,
+falling}` and asserted the credit-spread verdicts **differ**, to prove the trend
+input reaches the output (the inert-input class, D-037). Measured: all three
+returned `NO_WIDENING`. **The model is right and the check was wrong:**
+`credit_spread_attribution` tests `widening_observed` **first**, and on
+2026-09-20 the HY OAS **tightened** (`0.80 → 0.78` = `-2.0bp`), so the function
+returns `NO_WIDENING` legitimately **before reading the trend at all**. The
+assertion *directly above* it (`fundamental == (trend == "rising")`) passed all
+three times, so the wiring was never in doubt — the check was testing the
+**market** and reporting it as a test of the **system**.
+
+**Fixed** by pinning the wiring claim on a **widening row** (the same snapshot
+with `hy_spread_change_bp = 1.0`), where the trend genuinely decides. The live
+row is still printed above it. The fix **strengthens** the check: it now asserts
+the specific verdict (`rising → FUNDAMENTAL`) rather than merely "not all equal".
+Measured after: `rising → FUNDAMENTAL`, `stable → UNCLEAR`, `falling → UNCLEAR`,
+**exit 0**.
+
+**Lesson 5cd — a live check has two jobs and must not confuse them.** Verifying
+the *wiring* is deterministic and must hold every day; reporting the *market* is
+descriptive and differs every day. Asserting the first on the data of the second
+makes the check go red on a market move — the 5bl shape in its single-test form,
+and the same subject/claim drift as D-075. **A check must know which of its
+inputs is a fact about the system and which is a fact about the world.**
+
+### Live validation — 28/28
+
+All 28 `scripts/live_*.py` checks now **PASS, exit 0**, against the live OpenBB
+deployment on `:6901` with real market data — including `live_regime_check`
+(240 quarters, every stored base rate matches a live recomputation),
+`live_confirmation_signals_check` (real model names, total census),
+`live_no_trade_check`, `live_builder_check`, `live_instrument_selection`,
+`live_risk_axis_check` and `live_labor_check`.
+
+---
+
+## 2026-09-20 — session 3: the last do-not-fix entry, retracted (D-080)
+
+**Status: Phase 4 COMPLETE (unchanged 4/4). No phase started.**
+
+This session closed the one loose end session 2 left open: `M8e`, the sole
+remaining do-not-fix entry, which the handoff had flagged as *"a candidate for the
+same re-check rather than settled fact."* I ran `mutation_lei_proxy.py` **in full**
+instead of inspecting it.
+
+### `M8e` is KILLED — the do-not-fix list is now EMPTY
+
+The anchor resolves byte-for-byte against `config.py:965`, and the killing test
+reads `RegistrySeries.model_fields[...].default` directly. **`M8e` was never a
+limitation.** This is the **third** retraction of the same carried claim, after
+D-075's `CX5` and `M8d`. **The do-not-fix list has now been wrong 3 times out of
+3**, and the operational rule is recorded: a "target ABSENT" means *the gate is
+OFF* — it certifies nothing — and a do-not-fix label is an **unverified claim
+requiring re-derivation**, not a risk acceptance.
+
+### The sweep exposed a REAL survivor: `M8g` (O-101)
+
+`mutation_lei_proxy.py` certified **35/36**. The survivor was **`M8g`** — deleting
+`and not forward_looking` from the `SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK` guard at
+`validation.py:314`.
+
+**Why it survived:** `test_the_tolerance_is_not_applied_to_forward_looking_series`
+asserts the right property and its docstring names the right hazard — but it feeds
+a point dated **2030-01-01** against a retrieval of **2026-09-16** with tolerance
+**1**. The ~1,570-day lead puts the point in `future_dates`, **not**
+`tolerated_future_dates`, so **the guard is never reached** and the mutant moves a
+value nothing consults. That is **O-29's mis-target class**, the same class D-073
+found at `M1.2`.
+
+**What it hides:** a **projection** series carrying a tolerated point emits
+`SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK`, whose own text reads *"…NOT an estimate:
+unlike a forward_looking series these points are realised data."* — **false about
+the object it is attached to**, at INFO severity, with no `FORWARD_LOOKING_HORIZON`
+line to contradict it. The downstream PIT filter keys on exactly this distinction.
+
+**Remedy, RED→GREEN verified in both directions** (fails with the mutant, passes
+without, source byte-identical to `HEAD` afterwards): a new test feeding a lead of
+**1** against a tolerance of **3** — the only shape that populates
+`tolerated_future_dates` — plus a **positive control** so the absence assertion
+cannot be vacuous.
+
+**A second fact the test surfaced, recorded not asserted away:** this cell's
+measured behaviour is **SILENCE — no finding at all**, because
+`FORWARD_LOOKING_HORIZON` keys on `future_dates` (never entered) and the same-day
+path is correctly suppressed. The cell is **composite** — two independently-correct
+branches that jointly suppress — which is why neither branch's own test sees it. I
+first wrote the assertion *asserting* the horizon finding would fire; **the test
+failed and the test was wrong**, and I corrected it to pin the measurement.
+
+**Scope, stated honestly: LATENT, not a live leak.** Only `sofr` (1) and `iorb` (3)
+declare a non-zero tolerance and **both are `forward_looking=False`**, so the
+`(forward_looking=True, tolerance>0)` cell is **unreachable today**. It becomes
+live if a projection series ever opts in — so the new test **pins the silence**,
+making that arming fail loudly with a pointer to **O-101**.
+
+### Gates at close (re-measured, O-88)
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | **All checks passed** |
+| `ruff format --check` | **224 files already formatted** |
+| `mypy --strict` | **224 source files, no issues** (224 = 224, D-035) |
+| `pytest -q` | **2432 passed, 1 skipped, 0 failed** (+1 vs 2431 — the new test) |
+| `scripts/mutation_lei_proxy.py` | **36/36 killed** — `M8e` *and* `M8g` |
+| `tools/sweep_health.py` | 40 sweeps, 0 leftovers, 0 mutant shapes, **0 failures** |
+
+**No production source was changed.** The only source-tree edit is a test file.
+
+**Opens O-101.** Lessons **5ce** (a right assertion can still miss the branch) ·
+**5cf** (the do-not-fix label has been wrong 3 of 3) · **5cg** (when writing a test
+for a gap, expect your first assertion to be wrong — run it and let the measurement
+correct you).
+
+---
+
+## 2026-09-20 - Phase 0-4 audit, session 3: the interrupt defence that cannot fire, and
+## the health tool that could not load its own sweeps (D-082)
+
+**Scope: no production source changed. `src/` untouched. No Phase 5 work.**
+`AGENTS.md` unchanged. `git diff HEAD -- src/` shows **only** the two intended
+D-078 guards (`api_layer/orchestration.py`, `models/policy_rules.py`).
+
+### What this session set out to do
+
+Close the mechanically-closable remainder of **O-29** - the **14 mutation sweeps
+that had no `check_targets` gate of their own** - so a sweep can no longer
+certify a mutation it did not apply.
+
+### Done - O-29's wiring half is CLOSED
+
+All 14 sweeps now gate themselves through one shared module, `scripts/_sweep_gate.py`,
+created this session so there are not 14 divergent copies of the same refusal.
+Two harness families were wired differently:
+
+* **Family A** (`_MUTATIONS` 4-tuples): `check_targets(originals, _MUTATIONS)`,
+  or `_iter_mutations()` where the sweep resolves targets per-mutant
+  (`mutation_lei_proxy.py`).
+* **Family B** (`MUTATIONS` 3-tuples + a module-level `ORIGINAL`): the table is
+  rebuilt as `[(name, SRC, old, new) for name, old, new in MUTATIONS]` and the
+  pristine text passed as `{SRC: ORIGINAL}`. The initial call used `originals`,
+  which Family B has no such name for - **4 `F821 Undefined name` errors**, fixed
+  to the correct mapping.
+
+**Measured:** `TOTAL problems: 0` across all 14, and `tools/sweep_health.py` now
+reports **`sweeps with NO sweep-owned gate: 0`** with **`failures: 0`**.
+
+### Attempted, then MEASURED TO BE INERT - the signal-handler interrupt defence
+
+D-081 established that a killed sweep leaves mutated source because the `finally`
+restore never runs on a signal. The obvious remedy was `mutation_api_layer.py`'s
+existing handler, generalised into a shared `install_signal_restore()`.
+
+**It does not work on this platform, and the record now says so.** Three probes:
+
+| Probe | Result |
+| --- | --- |
+| self-`SIGTERM` | file stays `MUTATED`; **handler body never entered** |
+| self-`SIGINT` | exit **2** (`KeyboardInterrupt`), **not** the handler's `SystemExit(130)` |
+| trace wrapper | **no trace line printed at all**, though `signal.getsignal` confirmed the handler installed and `_PENDING[0]` confirmed the payload armed |
+
+On `win32`, `os.kill(pid, SIGTERM)` is `TerminateProcess`; Python-level handlers
+never run. **`mutation_api_layer.py`'s `_restore_in_flight` (credited at
+D-057/D-062) is inert here** - kept, because it is correct on POSIX, but no
+longer counted as protection on Windows.
+
+**The fix that works is filesystem-based.** `record_pristine()` writes each
+target's pristine text to a `<name>.sweepbackup` sidecar **before the first
+mutation**; `restore_from_sidecar()` restores from it on the next run and deletes
+it on success. It depends on nothing but the filesystem, and it is **strictly
+stronger than `repair_leftover_mutations`**, which can only heal a mutation the
+catalogue still recognises.
+
+**Verified end to end, by reproducing the exact failure:**
+
+```
+kill with `| head -6`   ->  regime.py left mutated
+                            regime.py.sweepbackup + config.py.sweepbackup written
+next run begins         ->  RESTORED config.py from sidecar (previous run was killed)
+                            RESTORED regime.py from sidecar (previous run was killed)
+                            check_targets: 40 mutations, 0 problem(s)
+sweep completes         ->  REGIME.PY RESTORED
+                            sidecars: (none - consumed)
+```
+
+The **heal must run before `check_targets`** - reversed, the gate would report
+`MUTATION STILL APPLIED` and refuse the run, blocking its own repair (lesson 5co).
+
+### Found in the same pass - `tools/sweep_health.py` could not load its own sweeps
+
+Wiring 14 sweeps to `from _sweep_gate import ...` made the health tool report
+**all 14 as `IMPORT FAILED - No module named '_sweep_gate'`**. They work run
+standalone (the script directory is on `sys.path`) but not under
+`spec_from_file_location`. That is **O-62 exactly** - *a sweep that cannot run is
+indistinguishable from a sweep nobody ran* - produced by the very change meant to
+strengthen them. **Fixed** in `_load` by prepending the sweep's parent to
+`sys.path` for the duration of `exec_module`, then removing it; `failures: 0`
+afterwards.
+
+### A note on a correction carried out this session
+
+`ruff format --check` and `mypy --strict` had been recorded as **224 = 224**. Both
+re-measured this session report **225** - the count moved when
+`scripts/_sweep_gate.py` was added, and the summary carried the stale pair
+forward. **Re-derived, not carried: 225 = 225.** (O-88 - a gate row is a CLAIM,
+not a receipt.)
+
+### Gates at close (re-measured, O-88)
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | **All checks passed** |
+| `ruff format --check` | **225 files already formatted** |
+| `mypy --strict src scripts tools tests` | **225 source files, no issues** (225 = 225, D-035) |
+| `pytest -q` | **2432 passed, 1 skipped, 0 failed** (counted from outcome markers, not exit code - D-082.2) |
+| `tools/sweep_health.py` | 40 sweeps, **0 ungated**, 0 leftovers, 0 mutant shapes, **0 failures** |
+| `scripts/mutation_regime.py` | gate: **40 mutations, 0 problems**; interrupted run **self-heals from sidecar** |
+
+**No production source was changed.** `src/` carries only the D-078 guards.
+
+**Opens O-103.** Lessons **5cl** (verify a safety mechanism before crediting it) ·
+**5cm** (no Python signal handler runs on `win32`) · **5cn** (the tool that gates
+the sweeps must be able to LOAD the sweeps) · **5co** (recovery must run before
+the gate that would refuse).
+
+**DELIVERED - the outstanding research.** The brief's request for **web research on
+macro trading logic mechanics, flow mechanics and execution patterns up to Phase 4**
+had been carried as outstanding across several sessions. It is now done, in
+**`docs/MECHANICS_VALIDATION.md`**: the four mechanics where a plausible
+implementation can be *quietly* wrong, each checked against a published source.
+
+| mechanic | source | verdict |
+| --- | --- | --- |
+| Taylor rule coefficients | Taylor (1993); balanced approach | **AGREE** (0.5/0.5; balanced gap 1.0) |
+| Taylor principle | "real rates must rise when inflation rises" | **AGREE** (on the coefficient) |
+| output-gap revision hazard | Orphanides & van Norden (1999) | **AGREE** |
+| breakeven = *compensation* not expectation | TIPS mechanics | **AGREE** (both premia disclosed) |
+| vintage / look-ahead bias | ALFRED vs FRED | **AGREE, exceeds source** |
+| output-gap *dominant* cause | end-of-sample trend unreliability | **ACCEPTED GAP** (inherited) |
+
+**Strongest result:** the code **A/B tested** FRED's `realtime_start`/`realtime_end`
+and proved they are a *decoy* - both equal TODAY for every series - then refused to
+populate `vintage_datetime` at all rather than fill it with a plausible wrong value
+(§21.0 rule 4, applied where the temptation is strongest).
+
+**The one accepted gap is structural, not a defect.** Orphanides & van Norden find the
+*dominant* source of output-gap error is **end-of-sample trend unreliability**, not data
+revision. This system consumes a published `gdp_potential`, so that cause is
+**inherited, disclosed, and not mitigated**; the Phase 5 Kalman-filter item is its
+remedy. **No code changed** - the first research pass in this audit to come back clean.
+
+---
+
+## 2026-09-20 - Phase 0-4 audit, session 3: the interrupt defence that cannot fire, and
+## the health tool that could not load its own sweeps (D-082)
+
+**Scope: no production source changed. `src/` untouched. No Phase 5 work.**
+`AGENTS.md` unchanged. `git diff HEAD -- src/` shows **only** the two intended
+D-078 guards (`api_layer/orchestration.py`, `models/policy_rules.py`).
+
+### What this session set out to do
+
+Close the mechanically-closable remainder of **O-29** - the **14 mutation sweeps
+that had no `check_targets` gate of their own** - so a sweep can no longer
+certify a mutation it did not apply.
+
+### Done - O-29's wiring half is CLOSED
+
+All 14 sweeps now gate themselves through one shared module, `scripts/_sweep_gate.py`,
+created this session so there are not 14 divergent copies of the same refusal.
+Two harness families were wired differently:
+
+* **Family A** (`_MUTATIONS` 4-tuples): `check_targets(originals, _MUTATIONS)`,
+  or `_iter_mutations()` where the sweep resolves targets per-mutant
+  (`mutation_lei_proxy.py`).
+* **Family B** (`MUTATIONS` 3-tuples + a module-level `ORIGINAL`): the table is
+  rebuilt as `[(name, SRC, old, new) for name, old, new in MUTATIONS]` and the
+  pristine text passed as `{SRC: ORIGINAL}`. The initial call used `originals`,
+  which Family B has no such name for - **4 `F821 Undefined name` errors**, fixed
+  to the correct mapping.
+
+**Measured:** `TOTAL problems: 0` across all 14, and `tools/sweep_health.py` now
+reports **`sweeps with NO sweep-owned gate: 0`** with **`failures: 0`**.
+
+### Attempted, then MEASURED TO BE INERT - the signal-handler interrupt defence
+
+D-081 established that a killed sweep leaves mutated source because the `finally`
+restore never runs on a signal. The obvious remedy was `mutation_api_layer.py`'s
+existing handler, generalised into a shared `install_signal_restore()`.
+
+**It does not work on this platform, and the record now says so.** Three probes:
+
+| Probe | Result |
+| --- | --- |
+| self-`SIGTERM` | file stays `MUTATED`; **handler body never entered** |
+| self-`SIGINT` | exit **2** (`KeyboardInterrupt`), **not** the handler's `SystemExit(130)` |
+| trace wrapper | **no trace line printed at all**, though `signal.getsignal` confirmed the handler installed and `_PENDING[0]` confirmed the payload armed |
+
+On `win32`, `os.kill(pid, SIGTERM)` is `TerminateProcess`; Python-level handlers
+never run. **`mutation_api_layer.py`'s `_restore_in_flight` (credited at
+D-057/D-062) is inert here** - kept, because it is correct on POSIX, but no
+longer counted as protection on Windows.
+
+**The fix that works is filesystem-based.** `record_pristine()` writes each
+target's pristine text to a `<name>.sweepbackup` sidecar **before the first
+mutation**; `restore_from_sidecar()` restores from it on the next run and deletes
+it on success. It depends on nothing but the filesystem, and it is **strictly
+stronger than `repair_leftover_mutations`**, which can only heal a mutation the
+catalogue still recognises.
+
+**Verified end to end, by reproducing the exact failure:**
+
+```
+kill with `| head -6`   ->  regime.py left mutated
+                            regime.py.sweepbackup + config.py.sweepbackup written
+next run begins         ->  RESTORED config.py from sidecar (previous run was killed)
+                            RESTORED regime.py from sidecar (previous run was killed)
+                            check_targets: 40 mutations, 0 problem(s)
+sweep completes         ->  REGIME.PY RESTORED
+                            sidecars: (none - consumed)
+```
+
+The **heal must run before `check_targets`** - reversed, the gate would report
+`MUTATION STILL APPLIED` and refuse the run, blocking its own repair (lesson 5co).
+
+### Found in the same pass - `tools/sweep_health.py` could not load its own sweeps
+
+Wiring 14 sweeps to `from _sweep_gate import ...` made the health tool report
+**all 14 as `IMPORT FAILED - No module named '_sweep_gate'`**. They work run
+standalone (the script directory is on `sys.path`) but not under
+`spec_from_file_location`. That is **O-62 exactly** - *a sweep that cannot run is
+indistinguishable from a sweep nobody ran* - produced by the very change meant to
+strengthen them. **Fixed** in `_load` by prepending the sweep's parent to
+`sys.path` for the duration of `exec_module`, then removing it; `failures: 0`
+afterwards.
+
+### A note on a correction carried out this session
+
+`ruff format --check` and `mypy --strict` had been recorded as **224 = 224**. Both
+re-measured this session report **225** - the count moved when
+`scripts/_sweep_gate.py` was added, and the summary carried the stale pair
+forward. **Re-derived, not carried: 225 = 225.** (O-88 - a gate row is a CLAIM,
+not a receipt.)
+
+### Gates at close (re-measured, O-88)
+
+| Gate | Result |
+| --- | --- |
+| `ruff check .` | **All checks passed** |
+| `ruff format --check` | **225 files already formatted** |
+| `mypy --strict src scripts tools tests` | **225 source files, no issues** (225 = 225, D-035) |
+| `pytest -q` | **2432 passed, 1 skipped, 0 failed** (counted from outcome markers, not exit code - D-082.2) |
+| `tools/sweep_health.py` | 40 sweeps, **0 ungated**, 0 leftovers, 0 mutant shapes, **0 failures** |
+| `scripts/mutation_regime.py` | gate: **40 mutations, 0 problems**; interrupted run **self-heals from sidecar** |
+
+**No production source was changed.** `src/` carries only the D-078 guards.
+
+**Opens O-103.** Lessons **5cl** (verify a safety mechanism before crediting it) ·
+**5cm** (no Python signal handler runs on `win32`) · **5cn** (the tool that gates
+the sweeps must be able to LOAD the sweeps) · **5co** (recovery must run before
+the gate that would refuse).
+
+**DELIVERED - the outstanding research.** The brief's request for **web research on
+macro trading logic mechanics, flow mechanics and execution patterns up to Phase 4**
+had been carried as outstanding across several sessions. It is now done, in
+**`docs/MECHANICS_VALIDATION.md`**: the four mechanics where a plausible
+implementation can be *quietly* wrong, each checked against a published source.
+
+| mechanic | source | verdict |
+| --- | --- | --- |
+| Taylor rule coefficients | Taylor (1993); balanced approach | **AGREE** (0.5/0.5; balanced gap 1.0) |
+| Taylor principle | "real rates must rise when inflation rises" | **AGREE** (on the coefficient) |
+| output-gap revision hazard | Orphanides & van Norden (1999) | **AGREE** |
+| breakeven = *compensation* not expectation | TIPS mechanics | **AGREE** (both premia disclosed) |
+| vintage / look-ahead bias | ALFRED vs FRED | **AGREE, exceeds source** |
+| output-gap *dominant* cause | end-of-sample trend unreliability | **ACCEPTED GAP** (inherited) |
+
+**Strongest result:** the code **A/B tested** FRED's `realtime_start`/`realtime_end`
+and proved they are a *decoy* - both equal TODAY for every series - then refused to
+populate `vintage_datetime` at all rather than fill it with a plausible wrong value
+(§21.0 rule 4, applied where the temptation is strongest).
+
+**The one accepted gap is structural, not a defect.** Orphanides & van Norden find the
+*dominant* source of output-gap error is **end-of-sample trend unreliability**, not data
+revision. This system consumes a published `gdp_potential`, so that cause is
+**inherited, disclosed, and not mitigated**; the Phase 5 Kalman-filter item is its
+remedy. **No code changed** - the first research pass in this audit to come back clean.

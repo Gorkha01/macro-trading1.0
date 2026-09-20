@@ -70,6 +70,7 @@ mutation; 1 otherwise.
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -90,10 +91,26 @@ def _load(path: Path) -> tuple[Any | None, str]:
     # module in ``sys.modules`` first, ``dataclasses`` resolves
     # ``sys.modules[cls.__module__]`` to None and raises.
     sys.modules[name] = module
+    # A sweep may import its SIBLINGS (``from _sweep_gate import ...``). Run as
+    # ``uv run python scripts/mutation_X.py`` that works, because Python puts the
+    # script's own directory on ``sys.path``. Loaded from here via
+    # ``spec_from_file_location`` it does NOT, so every gated sweep died with
+    # ``ModuleNotFoundError: No module named '_sweep_gate'`` -- reported as
+    # IMPORT FAILED, i.e. "a sweep that cannot run is indistinguishable from a
+    # sweep nobody ran" (O-62). Reproduce the interpreter's own behaviour by
+    # putting ``scripts/`` on the path for the duration of the load.
+    added = str(path.parent)
+    prepended = added not in sys.path
+    if prepended:
+        sys.path.insert(0, added)
     try:
         spec.loader.exec_module(module)
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
+    finally:
+        if prepended:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(added)
     return module, ""
 
 
@@ -290,7 +307,23 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
             continue
         count = text.count(old)
         if count == 0:
-            problems.append(f"{name}: target ABSENT in {target.name} (0 occurrences)")
+            # Distinguish a DRIFTED ANCHOR from a MUTANT LEFT APPLIED. Both
+            # present as "0 occurrences", and conflating them is what sent two
+            # sessions hunting stale anchors while the tree was mutated.
+            #
+            # A leftover mutation is self-concealing by construction (O-95): the
+            # mutant REPLACED the text the anchor looks for, so the anchor goes
+            # to zero and the tool used to blame the anchor. The discriminator
+            # is the mutation's own replacement text -- if `new` is present in
+            # the file, the mutation is applied and the anchor is fine.
+            if new.strip() and new in text:
+                problems.append(
+                    f"{name}: MUTATION STILL APPLIED in {target.name} "
+                    f"(anchor absent AND replacement text present — this is a "
+                    f"LEFTOVER, not a drifted anchor)"
+                )
+            else:
+                problems.append(f"{name}: target ABSENT in {target.name} (0 occurrences)")
         elif count > 1:
             problems.append(f"{name}: target AMBIGUOUS in {target.name} ({count} occurrences)")
     return problems

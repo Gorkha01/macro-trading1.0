@@ -993,6 +993,12 @@ def test_the_tolerance_is_not_applied_to_forward_looking_series() -> None:
     a forward-looking series would report a decade-ahead CBO projection as a
     clock artifact — labelling real projections as ordinary same-day prints,
     and destroying the distinction the output depends on.
+
+    **This is the far case: the point is BEYOND the tolerance.** It lands in
+    ``future_dates``, not ``tolerated_future_dates``, so it exercises the
+    ``forward_looking and future_dates`` branch. Its sibling
+    :func:`test_the_tolerance_is_not_applied_to_a_TOLERATED_forward_looking_point`
+    covers the near case, which is the one the guard actually protects.
     """
     from macro_engine.data_layer.validation import Severity, validate_observations
 
@@ -1020,6 +1026,96 @@ def test_the_tolerance_is_not_applied_to_forward_looking_series() -> None:
     horizon = next(f for f in report.findings if f.code == "FORWARD_LOOKING_HORIZON")
     assert horizon.severity is Severity.INFO
     assert not report.has_errors
+
+
+def test_the_tolerance_is_not_applied_to_a_tolerated_forward_looking_point() -> None:
+    """The NEAR case — the one the ``not forward_looking`` guard actually protects.
+
+    Written because a mutation sweep survivor exposed a gap: the sibling test
+    above asserts the right *property* but supplies a point **beyond** the
+    tolerance, so it lands in ``future_dates`` and never reaches the tolerated
+    branch. A mutant that deletes ``and not forward_looking`` from the
+    ``SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK`` guard therefore survived the whole
+    suite — a test asserting the property while being unable to reach the
+    branch is O-29's mis-target class.
+
+    The failure it hides is not cosmetic. That finding's own text reads *"Not a
+    fault, and NOT an estimate: unlike a forward_looking series these points
+    are realised data."* Attached to a **projection** series, that sentence is
+    **false about the object it describes** — the system would publish a
+    forward estimate, at INFO severity, wearing a code that declares it
+    realised, with no ``FORWARD_LOOKING_HORIZON`` line to contradict it. The
+    downstream PIT filter keys on exactly this distinction.
+
+    Note the tolerance is **smaller than the lead**: this is the only shape that
+    populates ``tolerated_future_dates``, and covered by the no-tolerance
+    default is the only other way to reach the branch.
+
+    **The measured behaviour of this cell is SILENCE, and that is recorded here
+    rather than asserted away.** A forward-looking series with a tolerated point
+    emits *no finding at all*: ``FORWARD_LOOKING_HORIZON`` keys on
+    ``future_dates``, which this point never enters, and the same-day path is
+    correctly suppressed by the guard under test. The cell is therefore
+    composite — two independently-correct branches that jointly produce
+    suppression — and it is **unreachable in the current registry** (only
+    ``sofr``/``iorb`` declare a non-zero tolerance and both are
+    ``forward_looking=False``), so this is a **latent** silence, not a live
+    leak. It is asserted as silence so that arming it later fails loudly: see
+    O-101.
+    """
+    from macro_engine.data_layer.validation import validate_observations
+
+    retrieve = datetime(2026, 9, 16, 12, 0, tzinfo=UTC)
+    # ONE day ahead against a tolerance of THREE: strictly inside the
+    # tolerance, so this is a tolerated point, not a projection.
+    points = [
+        ObservationPoint(
+            observation_date=date(2026, 9, 17),
+            value=27000.0,
+            series_id="gdp_potential",
+            retrieved_at=retrieve,
+        )
+    ]
+    report = validate_observations(
+        points,
+        series_id="gdp_potential",
+        forward_looking=True,
+        future_date_tolerance_days=3,
+    )
+    codes = [f.code for f in report.findings]
+
+    assert "SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK" not in codes, (
+        "a tolerated point in a FORWARD-LOOKING series was reported as a "
+        "same-day publication. That finding asserts the points are realised "
+        "data, which is false for a projection series — a forward estimate "
+        "would be published at INFO wearing a code that declares it observed."
+    )
+    # The measured cell is silence. Pinned explicitly: if a later change starts
+    # disclosing this state, this assertion fails and whoever armed the cell
+    # must decide the disclosure deliberately rather than inherit it (O-101).
+    assert codes == [], (
+        f"this cell is currently silent and is pinned as such; it now reports "
+        f"{codes}. A tolerated point in a forward-looking series needs a "
+        f"deliberate disclosure decision (O-101), not an inherited one."
+    )
+    assert not report.has_errors
+
+    # The control: the SAME point in the SAME series, with forward_looking
+    # flipped, MUST take the tolerated route and be disclosed. Without this the
+    # assertions above cannot distinguish "the guard works" from "the branch is
+    # dead" — a vacuous absence assertion.
+    disclosed = validate_observations(
+        points,
+        series_id="gdp_potential",
+        forward_looking=False,
+        future_date_tolerance_days=3,
+    )
+    assert "SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK" in [f.code for f in disclosed.findings], (
+        "a not-forward-looking series with a point inside its declared "
+        "tolerance must be disclosed as a same-day publication; if this fails "
+        "the tolerated branch is unreachable and the absence assertion above "
+        "is vacuous"
+    )
 
 
 def test_snapshot_build_reports_unverified_fields_rather_than_failing() -> None:

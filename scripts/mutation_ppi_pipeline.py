@@ -23,6 +23,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _sweep_gate import check_targets, format_problems
+
 SRC = Path("src/macro_engine/models/ppi_pipeline.py")
 ORIGINAL = SRC.read_text(encoding="utf-8")
 
@@ -253,6 +255,24 @@ def run_tests() -> bool:
 
 
 def main() -> int:
+    # A 3-tuple table against a single SRC; target made explicit.
+    #
+    # Refuse to measure before anything is mutated (D-048, O-29). An anchor
+    # that drifted reports as a survivor, which reads as 'the suite has a
+    # hole' when the truth is 'the sweep aimed at the wrong text'. A
+    # LEFTOVER mutant is reported as such rather than as a drifted anchor
+    # (D-081), because those two need opposite responses.
+    _table = [(name, SRC, old, new) for name, old, new in MUTATIONS]
+    problems = check_targets({SRC: ORIGINAL}, _table)
+    print(f"check_targets: {len(_table)} mutations, {len(problems)} problem(s)")
+    if problems:
+        print(format_problems(problems))
+        print()
+        print("REFUSING TO RUN: fix the anchors above first. A sweep")
+        print("that cannot prove it mutates the site it names certifies")
+        print("nothing (D-048, O-29).")
+        return 4
+
     survivors: list[tuple[str, str]] = []
     for name, old, new in MUTATIONS:
         if old not in ORIGINAL:

@@ -699,7 +699,27 @@ def derive_market_implied_policy_path(
 
     The signature is stable by design so that Phase 5+ can swap the body for a
     genuine Fed-funds-futures-implied distribution without breaking a caller.
+
+    Both inputs must be FINITE (D-078). The adjustment is a **subtraction**, so
+    a non-finite term premium does not merely propagate — it can **flip the
+    sign**: measured, ``short_tenor_term_premium=inf`` produced ``-inf``, i.e. a
+    market-implied path pointing the opposite way from the raw yield it was
+    supposed to adjust. The caller's type check admits any ``float``, and `nan`
+    and `inf` are floats, so the guard has to be on finiteness.
     """
+    for name, raw in (
+        ("short_yield", short_yield),
+        ("short_tenor_term_premium", short_tenor_term_premium),
+    ):
+        if raw is not None and not isfinite(raw):
+            raise ValueError(
+                f"derive_market_implied_policy_path received {name}={raw!r}. The "
+                "market-implied path is the reference the whole gap is measured "
+                "against, and the adjustment is a subtraction — a non-finite "
+                "input propagates AND can invert the sign, so the gap would be "
+                "computed against a market path that does not exist (Section "
+                "21.0 rule 3, D-078)."
+            )
     settings = get_settings()
     market_implied = settings.policy.market_implied
 

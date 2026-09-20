@@ -64,3 +64,13 @@ desktop.ini
 .vscode/
 *.swp
 *~
+
+# ---------------------------------------------------------------------------
+# Mutation-sweep recovery sidecars (D-082)
+# ---------------------------------------------------------------------------
+# `scripts/_sweep_gate.record_pristine()` writes a target's pristine text to
+# `<name>.sweepbackup` before mutating it, so a sweep killed on a platform with
+# no usable signal handler (win32) can still be restored on the next run. The
+# sidecar is deleted on a clean exit; one left behind means a run was killed,
+# and it must NEVER be committed as a source file.
+*.sweepbackup

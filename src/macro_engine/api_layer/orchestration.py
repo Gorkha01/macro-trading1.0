@@ -110,6 +110,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from math import isfinite
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1583,7 +1584,23 @@ def snapshot_to_thesis_inputs(
         )
     )
 
-    output_gap_value = float(growth.value) if isinstance(growth.value, int | float) else 0.0
+    # The output gap the Taylor rule will read. Refused rather than defaulted
+    # (Section 21.0 rule 3, D-078): `output_gap_from_snapshot` documents a float
+    # value, so a non-numeric one means the function changed shape — and the old
+    # `else 0.0` would have handed the policy rule an output gap of *exactly
+    # zero*, i.e. "the economy is precisely at potential", a coordinate claim
+    # about the economy invented from a value that carried none. A `nan` reaches
+    # the same place by a different route (`isinstance(nan, float)` is True), so
+    # the check is on FINITENESS and not only on type (lesson 5cc).
+    if not isinstance(growth.value, int | float) or not isfinite(float(growth.value)):
+        raise TypeError(
+            f"output_gap_from_snapshot returned a {type(growth.value).__name__} "
+            f"({growth.value!r}) for value; the Taylor rule needs a finite output "
+            "gap in percent. A missing gap must be reported as unavailable, never "
+            "substituted with 0.0 — a zero output gap is a specific statement "
+            "about capacity utilisation, not an absence of one."
+        )
+    output_gap_value = float(growth.value)
     gap_change, gap_change_described = _output_gap_change(snapshot, as_of=as_of)
     notes.append(
         DerivationNote(

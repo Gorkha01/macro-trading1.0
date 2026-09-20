@@ -11693,6 +11693,34 @@ is the clearest statement of why it was missed: it reasons about the value's
 **Fix:** `_signed_scalar` requires `isfinite`, so a non-finite value is reported
 in the `unreadable` census — visible — rather than silently neutralised.
 
+### D-078.5 — the market-implied path INVERTED its sign (measured)
+
+`derive_market_implied_policy_path` computes
+`expectations_component = short_yield - short_tenor_term_premium`. Measured:
+`short_yield=nan` → `nan`; **`short_tenor_term_premium=inf` → `-inf`.** The
+subtraction does not merely propagate a non-finite value — it **flips its
+sign**, so an infinite term premium produces a market-implied path pointing the
+**opposite way** from the raw yield it was supposed to adjust. The calling site
+in `thesis_layer/builder.py` guards with `isinstance(market_implied, int | float)`,
+which admits `nan`/`inf` because they are floats, so `float()` passed them into
+`canonical_policy_gap` — i.e. the gap would be measured against a market path
+that does not exist.
+
+**Fix:** both inputs refused unless finite. This is the **source**, so the guard
+is placed here rather than only at the consumer.
+
+### D-078.6 — the API layer substituted `0.0` for a missing output gap
+
+`api_layer/orchestration.py` read
+`output_gap_value = float(growth.value) if isinstance(growth.value, int | float) else 0.0`.
+The `else 0.0` is the §21.0 rule-3 inversion verbatim: a non-numeric
+`growth.value` became an output gap of **exactly zero**, i.e. *"the economy is
+precisely at potential"* — a coordinate claim about the economy invented from a
+value that carried none. (`nan` reached the same place by the other branch.)
+It cannot fire today, because `output_gap_from_snapshot` is documented to return
+a float — but it is a **fail-open default in the exact direction the directive
+forbids**, and it now **raises**, naming the field and the reason.
+
 ### Verification
 
 RED→GREEN, 43 new tests across three files:
@@ -11724,3 +11752,540 @@ this an `int` or `float`?" and the honest answer for `nan` is yes. **Every
 representation, not about usability** — `bool` was excluded by hand here
 because someone noticed `True` is an `int`; `nan` was not, for the same reason.
 Enumerate the values a type *can* hold that your arithmetic cannot *use*.
+
+---
+
+## D-079 — a live check asserted a property of TODAY'S MARKET and called it a property of the WIRING
+
+**Found:** 2026-09-20, running all 28 `scripts/live_*.py` checks against the live
+`:6901` deployment. **27 passed; `live_labor_check.py` failed.**
+
+### The failure
+
+```
+File "scripts/live_labor_check.py", line 2590, in _check_credit_spread
+    assert len(set(verdicts.values())) > 1, (
+AssertionError: every trend produced the same attribution, which would mean the
+trend input does not reach the verdict at all
+```
+
+The check loops `default_rate_trend` over `{rising, stable, falling}`, calls
+`credit_spread_attribution`, and asserts the verdicts **differ** — the intent
+being to prove the trend input actually reaches the output (the inert-input
+class, D-037). Measured: **all three returned `NO_WIDENING`.**
+
+### The cause is the model's branch ORDER, and the model is right
+
+`models/credit_spread.py` tests `widening_observed` **first**:
+
+```python
+if not widening_observed:
+    attribution = "NO_WIDENING"      # <- returns BEFORE reading the trend
+elif fundamental and technical: ...
+```
+
+On the 2026-09-20 snapshot the HY OAS **tightened** over the window
+(`hy_change_bp < 0`, measured `0.80 -> 0.78` = `-2.0bp`), so
+`widening_observed` is `False` and the function returns `NO_WIDENING`
+**legitimately, before `default_rate_trend` is consulted at all**. The three
+identical verdicts are the correct answer to a question the model never asked
+the trend about.
+
+**Crucially, the assertion immediately above it proves the trend DOES reach the
+model** — `fundamental == (trend == "rising")` is computed and asserted per
+iteration, and it passed all three times. So the wiring was never in doubt; the
+*second* assertion contradicted the *first* by testing a different thing.
+
+### The defect, and why it is the same class as D-075
+
+**The check tested a conjunction of the wiring AND today's market, and reported
+only the wiring.** It was therefore **green or red for a reason unrelated to
+what it claimed to verify** — and on 2026-09-20 it went red while the model was
+correct. That is lesson **5bl** ("a large homogeneous block of failures is more
+likely the GATE than the code") in its single-test form, and it is the same
+shape as D-075: a check whose *subject* had drifted from its *claim*.
+
+A live check has two legitimate jobs and must not confuse them:
+1. **Verify the wiring** — deterministic, must hold every day.
+2. **Report the market** — descriptive, differs every day.
+Asserting (1) on the data of (2) makes the check fail on market moves.
+
+### The fix
+
+The wiring claim is now pinned on a **widening row** — the same live snapshot
+with `hy_spread_change_bp` set to `1.0` (one basis point, the smallest change
+that opens the branch) — where the trend genuinely decides. The live row is
+still printed above it, so the reader sees both. The fix **strengthens** the
+check rather than relaxing it: it now also asserts the *specific* verdict
+(`rising` → `FUNDAMENTAL`) instead of merely "not all equal".
+
+The literal `1.0` is used deliberately and is the one number in the check that
+is **not** live: the object under test is the router, not the market, and the
+market is reported separately one line above. This is the D-073 distinction —
+a check must know which of its inputs is a *fact about the system* and which is
+a *fact about the world*.
+
+**Verification:** `live_labor_check.py` → PASSED, exit 0. All 28 live checks
+now pass.
+
+---
+
+## D-080 — the last do-not-fix entry was not a limitation either, and the sweep survivor it exposed was a real test gap
+
+**Date:** 2026-09-20 · **Scope:** `scripts/mutation_lei_proxy.py` (run, not edited),
+`src/macro_engine/data_layer/validation.py` (read, not edited),
+`tests/data_layer/test_phase1_data_layer.py` (one test added). **No source change.**
+
+### How this was found
+
+`M8e` (`mutation_lei_proxy.py`, *"the tolerance defaults to unlimited"*) had been
+carried as **"target ABSENT — do not fix"** in `HANDOFF.md`, `MEMORY.md`,
+`BUILD_STATE.md`, `PROGRESS.md` and the audit report. D-075 had already shown
+that label to be a stale-anchor artifact for `CX5`/`M8d`, and I wrote in the
+handoff that `M8e` should be **re-checked rather than trusted**. This is that
+re-check: the sweep was run **in full** instead of inspected.
+
+### Result 1 — `M8e` is KILLED. The do-not-fix claim is retracted.
+
+The anchor resolves (`_TOLERANCE_FIELD` is byte-identical to the live field at
+`config.py:965`), and `test_the_tolerance_defaults_to_zero_and_the_registry_declares_it`
+reads `RegistrySeries.model_fields[...].default` directly, so the mutant is
+killed. **`M8e` was never a limitation.** This is the **third** retraction of the
+same carried claim, after D-075's `CX5` and `M8d`.
+
+> **The do-not-fix list has now been wrong 3 times out of 3.** A "known, by
+> design" sweep failure has, in this project's history, always turned out to be
+> an artifact of the *check* rather than a property of the *code*. The label
+> should be treated as **an unverified claim requiring re-derivation**, not as
+> settled fact — and the honest reading of a persistent failure list is that it
+> is a to-do list, not a risk acceptance.
+
+### Result 2 — the sweep certified 35/36, and the survivor was a REAL gap
+
+The single survivor was **`M8g`** — *"the tolerance is applied to
+`forward_looking` series too"* — i.e. deleting `and not forward_looking` from
+the guard at `validation.py:314`.
+
+**Why it survived (measured, not inferred).**
+`test_the_tolerance_is_not_applied_to_forward_looking_series` asserts exactly
+the right *property*, and its docstring names exactly the right *hazard*. But it
+supplies a point dated **2030-01-01** against a retrieval of **2026-09-16** with
+`future_date_tolerance_days=1`. The lead is ~1,570 days — **far beyond** the
+tolerance — so the point enters `future_dates`, **not**
+`tolerated_future_dates`. The guard under test reads:
+
+```python
+if tolerated_future_dates and not forward_looking:
+```
+
+`tolerated_future_dates` is empty, the left operand is falsy, and **the guard is
+never consulted**. **The test asserts the property from an input that cannot
+reach the branch** — O-29's mis-target class, the same class D-073 found at
+`M1.2`, where a mutation moved one thing while the test asserted on another.
+
+> **Lesson 5ce: a test can assert the RIGHT property and still be unable to
+> reach the BRANCH that enforces it.** The distinguishing question is not "does
+> the assertion match the specification?" but "does this input take the path
+> the mutation moves?". A test whose input never enters the mutated branch is
+> equivalent to no test, while reading — in the suite, in review, and in the
+> coverage number — exactly like one.
+
+### What the mutant hides — the harm is not cosmetic
+
+With `M8g` applied, a **projection** series carrying a tolerated point emits
+`SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK`, whose own detail text reads:
+
+> *"…Not a fault, and NOT an estimate: unlike a forward_looking series these
+> points are realised data."*
+
+That sentence is **false about the object it is attached to**. The system would
+publish a **forward estimate**, at INFO severity, wearing a code whose text
+declares it **realised data** — and with **no `FORWARD_LOOKING_HORIZON` line to
+contradict it**, because that path keys on `future_dates`, which the tolerated
+point never enters. The downstream point-in-time filter keys on precisely this
+distinction (O-7). This is the **§21.0 rule 4** shape — a silent substitution of
+one category of data for another — reached through a guard that looks protective.
+
+### The remedy — RED→GREEN, both directions verified
+
+Added `test_the_tolerance_is_not_applied_to_a_tolerated_forward_looking_point`,
+which supplies a lead of **1** against a tolerance of **3** — the only shape that
+populates `tolerated_future_dates` — and adds a **positive control** (the same
+point with `forward_looking=False` must be disclosed), so the absence assertion
+**cannot be vacuous**.
+
+Verification is the part that matters, and it is the part I could have skipped:
+1. **RED with the mutant** — fails on the correct assertion, specifically
+   `assert 'SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK' not in [...]`.
+2. **GREEN without it** — 71 passed in the data-layer file.
+3. **Source byte-identical to `HEAD`** afterwards (`git diff --quiet`), so the
+   repair is proven to be the *test*, not a source edit.
+
+Re-running the sweep: **36/36 killed** — `M8e` **and** `M8g`.
+
+### The cell's measured behaviour is SILENCE — recorded, not asserted away
+
+Writing the test surfaced a second fact I did not predict: with **correct**
+source, a forward-looking series holding a tolerated point produces **no finding
+at all**. `FORWARD_LOOKING_HORIZON` keys on `future_dates`, which the tolerated
+point never enters; the same-day path is correctly suppressed by the guard under
+test. The full measured matrix:
+
+| `forward_looking` | tolerance | lead | findings |
+| --- | --- | --- | --- |
+| `False` | 0 | 1 | `FUTURE_OBSERVATION_DATE`, `FUTURE_DATED_POINTS_SUMMARY` |
+| `False` | 3 | 1 | `SAME_DAY_PUBLICATION_AHEAD_OF_CLOCK` |
+| `False` | 3 | 5 | `FUTURE_OBSERVATION_DATE`, `FUTURE_DATED_POINTS_SUMMARY` |
+| `True` | 0 | 1 | `FORWARD_LOOKING_HORIZON` |
+| **`True`** | **3** | **1** | **`[]` — silent** |
+| `True` | 3 | 5 | `FORWARD_LOOKING_HORIZON` |
+
+I first wrote the assertion *asserting* `FORWARD_LOOKING_HORIZON` would fire
+here, on the reasoning that silence is itself a defect. **The test failed and
+the test was wrong** — the code is not silent by omission; it is silent because
+two independently-correct branches jointly suppress. The cell is **composite**,
+which is exactly why neither branch's own unit test notices it. I corrected the
+assertion to pin the **measured** behaviour and cite the open question, rather
+than assert the behaviour I had assumed. *(A wrong assertion caught by running
+it is the RED→GREEN discipline doing its job on the test author.)*
+
+### Scope, stated honestly — this is LATENT, not a live leak
+
+Only two series declare a non-zero tolerance — `sofr` (1) and `iorb` (3) — and
+**both are `forward_looking=False`**. The `(forward_looking=True, tolerance>0)`
+cell is **unreachable in the current registry**. So:
+- **`M8g` was a real test gap** (a mutant that survives is a hole in the suite),
+- but **the behaviour it hides is not currently reachable**, so this is **not** a
+  live data leak today.
+
+It becomes live the moment any projection series opts into a tolerance. The new
+test therefore **pins the silence explicitly**: arming the cell later fails
+loudly with a pointer to **O-101**, forcing a **deliberate disclosure decision**
+rather than an inherited one. The three candidate resolutions — disclose under a
+new code, count tolerated points toward the horizon finding, or refuse the
+combination at the config layer — are recorded in O-101 and **not decided here**,
+because Phase 5 is unstarted and no projection series has asked for a tolerance.
+
+### Verification at close
+
+```
+scripts/mutation_lei_proxy.py  ->  36/36 killed   (M8e and M8g both KILLED)
+ruff check .                   ->  All checks passed!
+ruff format --check            ->  224 files already formatted
+mypy --strict                  ->  224 source files, no issues   [224 = 224]
+pytest -q                      ->  re-measured at close
+```
+
+**No production source was changed.** The only source-tree edit is a test file.
+
+**Lessons 5ce (a right assertion can still miss the branch) · 5cf (the
+do-not-fix label has been wrong 3 of 3 — treat it as an unverified claim) ·
+5cg (when writing the test for a gap, EXPECT your first assertion to be wrong;
+run it and let the measurement correct you).**
+
+---
+
+## D-081 — a leftover mutant was live in the tree, and `sweep_health.py` could not name it
+
+**Date:** 2026-09-20 · **Scope:** `src/macro_engine/models/regime.py` (restored from
+`HEAD`), `tools/sweep_health.py` (**fixed** — the diagnosis, not the detection),
+`scripts/mutation_regime.py` (**gained its missing `check_targets`**).
+
+### What was found, and how
+
+While adding the missing `check_targets` gate to `mutation_regime.py` (the O-29
+list — 14 sweeps with no gate of their own), the **new gate immediately reported
+`M6b: target ABSENT`**. Investigating that "anchor fault" found something worse:
+**`M6b` was not a drifted anchor — it was `M6b` ITSELF, applied to the tree.**
+
+Measured against the true baseline (`git show HEAD:...`):
+
+```
+HEAD   :  "growth_axis": growth,
+working:  "growth_axis": "unknown",
+```
+
+The working tree was publishing the regime label **with both of its auditing axes
+hardcoded to `"unknown"`** — `growth_axis` and `inflation_axis` blanked, so a
+consumer could no longer see whether the label came from a measured axis reading.
+That is precisely the disclosure `M6b` exists to remove.
+
+**A second leftover was then found** by comparing the whole file against `HEAD`:
+`M1a`/`M1b`, an extra branch in `_select_state`:
+
+```python
+if growth == "deep_contraction" and inflation == "rising":
+    return "reflation"
+```
+
+Both were committed **by me, this session, by killing a sweep mid-run.** I ran
+`uv run python scripts/mutation_regime.py`, piped it to `head -8`, and the
+truncated pipe **SIGTERM'd the sweep** while a mutant was applied. The `finally`
+block that restores the pristine text never ran. **This is lesson 5bi — "never
+interrupt a sweep" — and I caused it.** The mechanism is worth stating plainly,
+because the same command reads as harmless: `... | head -N` is enough to kill a
+sweep, and a killed sweep leaves the mutant on disk.
+
+### The finding that matters: the health tool gave a FALSE GREEN, then a WRONG DIAGNOSIS
+
+Two independent defects in `tools/sweep_health.py`, both in the **reporting**, not
+the detection:
+
+**(1) The whole-tree "mutant shape" scan (O-83's remedy) is blind to data mutations.**
+It hunts exactly two textual shapes — `if False:` / `if True:` and `# MUTANT`.
+Measured against both leftovers:
+
+| leftover | `new` text contains a scanned shape? |
+| --- | --- |
+| `M6b` — a changed **dict value** (`"growth_axis": "unknown"`) | **False** |
+| `M1a`/`M1b` — a changed **branch return** (`return "reflation"`) | **False** |
+
+Neither carries a scanned shape, so the scan reported **`mutant shapes on disk: 0`
+while two mutants were on disk.** The scan is catalogue-free by design (that is
+its strength — it finds mutants no sweep declares), but it recognises only
+*syntactic* mutations. **A mutation of a data literal or a return value leaves no
+shape to scan for.**
+
+**(2) `target ABSENT` was reported where the truth was `MUTATION STILL APPLIED`.**
+With the mutant live, the tool failed — correctly, non-zero — but said:
+
+```
+!! mutation_regime.py: own-targets: M1a ...: target ABSENT in regime.py (0 occurrences)
+leftover mutations:        0
+```
+
+**`0 occurrences` is true and `0 leftovers` is false, and the two together read as
+"the gate is broken."** This is the **O-95 self-concealing signature** — a leftover
+is self-concealing because it *replaced* the text its own anchor looks for. The
+tool could not distinguish:
+
+- *the anchor drifted* → the mutation cannot be applied → **the gate is off**; from
+- *the mutation is applied* → **the tree is mutated**.
+
+Those demand opposite responses, and the tool named the wrong one. **This is what
+sent two prior sessions hunting "stale anchors" (D-075) — the same confusion, in
+the same tool, with the same inverted diagnosis.** D-075 fixed two anchors that
+really had drifted; this one was a live mutant wearing that costume.
+
+### The fixes
+
+**`tools/sweep_health.py` — the discriminator.** A leftover is identified by the
+mutation's **own replacement text**: if the anchor is absent *and* `new` is
+present, the mutation is applied and the anchor is fine.
+
+```python
+if count == 0:
+    if new.strip() and new in text:
+        problems.append(f"{name}: MUTATION STILL APPLIED in {target.name} "
+                        "(anchor absent AND replacement text present — "
+                        "this is a LEFTOVER, not a drifted anchor)")
+    else:
+        problems.append(f"{name}: target ABSENT in {target.name} (0 occurrences)")
+```
+
+Verified by applying the sweep's **own** first catalogue entry and re-running:
+`M1a` is now reported as `MUTATION STILL APPLIED ... this is a LEFTOVER, not a
+drifted anchor`, and it appears in the leftover list. The other entries in the
+file, which are genuinely chained-off anchors, are still correctly reported ABSENT.
+
+**`scripts/mutation_regime.py` — the missing gate.** It now owns `check_targets`
+(refusing on ABSENT, AMBIGUOUS, and INERT-BY-CONSTRUCTION, exit **4**), so a
+direct run cannot certify against a wrong site. Its own comment block above
+`_INDEPENDENCE`/`_UNOBSERVABLE` already documented that the anchors were
+"ambiguous and worked by luck" until an *external* tool found them — **which is the
+argument for the gate living in the sweep.** A gate that exists only in
+`tools/sweep_health.py` does not protect anyone who runs the sweep directly, and
+running a sweep directly is the normal case.
+
+**`src/macro_engine/models/regime.py` — restored** from `HEAD` (`git checkout`),
+verified byte-identical for the mutant, with only my D-078 validator retained.
+
+### Verification
+
+```
+src/ vs HEAD              ->  only the 2 intended D-078 guards (orchestration, policy_rules)
+leftover mutants          ->  0   (catalogue-driven, all 40 sweeps)
+target problems           ->  0   (all 40 sweeps)
+sweep_health.py           ->  OK, 0 leftovers, 0 mutant shapes, 0 failures
+ruff / format / mypy      ->  clean, 224 = 224
+```
+
+**The D-080 test was NOT affected**: it targets `data_layer/validation.py`, which
+was never mutated. The full suite count is re-measured at close.
+
+### Lessons
+
+- **5ch — `... | head -N` kills a sweep, and a killed sweep leaves the mutant
+  applied.** The `finally` that restores pristine text runs on normal exit, not on
+  SIGTERM. **Never pipe a sweep into a truncating reader.** If a sweep must be
+  stopped, let the runner's own repair path run, or check `git status` after.
+- **5ci — `target ABSENT` has TWO causes with opposite remedies**, and the tool
+  must distinguish them: a drifted anchor means *the gate is off*; a present
+  replacement text means *the tree is mutated*. Reporting the first when the second
+  is true is how a live mutant survives two sessions of "anchor repair."
+- **5cj — a catalogue-free shape scan cannot see a data mutation.** `if False:` and
+  `# MUTANT` catch control-flow mutant *shapes*; a changed dict value, a changed
+  return literal, or a changed number leave nothing to scan for. **A green
+  whole-tree scan is not evidence that the tree is clean** — only a catalogue-driven
+  comparison against a trusted baseline (`git diff HEAD`) is.
+- **5ck — the strongest baseline is not another file, it is `HEAD`.** Every
+  in-session leftover check is scoped to what a catalogue declares; `git diff HEAD`
+  is scope-free and needs no catalogue. When a sweep has been interrupted, **diff
+  the tree against `HEAD` before trusting anything else.**
+
+---
+
+## D-082 — the interrupt-restore handler cannot fire on Windows, and the defence that can is a sidecar
+
+**Status:** FIXED — `scripts/_sweep_gate.py` gained `record_pristine` /
+`restore_from_sidecar` / `sidecar_for`; `scripts/mutation_regime.py` adopts
+them. `tools/sweep_health.py`'s loader was repaired in the same pass (below).
+
+### What was attempted
+
+D-081 established that a killed sweep leaves mutated source on disk, and that
+the `finally` restore does not run on a signal. The obvious remedy was the one
+`mutation_api_layer.py` already used: install a `SIGTERM`/`SIGINT` handler that
+undoes the in-flight mutation. A shared `install_signal_restore()` was written
+into `_sweep_gate.py` (the module all gated sweeps already import) and wired
+into `mutation_regime.py`.
+
+### Why it does not work — measured, not assumed
+
+The handler was tested in isolation before being trusted, and **it never
+executed.** Three probes, each narrowing the cause:
+
+```
+probe 1  self-kill SIGTERM   ->  handler body never entered; file stays MUTATED
+probe 2  self-kill SIGINT    ->  exit 2 (KeyboardInterrupt), not the handler's
+                                 SystemExit(130); file stays MUTATED
+probe 3  trace wrapper       ->  NO "[trace]" line printed at all
+```
+
+Probe 3 is the decisive one: the handler was confirmed **installed**
+(`signal.getsignal` returned it) and the payload was confirmed **armed**
+(`_PENDING[0]` held the correct `(path, original)`), yet the traced wrapper
+never ran. The signal never reaches Python code.
+
+**This is a platform property, not a bug in the handler.** On `win32`,
+`os.kill(pid, SIGTERM)` maps to `TerminateProcess`, which ends the process
+outright; Python's `signal` module cannot intercept it. `SIGINT` is likewise
+delivered as a `KeyboardInterrupt` rather than routed to the registered handler.
+
+**Consequence for the existing record:** `mutation_api_layer.py`'s
+`_restore_in_flight` (written at D-057/D-062) is **inert on this platform**. It
+is retained — it is correct and does work on POSIX, and removing it would
+regress that — but it must not be counted as protection on `win32`. The record
+that credited it as a defence is corrected here.
+
+### The defence that does work
+
+`record_pristine(paths)` writes each target's pristine text to a
+`<name>.sweepbackup` sidecar **before the first mutation**;
+`restore_from_sidecar(paths)` restores from it on the next run and deletes it on
+success. This depends on nothing but the filesystem, so it survives a kill that
+bypasses every Python-level mechanism — on any platform.
+
+It is also **strictly stronger than `repair_leftover_mutations`**, which was the
+existing recovery path: that inverts a leftover by matching the catalogue
+(`old` absent AND `new` present), so it can only heal a mutation the catalogue
+still recognises. A sidecar restores the exact bytes with no matching at all.
+
+The two mechanisms chain, and the chain was verified end to end:
+
+```
+kill with `| head -6`     ->  regime.py left mutated
+                              regime.py.sweepbackup + config.py.sweepbackup written
+next run begins           ->  RESTORED config.py from sidecar (previous run was killed)
+                              RESTORED regime.py from sidecar (previous run was killed)
+                              check_targets: 40 mutations, 0 problem(s)
+sweep completes           ->  REGIME.PY RESTORED
+                              sidecars: (none - consumed)
+```
+
+Note the ordering: the heal runs **before** `check_targets`. Had it been the
+other way around the gate would have reported `MUTATION STILL APPLIED` (D-081's
+discriminator working correctly) and refused the run — which is why the heal
+must come first.
+
+### The second defect found in the same pass — `sweep_health.py` could not load its own sweeps
+
+Wiring 14 sweeps to import `from _sweep_gate import ...` broke the health tool:
+
+```
+sweeps with NO sweep-owned gate: 0   <- the wiring worked
+failures: 14
+  !! mutation_regime.py: IMPORT FAILED — No module named '_sweep_gate'
+```
+
+Run as `uv run python scripts/mutation_X.py`, Python puts the script's own
+directory on `sys.path` and the sibling import resolves. Loaded by
+`sweep_health.py` via `spec_from_file_location`, it does not. So the tool
+reported **every newly-gated sweep as unrunnable** — the O-62 failure mode
+exactly ("a sweep that cannot run is indistinguishable from a sweep nobody
+ran"), produced by the very change meant to strengthen the sweeps.
+
+**Fixed** in `_load`: prepend the sweep's parent directory to `sys.path` for the
+duration of `exec_module`, then remove it — reproducing the interpreter's own
+behaviour. After the fix: `failures: 0`.
+
+### Lessons
+
+- **5cl — verify a safety mechanism before crediting it.** `install_signal_restore`
+  was written, wired, and *described as working* before being tested. The probe
+  took four minutes and found it entirely inert. A protection that is assumed
+  rather than exercised is worse than none, because it displaces the real one.
+- **5cm — on `win32`, no Python-level signal handler runs for `SIGTERM`/`SIGINT`.**
+  `os.kill(pid, SIGTERM)` is `TerminateProcess`. Any "restore on interrupt"
+  design must be filesystem-based, not signal-based, to work here. Check
+  `platform`/`sys.platform` before trusting a signal path.
+- **5cn — the tool that gates the sweeps must be able to LOAD the sweeps.**
+  Adding an import to 14 sweeps silently turned them unrunnable under the health
+  tool while leaving them working standalone. **A gate change must be verified
+  through the gate's own entry point**, not only through the path the developer
+  happened to use.
+- **5co — a recovery mechanism must run BEFORE the gate that would refuse the
+  run**, or the gate blocks its own repair.
+
+### D-082.1 — the sidecar pattern is gitignored, so a recovery artefact cannot be committed as source
+
+The sidecar exists so a killed sweep can be restored, which means a sidecar is
+**supposed** to be left behind when a run dies. That makes it a file that will
+appear inside `src/` in exactly the situation where a human is least likely to
+inspect the working tree carefully. `*.sweepbackup` is therefore added to
+`.gitignore`, verified with `git status --porcelain --ignored` returning `!!`.
+
+Recorded rather than assumed because the failure it prevents is silent: a
+committed sidecar would sit next to the real module, would type-check as ordinary
+Python text, and would be read by nobody. The rule it encodes:
+
+> **A recovery artefact is a file the system is *designed* to leave behind, so it
+> must be excluded from version control by construction, not by remembering.**
+
+### D-082.2 — `pytest` can exit non-zero in this environment with every test passing
+
+Measured twice this session while re-deriving the suite count (O-88). The run
+progresses to `[100%]` with **2432 dots, 0 `F` markers, 0 `E` markers, no
+"failed", no "error"** and one skip — and yet the process exits **1**.
+
+The cause is not the suite. At the very end of the run the harness emits:
+
+```
+[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":68,...,"targets":[...pytest-of-Hp\garbage-...],...}
+```
+
+pytest's session finish tries to remove its own temp directory; the environment's
+safe-delete guard intercepts that removal and signals a failure, which becomes the
+process status. **The tests are unaffected — the cleanup is what fails.**
+
+**Why it is recorded.** A future session reading `exit 1` will reasonably conclude
+a regression, and the natural next move — bisecting the change that "broke" it —
+would burn a full session on a green suite. The discriminator is cheap:
+
+> **Read the outcome markers, not the exit code.** Count `F`/`E` markers and the
+> summary line. If they are zero, the suite passed and the non-zero status came
+> from the harness's own teardown.
+
+The preferred invocation is therefore to **capture the summary line explicitly**
+rather than rely on `$?`, and to treat a `[safe-delete]` notice in the tail as the
+separating evidence.

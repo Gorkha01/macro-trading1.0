@@ -1384,3 +1384,327 @@ specification.** And the Kelly guard in `test_integrity_gates.py` was
 (`translate_thesis_to_position` being the one sanctioned route to Kelly per §25)
 instead of merely testing where Kelly is called.
 
+
+---
+
+## The D-075..D-079 pass — three mapping rules it adds
+
+This pass found no new module and no new tier. It found **four classes of defect
+whose home is the seam between two layers**, and each adds a mapping rule.
+
+### 1. `nan` is a READABLE value in every fallthrough axis helper (D-078)
+
+**The mechanism, stated once so it is checkable everywhere:** every axis/bucket/
+direction helper in the project is a **fallthrough** —
+
+```python
+if x < lo:  return LOW
+if x < hi:  return MID
+return HIGH            # <- the branch a NaN reaches
+```
+
+`nan` fails **every** comparison, so it does not fall out of the band tests as an
+error and does not take a neutral branch. It arrives at the **final `return`**, the
+most extreme bucket the grid has. Measured, before the fix:
+
+| call | returned | i.e. |
+| --- | --- | --- |
+| `classify_regime_rule_based(output_gap=nan)` | `growth_axis='above_trend'` | the most expansionary state |
+| `classify_regime_rule_based(inflation_trend_3m=nan)` | `inflation_axis='flat'` | a fabricated *stable* |
+| `classify_regime_rule_based(inflation_trend_3m=inf)` | `inflation_axis='rising'` | a fabricated *rising* |
+| `taylor_rule(pi_current=nan)` | `value=nan` | a prescription that is not a number |
+| `MarketPricingGap(raw_gap=nan)` | `direction='aligned'`, `is_meaningful=False` | **"model and market agree, insignificantly" — a silent NO-TRADE from absent data** |
+| `_direction_for(nan, +1)` | `'contradicts'` | a fabricated disagreement |
+| `derive_market_implied_policy_path(short_tenor_term_premium=inf)` | `-inf` | a **sign inversion** in the reference path |
+| `api_layer/orchestration.py` | `else 0.0` | an output gap of *exactly zero* |
+
+**The mapping rule: guard the input DOMAIN, not the output RANGE.** A range check
+written on the result (`0 <= value <= 1`) *passes* for `nan` — every comparison a
+plausibility check is made of returns `False` for `NaN`, so a poison reports CLEAN
+(the D-074.1 mechanism, now confirmed at a second layer). The only sound place to
+refuse a non-finite value is **where it enters**, as a pydantic `model_validator`
+on the inputs object, or an explicit `isfinite` gate at a free function's boundary.
+
+**Two consequences for this mapping:**
+
+- `pydantic`'s `float` **accepts** `nan`/`inf` by default (`allow_inf_nan=True`).
+  *Class membership is not a validity test* — `isinstance(x, (int, float))` is
+  `True` for `nan`. A field typed `float` is **unconstrained** unless the validator
+  says otherwise.
+- `models/as_of.py`'s `dropna` does **not** remove `nan` — `nan` is not null. The
+  point-in-time path is therefore not a defence against this class, and a reader
+  that trusts `dropna` to sanitise its input is trusting the wrong thing.
+
+Consumer sites fixed this pass: `models/regime.py`, `models/policy_rules.py`,
+`thesis_layer/signals.py`, `api_layer/orchestration.py`. Regression surface:
+`tests/models/test_non_finite_inputs.py` (43 tests) and
+`tests/thesis_layer/test_signals.py` (+11).
+
+### 2. A live check may test TODAY'S MARKET and call it the WIRING (D-079)
+
+`scripts/live_labor_check.py` asserted `len(set(verdicts.values())) > 1` to prove
+that `default_rate_trend` actually **reaches** the credit-attribution verdict. On
+2026-09-20 the HY OAS **tightened** (`-2.0bp`), so `widening_observed` was `False`
+for all three trends and every verdict legitimately read `NO_WIDENING` — the model
+was correct and the **check failed**. The assertion conflated two different claims:
+
+| claim | what it needs | why a live row cannot supply it |
+| --- | --- | --- |
+| **is the wiring correct?** | a row where the branch is *reached* | days when the branch is unreached |
+| **is today's reading right?** | today's actual row | cannot prove reachability |
+
+**The mapping rule: an instrument's WIRING and its reading are two claims and need
+two rows.** A live check that can only see one market state can only prove one of
+them. Fix: pin the wiring claim on a **constructed** row (`hy_spread_change_bp=1.0`)
+that is *labelled* as constructed, and print the live row separately as the reading.
+This is `live_risk_axis_check.py`'s pattern (D-073) generalised — a check recomputes
+the reachable set rather than hoping the market supplies it. Classed as **O-100**.
+
+### 3. An anchor is a CLAIM about source text (D-075)
+
+`mutation_drawdown.py` `CX5` and `mutation_regime.py` `M8d` were recorded for two
+sessions as *"targets absent by design — DO NOT FIX."* Both were **stale anchors**
+matching 0 occurrences: a defensive `get("tiers", [])` default added to the live
+config accessor, and a four-line comment block inserted between two lines the anchor
+pinned as adjacent. Neither mutation surface had changed. **A sweep that reports
+`target ABSENT` cannot distinguish "this mutation no longer applies" from "this
+mutation never existed"** — the O-95 self-concealing class, where the stale anchor
+destroys its own evidence. After repair both sweeps certify: `mutation_drawdown.py`
+47/47, `mutation_regime.py` 40/40.
+
+**The mapping rule: O-88's "a gate row is a claim, not a receipt" applies to anchors
+too, and the do-not-fix list is not exempt from re-measurement.** A "known, by
+design" failure that no one has re-derived from the source in N sessions is a
+carried claim, not a measured fact.
+
+### 4. A code fix citing a decision number is citing a receipt (D-075.3)
+
+Two docstrings in the tree cited `(D-076)` and `(D-077)` while **no such entry
+existed in any record file**. The numbers were real (the entries were written this
+pass) but the *sequence was inverted*: the code claimed the decision before the
+decision was recorded. **The mapping rule: write the decision entry in the same
+increment as the code that cites it.** A citation is a pointer to a receipt; a
+pointer to a missing receipt is worse than no citation, because it reads as
+authority.
+
+---
+
+## The D-080 addendum — the fifth mapping rule: an assertion has a *reach* as well as a *meaning*
+
+The four rules above (D-075..D-079) each described a defect at a **seam between two
+layers**. This one is a defect at a **seam between a test and the branch it claims to
+cover** — and it is the first mapping rule in this file about the *test* layer rather
+than the *code* layer.
+
+### The rule
+
+> **A test has two properties, and the suite measures only one of them.**
+>
+> - Its **meaning** — does the assertion match the specification? This is what a
+>   reviewer reads, and what the docstring usually states.
+> - Its **reach** — does the input actually take the path the mutation moves? This
+>   is what makes the assertion *load-bearing*, and **nothing measures it.**
+>
+> A test whose input never enters the mutated branch is **equivalent to no test**
+> while reading — in the suite, in review, and in the coverage number — **exactly
+> like one.** (Lesson 5ce.)
+
+The instance: `test_the_tolerance_is_not_applied_to_forward_looking_series` asserted
+the correct property, and its docstring named the correct hazard. But its input was a
+point dated **2030-01-01** against a retrieval of **2026-09-16** with
+`future_date_tolerance_days=1`. The ~1,570-day lead routed the point into
+`future_dates`, **not** `tolerated_future_dates` — so the guard
+`if tolerated_future_dates and not forward_looking:` was **never consulted**, and the
+mutant that deletes `and not forward_looking` moved a value nothing read. **The
+mutation sweep found in one run what review had not found in two sessions.**
+
+### Why this belongs in the mapping, not just the decision log
+
+**Because the failure mode is invisible to every instrument the project already has.**
+
+| instrument | why it cannot see this |
+| --- | --- |
+| the test suite | the test **passes** — it is green in both the correct and the mutated tree |
+| a coverage number | the test **executes** the function; it simply never enters the branch |
+| reading the test | it asserts the right thing, in the right words, citing the right hazard |
+| mutation testing | **only** this sees it — and only if the sweep is actually **run** |
+
+**The mapping consequence: a mutation sweep is not a redundant gate on top of the
+test suite. It is the ONLY instrument that measures an assertion's reach**, and the
+suite is the only instrument that measures its meaning. They are orthogonal, and the
+project's habit of treating a certified sweep as *"extra assurance"* understates what
+it is. `mutation_lei_proxy.py` — a sweep that had been annotated *"target absent by
+design, do not fix"* for two sessions — was the **single** thing standing between this
+gap and production.
+
+### The corollary — the do-not-fix label is where reach goes unmeasured
+
+The same file that carried this gap also carried the label that hid it. **Three
+entries were annotated "target ABSENT — do not fix, by design" and all three were
+wrong** (`CX5`, `M8d`, `M8e` — D-075, D-080). In each case the label described the
+*check's* failure, not the *code's* property, and the correct response was to fix
+the check.
+
+> **A do-not-fix list is a place where the project has agreed to stop measuring.
+> Everything on it should be treated as unmeasured, and the honest default reading of
+> a persistent failure list is: this is a to-do list, not a risk acceptance.**
+
+Note what the fix for this class looks like in each case, because it is always the
+same shape: **re-derive the claim from the source.** `CX5`'s anchor was compared
+against the live accessor; `M8d`'s against the live block; `M8e`'s against the live
+field; and the new test's input was chosen by **measuring which input populates
+`tolerated_future_dates`** rather than by reasoning about what ought to. Every one of
+these is O-88 — *a row is a claim, not a receipt* — applied to whatever object the
+claim was written about: a gate, an anchor, or an assertion's own input.
+
+---
+
+## The D-082 addendum - the sixth mapping rule: a *protection* has a reach too
+
+D-080 established that an **assertion** has a reach as well as a meaning, and that
+a mutation sweep is the only instrument that measures reach. D-082 adds the same
+distinction for a **protection**: a safety mechanism has a *reach* - the set of
+failure modes it actually intercepts - and that reach is **not** inferred from its
+existence, its description, or the fact that it is a recognised pattern.
+
+### The rule
+
+> **A protection's reach is measured by reproducing the failure it claims to
+> intercept, on the platform it will run on - never by reading the code that
+> installs it.**
+
+### The case that produced it
+
+After D-081, the remedy for "a killed sweep leaves mutated source" looked settled:
+add a signal handler, as `mutation_api_layer.py` already had. A shared
+`install_signal_restore()` was written into `scripts/_sweep_gate.py`, wired into
+`mutation_regime.py`, and **described in the record as the defence**.
+
+It intercepts nothing on this platform. Measured, in three probes:
+
+| probe | expectation | measurement |
+| --- | --- | --- |
+| self-`SIGTERM` | handler restores the file | file stays `MUTATED`; **handler body never entered** |
+| self-`SIGINT` | handler's `SystemExit(130)` | exit **2** (`KeyboardInterrupt`) - the handler did not run |
+| trace wrapper | a trace line per invocation | **no trace line at all**, with the handler confirmed installed *and* the payload confirmed armed |
+
+The third probe is the one that matters methodologically. It ruled out the two
+comfortable explanations - *the handler was never installed* and *the payload was
+never set* - and left only the true one: **on `win32`, `os.kill(pid, SIGTERM)` maps
+to `TerminateProcess`, so the signal never reaches Python code.** `SIGINT` is
+delivered as a `KeyboardInterrupt` rather than routed to the registered handler.
+
+**The consequence is a retraction, not just a gap:** `mutation_api_layer.py`'s
+`_restore_in_flight` - credited in the record at D-057/D-062 as the defence
+against leftover mutants - **is inert here.** It is kept, because it is correct
+and does work on POSIX, but the record that counted it as protection on this
+platform is wrong.
+
+### What the mapping should point at
+
+The protection with real reach is the one that depends on the least: the
+**sidecar**. `record_pristine()` writes the target's pristine text next to it
+*before* the first mutation; `restore_from_sidecar()` restores from it on the next
+run. No signal, no catalogue, no in-process state - only the filesystem, which
+survives a kill that bypasses every Python-level mechanism.
+
+It is also **strictly stronger than the existing `repair_leftover_mutations`**,
+and the comparison is worth keeping: that function inverts a leftover by *matching
+the catalogue* (`old` absent AND `new` present), so it can only heal a mutation it
+still recognises. Restoring from recorded bytes needs to recognise nothing.
+
+### The ordering rule this exposes (5co)
+
+The heal must run **before** `check_targets`. Reversed, the gate reads the mutanted
+source, reports `MUTATION STILL APPLIED` (D-081's discriminator working perfectly),
+and **refuses the run** - so the gate blocks its own repair.
+
+> **A recovery mechanism must be positioned before the gate that would refuse the
+> run it is there to enable.**
+
+### And the same rule applied to the tool that gates the gates
+
+Wiring the 14 sweeps to import `_sweep_gate` broke `tools/sweep_health.py`, which
+reported **all 14 as `IMPORT FAILED`** - they work standalone (the script directory
+is on `sys.path`) but not under `spec_from_file_location`. This is **O-62** in its
+purest form: *a sweep that cannot run is indistinguishable from a sweep nobody
+ran*, produced by the change meant to strengthen them.
+
+> **A gate change must be verified through the gate's own entry point, not through
+> whichever path the developer happened to use.** (5cn)
+
+---
+
+## The D-082 addendum - the sixth mapping rule: a *protection* has a reach too
+
+D-080 established that an **assertion** has a reach as well as a meaning, and that
+a mutation sweep is the only instrument that measures reach. D-082 adds the same
+distinction for a **protection**: a safety mechanism has a *reach* - the set of
+failure modes it actually intercepts - and that reach is **not** inferred from its
+existence, its description, or the fact that it is a recognised pattern.
+
+### The rule
+
+> **A protection's reach is measured by reproducing the failure it claims to
+> intercept, on the platform it will run on - never by reading the code that
+> installs it.**
+
+### The case that produced it
+
+After D-081, the remedy for "a killed sweep leaves mutated source" looked settled:
+add a signal handler, as `mutation_api_layer.py` already had. A shared
+`install_signal_restore()` was written into `scripts/_sweep_gate.py`, wired into
+`mutation_regime.py`, and **described in the record as the defence**.
+
+It intercepts nothing on this platform. Measured, in three probes:
+
+| probe | expectation | measurement |
+| --- | --- | --- |
+| self-`SIGTERM` | handler restores the file | file stays `MUTATED`; **handler body never entered** |
+| self-`SIGINT` | handler's `SystemExit(130)` | exit **2** (`KeyboardInterrupt`) - the handler did not run |
+| trace wrapper | a trace line per invocation | **no trace line at all**, with the handler confirmed installed *and* the payload confirmed armed |
+
+The third probe is the one that matters methodologically. It ruled out the two
+comfortable explanations - *the handler was never installed* and *the payload was
+never set* - and left only the true one: **on `win32`, `os.kill(pid, SIGTERM)` maps
+to `TerminateProcess`, so the signal never reaches Python code.** `SIGINT` is
+delivered as a `KeyboardInterrupt` rather than routed to the registered handler.
+
+**The consequence is a retraction, not just a gap:** `mutation_api_layer.py`'s
+`_restore_in_flight` - credited in the record at D-057/D-062 as the defence
+against leftover mutants - **is inert here.** It is kept, because it is correct
+and does work on POSIX, but the record that counted it as protection on this
+platform is wrong.
+
+### What the mapping should point at
+
+The protection with real reach is the one that depends on the least: the
+**sidecar**. `record_pristine()` writes the target's pristine text next to it
+*before* the first mutation; `restore_from_sidecar()` restores from it on the next
+run. No signal, no catalogue, no in-process state - only the filesystem, which
+survives a kill that bypasses every Python-level mechanism.
+
+It is also **strictly stronger than the existing `repair_leftover_mutations`**,
+and the comparison is worth keeping: that function inverts a leftover by *matching
+the catalogue* (`old` absent AND `new` present), so it can only heal a mutation it
+still recognises. Restoring from recorded bytes needs to recognise nothing.
+
+### The ordering rule this exposes (5co)
+
+The heal must run **before** `check_targets`. Reversed, the gate reads the mutanted
+source, reports `MUTATION STILL APPLIED` (D-081's discriminator working perfectly),
+and **refuses the run** - so the gate blocks its own repair.
+
+> **A recovery mechanism must be positioned before the gate that would refuse the
+> run it is there to enable.**
+
+### And the same rule applied to the tool that gates the gates
+
+Wiring the 14 sweeps to import `_sweep_gate` broke `tools/sweep_health.py`, which
+reported **all 14 as `IMPORT FAILED`** - they work standalone (the script directory
+is on `sys.path`) but not under `spec_from_file_location`. This is **O-62** in its
+purest form: *a sweep that cannot run is indistinguishable from a sweep nobody
+ran*, produced by the change meant to strengthen them.
+
+> **A gate change must be verified through the gate's own entry point, not through
+> whichever path the developer happened to use.** (5cn)
