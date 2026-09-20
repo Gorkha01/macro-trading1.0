@@ -1,15 +1,22 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-19** (after the **§8 API layer**, `api_layer/` ·
-**D-070** · **PHASE 3 COMPLETE 2/2** — five surfaces, the orchestration gap closed,
-and a mutation sweep that certified a test selection it never ran).
+Last updated: **2026-09-20** (after the **§6 publication-date work** and the
+**value-provenance findings** — `publication_dates.py` · `docs/FINDINGS_value_provenance.md`
+· **release_datetime now OBTAINED 42/42**; `vintage_datetime` established as
+not-obtainable by test. **PHASE 4 IS THE NEXT INCREMENT.**)
 
 Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 
 ---
 
 ## ⏭️ SESSION HANDOFF — read this first if you are a new session
+
+> **STARTING PHASE 4?** Read **`docs/PHASE4_HANDOFF.md`** first — it is purpose-built
+> for that and will save you re-deriving the scope. It records what Phase 4 must
+> deliver, which of those pieces **already exist** (most of them), the two mandated
+> tests, the inherited gate baseline, and the open issues. This section below is the
+> older D-070 handoff and remains accurate, but Phase 4's *scope* lives in the new file.
 
 **WHERE WE ARE.** Phases **0 = 8/8 ✅ · 1 = 9/9 ✅ · 2 = 85/98 (13 outstanding, ALL
 Tier 5 by §22.3) · 3 = 2/2 ✅ · 4 = not started**. Tiers **1/2/3/4 = 23/23 · 29/29
