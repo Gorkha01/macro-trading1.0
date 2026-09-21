@@ -140,12 +140,36 @@ _FRED_CALENDAR_URL = (
     "https://fred.stlouisfed.org/releases/calendar?po=1&ptic=0&vs={start}&ve={end}&rid={rid}"
 )
 
-#: The STRUCTURED FOMC document command on the local OpenBB service (D-086).
+#: The STRUCTURED FOMC document command's path on the local OpenBB service (D-086).
 #: Returns ``date``/``doc_type``/``doc_format``/``url`` as fields, so the meeting
 #: date and the dot-plot flag are both read rather than parsed out of markup.
 #: ``provider=federal_reserve`` is required; ``year=`` is the only filter that
 #: actually bites (measured — see ``_fetch_fed_fomc_meetings``).
-_FOMC_DOCUMENTS_URL = "http://127.0.0.1:6901/api/v1/economy/fomc_documents"
+#:
+#: **The host is NOT part of this constant, and that is the fix (O-113).** This
+#: used to be the full absolute URL with ``127.0.0.1:6901`` baked in, and the
+#: port was the **dead** one — so the FOMC catalyst returned HTTP 502 on every
+#: call while ``:6900`` served the same command (34 rows). Hard-coding the host
+#: also made the module blind to ``settings.openbb.base_url`` and to the
+#: ``OPENBB_API_URL`` override, which is exactly how a deployment or a port
+#: change turns a working feature into a silent outage. The base is resolved from
+#: config at call time by :func:`_fomc_documents_url`.
+_FOMC_DOCUMENTS_PATH = "/api/v1/economy/fomc_documents"
+
+
+def _fomc_documents_url(base: str | None = None) -> str:
+    """The FOMC documents endpoint, rebased on the configured OpenBB base URL.
+
+    ``base`` is accepted for tests; production callers pass nothing and get
+    ``settings.openbb.base_url``. Deriving the URL rather than storing it keeps
+    **one** source of truth for the host, so a port change is a config edit and
+    not a code change — the O-111 lesson (*a check that does not ask is a check
+    that cannot answer*) applied to the fetch itself.
+    """
+    if base is None:
+        base = get_settings().openbb.base_url
+    return f"{base.rstrip('/')}{_FOMC_DOCUMENTS_PATH}"
+
 
 #: FRED close the connection for urllib's and aiohttp's TLS/HTTP fingerprint
 #: (measured: ``RemoteDisconnected`` and ``TimeoutError``) while answering
@@ -311,8 +335,9 @@ def _fetch_fed_fomc_meetings(
     years = sorted({today.year, today.year + 1})
 
     rows: list[dict[str, object]] = []
+    documents_url = _fomc_documents_url()
     for year in years:
-        url = f"{_FOMC_DOCUMENTS_URL}?provider=federal_reserve&year={year}"
+        url = f"{documents_url}?provider=federal_reserve&year={year}"
         try:
             payload = json.loads(_http_get(url, timeout=timeout))
         except (httpx.HTTPError, TimeoutError, ValueError) as exc:
@@ -433,7 +458,7 @@ def next_catalyst_calendar(as_of: date | None = None) -> list[str]:
         raise CatalystSourceError(
             "no catalyst source answered: FRED (rid "
             f"{settings.cpi_id}/{settings.nfp_id}/{settings.pce_id}) and "
-            f"{_FOMC_DOCUMENTS_URL} all failed. An empty calendar here would be "
+            f"{_fomc_documents_url()} all failed. An empty calendar here would be "
             "indistinguishable from a genuinely quiet calendar, so it is an error "
             "rather than a silent []."
         )

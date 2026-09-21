@@ -20,6 +20,8 @@ dependencies = [
     "statsmodels>=0.14.2",
     "pyarrow>=16.0.0",
     "sqlalchemy>=2.0.54",
+    "openbb-fred>=1.6.2",
+    "openbb-economy>=1.6.2",
 ]
 
 [project.optional-dependencies]

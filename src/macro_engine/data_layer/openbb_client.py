@@ -1,7 +1,8 @@
 """Resilient OpenBB data gateway (AGENTS.md Section 5.1).
 
 Implements the two-path fetch strategy: try the **local OpenBB Platform API**
-first (``http://127.0.0.1:6901``) for lower latency and to avoid re-initialising
+first (``http://127.0.0.1:6900``, i.e. ``settings.openbb.base_url``) for lower
+latency and to avoid re-initialising
 the SDK per call, then **fall back to the Python package** if the local API is
 unreachable. After retries are exhausted it attempts the *other* path once
 before giving up.

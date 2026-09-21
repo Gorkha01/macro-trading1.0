@@ -88,6 +88,50 @@ def test_environment_variable_overrides_the_yaml_default(
     assert get_deployment_config().api_port == 9100
 
 
+def test_the_two_openbb_defaults_agree() -> None:
+    """The deployment fallback and settings.yaml must name the same host (O-113).
+
+    ``OPENBB_API_URL``'s fallback used to be ``http://127.0.0.1:6901`` while
+    ``openbb.local_api_base_url`` in settings.yaml said ``:6900`` — and ``:6901``
+    is *bound but dead* (502 on every data route; ``:6900`` serves the same
+    commands). Two defaults for one setting is a latent contradiction: for the
+    whole time they disagreed, one of them silently handed out the broken host,
+    and which one you got depended on whether you had exported the variable.
+    A port that is bound passes a reachability check, so nothing complained.
+
+    They cannot be derived from each other — ``deployment`` is deliberately
+    dependency-free and cannot import ``config`` — so they are pinned together
+    here instead. This test is the whole reason the duplication is safe.
+    """
+    from macro_engine import deployment
+    from macro_engine.config import get_settings
+
+    fallback = deployment._OPENBB_DEFAULT_BASE_URL
+    declared = get_settings().openbb.base_url
+
+    assert fallback == declared, (
+        "OPENBB_API_URL's fallback "
+        f"({fallback!r}) disagrees with openbb.local_api_base_url "
+        f"({declared!r}). One of them is the host operators actually get; "
+        "reconcile them and re-measure which port serves before editing either."
+    )
+
+
+def test_the_openbb_fallback_port_is_not_the_known_dead_one() -> None:
+    """A regression guard with the measured value written down (O-113).
+
+    ``:6901`` was measured on 2026-09-21 to answer 502 Bad Gateway on data
+    routes while ``:6900`` served the same commands successfully. If ``:6901``
+    ever returns to any default here, the outage has been re-introduced even if
+    the two defaults still agree with each other.
+    """
+    from macro_engine import deployment
+
+    assert "6901" not in deployment._OPENBB_DEFAULT_BASE_URL, (
+        "the dead port is back as a default — see O-113 and config/settings.yaml"
+    )
+
+
 def test_production_without_required_variables_fails_fast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

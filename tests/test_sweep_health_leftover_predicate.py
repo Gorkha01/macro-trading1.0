@@ -421,51 +421,90 @@ def test_the_committed_mutant_scan_exists_and_is_wired_into_main() -> None:
 
 
 @pytest.mark.skipif(not _git_available(), reason="needs git to establish committed ground truth")
-def test_a_committed_mutant_is_detected_and_the_shipped_tree_is_not() -> None:
-    """Both directions, against the real history.
+def test_the_committed_mutant_scan_fires_on_a_commit_that_carries_one() -> None:
+    """The POSITIVE control, against frozen history rather than against ``HEAD``.
 
-    The defect this guards is subtle enough to be worth the real-data test. The
-    scan compares each catalogue entry against **``HEAD``**, not against a fixed
-    commit: the question is always "is a mutant the baseline *now*?" That makes
-    the positive control time-dependent, and it has already had to be repointed
-    once — on 2026-09-21 ``HEAD`` was ``5d4c1da`` and carried ``M7b``; by the time
-    this test was next run, ``HEAD`` had advanced to ``81fd65a`` and ``M7b`` was
-    repaired, so the old fixture asserted a fact about the past that the scan is
-    not asked to answer.
+    O-109's remedy is a scan that asks **git** whether a mutation is the baseline.
+    Its positive control must therefore point at a commit that *is known to carry
+    a mutant* — and that commit must be named explicitly, because ``HEAD`` moves.
 
-    The control is therefore selected from the live scan's own output rather than
-    hard-coded, and the assertion is structural: the scan must find *something*
-    committed (or ``HEAD`` is clean, which is a pass and also means this guard
-    needs re-pointing only when a mutant is committed).
+    **This test has now been repointed twice, and the second time taught the
+    lesson worth keeping.** It first hard-coded ``5d4c1da`` (which carried ``M7b``
+    in ``lei_proxy.py``); ``HEAD`` advanced, ``M7b`` was repaired, and the fixture
+    began asserting a fact about the past that the scan is not asked to answer. It
+    was then rewritten to select its control from the **live** scan's own output —
+    which merely moved the fragility: it required ``HEAD`` to be *currently dirty*,
+    so committing the repairs (the desired end state!) broke the guard.
 
-    Two mutants were committed in ``81fd65a`` at the time of writing
-    (``M3.2``, ``M8.3``), so this test has real material to fire on. If a future
-    session makes ``HEAD`` clean by committing the repairs, the positive half
-    below must be re-pointed at the next commit that carries one — the assertion
-    message says so.
+    **A guard that needs a live defect to exist is broken by the cure.** So the
+    control is now pinned to the historical commit ``81fd65a``, which is immutable
+    and carries two known committed mutants (``M3.2``, ``M8.3``). The scan is run
+    against that revision by *stubbing* the revision it reads, so the test says
+    "given this commit, does the scan see it?" — which is the actual property, and
+    is independent of what ``HEAD`` happens to be today.
     """
     tool = _load(_TOOL, "_sweep_health_committed")
 
-    # Build the full live catalogue, exactly as ``main`` does.
+    entries: list[tuple[str, Path, str, str]] = []
+    for sweep in sorted((_ROOT / "scripts").glob("mutation_*.py")):
+        module = _load(sweep, f"_sweep_committed_{sweep.stem}")
+        entries.extend(tool._mutations(module))
+
+    # Frozen ground truth: 81fd65a carries M3.2 (elif False: in convergence.py)
+    # and M8.3 (hardcoded "convergence=HIGH" in reasoning_stream.py).
+    known_dirty = "81fd65a"
+    original = tool._committed_blob
+
+    def _blob_at_known_dirty(path: Path) -> str | None:
+        blob: str | None = original(path, rev=known_dirty)
+        return blob
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(tool, "_committed_blob", _blob_at_known_dirty, raising=False)
+        findings = tool._committed_mutant_scan(entries)
+    finally:
+        monkeypatch.undo()
+
+    assert findings, (
+        f"the scan found nothing in {known_dirty}, which is known to carry M3.2 "
+        "and M8.3. Either the revision no longer exists (re-point the fixture at "
+        "another commit that carries a mutant) or the scan has regressed."
+    )
+    # Every finding must be backed by a shape witness, never by the bare
+    # "new is present" test that produced the M8.3 false positive.
+    for finding in findings:
+        assert "AND a mutant shape at the edit site" in finding, (
+            "a committed finding is not backed by a shape witness, so it may be "
+            f"the M8.3 false positive returning: {finding!r}"
+        )
+
+
+@pytest.mark.skipif(not _git_available(), reason="needs git to establish committed ground truth")
+def test_the_committed_mutant_scan_reports_nothing_on_a_clean_head() -> None:
+    """The NEGATIVE control: the steady state is ``0``, and it must stay ``0``.
+
+    ``HEAD`` being clean is the **desired** end state — the whole point of O-109's
+    remedy is that a session can see it is clean. A guard whose negative half
+    cannot pass on a clean tree is a guard that punishes success, so this asserts
+    the opposite direction explicitly: on the real current ``HEAD``, the scan
+    reports **no** committed mutants.
+
+    If this ever fails, a mutant **has been committed** and the message names the
+    finding — which is exactly the alarm O-109 exists to raise.
+    """
+    tool = _load(_TOOL, "_sweep_health_committed")
+
     entries: list[tuple[str, Path, str, str]] = []
     for sweep in sorted((_ROOT / "scripts").glob("mutation_*.py")):
         module = _load(sweep, f"_sweep_committed_{sweep.stem}")
         entries.extend(tool._mutations(module))
 
     findings = tool._committed_mutant_scan(entries)
-
-    # Every finding must name a mutant that really is in HEAD, and every one must
-    # be justified by a shape witness -- never by the bare "new is present" test.
-    assert findings, (
-        "no committed mutant was reported. If every repair has been committed, "
-        "this is CORRECT and the positive control below needs a new fixture; if a "
-        "mutant IS committed, the scan has regressed."
+    assert not findings, (
+        "a mutant is committed in HEAD (O-109). Repair it and commit the repair://n  "
+        + "\n  ".join(findings)
     )
-    for finding in findings:
-        assert "AND a mutant shape at the edit site" in finding, (
-            "a committed finding is not backed by a shape witness, so it may be "
-            f"the M8.3 false positive returning: {finding!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -553,3 +592,329 @@ def test_the_committed_scan_requires_a_shape_not_merely_the_word_mutant() -> Non
     assert not any(
         tool._is_mutant_shape(line.strip()) for line in benign.splitlines() if line.strip()
     ), "the fixture is meant to be shape-free; it is not"
+
+
+# ---------------------------------------------------------------------------
+# O-72: the tool is ENFORCED in CI, and the enforcement is itself guarded.
+# ---------------------------------------------------------------------------
+
+
+def _workflow_step_text(job: str) -> list[str]:
+    """Every field of every step in a CI job, CONCATENATED.
+
+    Concatenating ``name``/``run``/``uses`` rather than picking one is deliberate:
+    an earlier guard in this project matched ``name or run or uses``, and the step
+    it looked for was *named* differently from what its ``run`` contained, so the
+    guard reported the step missing when it was present (D-087.17). Reading all
+    the text removes that guess.
+    """
+    import yaml
+
+    path = _ROOT / ".github" / "workflows" / "quality-gates.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"][job]["steps"]
+    return [
+        " ".join(str(v) for k, v in step.items() if k in {"name", "run", "uses"}) for step in steps
+    ]
+
+
+def test_sweep_health_runs_in_the_merge_gate() -> None:
+    """A gate run only by hand is not a gate (O-72, O-63).
+
+    ``sweep_health.py`` was the project's most valuable check and nothing invoked
+    it — *"gates run by hand from prose, and prose cannot refuse"*. This asserts it
+    actually runs in CI, so the habit cannot silently lapse.
+    """
+    steps = _workflow_step_text("quality")
+
+    runs = [s for s in steps if "sweep_health" in s]
+    assert len(runs) == 1, (
+        f"expected exactly one step running `tools/sweep_health.py` in the quality "
+        f"job, found {len(runs)}: {steps}. The tool exists but nothing enforces it "
+        "(O-72)."
+    )
+
+
+def test_sweep_health_runs_before_the_test_suite() -> None:
+    """Order matters: fail fast on a dirty tree, before the long step.
+
+    A tree carrying a mutant is not worth running a two-minute suite against, and
+    the suite is the expensive step. This is the opposite of the *local* habit —
+    where the tool runs LAST because it is a photograph of the tree — and both are
+    deliberate.
+    """
+    steps = _workflow_step_text("quality")
+
+    runs = [i for i, s in enumerate(steps) if "sweep_health" in s]
+    tests = [i for i, s in enumerate(steps) if "pytest" in s or "Test suite" in s]
+    assert runs and tests, f"missing step(s): runs={runs} tests={tests}"
+    assert runs[0] < tests[0], (
+        "sweep_health must run BEFORE the offline test suite in the quality job "
+        f"(step order: {steps})"
+    )
+
+
+def test_the_sweep_health_step_can_actually_fail_the_job() -> None:
+    """No ``|| true``, no ``continue-on-error`` — the tool must be able to refuse.
+
+    The tool already returns non-zero on a failure; an unguarded invocation is what
+    lets that reach the job status. Any swallowing construct turns the gate back
+    into the prose it replaced.
+    """
+    import yaml
+
+    path = _ROOT / ".github" / "workflows" / "quality-gates.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    matching = [
+        s
+        for s in workflow["jobs"]["quality"]["steps"]
+        if "sweep_health" in str(s.get("run") or "") or "sweep_health" in str(s.get("name") or "")
+    ]
+    assert matching, "no sweep_health step found (see the wiring test)"
+
+    step = matching[0]
+    run = str(step.get("run", ""))
+    assert "|| true" not in run, f"the sweep_health step swallows failure: {run!r}"
+    assert "|| exit 0" not in run, f"the sweep_health step forces success: {run!r}"
+    assert not step.get("continue-on-error"), (
+        f"the sweep_health step is marked continue-on-error, so a mutant cannot fail "
+        f"the job: {step!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The control-coverage line (O-72's first half, made visible)
+# ---------------------------------------------------------------------------
+# `sweep_health.py` checks the GATES, not the KILLINGS, and it stays that way --
+# it cannot ask whether a resolving sweep would still kill. What it CAN see is
+# which sweeps have NO way to notice that their own baseline broke: a sweep with
+# neither `expect_killed` nor a `.killed` read reports "everything killed" just
+# as loudly on a broken baseline as on a strong suite. That is the D-051 trap.
+
+
+def test_the_control_marker_set_accepts_both_legitimate_mechanisms(
+    tool_module: Any,
+) -> None:
+    """Both mechanisms must count, or the check flags correct sweeps (O-107).
+
+    The FIRST version of this check recognised only a `.killed` read and
+    therefore reported **six false positives** -- every one of them a sweep that
+    declares its control with `expect_killed=False` instead. A gate that flags
+    correct code is one the operator learns to ignore, which is the failure this
+    whole family of checks exists to avoid.
+    """
+    markers = tool_module._CONTROL_MARKERS
+
+    assert "expect_killed" in markers, (
+        "the expect_killed mechanism is no longer recognised; sweeps using it "
+        "will be reported as control-less even though they have a control"
+    )
+    assert any(".killed" in m for m in markers), (
+        "the .killed read is no longer recognised; the 12 sweeps using the "
+        "explicit D-051 refusal will be reported as control-less"
+    )
+
+
+def test_a_bare_method_definition_is_not_a_control_use(tool_module: Any) -> None:
+    """`def killed` must NOT count as a control; `.killed` must.
+
+    Measured on ``mutation_risk_axis.py``: a mutant that removed both real uses
+    still matched the original, looser predicate, because the property
+    *definition* remained. **Verify what a predicate actually matched before
+    believing its verdict** (lesson 5cm), and pin the fix here so the loose
+    predicate cannot come back.
+    """
+    markers = tool_module._CONTROL_MARKERS
+    definition = "    def killed(self) -> bool://n        return True\n"
+
+    assert not any(m in definition for m in markers), (
+        "a bare method definition still matches a control marker, so removing "
+        "every real use of the mechanism would not be detected"
+    )
+    assert any(m in "    if control.killed://n        return 2\n" for m in markers), (
+        "an attribute read no longer matches, which breaks the check in the "
+        "false-positive direction"
+    )
+
+
+def test_the_control_scan_runs_over_the_real_sweep_directory(tool_module: Any) -> None:
+    """The scan must produce a real count, not zero and not all.
+
+    Zero would mean the predicate matches nothing; all would mean it matches
+    everything. Each makes the line useless in a different direction, and each is
+    refused here rather than being read as a measurement.
+    """
+    sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
+    assert sweeps, "no sweeps found; the glob is wrong"
+
+    missing = [p.name for p in sweeps if not tool_module._control_markers(p)]
+    assert 0 < len(missing) < len(sweeps), (
+        f"the control scan reported {len(missing)} of {len(sweeps)} sweeps as "
+        f"control-less. Zero means the predicate matches nothing; all means it "
+        f"matches everything. Neither is a measurement."
+    )
+
+
+def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
+    """Coverage is REPORTED, never failed -- the same discipline as O-29.
+
+    Neither mechanism is required by any specification, and turning a missing
+    control into a build failure would block legitimate work on a convention that
+    does not exist. The value is that the gap is now VISIBLE: 40 sweeps, 18 of
+    them unable to distinguish a broken baseline from a strong suite.
+    """
+    sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
+    missing = [p.name for p in sweeps if not tool_module._control_markers(p)]
+    text = _TOOL.read_text(encoding="utf-8")
+
+    assert "sweeps with NO honesty control" in text, (
+        "the control-coverage line is not printed; the scan exists but nothing "
+        "shows it, which is the O-62 shape one level down"
+    )
+    assert "NO CONTROL ->" in text, "the per-sweep detail line is missing"
+    assert missing, (
+        "no sweep is control-less, so this check has become vacuous -- delete it "
+        "or explain why the property no longer holds"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The derived sweep budget (O-112(c))
+# ---------------------------------------------------------------------------
+# O-112 asked for exactly this: *"no gate asserts that the driver's budget
+# exceeds the sweep's measured cost, so the two can drift apart again."* The
+# remedy is to DERIVE the budget from the catalogue rather than type it, so
+# changing a sweep's mutation count moves the budget with it.
+
+
+def test_the_budget_derives_from_the_declared_mutation_count(tool_module: Any) -> None:
+    """The budget must be a FUNCTION of the catalogue, not a constant.
+
+    O-112's defect was a flat `timeout 600` against `mutation_api_layer.py`, whose
+    **42** mutations at a measured **39.73 s** each give a floor of **~1,700 s**.
+    The kill was arithmetic, not bad luck. A derivation makes that class of
+    mistake impossible to repeat by hand.
+    """
+    derive = tool_module._sweep_budget
+
+    assert derive(100) > derive(10), "the budget does not grow with the catalogue"
+    assert derive(10) < derive(100) < derive(1000), "the budget is not monotonic"
+
+
+def test_the_floor_applies_to_tiny_sweeps(tool_module: Any) -> None:
+    """A small catalogue must still get a usable budget.
+
+    Three mutations at 75 s is 225 s, which is under one `uv run pytest` startup
+    on a cold cache -- so the floor matters independently of the multiplier.
+    """
+    floor = tool_module._BUDGET_FLOOR_SECONDS
+
+    assert tool_module._sweep_budget(0) == floor
+    assert tool_module._sweep_budget(1) == floor
+    assert tool_module._sweep_budget(1000) > floor
+
+
+def test_the_budget_covers_the_measured_case_o112_recorded(tool_module: Any) -> None:
+    """The derivation must clear the ONE case that is actually measured.
+
+    This is the regression that matters: `mutation_api_layer.py` certifies in
+    **1,066 s** and its arithmetic floor is **~1,700 s**. A budget that does not
+    clear the floor would have killed the very sweep O-112 was written about.
+    """
+    api_layer_mutations = 42
+    measured_seconds = 1066
+    arithmetic_floor = 1700
+
+    budget = tool_module._sweep_budget(api_layer_mutations)
+    assert budget > measured_seconds, (
+        f"the derived budget {budget} s does not clear the MEASURED cost of "
+        f"{measured_seconds} s for mutation_api_layer.py, so O-112 would recur"
+    )
+    assert budget > arithmetic_floor, (
+        f"the derived budget {budget} s does not clear the arithmetic FLOOR of "
+        f"{arithmetic_floor} s, so the sweep would be killed mid-run"
+    )
+
+
+def test_no_pass_through_budget_constant_survives(tool_module: Any) -> None:
+    """The old flat number must not be re-introduced as a literal.
+
+    A `600` returned directly for every sweep is the D-087.11 defect verbatim.
+    """
+    derive = tool_module._sweep_budget
+    values = {derive(n) for n in (0, 1, 5, 42, 87, 500)}
+
+    assert len(values) > 1, (
+        "the budget is constant across every catalogue size, which is exactly "
+        "the flat-timeout defect O-112 recorded"
+    )
+    assert 600 not in {derive(42), derive(87)}, (
+        "a sweep with dozens of mutations is getting a 600 s budget, which is the D-087.11 defect"
+    )
+
+
+def test_the_largest_real_sweep_clears_the_old_flat_budget(tool_module: Any) -> None:
+    """Print the drift, and fail if it ever becomes harmless in a misleading way.
+
+    Measured on the real directory: the largest sweep is `mutation_scorecard.py`
+    at **87** mutations, whose derived budget is **6,525 s** — **10.9x** the old
+    flat 600 s. The assertion is on the RELATIONSHIP, so it survives the catalogue
+    growing.
+    """
+    sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
+    counts = []
+    for path in sweeps:
+        module = _load(path, f"_budget_{path.stem}")
+        counts.append((len(tool_module._mutations(module)), path.name))
+
+    assert counts, "no sweeps found"
+    biggest, name = max(counts)
+    derived = tool_module._sweep_budget(biggest)
+
+    assert derived > 600, (
+        f"{name} declares {biggest} mutations but its derived budget is only "
+        f"{derived} s, which the old flat 600 s would have covered -- if that is "
+        f"genuinely true, delete this test rather than weaken it"
+    )
+
+
+def test_the_budget_table_is_actually_printed() -> None:
+    """`--budgets` must produce a usable table, not just exist.
+
+    A derivation nothing can read is O-62's shape one level down: the arithmetic
+    is right and no driver author will ever see it. The driver O-112 was written
+    about was a THROWAWAY in `.probe/` and no longer exists, which is precisely
+    why the formula has to live somewhere durable.
+    """
+    result = subprocess.run(
+        [sys.executable, str(_TOOL), "--budgets"],
+        capture_output=True,
+        text=True,
+        cwd=str(_ROOT),
+        check=False,
+    )
+
+    assert result.returncode == 0, f"--budgets exited {result.returncode}: {result.stderr}"
+    combined = result.stdout + result.stderr
+    assert "budget" in combined and "mutations" in combined, (
+        f"the budget table is missing from the output: {combined!r}"
+    )
+    # The largest sweep must be named, so the number is actionable.
+    assert "mutations" in combined, "no per-sweep rows"
+    assert "total wall-clock" in combined, "the serial total is missing"
+
+
+def test_the_budget_constant_is_documented_with_its_reason(tool_module: Any) -> None:
+    """A budget constant typed without its derivation is the defect returning.
+
+    `75` is not a round number chosen for looks -- it is ~1.9x the one measured
+    per-mutation cost (39.73 s). A future editor must be able to challenge it.
+    """
+    source = _TOOL.read_text(encoding="utf-8")
+
+    assert "_BUDGET_SECONDS_PER_MUTATION = 75" in source
+    assert "39.73" in source, (
+        "the per-mutation constant no longer cites the measurement it came from, "
+        "so a reader cannot tell whether it is earned or invented"
+    )
+    assert "O-112" in source, "the constant does not name the issue it closes"

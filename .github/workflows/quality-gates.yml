@@ -47,6 +47,21 @@ jobs:
       - name: Reachability gate (no new unreachable model functions)
         run: uv run python tools/reachability_audit.py --check-baseline
 
+      # O-72, O-63. `sweep_health.py` was the project's most valuable gate and it
+      # ran BY HAND ONLY -- "gates run by hand from prose, and prose cannot refuse"
+      # (O-63). It proves every sweep LOADS, every anchor RESOLVES, and no mutant
+      # is left on disk or committed; those are exactly the failures that have
+      # recursed here (O-61 three times, O-98, O-102, O-109). It is cheap (seconds),
+      # stdlib-only, and needs no service -- it degrades to "could not ask git"
+      # rather than failing in a fresh clone -- so it belongs in the merge gate.
+      #
+      # Placed BEFORE the suite so a dirty tree fails fast (the suite is the
+      # long step, and there is no point running it on a tree carrying a mutant).
+      # Note the converse: this is a PHOTOGRAPH of the tree, so it cannot see a
+      # change made after it runs -- locally, run it LAST.
+      - name: Sweep health (no left-on-disk or committed mutants)
+        run: uv run python tools/sweep_health.py
+
       - name: Test suite (offline)
         run: uv run pytest -m "not live"
 
@@ -59,6 +74,23 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.12
       - run: uv sync --extra dev --frozen
+
+      # O-111(a) ENFORCED. The probe exists and is documented as Step 0, but
+      # nothing ran it automatically -- and the step below is exactly where it
+      # matters. `pytest -m live` SKIPS the registry-coverage checks when the
+      # service is down (correctly: an external dependency being unavailable is
+      # not a regression in this repository), so a dead endpoint turns this job
+      # GREEN while deleting assertions. That is the O-111 incident one level up,
+      # and a skip cannot distinguish "I chose to run offline" from "the thing I
+      # depend on has been dead all day".
+      #
+      # Exit codes are the contract (O-88): 0 serving, 1 not serving, 2 could not
+      # run. A non-zero exit FAILS the job, which is the point -- this is the one
+      # place where an unserving OpenBB instance is a real failure rather than a
+      # reason to skip.
+      - name: OpenBB reachability (fails if the configured URL does not SERVE)
+        run: uv run python tools/openbb_reachability.py
+
       - name: Live data-layer tests
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}

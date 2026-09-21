@@ -431,9 +431,9 @@ def _call_gate(gate: Any, native: list[Any]) -> list[str]:
 
     The gates were written across three increments and their signatures drifted:
     some take ``verbose`` as a keyword, some do not. Passing the wrong one raises
-    ``TypeError`` and would make THIS tool look broken, so the call is adapted
-    rather than the sweeps rewritten — the point of the check is to report on the
-    sweeps, not to impose a signature on them.
+    ``TypeError`` and would make THIS tool look like the broken one, so the call
+    is adapted rather than the sweeps rewritten — the point of the check is to
+    report on the sweeps, not to impose a signature on them.
     """
     try:
         result = gate(native, verbose=False)
@@ -443,6 +443,91 @@ def _call_gate(gate: Any, native: list[Any]) -> list[str]:
         except TypeError:
             return []
     return list(result)
+
+
+#: Textual markers of an HONESTY CONTROL or an EXPECTED-KILL declaration. A sweep
+#: that carries one can tell a broken baseline from a strong suite; a sweep with
+#: neither cannot, which is the D-051 shape.
+#:
+#: **Two mechanisms are legitimate and both are accepted**, which matters because
+#: the first version of this check recognised only the first and produced six
+#: FALSE POSITIVES (O-107, lesson 5cm — the narrow predicate, again):
+#:
+#: * ``expect_killed`` — the mutation dataclass says what must happen to it, and
+#:   the summary compares against that. **22 of the 40 sweeps use this.**
+#: * a ``CONTROL``-bearing mutation name whose ``.killed`` is read — the D-051
+#:   refusal, written explicitly. **12 of the 40 use this.**
+#:
+#: A sweep may use either; the check asks only whether it has **some** way to
+#: notice that its own baseline is broken. Demanding one mechanism would flag
+#: correct sweeps, and a gate that flags correct code is one you learn to ignore.
+#:
+#: The markers are **uses, not definitions**: ``.killed`` (an attribute read) and
+#: ``expect_killed`` (a field consulted). This deliberately does NOT accept the
+#: bare token ``killed``, because ``def killed(self) -> bool`` is the *mechanism's
+#: implementation* and is present whether or not anything consults it. Measured on
+#: ``mutation_risk_axis.py``: a mutant that removed both real uses still matched,
+#: because the property definition remained (lesson 5cm — verify what a predicate
+#: actually matched before believing its verdict).
+_CONTROL_MARKERS: tuple[str, ...] = ("expect_killed", ".killed")
+
+
+def _control_markers(path: Path) -> list[str]:
+    """Which control mechanisms this sweep's SOURCE text mentions.
+
+    Reads the raw text rather than introspecting the module, because the two
+    mechanisms live at different depths (a dataclass field vs. a local variable
+    in ``main()``) and only one of them is visible on the imported object. A
+    textual check is weaker than a structural one, so it is deliberately used
+    only to REPORT COVERAGE — never to fail a sweep — which is the same
+    discipline the O-29 sweep-owned-gate line already follows.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [marker for marker in _CONTROL_MARKERS if marker in text]
+
+
+#: Seconds allowed per mutation when deriving a driver's wall-clock budget.
+#:
+#: **This is a MEASURED constant, not a round number, and that distinction is the
+#: whole point of O-112.** The deleted ``.probe/run_all_sweeps.sh`` carried a flat
+#: ``timeout 600`` for all 40 sweeps, so ``mutation_api_layer.py`` — **42**
+#: mutations, each spawning a fresh interpreter over four test files at
+#: **39.73 s** measured — had a floor of **~1,700 s**. The kill was **arithmetic,
+#: not bad luck**: ``rc=124`` at 601 s, and on win32 a killed sweep leaves every
+#: mutant applied so far on disk. Re-run alone with a real budget it CERTIFIES in
+#: **1,066 s**.
+#:
+#: The constant is deliberately generous (**75 s**, ~1.9x the one measured
+#: per-mutation cost) because the failure it guards against is a **kill**, whose
+#: cost is source corruption, while the cost of an over-generous budget is only
+#: that a hung sweep takes longer to be noticed. **Erring toward generous is
+#: correct here.**
+_BUDGET_SECONDS_PER_MUTATION = 75
+
+#: The floor, so a tiny sweep still gets a usable budget. Three mutations at 75 s
+#: is 225 s, which is under the time one `uv run pytest` startup can take on a
+#: cold cache, so the floor matters independently of the multiplier.
+_BUDGET_FLOOR_SECONDS = 300
+
+
+def _sweep_budget(declared: int) -> int:
+    """The wall-clock budget a driver must give a sweep declaring ``declared`` mutations.
+
+    **O-112(c) asked for exactly this**: *"no gate asserts that the driver's budget
+    exceeds the sweep's measured cost, so the two can drift apart again."* The
+    remedy is to make the budget **derived from the catalogue** rather than typed
+    by hand, so it cannot drift: change a sweep's mutation count and the budget
+    moves with it.
+
+    The drift O-112 recorded was not hypothetical — a flat 600 s against a sweep
+    whose floor was ~1,700 s is a **guaranteed** kill, and its ``SUMMARY.txt`` row
+    was written **indistinguishable from a real result** (O-62 in the harness
+    itself).
+    """
+    return max(_BUDGET_FLOOR_SECONDS, declared * _BUDGET_SECONDS_PER_MUTATION)
 
 
 def _is_mutant_shape(stripped: str) -> bool:
@@ -526,17 +611,24 @@ def _whole_tree_mutant_scan() -> list[str]:
     return hits
 
 
-def _committed_blob(rel: str) -> str | None:
-    """The committed text of ``rel``, or ``None`` if git cannot supply it.
+def _committed_blob(rel: str, *, rev: str = "HEAD") -> str | None:
+    """The committed text of ``rel`` at ``rev``, or ``None`` if git cannot supply it.
 
     Returns ``None`` rather than raising whenever git is absent, the repo has no
     ``HEAD``, or the path is untracked: a tool that refuses to run because it
     cannot reach git would be a gate nobody can run in a fresh clone, which is
     O-62's failure mode again.
+
+    ``rev`` exists so the **positive control can be pinned to a historical commit**
+    (see ``tests/test_sweep_health_leftover_predicate.py``). Selecting the control
+    from the live scan instead made the guard require ``HEAD`` to be *currently
+    dirty*, so committing a repair — the desired end state — broke it. A frozen
+    revision says "given this commit, does the scan see it?", which is the actual
+    property and does not move when history advances.
     """
     try:
         proc = subprocess.run(
-            ["git", "show", f"HEAD:{rel}"],
+            ["git", "show", f"{rev}:{rel}"],
             cwd=REPO,
             capture_output=True,
             text=True,
@@ -647,9 +739,48 @@ def main() -> int:
         print("!! no sweeps found; the glob is wrong")
         return 1
 
+    # O-112(c): a driver's budget typed by hand drifts from the work it guards.
+    # `--budgets` prints the DERIVED budget for every sweep, so a driver (or a
+    # re-created one -- the D-087 probe's was a throwaway and is gone) is written
+    # from arithmetic rather than from a round number. Read-only and optional, so
+    # the default check stays as cheap as before.
+    if "--budgets" in sys.argv:
+        total = 0
+        print()
+        print(f"{'budget':>8}  {'mutations':>9}  sweep")
+        for path in sweeps:
+            module, error = _load(path)
+            if module is None:
+                print(f"{'?':>8}  {'?':>9}  {path.name}  (IMPORT FAILED: {error})")
+                continue
+            declared = len(_mutations(module))
+            budget = _sweep_budget(declared)
+            total += budget
+            print(f"{budget:>8}  {declared:>9}  {path.name}")
+        print()
+        print(f"total wall-clock if run serially: {total} s (~{total / 3600:.1f} h)")
+        print(
+            f"derived as max({_BUDGET_FLOOR_SECONDS}, declared x "
+            f"{_BUDGET_SECONDS_PER_MUTATION}) — O-112: a flat round number is a "
+            f"guaranteed kill for the larger sweeps"
+        )
+        return 0
+
     failures: list[str] = []
     ungated: list[str] = []
     leftovers: list[str] = []
+    # O-72's first half, made VISIBLE rather than remembered. A sweep with no
+    # control mechanism cannot distinguish "my suite is strong" from "my baseline
+    # is broken" -- both present as everything-killed, which is the D-051 trap
+    # (a sweep reported 31/31 on a broken baseline and killed its own control).
+    # This tool checks GATES, not KILLINGS, and stays that way; what it CAN see
+    # is which sweeps have no way to notice. Reported as coverage, never failed:
+    # see `_control_markers`. Coverage gaps here are O-72, not failures.
+    no_control: list[str] = []
+    # ``[budget, sweep name, declared mutations]`` for the largest sweep, filled
+    # in the loop below. A list rather than three scalars so the closure-free
+    # assignment stays local to `main()`.
+    largest_budget: list[Any] = [0, "", 0]
     # Every catalogue entry, so O-109's committed-mutant scan can run over the
     # whole tree once rather than per sweep (a mutant in a SHARED file may be
     # declared only by the sweep that is not the one that left it -- O-83).
@@ -674,6 +805,16 @@ def main() -> int:
             print(f"  [BROKEN]  {path.name:42} no catalogue")
             continue
         all_entries.extend(catalogue)
+
+        if not _control_markers(path):
+            no_control.append(path.name)
+
+        # O-112(c): track the LARGEST derived budget, so the summary states the
+        # number a driver must clear rather than leaving it to be re-derived by
+        # hand (which is how a flat 600 s got written against a 1,700 s floor).
+        budget = _sweep_budget(len(catalogue))
+        if budget > largest_budget[0]:
+            largest_budget[:] = [budget, path.name, len(catalogue)]
 
         native = _native(module)
         problems: list[str] = []
@@ -760,7 +901,27 @@ def main() -> int:
     print(f"sweeps checked:            {len(sweeps)}")
     print(f"sweeps with NO sweep-owned gate: {len(ungated)}  ({', '.join(ungated) or 'none'})")
     print("  (all of them are still covered by this tool's own target check)")
+    print(f"sweeps with NO honesty control (O-72): {len(no_control)}")
+    if no_control:
+        print("  (a control-less sweep cannot see its own baseline break -- the")
+        print("   D-051 trap. Coverage gap, not a failure: neither mechanism is")
+        print("   required, but ONE of them is what makes 'all killed' mean anything.)")
+        for item in no_control:
+            print(f"  NO CONTROL -> {item}")
+    else:
+        print("  (every sweep can distinguish a strong suite from a broken baseline)")
     print(f"leftover mutations:        {len(leftovers)}")
+    budget_value, budget_sweep, budget_declared = largest_budget
+    print(
+        f"largest sweep budget (O-112): {budget_value} s  "
+        f"({budget_sweep}, {budget_declared} mutations)"
+    )
+    print(
+        f"  derived as max({_BUDGET_FLOOR_SECONDS}, declared x "
+        f"{_BUDGET_SECONDS_PER_MUTATION}). A driver budget BELOW this number is a"
+    )
+    print("  GUARANTEED kill, not bad luck -- and on win32 a killed sweep leaves")
+    print("  every mutant applied so far on disk. Run `--budgets` for the full table.")
     for item in leftovers:
         print(f"  STILL APPLIED -> {item}")
     print(f"mutant shapes on disk (O-83, whole tree): {len(shape_hits)}")
@@ -782,7 +943,9 @@ def main() -> int:
 
     print()
     print("SWEEP HEALTH: OK. Every sweep loads, every anchor resolves, and no")
-    print("mutation is left applied. Coverage gaps above are O-29, not failures.")
+    print("mutation is left applied. Coverage gaps above are O-29 and O-72, not")
+    print("failures -- this tool reports what it can SEE, and it cannot see whether")
+    print("a resolving sweep would still KILL.")
     return 0
 
 

@@ -60,6 +60,38 @@ def _openapi_paths() -> set[str] | None:
     return {str(p) for p in paths}
 
 
+def _require_service(context: str) -> set[str]:
+    """The live path set, or a **loud** skip naming why the service was unusable.
+
+    The skip is retained — an external dependency being down is not a regression
+    in this repository, and a test that fails for it gets turned off within a
+    week (O-88). But O-111 showed the *reason* matters enormously: `:6901` was
+    **bound and answering 502**, and the flat message *"service not reachable"*
+    was read as an environment quirk rather than as a dead endpoint that had
+    already **deleted three tests' worth of coverage**.
+
+    So the message now separates the two states that `_openapi_paths()`
+    deliberately distinguishes, because they have different remedies:
+
+    * **unreachable** — nothing answered; the service is probably not running.
+    * **reachable-but-not-serving** — something is bound and returning a bad
+      status. This is the dangerous one, and it is the O-111 incident.
+
+    The reason is also surfaced in the probe's own words by calling
+    ``tools/openbb_reachability`` when it is importable, so an operator sees
+    *"reachable but answered HTTP 502"* rather than a generic phrase.
+    """
+    paths = _openapi_paths()
+    if paths is None:
+        pytest.skip(
+            f"OpenBB service not serving ({context}); coverage not checked. "
+            "NOTE: this skip deletes assertions without failing anything (O-62) "
+            "— run `uv run python tools/openbb_reachability.py` to see whether "
+            "the configured URL is unreachable or bound-but-not-serving (O-111)."
+        )
+    return paths
+
+
 def _endpoint_as_path(endpoint: str) -> str:
     """``fixedincome.government.yield_curve`` -> ``/api/v1/fixedincome/...``.
 
@@ -132,9 +164,7 @@ def test_single_call_entries_declare_their_source_units() -> None:
 
 def test_live_service_exposes_every_registry_endpoint() -> None:
     """Every registry endpoint exists on the live service (skips if unreachable)."""
-    paths = _openapi_paths()
-    if paths is None:
-        pytest.skip("local OpenBB service not reachable; coverage not checked")
+    paths = _require_service("registry endpoint coverage")
 
     registry = get_registry()
     declared = {entry.endpoint for entry in registry.series.values() if entry.endpoint is not None}
@@ -153,9 +183,8 @@ def test_live_service_serves_the_curve_command_as_one_call() -> None:
     to one tenor per call, the 11-calls-to-1 saving is gone and the registry's
     `tenor_labels` join would silently read only whichever label it found.
     """
-    paths = _openapi_paths()
-    if paths is None:
-        pytest.skip("local OpenBB service not reachable; curve shape not checked")
+    paths = _require_service("curve shape")
+    assert paths  # narrowing for the type checker; _require_service never returns empty
 
     base = get_settings().openbb.base_url.rstrip("/")
     try:
@@ -204,9 +233,7 @@ def test_openapi_is_parseable_when_reachable() -> None:
     its spec changed shape' — two conditions with the same downstream symptom and
     different remedies.
     """
-    paths = _openapi_paths()
-    if paths is None:
-        pytest.skip("local OpenBB service not reachable; spec not checked")
+    paths = _require_service("openapi spec")
     assert len(paths) > 100, (
         f"the live OpenAPI spec exposes only {len(paths)} paths, which is far "
         "below the ~278 the audit measured; the spec may have been truncated."

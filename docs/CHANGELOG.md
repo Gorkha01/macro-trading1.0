@@ -10,6 +10,340 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.22 - O-112(c) closed: the sweep-driver budget is now DERIVED, not typed
+
+**Added**
+
+- **`tools/sweep_health.py`** - `_sweep_budget(declared) = max(300, declared x 75)`, and a
+  **`--budgets`** mode that prints the derived budget for all 40 sweeps plus the serial total.
+  The formula lives in the tool that already loads every catalogue, so it cannot drift from the
+  work it guards and cannot be lost with a throwaway script.
+
+**Notes**
+
+- **Walking back to close O-112(c) found the sharper problem: the driver was a THROWAWAY.**
+  `.probe/run_all_sweeps.sh` is gone and nothing in `scripts/` or `tools/` held the formula - so
+  the gap was not a missing test around a live mechanism, but **a mechanism with no durable
+  home**. It could be re-invented wrongly from scratch, with a round number, exactly as it was
+  the first time.
+- **Measured on the real 40 sweeps: 1,286 declared mutations.** The largest derived budget is
+  **6,525 s** for `mutation_scorecard.py` (87 mutations) - **10.9x** the old flat 600 s. Every
+  sweep above **~8 mutations** was over-budget under that timeout, so the D-087.11 kill was the
+  **common case, not an outlier**.
+- **The constant is measured, not chosen:** 75 s is ~**1.9x** the one recorded per-mutation cost
+  (**39.73 s**). **Erring generous is correct** - the failure guarded against is a **kill**,
+  whose cost is source corruption on win32; an over-generous budget only delays noticing a hang.
+- **A second defect, in the fix's own first pass:** a bare `75` is indistinguishable from an
+  invented round number - the exact class of error being fixed. The constant now carries its
+  measurement, multiplier rationale, error direction and the issue it closes, with **a guard
+  asserting all four survive**.
+- **Seven new guards** (38 -> **45 passed / 1 deselected**). **Mutation-proven:**
+  `return 600` (the D-087.11 defect verbatim) fails **all five** budget guards and nothing else.
+  Full battery: ruff clean, format **234 files**, mypy **234 source files / 0 errors**, pytest
+  **2595 passed / 1 skipped / 0 failed**, `sweep_health.py` **40 sweeps / OK**. `234 = 234`.
+
+### D-087.21 - O-72's first half MEASURED (18/40 sweeps have no honesty control), and a real defect D-087.13 introduced
+
+**Added**
+
+- **`tools/sweep_health.py`** - a reported control-coverage line. `_control_markers()` answers a
+  question the tool could not previously ask: *does this sweep have ANY way to notice that its
+  own baseline broke?* **Measured: 18 of 40 sweeps carry neither mechanism.** Printed as
+  **coverage, never as a failure** - the O-29 discipline. Neither mechanism is required by any
+  specification, so inventing a requirement would block legitimate work; the value is that the
+  gap is visible rather than folklore.
+- **`tests/test_sweep_health_leftover_predicate.py`** - **4 new guards** (34 -> **38 passed /
+  1 deselected**).
+
+**Fixed**
+
+- **`scripts/live_catalyst_calendar_check.py`** - two call sites referenced
+  `catalysts._FOMC_DOCUMENTS_URL`, a symbol **D-087.13 removed** when it replaced the fixed URL
+  with the `_fomc_documents_url()` function. The script would have raised **`AttributeError`**
+  on its next live run. Both sites now call `_fomc_documents_url()`.
+- **`tests/test_sweep_health_leftover_predicate.py:459`** - a `no-any-return` mypy error.
+
+**Notes**
+
+- **A defect in the new check's OWN first version, caught before it shipped:** it recognised only
+  a `.killed` read and reported **six false positives** - `inflation_trajectory`,
+  `instrument_selection`, `kelly`, `risk_axis`, `thesis_position`, `voltarget` - every one of
+  them a sweep declaring its control with **`expect_killed=False`** instead. **O-107's narrow
+  predicate again.** Survey of both mechanisms: **22 of 40 use `expect_killed`, 12 use a
+  `.killed` read**; the check now accepts **either**.
+- **A second defect, in the predicate itself:** mutation-proving showed a mutant removing **both**
+  real uses still matched, because `def killed(self) -> bool` - the mechanism's *implementation*
+  - remained. **A definition is not a use.** Measured on `mutation_risk_axis.py`: loose predicate
+  survived every real use being removed; tightened one moves **18 -> 19** and names the file.
+- **The cross-directory lesson:** D-087.13's fix landed in `src/`, and the O-113(c) scan guards
+  `src/` only - so a consumer **outside** that scope was left broken by a change **inside** it.
+  No sweep could see it (not a mutation), the host scan could not (wrong scope, and a symbol
+  rename is not a literal), and the offline suite does not import the script. **`mypy --strict`
+  is the only gate with the reach** - verified by re-introducing the symbol (2 errors, exit 1).
+  The `src/` scan boundary **stays**, on purpose; the guard for this class is mypy covering all
+  four roots.
+- **Mutation-proven, 3 mutants, each killed by the right guard.** Full battery: ruff clean,
+  format **234 files**, mypy **234 source files / 0 errors**, pytest **2588 passed / 1 skipped /
+  0 failed**, `sweep_health.py` **40 sweeps / 0 leftovers / 0 shapes / 0 committed mutants /
+  OK**. `234 = 234` (D-035).
+
+### D-087.20 - `sweep_health.py` now gates CI: O-72's enforcement half closed - `sweep_health.py` now gates CI: O-72's enforcement half closed
+
+**Changed**
+
+- **`.github/workflows/quality-gates.yml`** - the `quality` job gained a
+  `Sweep health (no left-on-disk or committed mutants)` step, running **before**
+  `Test suite (offline)`. A tree carrying a left-on-disk mutant, a stale mutant shape,
+  or a committed mutant must now pass the scan before the suite is allowed to certify
+  anything.
+- **`tests/test_sweep_health_leftover_predicate.py`** - 3 new workflow-reading guards
+  (now **34 passed / 1 deselected**): the step exists **exactly once** and runs
+  **before** the suite; it carries no `|| true`, no `continue-on-error`, no `|| exit 0`.
+
+**Notes**
+
+- **Same tool, opposite order in the two contexts, on purpose.** Locally the tool must
+  run **LAST** - it is a *photograph* of the tree and cannot see a change made after it
+  ran (D-086: clean at 08:33, mutant appeared 08:35). In CI it must run **FIRST**,
+  because there its job is to **refuse the run**, not to report on one already done.
+- **CI-safety verified, not assumed:** stdlib-only imports, no service, and
+  `_committed_blob` **returns `None` instead of raising** when git is absent or `HEAD`
+  is missing, so a shallow/detached checkout degrades rather than breaks the build.
+- **Mutation-proven, 3 mutants, each killed by the right guard:** step removed -> all
+  three fail; neutered with `|| true` -> guard 3 only; moved after the suite -> guard 2
+  only. The **selectivity** is the evidence the guards do distinct work.
+- The workflow-reading helper **concatenates** `name`, `run` and `uses` - because the
+  D-087.17 helper matched `name or run or uses` and reported a **present** step as
+  **missing** (O-107's narrow predicate, in a new place). The lesson was carried across,
+  not re-learned.
+- **Does NOT close:** O-72's **first half**. `sweep_health.py` checks the **gates**, not
+  the **killings** - it cannot see a sweep whose anchors resolve but whose selection no
+  longer kills anything (the **D-051** trap). D-065 fixed that in **one** sweep only.
+  Wiring the tool into CI wires in what the tool can *see*, and no more.
+
+### D-087.19 - `use_local_api_first` A/B re-measured: the 23x was thermal, not transport
+
+**Changed**
+
+- **`config/settings.yaml`** - the `use_local_api_first` note corrected. It recorded
+  *"local-first 223.6s vs in-process package 9.5s, a ~23x difference"* (2026-09-16). The
+  comparison **did not reproduce**: it pitted a **cold** run against a **warm** one, so most
+  of the 23x was **warm-up**, not transport. Corrected figures (3 runs each, one session):
+  `package_first` **80.66 / 4.70 / 4.21 s**, `local_first` **46.25 / 3.66 / 3.76 s**; warm
+  means **4.46 s** vs **3.71 s**, i.e. **1.20x**, not 23x. The default **stays `false`** - on
+  that 1.20x warm margin, not on the withdrawn 23x.
+
+**Notes**
+
+- All 6 runs made **28 fetches**, returned `ok`, and routed **exactly as configured** (0
+  local-API calls in package mode, 28/28 local in local-first mode), so the A/B is clean.
+- **Cold start dominates a build: run 1 is 12.5-18.1x warm in BOTH modes.** This re-frames
+  O-111(b) - the "~56 s" figure was itself cold; warm it is ~4 s. The honest operational
+  statement is **first build ~46-81 s, subsequent ~4 s**, and a build time quoted without its
+  thermal state is *ambiguous* rather than merely imprecise.
+
+### D-087.18 - O-111(b)'s 83 s figure re-measured: right number, wrong mechanism
+
+**Notes**
+
+- **No code changed.** A measurement correction. `build_snapshot("us")` was instrumented:
+  **56.31 s total, 28 fetches, 0 through the local API, 53.91 s (95.7%) in fetch time,
+  2.41 s build overhead, 1.93 s average per fetch.** The recorded explanation (*"~24
+  sequential requests"*) is **disproved by arithmetic on its own numbers** - the local API
+  measures **128.4 ms** fresh, so 24 requests is **3.1 s**, ~27x short of 83 s. The build
+  in fact uses the **in-process `openbb` package** (`use_local_api_first: false`), never
+  HTTP to `:6900`.
+- **The time is provider latency:** `gdp_real` alone **9.305 s** (17% of all fetch time in
+  one series); top five **22.0 s (41%)**. **So the recorded remedy - batching/parallelising
+  the loop - targets 2.41 s of 56 (4%)** and saves ~2.4 s at most. The real levers are
+  provider latency, the `use_local_api_first` A/B, and caching (still declined).
+- **O-111(b) stays open** (~56 s/healthy build is real); only its explanation is closed.
+
+### D-087.17 - O-111(a) enforced: the reachability probe now gates the CI job
+
+**Changed**
+
+- **`.github/workflows/quality-gates.yml`** - the `live-data` job gains a
+  **reachability step before `pytest -m live`**. The job previously went straight into
+  the tests, which **skip** the registry-coverage checks when OpenBB is down - so a
+  dead endpoint passed **GREEN while deleting assertions** (the O-111 incident one
+  level up; **O-62**). The placement is the point: run after the tests, the job has
+  already gone green. A non-zero exit **fails the job** - the one place an unserving
+  OpenBB instance is a real failure rather than a reason to skip.
+
+**Added**
+
+- **2 guards** in `tests/test_openbb_reachability_probe.py` that read the workflow:
+  the probe step exists **exactly once** and precedes `pytest -m live`, and it is not
+  neutered (`|| true` / `continue-on-error` / `|| exit 0`). Mutation-proven with three
+  mutants, each killed by the guard meant to catch it (step removed -> both; neutered
+  -> guard 2 only; reordered -> guard 1 only).
+
+**Notes**
+
+- **A defect in the guard's own first attempt:** the helper returned
+  `name or run or uses`, so a step whose *name* differed from its *run* was matched by
+  the wrong field. It failed on first run, correctly. Fix: read **all** the step text
+  rather than the field expected to be interesting (**O-107**).
+
+### D-087.16 - O-113(c) closed: the hard-coded-host class is scanned, not inspected
+
+**Added**
+
+- **`tests/test_no_hardcoded_service_hosts.py`** - the whole-tree scan O-113(c) asked
+  for. **No module may hard-code the host of a service whose base URL `settings`
+  exposes** (today: OpenBB). The exclusion is **structural** - `_executable_strings()`
+  walks the AST and keeps string constants in code, so docstrings and comments are
+  excluded by construction, including the fix's own comments that name `6901` on
+  purpose; it also excludes `description=`/`help=`/`doc=` keywords (documentation that
+  happens to live in an expression). **9 guards**, three of which are about the
+  allowlist itself: no stale entries, every entry states a reason, and the host set is
+  **re-derived from live settings** so a config change forces it to be revisited
+  (D-087.14 applied to this scan). Mutation-proven: the original O-113 literal is
+  killed by 2 guards, and a literal against the *currently configured* port is killed
+  by the main scan.
+
+**Notes**
+
+- **Zero remaining defects.** All 9 URL occurrences in `src/` were read and
+  classified: 1 allowlisted (`deployment.py`), 5 docstrings/comments, 1 bind default
+  in `config.py`, 1 third-party FRED host, 1 the FOMC path already fixed at D-087.13.
+  A blanket *"no absolute URLs in `src/`"* rule was **rejected** - a third-party host
+  with no configured counterpart creates no contradiction, and a check that fails on
+  legitimate code gets disabled. **The scan guards `src/` only**; `scripts/`, `tools/`
+  and `tests/` may legitimately name a host.
+
+### D-087.15 - O-111(a) closed: a command that checks the service actually serves
+
+**Added**
+
+- **`tools/openbb_reachability.py`** - reports whether the configured OpenBB URL
+  **serves**, separating **unreachable** (nothing answered) from
+  **reachable-but-not-serving** (bound, 502 - the O-111 case that cost hours and
+  silently skipped three coverage tests). It reads `settings.openbb.base_url`, not a
+  literal, and an AST guard forbids a port in its executable code. Exit codes:
+  `0` serving, `1` not serving, `2` probe could not run.
+- **11 offline guards** in `tests/test_openbb_reachability_probe.py` (transport
+  monkeypatched), covering both directions plus the reachable-but-empty and
+  non-JSON-200 cases.
+
+**Changed**
+
+- **`tests/data_layer/test_registry_endpoint_coverage.py`** - the flat *"service not
+  reachable"* skip became `_require_service()`, which names the O-62 cost (*this skip
+  deletes assertions without failing anything*) and points at the probe. The skip is
+  still a skip - an external dependency is not a repo regression - but it is no longer
+  **silent**.
+- **HANDOFF Step 0** now runs the probe first when a session touches live data.
+
+**Verified**
+
+- Live: `:6900` -> **200 / 278 paths / SERVES**; `:6901` -> **502 / 0 paths / does NOT
+  serve** - and **both are reachable**, which is the whole finding.
+- Mutation-proven: collapsing `serves` into `reachable` fails **4** guards; a
+  hard-coded host fails the AST guard. Restored clean.
+- Gates: ruff clean, format **233** = `mypy --strict` **69 source files**, pytest
+  **2570 passed / 1 skipped / 0 failed** in 118 s, `sweep_health.py` **OK**.
+
+**Issues:** closes **O-111(a)**. O-111(b) (the 83 s snapshot) stays open; O-113(c) (a
+whole-tree scan for hard-coded hosts) stays open.
+
+### D-087.14 - the O-109 guard was broken by its own cure
+
+**Found by running the full suite after the repairs were committed.** No source
+behaviour changed.
+
+**Fixed**
+
+- **`test_a_committed_mutant_is_detected_and_the_shipped_tree_is_not` failed on
+  success.** With a clean `HEAD` - the *entire point* of O-109's remedy - the
+  committed-mutant scan correctly returns `[]`, and the guard's opening
+  `assert findings` failed. This was the **third** re-pointing of the same test:
+  v1 hard-coded `5d4c1da` (history moved past it), v2 selected its control from
+  the **live** scan (so it required `HEAD` to be *currently dirty*), v3 pins it to
+  **frozen history**.
+- **`_committed_blob(rel, *, rev="HEAD")`** gained an optional `rev` parameter
+  (production default unchanged) so the positive control can read a specific,
+  immutable commit.
+- The **positive** half now reads **`81fd65a`**, verified to carry both mutants
+  (`convergence.py:330` = `elif False:  # CONFLICTED removed`;
+  `reasoning_stream.py:287` = `"convergence=HIGH",  # MUTANT: ...`).
+- The **negative** half is now its own test,
+  `test_the_committed_mutant_scan_reports_nothing_on_a_clean_head`, because a clean
+  tree is the steady state and must be seen to pass.
+
+**Verified**
+
+- **Mutation-proven:** making `_committed_blob` ignore `rev` and always read `HEAD`
+  kills the positive half.
+- Gates: ruff clean, format **231** = `mypy --strict` **69** (D-035 parity), full
+  suite **2559 passed / 1 skipped / 0 failed** in 128 s,
+  `sweep_health.py` **40 sweeps / 0 leftovers / 0 shapes / 0 committed / OK**.
+
+**The rule:** *a test whose fixture is "whatever the system currently reports" is not
+a test of the system - it is a restatement of it. Ground truth must be external and
+frozen.*
+
+### D-087.12 / D-087.13 - the dead port was hard-coded, and the TEST agreed with the bug
+
+**Two entries, both triggered by questions rather than failing gates.** No Phase 5
+work. `AGENTS.md` unchanged.
+
+**Fixed**
+
+- **`catalysts.py` hard-coded the DEAD OpenBB port as the FOMC documents URL**
+  (O-113). `_FOMC_DOCUMENTS_URL` held the absolute
+  `http://127.0.0.1:6901/api/v1/economy/fomc_documents`, and `:6901` answers
+  **502 on every data route** - proved in one run: the literal raises
+  `HTTPStatusError: 502 Bad Gateway`, while `get_settings().openbb.base_url`
+  returns **200 with 34 rows / 5,358 bytes**. So the FOMC catalyst could **never**
+  succeed, on any call, while the thesis still built with a FRED-only calendar and
+  **nothing raised**. Replaced with `_FOMC_DOCUMENTS_PATH` plus
+  `_fomc_documents_url(base=None)`, which resolves the host from config **at call
+  time**; both call sites derive from it.
+- **The test was why it survived.** `tests/thesis_layer/test_catalysts.py` defined
+  `_FOMC_HOST` as a **copy of the implementation's literal**, so the stub routed
+  the 502-producing URL to the happy path and the suite **could not fail** - worse
+  than no test, because it converts an outage into a green check. It now
+  **derives** the host from `catalysts._fomc_documents_url()`, making agreement
+  structural rather than coincidental.
+- **A second instance in `deployment.py`.** `OPENBB_API_URL`'s `yaml_default` was
+  `:6901` while `settings.yaml` declares `:6900` - **two defaults for one
+  setting**, and the operational one handed a clean checkout the broken host.
+  That module is deliberately dependency-free, so the value is now the named
+  constant `_OPENBB_DEFAULT_BASE_URL`, **pinned to config by a test**.
+- Two docstring examples (`openbb_client.py`, `contracts.py`) corrected.
+
+**Added**
+
+- `test_the_fomc_fetch_derives_its_host_from_config` - asserts the URL is a
+  function of the configured base, that a rebase is honoured, and that no
+  absolute-URL constant survives.
+- `test_the_two_openbb_defaults_agree` and
+  `test_the_openbb_fallback_port_is_not_the_known_dead_one` in
+  `tests/test_infrastructure.py`.
+
+**Verified**
+
+- **Mutation-proven both directions:** dead port back in the deployment default ->
+  killed by both guards; helper ignoring config -> killed by the new guard with a
+  message naming the defect. Restores verified: no `MUTANT` text in `src/`.
+- Gates: `ruff check` clean, `ruff format --check` **231** = `mypy --strict` **69
+  source files** (D-035 parity), catalysts + infrastructure **86 passed / 1
+  deselected**.
+
+**Also recorded (no source change)**
+
+- **D-087.12 - D-084's vintage conclusion RE-MEASURED against `:6900`** (O-111(c))
+  and it **survives**: `fred_search` returns **200**, **278 paths / 0 `vintage`**
+  identical, `realtime_*` absorbed, marker-not-selector re-confirmed. **Method
+  correction:** the recorded A/B compared the whole JSON envelope and now returns
+  `False` because transport metadata differs per call (**61 leaf keys, exactly 3
+  differ**) - compare `["results"]`, never the envelope.
+
+**Issues:** opens **O-113**; closes **O-111(c)**. **O-111(a) remains open and is the
+root** - nothing still checks that the configured URL **serves**.
+
 ### D-087.11 - the FULL 40-sweep run completed: four more defects, three under green gates
 
 **A complete pass over all 40 mutation sweeps (1,286 mutations) was run for the

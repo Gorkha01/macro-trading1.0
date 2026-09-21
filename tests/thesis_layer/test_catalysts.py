@@ -41,6 +41,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -132,12 +133,23 @@ _FOMC_2027 = {
 _TODAY = dt.date(2026, 9, 19)
 
 #: The two hosts the module is allowed to call. NOTE (D-086): the Fed host is
-#: `127.0.0.1` now — the FOMC source is the local OpenBB command, not
-#: `www.federalreserve.gov`. FRED is still read directly by `httpx` (its
+#: the local OpenBB service now — the FOMC source is the local OpenBB command,
+#: not `www.federalreserve.gov`. FRED is still read directly by `httpx` (its
 #: OpenBB alternative is broken by a transport-fingerprint block, §5.3 of the
 #: audit), so both hosts remain, but only one of them is a scrape.
 _FRED_HOST = "fred.stlouisfed.org"
-_FOMC_HOST = "127.0.0.1:6901/api/v1/economy/fomc_documents"
+
+#: **The FOMC host is DERIVED, never spelled out (O-113).** It used to be the
+#: literal `"127.0.0.1:6901/api/v1/economy/fomc_documents"` — the *dead* port —
+#: and the source hard-coded the same literal, so the stub matched the bug
+#: exactly and the test passed while production 502'd on every call. A test that
+#: reproduces the implementation's mistake instead of the contract is worse than
+#: no test: it converts an outage into a green check.
+#:
+#: Reading the path from the module under test and the host from config means
+#: the stub tracks whatever the code actually calls. If the code regresses to a
+#: literal host, `test_the_fomc_fetch_derives_its_host_from_config` fails.
+_FOMC_HOST = f"{urlparse(catalysts._fomc_documents_url()).netloc}{catalysts._FOMC_DOCUMENTS_PATH}"
 
 
 def _fomc_payload_for_year(year: int) -> dict[str, Any]:
@@ -718,6 +730,48 @@ def test_the_configured_ids_are_the_measured_ones() -> None:
     settings = get_settings().catalyst_calendar
 
     assert (settings.cpi_id, settings.nfp_id, settings.pce_id) == (10, 50, 54)
+
+
+def test_the_fomc_fetch_derives_its_host_from_config() -> None:
+    """The FOMC endpoint must follow config, not a literal host (O-113).
+
+    The defect this pins: the module stored the full absolute URL with the
+    **dead** port ``6901`` baked in, and ``6901`` answered ``502`` on every data
+    call while the configured port served the same command with 34 rows. Nothing
+    failed, because the *test* stubbed the same dead literal — the stub agreed
+    with the bug.
+
+    So this asserts the two properties that make that impossible:
+    1. the URL is a **function of** the configured base (change the base, the
+       URL moves);
+    2. no port or host literal survives in the module's URL constants.
+    """
+    default_url = catalysts._fomc_documents_url()
+    assert default_url.startswith(get_settings().openbb.base_url.rstrip("/")), (
+        f"the FOMC URL {default_url!r} does not derive from the configured base "
+        f"{get_settings().openbb.base_url!r} — a literal host has crept back in"
+    )
+    assert default_url.endswith(catalysts._FOMC_DOCUMENTS_PATH)
+
+    # Rebasing must actually move the URL: an implementation that ignored its
+    # argument (or read config regardless) would pass the check above by
+    # coincidence whenever the two happened to agree.
+    rebased = catalysts._fomc_documents_url("http://example.invalid:9999/")
+    assert rebased == "http://example.invalid:9999/api/v1/economy/fomc_documents"
+
+    # And the constant must be the PATH, not an absolute URL — this is the
+    # regression that produced the outage, caught at the source.
+    assert catalysts._FOMC_DOCUMENTS_PATH.startswith("/")
+    assert "://" not in catalysts._FOMC_DOCUMENTS_PATH
+    assert not hasattr(catalysts, "_FOMC_DOCUMENTS_URL"), (
+        "the absolute-URL constant is back — derive from config instead"
+    )
+
+    # The stub the offline tests route on is derived from the same call, so the
+    # suite cannot agree with a dead port again. If someone re-pins it by hand
+    # to a literal, this fails.
+    derived_host = f"{urlparse(default_url).netloc}{catalysts._FOMC_DOCUMENTS_PATH}"
+    assert derived_host == _FOMC_HOST
 
 
 # ---------------------------------------------------------------------------

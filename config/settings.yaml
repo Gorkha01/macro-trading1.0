@@ -41,19 +41,30 @@ openbb:
     value: false
     calibration_status: institutional_convention
     note: >
-      MEASURED 2026-09-16, not assumed. The original rationale was "local API
-      first avoids re-initialising the SDK per call" — that reasoning is wrong
-      for this workload. Timing a full 21-field snapshot build against a
-      HEALTHY local server: local-first 223.6s vs in-process package
-      9.5s, a ~23x difference, with identical results (21/21 fields, no
-      failures, byte-identical values). The package path keeps OpenBB
-      initialised in-process, whereas every local-API call is a fresh HTTP
-      round-trip through the server's provider layer.
+      RE-MEASURED 2026-09-21 (D-087.19). The ORIGINAL measurement (2026-09-16)
+      recorded "local-first 223.6s vs in-process package 9.5s, a ~23x
+      difference" — and that comparison DID NOT REPRODUCE. It compared two
+      different THERMAL states: the 223.6s figure was a cold run and the 9.5s
+      figure a warm one, so most of the "23x" was warm-up, not transport.
 
-      Default is therefore FALSE (package first). The local API remains the
-      fallback path and can be preferred by flipping this flag — which is the
-      point of having it in config: the roles are swappable without a code
-      change. Re-measure before changing this, and record the number here.
+      Corrected numbers, 3 runs each on both paths in one session, full
+      24-field snapshot, live service, all runs ok with identical field counts:
+
+                  run 1 (cold)   warm mean   cold/warm
+        package        80.66s       4.46s      18.1x
+        local-first    46.25s       3.71s      12.5x
+
+      So the honest comparison is the WARM one: the local API is 1.20x SLOWER
+      than the package path, not 23x. Cold start is the dominant term in a
+      build (12-19x), and the earlier note never mentioned it — which is why
+      any single uncaveated build time for this pipeline is ambiguous.
+
+      Default is therefore still FALSE (package first) — retained on the 1.20x
+      warm margin, NOT on the withdrawn 23x. The local API remains the fallback
+      path and can be preferred by flipping this flag, which is the point of
+      having it in config: the roles are swappable without a code change.
+      If you re-measure, state the THERMAL state of every run, or the number
+      is not comparable to this one.
   max_retries:
     value: 3
     calibration_status: institutional_convention

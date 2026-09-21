@@ -92,7 +92,7 @@ def _check() -> None:
         # back and it was the expected JSON envelope, not an error page.
         (
             "FOMC",
-            f"{catalysts._FOMC_DOCUMENTS_URL}?provider=federal_reserve&year={today.year}",
+            f"{catalysts._fomc_documents_url()}?provider=federal_reserve&year={today.year}",
         ),
     ):
         body = catalysts._http_get(url, timeout=float(settings.http_timeout_seconds.value))
@@ -177,7 +177,7 @@ def _check() -> None:
     # would only re-test the function with itself.
     print("\n  (5) economy/fomc_documents returns typed date/doc_type (live)")
     raw = catalysts._http_get(
-        catalysts._FOMC_DOCUMENTS_URL + f"?provider=federal_reserve&year={today.year}",
+        catalysts._fomc_documents_url() + f"?provider=federal_reserve&year={today.year}",
         timeout=float(settings.http_timeout_seconds.value),
     )
     payload = json.loads(raw)

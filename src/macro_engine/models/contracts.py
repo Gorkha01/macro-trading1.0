@@ -273,7 +273,7 @@ class ModelResult(BaseModel):
         description=(
             "Where each input actually came from, at the granularity a reader "
             "needs to audit it (e.g. 'CPIAUCSL @ 2026-08-01 via openbb:"
-            "http://127.0.0.1:6901'). Complements `inputs_used`, which names "
+            "http://127.0.0.1:6900'). Complements `inputs_used`, which names "
             "the FIELDS; this names the SOURCES (Section 4)."
         ),
     )

@@ -213,6 +213,22 @@ class DeploymentConfig(BaseModel):
         return self.environment.is_production
 
 
+#: The fallback OpenBB base URL for a clean checkout. **Kept in step with
+#: ``openbb.local_api_base_url`` in ``config/settings.yaml`` on purpose (O-113).**
+#: This used to be ``http://127.0.0.1:6901`` — the port that is *bound but dead*
+#: (measured: 502 Bad Gateway on every data route while ``:6900`` served the same
+#: commands). Two defaults for one setting is a latent contradiction; when they
+#: disagree the operational one wins and the failure is silent, because a port
+#: that is bound looks healthy to everything that only checks reachability.
+#:
+#: This module deliberately imports nothing from ``macro_engine.config`` (it is
+#: the dependency-free deployment descriptor), so the value is duplicated here as
+#: a named constant rather than derived — and
+#: ``tests/test_infrastructure.py`` pins the two to each other so a future edit
+#: to one without the other fails a test instead of an outage.
+_OPENBB_DEFAULT_BASE_URL = "http://127.0.0.1:6900"
+
+
 # The canonical declaration of every external knob. Order mirrors
 # DeploymentConfig for reviewability.
 _VARIABLES: dict[str, EnvironmentVariable] = {
@@ -302,8 +318,13 @@ _VARIABLES: dict[str, EnvironmentVariable] = {
         ),
         EnvironmentVariable(
             name="OPENBB_API_URL",
-            description="Base URL of the OpenBB Platform API.",
-            yaml_default="http://127.0.0.1:6901",
+            description=(
+                "Base URL of the OpenBB Platform API. Must match "
+                "`openbb.local_api_base_url` in settings.yaml; the fallback "
+                "here is only for a clean checkout, and production should "
+                "export it explicitly."
+            ),
+            yaml_default=_OPENBB_DEFAULT_BASE_URL,
         ),
         EnvironmentVariable(
             name="MACRO_DATA_STORE_PATH",
