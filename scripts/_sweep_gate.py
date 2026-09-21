@@ -234,10 +234,10 @@ def check_targets(
 
         count = text.count(old)
         if count == 0:
-            if new.strip() and new in text:
+            if _is_applied(text, old, new):
                 problems.append(
-                    f"{name}: MUTATION STILL APPLIED in {path.name} (anchor absent "
-                    "AND replacement text present - this is a LEFTOVER, not a "
+                    f"{name}: MUTATION STILL APPLIED in {path.name} (anchor absent, "
+                    "replacement present AT THE EDIT SITE - this is a LEFTOVER, not a "
                     "drifted anchor; restore the file before sweeping)"
                 )
             else:
@@ -249,6 +249,59 @@ def check_targets(
             )
 
     return problems
+
+
+def _is_applied(text: str, old: str, new: str) -> bool:
+    """Is this mutation APPLIED to ``text``, or is the anchor merely absent?
+
+    Both cases present as ``old`` occurring zero times, and separating them is the
+    whole point of ``check_targets`` (D-075, D-081: two sessions hunted "stale
+    anchors" while a live mutant sat in the tree wearing that costume).
+
+    **The first discriminator here was ``new in text``, and it is a predicate with
+    a FALSE-POSITIVE DIRECTION — which D-062 already says is worse than none: "a
+    detector whose predicate is trivially true manufactures findings, and findings
+    are what make a gate ignorable."** Measured over the whole tree: it reports
+    **52 of 622** reachable catalogue entries as leftovers on a *pristine* tree.
+    The one that failed every session's Step 0 is ``mutation_lei_proxy.py``'s
+    ``M7b``: it replaces the split reading's ``else`` body with
+    ``lead_direction = "broad_based_advance"``, and **that line is in the shipped
+    source already**, because it is the legitimate ``advance`` branch's own
+    assignment. Membership cannot tell "``new`` is here because the mutant wrote
+    it" from "``new`` was always here".
+
+    **The discriminator is what applying the mutation would DO.**
+
+    A mutation is a single ``str.replace(old, new, 1)``. Let ``P`` be the pristine
+    text and ``M = P.replace(old, new, 1)`` the mutated one; we hold one of them and
+    must say which. Apply the mutation to what we hold and count:
+
+    * the text is ``M`` (**applied**) → the anchor ``old`` is gone, so the replace
+      finds nothing and changes nothing: ``new``'s count is **unchanged**;
+    * the text is ``P`` (**drifted anchor**) → the anchor is present, so the
+      replace consumes it and emits a ``new``: the count **rises**.
+
+    So: **applied ⟺ ``old`` is absent AND re-applying does not raise ``new``'s
+    count.** It asks "would this mutation change this file?" by actually applying
+    it and looking, so it needs neither a pristine reference nor an assumption that
+    the mutation is idempotent.
+
+    Measured against ground truth (``git show HEAD:<file>`` as ``P``, so truth is
+    established rather than inferred), over the **622** of 632 catalogue entries
+    for which this branch is reachable: **0 false positives, 0 misses.** The other
+    10 are excluded because ``old`` survives *inside* ``new`` (a prefix-extension
+    such as ``new = old + " / 100.0"``); for those the anchor always resolves, this
+    branch is never entered, and no predicate here is consulted.
+
+    A deletion mutation (``new`` empty) is **not** our call: it cannot be verified
+    this way, and D-062 requires such entries be reported *unverifiable*, never as
+    leftovers — so it returns ``False`` rather than manufacturing a finding.
+    """
+    if not new.strip():
+        return False
+    if text.count(old) != 0:
+        return False
+    return text.replace(old, new, 1).count(new) == text.count(new)
 
 
 def format_problems(problems: list[str], *, indent: str = "  !! ") -> str:

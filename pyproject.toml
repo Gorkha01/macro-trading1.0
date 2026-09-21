@@ -91,6 +91,12 @@ ignore = [
 # unreproducible (O-63).
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "ANN201", "ANN001", "ANN202"]
+# S603/S607 on the sweep-health guards, scoped to the files that legitimately
+# invoke `git`. Those calls carry a fixed argv with no shell and no interpolated
+# user input, so the "untrusted input" and "partial executable path" hazards the
+# rules exist for are absent. Scoping by file (rather than a `# noqa` per line)
+# keeps the rules live everywhere else (D-067).
+"tests/test_sweep_health_leftover_predicate.py" = ["S603", "S607"]
 # `tests/thesis_layer/test_warnings.py` and its siblings print their measurements
 # in the LIVE tests. The live tests are the project's measurement instrument
 # (Section 21.0's real-data execution step): they are deselected from the default
@@ -98,7 +104,7 @@ ignore = [
 # only the assertions. Restricting the exemption to the live path would mean a
 # `# noqa` on every line, which hides the rule instead of scoping it (D-067).
 "tests/thesis_layer/*.py" = ["T20"]
-"tools/*.py" = ["T20"]        # CLI tools are allowed to print
+"tools/*.py" = ["T20", "S603", "S607"]        # CLI tools are allowed to print
 # Operator scripts print: their entire purpose is to show a human what the
 # live system returns (Section 21.0's real-data execution step). They are run
 # by hand, never imported, and excluded from the default test run.
@@ -163,12 +169,20 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src", "tools"]
-addopts = "-ra --strict-markers --strict-config"
+# D-087: `-m "not live and not slow"` is the DEFAULT. The `live` marker was
+# always documented as "excluded from default CI runs" but nothing enforced it,
+# so a plain `uv run pytest` fanned out ~21 network calls with 3 retries x 15s
+# timeout each and could run for tens of minutes on one test (worst case measured
+# at >40 min for a single live snapshot build). Pin run the same either way, but
+# a live run makes its cost explicit; and a default run cannot be dragged by a
+# slow provider. The `slow` marker is the exhaustive-catalogue guard (~4 min).
+addopts = "-ra --strict-markers --strict-config -m 'not live and not slow'"
 markers = [
     "live: hits a real external data source; excluded from default CI runs",
     "offline: no network access required",
     "golden: hand-verified expected-value test (Section 21.2 Step 4)",
     "warning_path: proves a ModelResult.warnings condition actually fires (Section 21.2 Step 5)",
+    "slow: loads all 40 mutation sweeps (~4 min); correctness is unaffected by deselection",
 ]
 
 [dependency-groups]

@@ -20,18 +20,23 @@ version: 1
 # ---------------------------------------------------------------------------
 openbb:
   local_api_base_url:
-    value: "http://127.0.0.1:6901"
+    value: "http://127.0.0.1:6900"
     calibration_status: institutional_convention
     note: >
-      OpenBB Platform API base URL. MEASURED 2026-09-20: the deployment in
-      use serves on :6901, and :6901 is the address this project's live
-      checks and the operator's OpenBB session both target. The OpenBB
-      package default is :6900 and a second instance was found still bound
-      there, so :6900 is not an error — but it is NOT the service this
-      engine is pointed at, and two live instances make "which one answered"
-      ambiguous. Pinned to :6901 to remove that ambiguity. Override via the
-      OPENBB_API_URL environment variable in deployments where the API runs
-      elsewhere.
+      OpenBB Platform API base URL. MEASURED 2026-09-21 (D-087.10): the service
+      the operator actually runs is :6900, and :6901 answers 502 Bad Gateway —
+      it is bound but dead. The prior entry pinned :6901 on 2026-09-20 to remove
+      ambiguity between two live instances; that reasoning was right and its
+      conclusion was wrong, because the instance it chose is the one that does
+      not serve. The cost of the wrong pin was silent and large: a full snapshot
+      build retried 42 series x 3 attempts against a 502 and exceeded 400s
+      without completing, which is why every full-suite run took hours — the
+      engine was faithfully retrying a dead endpoint, not rate-limited and not
+      slow code. Evidence at close: :6900 -> 200 in 0.12s and FRED DGS10/GDPC1/
+      CPIAUCSL -> 1.2s/1.2s/2.0s, all succeeding; :6901 -> HTTP 502. Override
+      via the OPENBB_API_URL environment variable in deployments where the API
+      runs elsewhere. If both ports ever answer, re-measure before choosing —
+      do not infer health from a port being bound.
   use_local_api_first:
     value: false
     calibration_status: institutional_convention

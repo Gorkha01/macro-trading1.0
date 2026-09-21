@@ -10,6 +10,84 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087 - the leftover detector was a false-positive machine, and a mutant had been COMMITTED
+
+**Two defects, each hiding the other. Both fixed and mutation-proven.** No Phase 5
+work. `AGENTS.md` unchanged.
+
+**Fixed**
+
+- **O-108 - a false-positive detector.** `scripts/_sweep_gate.py` and
+  `tools/sweep_health.py` decided *"is this mutation applied, or is the anchor
+  merely absent?"* with `old not in text and new in text`. A mutation whose
+  replacement text is **also a legitimately present string** - `M7b`'s
+  `lead_direction = "broad_based_advance"` is the neighbouring branch's own
+  assignment - makes that predicate fire on a **pristine** file. Measured against
+  ground truth (`git show HEAD:<path>`) over the 622 reachable catalogue entries:
+  **52 false positives, 0 misses**. Replaced with a **count-stable** predicate
+  (`applied ⟺ old absent AND re-applying does not raise new's count`), measured
+  **0 / 0**. Three other candidates were scored before this one was adopted; the
+  first attempt passed the reported case but failed **9** real entries.
+
+- **O-109 - a mutant was COMMITTED.** `models/lei_proxy.py` carried
+  `else: lead_direction = "broad_based_advance"` where `"mixed"` belongs - and it
+  was in **`HEAD` (`5d4c1da`)**, not merely in the working tree. Every prior
+  anti-mutant check compared the working tree against the catalogues; **none could
+  see a mutant that *is* the baseline**, including `git diff HEAD`. Restored, and
+  proven by the test that demands the composite agree (`3` tests fail with the
+  mutant, pass without).
+
+**Added**
+
+- `_committed_blob()` / `_committed_mutant_scan()` in `tools/sweep_health.py` -
+  compares every catalogue entry against `git show HEAD:<target>` and reports a
+  committed mutant as a failure. New summary line: `committed mutants (O-109, vs
+  HEAD)`.
+- `tests/test_sweep_health_leftover_predicate.py` - **15** guards: 4 behavioural
+  (both directions, incl. the exact `M7b` shape), 3 structural (both copies exist,
+  not a bare membership test, the two copies agree on the real catalogue), 2 for
+  the committed-mutant scan. RED on the old predicate (**2 failed**) → GREEN on the
+  new (**14 fast guards passed**, plus 1 `slow` exhaustive-catalogue guard).
+
+**Removed**
+
+- `docs/MODULE_MAPPING.md` carried the **D-082 addendum section duplicated
+  verbatim** (a 73-line body, twice, the second running to EOF). Second copy
+  removed after the two bodies were verified byte-identical. 76 deletions, 0
+  additions.
+
+**Fixed (test configuration and the data-service port)**
+
+- **D-087.10 — the engine was pointed at a dead OpenBB port.** `settings.yaml` carried
+  `local_api_base_url = "http://127.0.0.1:6901"`, which is **bound but answers 502 Bad
+  Gateway**; the real service is **`:6900`** (200 in 0.12 s). **This was the entire
+  cause of the hour-long runs** — a snapshot build retried **42 series × 3 attempts**
+  against the 502 and exceeded **400 s**, where the same build on `:6900` finishes in
+  **83.2 s with 24/24 succeeded**. **No `429` anywhere: rate limiting was never the
+  cause.** It had also been **silently deleting coverage** — three
+  `test_registry_endpoint_coverage.py` checks skipped with *"service not reachable"*.
+  **One config value; no code changed.** Default suite went **2536 → 2539 passed,
+  4 → 1 skipped**. Lesson 5cq: *a port that is BOUND is not a port that SERVES.*
+  **Opens O-111.**
+
+- **D-087.6 — the default test run no longer includes live-network tests.** `addopts`
+  gained **`-m 'not live and not slow'`**. The `live` marker was always documented as
+  *"excluded from default CI runs"* but **nothing enforced it**, so a plain
+  `uv run pytest` fanned out ~21 live network calls with 3 retries x 15 s timeout
+  each and could sit on a **single test** for **40+ minutes**. A default run is now
+  **~113 s**. Live tests are explicit (`-m live`). **Opens O-110** (no per-test
+  timeout exists; the live tests are the project's measurement instrument and must
+  now be run deliberately).
+
+**Gates** (re-derived by execution, not carried forward - O-88): `ruff check` clean,
+`ruff format --check` **231** = `mypy --strict` **231** (D-035 parity; the 230 → 231
+step is this increment's new test file). `pytest` (**default**) **2539 passed /
+1 skipped / 0 failed** in **112.8 s**; `-m slow` **1 passed** in **230.8 s**;
+`scripts/live_api_check.py` **PASSES end to end**; reachability audit **PASS**
+(baseline 58 = measured 58).
+
+**Not committed** - the tree is left dirty with the fix; the user pushes.
+
 ### D-083 - external mechanics validation: the research the brief asked for, finally done
 
 **No code changed. A documentation deliverable.** No Phase 5 work. `AGENTS.md` unchanged.

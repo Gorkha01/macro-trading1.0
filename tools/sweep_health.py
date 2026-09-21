@@ -54,6 +54,24 @@ because it had succeeded.**
 
 The remedy is step 5 below, and it does not consult a catalogue at all.
 
+**O-109: every check above is DIRTY-RELATIVE, and a mutant can be COMMITTED.**
+This tool compares the tree against each sweep's catalogue, and the catalogues are
+themselves the reference. So all of it is blind to a mutant that has been *committed*
+— the tree and ``HEAD`` agree, every anchor still resolves against the corrupted
+source, and ``git diff`` is empty **because the corruption is the baseline**.
+
+Measured live (2026-09-21): ``mutation_lei_proxy.py``'s ``M7b`` had collapsed the
+split reading's ``else`` branch to ``lead_direction = "broad_based_advance"`` and
+was committed in ``5d4c1da "more others fixes"``. Every one of the checks below
+still passed on it *except* the leftover scan, and that scan was itself reporting
+a false positive for an unrelated reason (O-108) — so the two defects masked each
+other. The three independent "is the tree clean?" probes agreed the tree was
+clean, because against ``HEAD`` **it was**.
+
+Step 6 below is the remedy: ask **git** whether the mutant's replacement text is
+present in the COMMITTED blob. The catalogue is still the reference, but the
+comparison is now anchored to a revision rather than to the working tree.
+
 Coverage gaps are reported, not failed: seven older sweeps predate
 ``check_targets`` (O-29), and failing on that would make this gate red on a tree
 that is behaving as designed. A sweep with **no** gate is reported as
@@ -73,6 +91,7 @@ import ast
 import contextlib
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -113,6 +132,60 @@ def _load(path: Path) -> tuple[Any | None, str]:
             with contextlib.suppress(ValueError):
                 sys.path.remove(added)
     return module, ""
+
+
+def _is_applied(text: str, old: str, new: str) -> bool:
+    """Is this mutation APPLIED to ``text``, or is the anchor merely absent?
+
+    **Deliberately duplicated from ``scripts/_sweep_gate.py``, not imported.**
+    ``tools/`` has no ``__init__.py`` and the gate names ``src tests scripts
+    tools``, so one file would become two modules and ``mypy --strict`` refuses
+    the import (the same reason ``mutation_scenario_distribution.py`` gives for
+    duplicating ``enclosing_symbol``). The two copies must be kept in step; the
+    test file that guards this one carries the same fixtures as the gate's.
+
+    Both "anchor absent" cases look identical — ``old`` occurs zero times — and
+    separating them is the point of the leftover check (D-075, D-081).
+
+    **The predicate used to be ``new in text``, and that is a FALSE-POSITIVE
+    direction (O-108)** — D-062 already records why this is worse than no
+    detector: "a detector whose predicate is trivially true manufactures
+    findings, and findings are what make a gate ignorable." A mutation's
+    replacement text is often *already* in the shipped source. Measured over the
+    tree: ``new in text`` reports **52 of 622** reachable entries as leftovers on
+    a pristine tree. The one that broke every session's Step 0 was ``M7b``, whose
+    ``new`` is ``lead_direction = "broad_based_advance"`` — the legitimate
+    ``advance`` branch's own assignment.
+
+    **The discriminator is what applying the mutation would DO.** A mutation is a
+    single ``str.replace(old, new, 1)``. With ``P`` pristine and
+    ``M = P.replace(old, new, 1)``:
+
+    * the text is ``M`` (**applied**) → ``old`` is gone, so the replace finds
+      nothing and ``new``'s count is **unchanged**;
+    * the text is ``P`` (**drifted anchor**) → the replace consumes an ``old`` and
+      emits a ``new``, so the count **rises**.
+
+    So: **applied ⟺ ``old`` absent AND re-applying does not raise ``new``'s
+    count.** It asks "would this mutation change this file?" by applying it and
+    looking, needing neither a pristine reference nor idempotence.
+
+    Measured against ground truth (``git show HEAD:<file>``, so truth is
+    established rather than inferred): **0 false positives, 0 misses** over the
+    622 reachable entries. The other 10 are excluded because ``old`` survives
+    *inside* ``new`` (a prefix-extension like ``new = old + " / 100.0"``); there
+    the anchor always resolves, this branch is never entered, and no predicate
+    here is consulted.
+
+    A deletion mutation (``new`` empty) is **not** our call: D-062 requires such
+    entries be reported *unverifiable*, never as leftovers, so this returns
+    ``False`` rather than manufacturing a finding.
+    """
+    if not new.strip():
+        return False
+    if text.count(old) != 0:
+        return False
+    return text.replace(old, new, 1).count(new) == text.count(new)
 
 
 def _native(module: Any) -> list[Any]:
@@ -333,13 +406,18 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
             # A leftover mutation is self-concealing by construction (O-95): the
             # mutant REPLACED the text the anchor looks for, so the anchor goes
             # to zero and the tool used to blame the anchor. The discriminator
-            # is the mutation's own replacement text -- if `new` is present in
-            # the file, the mutation is applied and the anchor is fine.
-            if new.strip() and new in text:
+            # is `_is_applied` -- and NOT `new in text`, which was a predicate
+            # with a FALSE-POSITIVE direction (O-108): it reported 52 of 622
+            # reachable entries as leftovers on a pristine tree, because a
+            # mutation's replacement text is frequently already in the shipped
+            # source. `M7b`'s `lead_direction = "broad_based_advance"` is the
+            # legitimate advance branch's own assignment, so `new in text` was
+            # trivially true and Step 0 failed on a clean tree.
+            if _is_applied(text, old, new):
                 problems.append(
                     f"{name}: MUTATION STILL APPLIED in {target.name} "
-                    f"(anchor absent AND replacement text present — this is a "
-                    f"LEFTOVER, not a drifted anchor)"
+                    f"(anchor absent AND re-applying the mutation changes nothing "
+                    f"-- this is a LEFTOVER, not a drifted anchor)"
                 )
             else:
                 problems.append(f"{name}: target ABSENT in {target.name} (0 occurrences)")
@@ -435,6 +513,81 @@ def _whole_tree_mutant_scan() -> list[str]:
     return hits
 
 
+def _committed_blob(rel: str) -> str | None:
+    """The committed text of ``rel``, or ``None`` if git cannot supply it.
+
+    Returns ``None`` rather than raising whenever git is absent, the repo has no
+    ``HEAD``, or the path is untracked: a tool that refuses to run because it
+    cannot reach git would be a gate nobody can run in a fresh clone, which is
+    O-62's failure mode again.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "show", f"HEAD:{rel}"],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _committed_mutant_scan(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
+    """O-109's remedy: is a mutant's replacement text in the COMMITTED source?
+
+    Every other check in this file compares the working tree against the sweeps'
+    catalogues, so all of them share one blind spot: **a mutant that has been
+    committed is the baseline.** ``git diff`` is empty, each anchor still resolves
+    against the corrupted text, and the tree is "clean" by every dirty-relative
+    measure. The catalogue's own declaration is what gives it away — a mutation is
+    *supposed* to be absent from the shipped source, so its replacement text being
+    present in ``HEAD`` is a defect regardless of what the working tree says.
+
+    The predicate is deliberately **the same one the live sweep uses to apply the
+    mutation** (``old`` absent AND ``new`` present), evaluated against the
+    committed blob. That is a *weaker* test than ``_is_applied`` — which needs the
+    file that would be edited — but it is the right one here: ``HEAD`` is not the
+    working tree, and the question is whether the mutation is *already in the
+    source history*.
+
+    **This check would have caught the 2026-09-21 incident.** ``M7b``'s
+    replacement, ``lead_direction = "broad_based_advance"``, is present in the
+    committed ``lei_proxy.py`` where the ``mixed`` arm belongs.
+
+    Mis-reporting is the danger here, because ``old in text`` is how a *drifted*
+    anchor is distinguished, and a drifted anchor also has "``old`` absent, ``new``
+    present". The reduction to a hard finding therefore requires that
+    ``_is_applied`` — the edit-site-aware predicate, which can tell the two apart —
+    agrees, and drifted anchors are reported separately at the call site so the
+    weaker signal is still visible without being fatal.
+    """
+    findings: list[str] = []
+    blobs: dict[Path, str | None] = {}
+    for name, target, old, new in catalogue:
+        if not new.strip() or old == new:
+            continue
+        if target not in blobs:
+            try:
+                rel = target.resolve().relative_to(REPO.resolve()).as_posix()
+            except ValueError:
+                blobs[target] = None
+            else:
+                blobs[target] = _committed_blob(rel)
+        committed = blobs[target]
+        if committed is None:
+            continue
+        if old not in committed and new in committed and _is_applied(committed, old, new):
+            findings.append(
+                f"{name}: the committed {target.name} already carries this mutation's "
+                f"replacement text (old absent, new present in HEAD) — a mutant was "
+                f"COMMITTED, so every dirty-relative check is blind to it"
+            )
+    return findings
+
+
 def main() -> int:
     print("=" * 78)
     print("SWEEP HEALTH — every mutation sweep, without running one")
@@ -448,6 +601,10 @@ def main() -> int:
     failures: list[str] = []
     ungated: list[str] = []
     leftovers: list[str] = []
+    # Every catalogue entry, so O-109's committed-mutant scan can run over the
+    # whole tree once rather than per sweep (a mutant in a SHARED file may be
+    # declared only by the sweep that is not the one that left it -- O-83).
+    all_entries: list[tuple[str, Path, str, str]] = []
 
     # O-83's remedy, run BEFORE the per-sweep scan so a shape left anywhere is
     # reported even if no catalogue declares it.
@@ -467,6 +624,7 @@ def main() -> int:
             failures.append(f"{path.name}: no mutation catalogue found")
             print(f"  [BROKEN]  {path.name:42} no catalogue")
             continue
+        all_entries.extend(catalogue)
 
         native = _native(module)
         problems: list[str] = []
@@ -508,7 +666,7 @@ def main() -> int:
                 if old not in text:
                     unverifiable += 1
                 continue
-            if old not in text and new in text:
+            if _is_applied(text, old, new):
                 applied += 1
                 leftovers.append(f"{path.name}: {name}")
 
@@ -540,6 +698,14 @@ def main() -> int:
         else:
             print(f"  [ok]      {path.name:42} {len(catalogue):3} mutations  [{'+'.join(gates)}]")
 
+    # O-109's remedy. Runs AFTER the loop because it needs the whole catalogue,
+    # and it is the ONLY check here that is not dirty-relative: a mutant that was
+    # committed makes every other check in this tool pass while the shipped source
+    # is corrupted.
+    committed_hits = _committed_mutant_scan(all_entries)
+    for hit in committed_hits:
+        failures.append(f"committed mutant: {hit}")
+
     print()
     print("=" * 78)
     print(f"sweeps checked:            {len(sweeps)}")
@@ -551,6 +717,9 @@ def main() -> int:
     print(f"mutant shapes on disk (O-83, whole tree): {len(shape_hits)}")
     for item in shape_hits:
         print(f"  SHAPE FOUND   -> {item}")
+    print(f"committed mutants (O-109, vs HEAD): {len(committed_hits)}")
+    for item in committed_hits:
+        print(f"  IN COMMITTED SOURCE -> {item}")
     print(f"failures:                  {len(failures)}")
     for item in failures:
         print(f"  !! {item}")

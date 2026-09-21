@@ -1635,76 +1635,60 @@ ran*, produced by the change meant to strengthen them.
 
 ---
 
-## The D-082 addendum - the sixth mapping rule: a *protection* has a reach too
+## The D-087 addendum - the seventh mapping rule: a check that is *only* dirty-relative cannot see a defect that *is* the baseline
 
-D-080 established that an **assertion** has a reach as well as a meaning, and that
-a mutation sweep is the only instrument that measures reach. D-082 adds the same
-distinction for a **protection**: a safety mechanism has a *reach* - the set of
-failure modes it actually intercepts - and that reach is **not** inferred from its
-existence, its description, or the fact that it is a recognised pattern.
+D-080 established that an assertion has a *reach*; D-082 established that a
+protection has one. D-087 adds the same distinction for a **check**, and the
+reach it exposes is the widest gap found so far - because the failure mode is
+not "the check is wrong" but "the check is **structurally unable to look** at the
+place the defect is".
 
 ### The rule
 
-> **A protection's reach is measured by reproducing the failure it claims to
-> intercept, on the platform it will run on - never by reading the code that
-> installs it.**
+> **A check whose reference is the working tree cannot see a defect that has been
+> committed. The only instrument with reach over that case is the one that reads
+> the committed blob as data (`git show <rev>:<path>`) and compares a catalogue
+> against it.**
 
-### The case that produced it
+### Why this is not just "check harder"
 
-After D-081, the remedy for "a killed sweep leaves mutated source" looked settled:
-add a signal handler, as `mutation_api_layer.py` already had. A shared
-`install_signal_restore()` was written into `scripts/_sweep_gate.py`, wired into
-`mutation_regime.py`, and **described in the record as the defence**.
+`models/lei_proxy.py` carried an applied mutation - `else: lead_direction =
+"broad_based_advance"` where `"mixed"` belongs - and it was in **`HEAD`**. The
+reach of each existing instrument, measured:
 
-It intercepts nothing on this platform. Measured, in three probes:
+| instrument | reference | sees a working-tree mutant | sees a committed mutant |
+| --- | --- | --- | --- |
+| `git diff HEAD` | `HEAD` | yes | **no** - the mutant *is* `HEAD` |
+| sweep `check_targets` | anchor vs working tree | yes | **no** |
+| `sweep_health.py` leftover scan | catalogue vs working tree | yes | **no** |
+| **`_committed_mutant_scan`** | **catalogue vs `git show HEAD:`** | (n/a) | **yes** |
 
-| probe | expectation | measurement |
-| --- | --- | --- |
-| self-`SIGTERM` | handler restores the file | file stays `MUTATED`; **handler body never entered** |
-| self-`SIGINT` | handler's `SystemExit(130)` | exit **2** (`KeyboardInterrupt`) - the handler did not run |
-| trace wrapper | a trace line per invocation | **no trace line at all**, with the handler confirmed installed *and* the payload confirmed armed |
-
-The third probe is the one that matters methodologically. It ruled out the two
-comfortable explanations - *the handler was never installed* and *the payload was
-never set* - and left only the true one: **on `win32`, `os.kill(pid, SIGTERM)` maps
-to `TerminateProcess`, so the signal never reaches Python code.** `SIGINT` is
-delivered as a `KeyboardInterrupt` rather than routed to the registered handler.
-
-**The consequence is a retraction, not just a gap:** `mutation_api_layer.py`'s
-`_restore_in_flight` - credited in the record at D-057/D-062 as the defence
-against leftover mutants - **is inert here.** It is kept, because it is correct
-and does work on POSIX, but the record that counted it as protection on this
-platform is wrong.
+Every row but the last is *dirty-relative*. A mutation is a **text substitution**;
+if that substitution is committed, then compared to `HEAD` the tree is **clean**,
+and every dirty-relative check reports success. This is why the defect survived
+under green gates: the checks were not lying, they were **looking elsewhere**.
 
 ### What the mapping should point at
 
-The protection with real reach is the one that depends on the least: the
-**sidecar**. `record_pristine()` writes the target's pristine text next to it
-*before* the first mutation; `restore_from_sidecar()` restores from it on the next
-run. No signal, no catalogue, no in-process state - only the filesystem, which
-survives a kill that bypasses every Python-level mechanism.
+The predicate must also be right, or the newly-reached check produces noise from
+its new vantage point. The count-stable form - *applied ⟺ `old` is absent AND
+re-applying does not raise `new`'s count* - is exact here because a genuine
+left-over already contains the replacement: applying it again **duplicates** it.
+A drifted anchor leaves the count unchanged. Measured **0 false positives / 0
+misses** over the 622 reachable entries; the membership form it replaces measured
+**52 / 0**.
 
-It is also **strictly stronger than the existing `repair_leftover_mutations`**,
-and the comparison is worth keeping: that function inverts a leftover by *matching
-the catalogue* (`old` absent AND `new` present), so it can only heal a mutation it
-still recognises. Restoring from recorded bytes needs to recognise nothing.
+### And the tiebreaker hierarchy, completed
 
-### The ordering rule this exposes (5co)
+D-087 also settles what to believe when checks disagree. The order is:
 
-The heal must run **before** `check_targets`. Reversed, the gate reads the mutanted
-source, reports `MUTATION STILL APPLIED` (D-081's discriminator working perfectly),
-and **refuses the run** - so the gate blocks its own repair.
+1. `git diff HEAD` - scope-free, but **blind to a committed defect**.
+2. The sweeps' catalogue **vs `HEAD`** - catches what (1) cannot.
+3. `git show HEAD:<path>` **read as data** - the ground truth both are compared
+   against.
+4. What the **demanding test** does when the defect is re-injected - the only
+   check that measures *meaning* rather than *text*.
 
-> **A recovery mechanism must be positioned before the gate that would refuse the
-> run it is there to enable.**
-
-### And the same rule applied to the tool that gates the gates
-
-Wiring the 14 sweeps to import `_sweep_gate` broke `tools/sweep_health.py`, which
-reported **all 14 as `IMPORT FAILED`** - they work standalone (the script directory
-is on `sys.path`) but not under `spec_from_file_location`. This is **O-62** in its
-purest form: *a sweep that cannot run is indistinguishable from a sweep nobody
-ran*, produced by the change meant to strengthen them.
-
-> **A gate change must be verified through the gate's own entry point, not through
-> whichever path the developer happened to use.** (5cn)
+> **When three checks disagree, believe `git diff HEAD` (O-102, 5ck) - unless
+> `git diff HEAD` is itself clean, in which case the defect is either absent or
+> committed, and only (2) distinguishes them.** (5cp)

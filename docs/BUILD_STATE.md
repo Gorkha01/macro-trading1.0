@@ -8104,3 +8104,95 @@ times out of 3.** Running `mutation_lei_proxy.py` to settle it also surfaced a
 **real** surviving mutant (`M8g`) that the do-not-fix noise had been adjacent to
 for two sessions — see the section above and O-101.
 
+
+---
+
+## The sweep-leftover detector and the committed-mutant scan (`D-087`) — infrastructure, not a numbered module
+
+**`AGENTS.md` unchanged. No Phase 5 work. No new module.** D-087 repairs two
+defects in the **verification infrastructure itself** — the machinery that decides
+whether a mutation is left applied (`scripts/_sweep_gate.py`, `tools/sweep_health.py`),
+and the committed baseline it must be checked against.
+
+### What was broken
+
+**Defect 1 (O-108) — the discriminator was a false-positive machine.** The
+predicate answering *"is this mutation applied, or is the anchor merely absent?"*
+was `old not in text and new in text`. `M7b` replaces the *value* of a branch
+assignment, and its replacement text (`lead_direction = "broad_based_advance"`) is
+**also the legitimate neighbouring branch's own assignment** — so the predicate
+fires on a pristine file. Measured against `git show HEAD:` ground truth over the
+**622** reachable catalogue entries: **52 false positives, 0 misses.**
+
+**Defect 2 (O-109) — the mutant was committed.** `src/macro_engine/models/lei_proxy.py`
+carried `else: lead_direction = "broad_based_advance"` where `"mixed"` belongs, and
+the corruption was in **`HEAD` (`5d4c1da`)**. Verified by occurrence count:
+`f740d2a` had **1**, `5d4c1da` had **2**. Every prior check was **dirty-relative**,
+so none could see it — **including `git diff HEAD`**.
+
+The two masked each other: the false positive made the (true) `M7b` finding look
+like noise, and once it was dismissed there was nothing left that could see the
+committed corruption.
+
+### What was built
+
+| artefact | role |
+| --- | --- |
+| `_is_applied(text, old, new)` in `_sweep_gate.py` | exact left-over discriminator: **applied ⟺ `old` absent AND re-applying does not raise `new`'s count**. Measured **0 false positives / 0 misses** over the 622 entries. |
+| the same in `tools/sweep_health.py` | duplicated, not imported: `mypy --strict` cannot span `tools/` and `scripts/` — neither is a package. |
+| `_committed_blob(rel)` + `_committed_mutant_scan(catalogue)` in `tools/sweep_health.py` | the O-109 remedy — reads each target's committed text via `git show HEAD:` and flags a catalogue entry whose replacement is **already in HEAD** with its anchor absent. |
+| new summary line `committed mutants (O-109, vs HEAD)` | the reach the old report had no row for. |
+| `tests/test_sweep_health_leftover_predicate.py` | **15** guards — 4 behavioural, 3 structural, 2 for the committed scan. |
+| `models/lei_proxy.py` | `else: lead_direction = "mixed"` restored (the actual source defect). |
+
+### Why the count-stable predicate is exact, not heuristic
+
+A mutation is a **text substitution**. A genuine left-over **already contains** the
+replacement, so applying `old→new` *again* would **duplicate** it — the count rises.
+A **drifted anchor** leaves the count unchanged. So *"re-applying does not raise the
+count"* separates the two cases exactly. Three other candidates were scored against
+ground truth first; the **first attempt passed the reported case but failed 9 real
+entries** (prefix-extensions where `new` contains `old`, and wrong-occurrence
+`find`), which is why the score table exists.
+
+### Proof (RED → GREEN, both fixes)
+
+- **Detector:** re-inject the old predicate into both files → **2 guards FAIL**
+  (measured on the shipped, corrected loader — an earlier figure of 7 was taken
+  under a broken loader and is retracted; see `DECISIONS.md` D-087.5);
+  restore (byte-identical verified) → **all pass**.
+- **Source:** re-apply the `M7b` mutant → the demanding test
+  `test_a_broad_advance_requires_the_composite_to_agree` **FAILS** plus 2 siblings;
+  restore (byte-identical) → **55 pass**.
+- **Committed scan:** fires on `5d4c1da`'s blob, silent on the repaired tree. (Reads
+  **0** once this increment is committed — the repair is in the working tree, `HEAD`
+  still carries the mutant until then.)
+
+### Gates at close (re-derived by execution — O-88; a row is a claim, not a receipt)
+
+| gate | value |
+| --- | --- |
+| `ruff check` | **All checks passed** |
+| `ruff format --check` | **231** files |
+| `mypy --strict` | **231** files (D-035 parity: counts must match) |
+| `pytest -q` (default, `not live and not slow`) | **2536 passed / 4 skipped / 0 failed** in **113.8 s** |
+| `pytest -q -m slow` | **1 passed** in **230.8 s** |
+| `tools/reachability_audit.py --check-baseline` | **PASS** — baseline 58 = measured 58, no regressions |
+| `tools/sweep_health.py` | 40 sweeps, 0 leftovers, 0 mutant shapes, 1 committed (pre-fix `HEAD`) |
+
+**D-087.6 — the default run no longer includes live tests.** `addopts` was
+`-ra --strict-markers --strict-config` with **no `-m` filter**, so a plain
+`uv run pytest` ran the `@pytest.mark.live` tests even though the marker's own text
+says *"excluded from default CI runs"*. The worst builds a **~21-series** live
+snapshot; at **3 retries × 15 s + backoff** per series (~49.5 s worst case, then the
+other path once) that is **~17 min for one test** — measured at **40+ min** stuck.
+`addopts` now carries **`-m 'not live and not slow'`**: a default run is **~114 s**.
+Live runs are explicit (`-m live`). **Opens O-110.**
+
+### Also removed
+
+`docs/MODULE_MAPPING.md` carried the entire **D-082 addendum section duplicated
+verbatim** (73-line body, twice, second to EOF). Second copy removed after the
+bodies were verified byte-identical — **76 deletions, 0 additions**.
+
+**Not committed.** The tree is left dirty with this fix; the user pushes.

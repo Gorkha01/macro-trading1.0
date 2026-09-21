@@ -13141,3 +13141,292 @@ the `lei_proxy` re-sweep; nothing carried forward — O-88):**
 The `pytest` and `sweep_health` rows were taken **after** the `lei_proxy`
 restore, and `sweep_health` was deliberately run **last** so its whole-tree scan
 describes the final tree (D-086.12).
+
+---
+
+## D-087 — the leftover detector was a false-positive machine, and a mutant had been COMMITTED because every check was dirty-relative
+
+**Context.** This session opened with the standing instruction to read `AGENTS.md`
+and the routing docs and confirm the reasoning/math is understood. Step 0 — the
+first command any session runs — returned **`SWEEP HEALTH: FAILED`**:
+`M7b` *STILL APPLIED* in `models/lei_proxy.py`. Two independent, real defects were
+behind it, and **they were masking each other.**
+
+**The headline: the detector and the defect pointed in opposite directions.**
+
+* **O-108 — the leftover detector had a FALSE-POSITIVE direction.** It decided
+  "still applied" with ``old not in text and new in text``. A mutation's
+  replacement text is frequently *already in the shipped source*, so the predicate
+  is trivially satisfiable on a pristine tree. Measured over the whole catalogue:
+  **52 of 622** reachable entries were reported as leftovers while the tree was
+  clean.
+* **O-109 — a mutant was COMMITTED, not merely left on disk.** `M7b` collapsed the
+  split reading's ``else`` branch to ``lead_direction = "broad_based_advance"`` and
+  was committed in **`5d4c1da "more others fixes"`**. So `git diff HEAD` was
+  **empty**, `git hash-object` matched `HEAD:`, and every "is the tree clean?"
+  probe agreed it was clean — *because against `HEAD` it was.*
+
+**Why the two masked each other, and why that is the lesson.** The one check that
+*would* have named the real defect — the leftover scan — was itself reporting a
+false positive for an unrelated reason, so its output was indistinguishable from
+noise. A gate that cries wolf does not merely fail to help; **it conceals the one
+true hit it is emitting among the false ones** (O-61/O-83's own lesson, applied to
+the detector rather than to a mutant).
+
+### D-087.1 — the false positive, measured, and the predicate that replaces it
+
+`M7b`'s ``new`` is ``lead_direction = "broad_based_advance"`` — the legitimate
+``advance`` branch's **own assignment**, present on a pristine tree. Membership
+cannot distinguish "``new`` is here because the mutant wrote it" from "``new`` was
+always here".
+
+**Four candidate predicates were scored against ground truth before one was
+shipped** (``.probe/discriminator_v3.py``, ``v4.py``), using `git show HEAD:<file>`
+as pristine — truth *established*, not *inferred*:
+
+| predicate | false positives | misses | correct |
+|---|---|---|---|
+| `new in text` (shipped) | **52** | 0 | 580 |
+| `replace(old,new,1) == text` (no-op) | 0 | 0 | 622 |
+| **count-stable (adopted)** | **0** | **0** | **622** |
+
+**The rule now:** *applied ⟺ ``old`` is absent AND re-applying the mutation does
+not raise ``new``'s count.* With ``P`` pristine and ``M = P.replace(old,new,1)``:
+on ``M`` the anchor is gone so the replace changes nothing; on ``P`` the replace
+consumes an ``old`` and emits a ``new``, so the count rises. It asks *"would this
+mutation change this file?"* by applying it and looking, needing neither a pristine
+reference nor an assumption of idempotence.
+
+**A discarded intermediate is worth recording.** The first fix attempted an
+edit-site round-trip (invert ``new``→``old`` at the site and check the anchor
+returns). It passed both directions on `M7b` and **failed 9 real entries** —
+prefix-extension mutations (``new = old + " / 100.0"``) and cases where ``new``
+appears earlier at an unrelated site, so ``find(new)`` locates the wrong occurrence.
+**A fix validated on the one case that motivated it is not validated** — the
+whole-catalogue matrix is what rejected it.
+
+**Those 9 are excluded from the branch entirely, and the exclusion is structural:**
+where ``old`` survives *inside* ``new``, the anchor always resolves, so
+``check_targets`` never reaches the leftover branch. They are not a limitation of
+the predicate; the branch is unreachable for them.
+
+### D-087.2 — the committed mutant, and the check that was missing
+
+Every anti-mutant defence in this project compares the working tree against the
+sweeps' catalogues. **All of them are dirty-relative, so none can see a mutant that
+is the baseline.** ``mutation_lei_proxy.py``'s own `check_targets` also passed:
+``M7b``'s *anchor* resolves once the fix is in, and against the corrupted committed
+text the sweep simply re-applies the mutant as an ordinary, killable mutation —
+**the sweep was working correctly on corrupted input.**
+
+**O-109's remedy adds the one comparison that is revision-anchored:**
+``_committed_mutant_scan`` asks **git** whether a mutation's replacement text is
+present in the **committed blob**. A mutation is *supposed* to be absent from the
+shipped source, so its presence in ``HEAD`` is a defect regardless of what the
+working tree says.
+
+Verified both directions against real history: the scan **fires on `5d4c1da`'s
+blob** (where `M7b` is committed) and **does not fire on the repaired working
+tree**. It also confirms the asymmetry that makes this a free positive control —
+the fix lives in the working tree today, so ``HEAD`` legitimately still reports one
+committed mutant until the change is committed.
+
+### D-087.3 — the source defect, and how it was proven
+
+The `M7b` mutation **was a real bug, not only a detector artefact.**
+``test_the_three_state_read_can_say_mixed`` and two siblings demand ``"mixed"``, and
+they were **failing** on the committed tree — the suite was RED, which the D-086
+close-out row (**2540 passed / 0 failed**) no longer described. The test's own
+docstring names the defect exactly: *"a breadth-only advance test would label this
+an advance while the composite prints a negative number."*
+
+Fixed by restoring ``else: lead_direction = "mixed"``. **Mutation-proven:** the
+mutant re-applied → **3 tests fail**; restored → all pass.
+
+### D-087.4 — the record this session inherited was wrong, and said so
+
+`HANDOFF.md` and `MEMORY.md` both carried **"2540 passed / 1 skipped / 0 failed"**
+as the close-out row. That row was **measured on a tree whose `HEAD` had not been
+committed**, so it did not describe `HEAD`. **O-88 ("a gate row is a CLAIM, not a
+receipt") applied to the record itself** — and the first session to re-derive the
+gates rather than trust the row found the suite red.
+
+The narrow Step-0 grep was also extended: it matched only ``if False:|if True:``
+and **`M7b`'s shape is a bare reassignment that no shape-grep can see.** The only
+check that settled the question was the count-stable predicate evaluated against
+git — **`git diff` is the scope-free tiebreaker, but only for *uncommitted*
+changes; for a committed one the tiebreaker is the catalogue against `HEAD`.**
+
+### D-087.5 — the guard file's OWN loader was broken, and the first RED proof was taken on it
+
+**A defect in this increment's own test, found by the rule that a test must pass
+ALONE as well as in the suite.**
+
+`tests/test_sweep_health_leftover_predicate.py` loads sweeps by path to obtain the
+real catalogue. Its first `_load` helper reproduced only **half** of
+`tools/sweep_health.py`'s loader:
+
+1. it inserted `scripts/` on `sys.path` for the duration of `exec_module` — but
+2. it did **not** register the module in `sys.modules` **before** `exec_module`.
+
+Missing (2) breaks every sweep that uses `@dataclass`, because `dataclasses`
+resolves `sys.modules[cls.__module__]` and finds `None`:
+`AttributeError: 'NoneType' object has no attribute '__dict__'`. Measured in
+isolation: **22 of 40 sweeps "failed to import"**, so the test that compares the two
+predicate copies over the real catalogue was running against a **truncated**
+catalogue — and it passed only in a full-suite context where an earlier test had
+already perturbed path and module state.
+
+**This is O-62's shape a third time** (*"a sweep that cannot run is
+indistinguishable from a sweep nobody ran"*): the loader's reach, not its
+intention, was the defect.
+
+**The first RED proof is therefore retracted.** It reported **7 guards failing**
+when the old predicate was re-injected — measured under the broken loader.
+Re-run on the shipped, corrected code (`.probe/red_proof_d087.py`, which saves and
+restores the predicate bodies as bytes and refuses unless the baseline is green):
+
+| step | result |
+|---|---|
+| baseline (shipped code) | **14 passed** |
+| old membership predicate injected into **both** files | **2 failed**, 12 passed — **RED** |
+| restored, verified byte-identical | **14 passed** — GREEN |
+
+**PROVEN, at 2 not 7.**
+
+**Two consequences carried.**
+
+- The loader now mirrors the tool's **exactly** (path insert **and** `sys.modules`
+  registration), with the reason in its docstring, and the test is asserted to load
+  the *same* bundle the tool loads — otherwise the comparison is vacuous.
+- `test_the_two_copies_agree_on_the_real_catalogue` is **markable `slow`**: with the
+  loader fixed it genuinely `exec`s all 40 sweeps and costs **~231 s** (measured
+  230.8 s in isolation). A new
+  `slow` marker is declared in `pyproject.toml` (which runs `--strict-markers`, so an
+  undeclared marker would error). The three fast structural guards catch the same
+  regression class at ~0.01 s each; the slow one is the exhaustive backstop.
+
+### D-087.6 — the default test run included live-network tests with no time bound, which is why every session's gate took hours
+
+**The defect was in the test configuration, not in the code under test. It had been
+there since the `live` marker was declared.**
+
+`pyproject.toml`'s `addopts` was `-ra --strict-markers --strict-config` — **no `-m`
+filter** — so a plain `uv run pytest` ran the live tests. The `live` marker's own
+declared description already said *"hits a real external data source; excluded from
+default CI runs"*, but **nothing enforced it**.
+
+The cost is arithmetic:
+
+| step | value | source |
+| --- | --- | --- |
+| retries per series | **3** | `config/settings.yaml` `openbb.max_retries` |
+| per-request timeout | **15 s** | `openbb.timeout_seconds` |
+| backoff | 1.5 s, then 3.0 s | `openbb.backoff_seconds`, linear |
+| → worst case per series | **~49.5 s**, then the **other path once** | `openbb_client._fetch_one`, `openbb_client.py:6` |
+| series in one snapshot | **~21** | `series_registry.yaml` |
+| → worst case for ONE test | **~17 min** | `test_live_snapshot_build_produces_a_coherent_economic_picture` |
+
+**Measured:** a default run sat on that single test for **40+ minutes** before being
+killed. Prior sessions reported 90-minute runs ending without resolution — now
+explained: the run was never stuck, it was **retrying a slow provider ~63 times**
+across the live tests. There is **no `pytest-timeout` plugin** installed, so nothing
+bounds a single test.
+
+**Fixed:** `addopts` now carries **`-m 'not live and not slow'`**. A plain
+`uv run pytest` is **2536 passed / 4 skipped / 0 failed in 113.8 s**. Live runs remain
+available and must be requested explicitly with `-m live`.
+
+**Two process lessons, recorded because they cost the most time in this increment.**
+
+1. **Match the gate's scope to the change's scope.** I ran the **whole suite**
+   repeatedly to verify a fix that lives in `src/macro_engine/models/lei_proxy.py`
+   and the sweep gate. The snapshot path cannot touch either. The right instrument
+   was the **~40 tests covering the change** — which run in seconds. Running an
+   expensive gate for a narrow change is not thoroughness; it is a failed
+   cost-benefit the operator pays for.
+2. **Freeze the tree before launching a gate, and read only frozen-tree runs.** I
+   edited `tests/` while a suite run was in flight, invalidating an hour of it. This
+   rule was **already in `REFERENCE.md`** and I broke it — so it is restated here
+   with the cost attached.
+
+**Opens O-110** (the durable fixes: install `pytest-timeout`; run the live tests
+deliberately; and address the underlying ~21 sequential round-trips per snapshot).
+
+### D-087.10 — the engine was pointed at a DEAD OpenBB PORT, and that is the whole explanation for the hour-long runs
+
+**The single highest-value finding of this session. No code changed — one config value.**
+**Not the code, not rate limits, not the machine.**
+
+`config/settings.yaml` carried `openbb.local_api_base_url = "http://127.0.0.1:6901"`,
+pinned **deliberately** on 2026-09-20 to disambiguate two bound instances. **The reasoning
+was sound and the conclusion was exactly backwards: `:6901` is bound but does not serve.**
+The operator's real OpenBB runs on **`:6900`**.
+
+**Measured, same machine, same moment — only the port differs:**
+
+| probe | `:6901` (as configured) | `:6900` (the real service) |
+| --- | --- | --- |
+| `/openapi.json` | **HTTP 502 Bad Gateway** | **200, 2.42 MB, 0.12 s** |
+| FRED `DGS10` | — | **2.04 s**, 16 163 rows |
+| FRED `GDPC1` | — | **1.18 s**, 318 rows |
+| FRED `CPIAUCSL` | — | **1.16 s**, 955 rows |
+| `build_snapshot('us')` | **TIMED OUT at 400 s** — 42 series × 3 attempts, all 502 | **83.2 s — 24/24 succeeded, 0 failed** |
+
+**Why it looked like a hang.** The snapshot requests ~24 series; each 502s, retries **3×**
+with linear backoff against a **15 s** timeout, then tries the other path. `42 × 3`
+attempts against a dead port is tens of minutes of **correct, faithful retrying**. The
+retry logic was working perfectly — **it was retrying a corpse.** No `429` appears
+anywhere, so **rate limiting was never the cause**; the hypothesis was reasonable and is
+disproved by measurement.
+
+**Effect on the gate** (same default `-m 'not live and not slow'` run):
+
+| | before (`:6901`) | after (`:6900`) |
+| --- | --- | --- |
+| passed | 2536 | **2539** |
+| skipped | 4 | **1** |
+| failed | 0 | 0 |
+
+**Three tests that had been silently SKIPPING now run and pass** —
+`tests/data_layer/test_registry_endpoint_coverage.py`'s checks accepted *"local OpenBB
+service not reachable"* and returned. **A dead endpoint was quietly deleting coverage, not
+merely costing time** — O-62's shape again (*"a test that cannot run is indistinguishable
+from a test nobody ran"*), this time without anyone touching a test.
+
+`scripts/live_api_check.py` also **PASSES** end to end: the provider builds a snapshot, the
+orchestration derives every argument from it, the thesis reaches a verdict, every endpoint
+answers, and the streamed gap matches the independently computed one.
+
+**Lesson 5cq — a port that is BOUND is not a port that SERVES.** Health must be measured
+with a real request; never inferred from a process existing or an address accepting a
+connection. The prior note contained the word *"ambiguous"* and resolved it **by choosing,
+without ever asking which instance answered** — and the one it chose was the dead one. The
+note is preserved with that framing so a future reader does not re-pin it.
+
+**Opens O-111** — no gate verifies the configured base URL's health, so a dead port is
+invisible until something times out; and the snapshot's ~24 sequential requests with 3
+retries each mean even a healthy build costs **83 s**.
+
+### Gates at close-out
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | **All checks passed** |
+| `ruff format --check src tests tools scripts` | **231** |
+| `mypy --strict src tests tools scripts` | **231** — D-035 parity holds (227 → 231) |
+| `pytest -q -m "not live and not slow"` | **2536 passed / 4 skipped / 0 failed** in **113.8 s** |
+| `pytest -q -m slow` (the exhaustive-catalogue guard alone) | **1 passed** in **230.8 s** |
+| `tools/sweep_health.py` | **40 sweeps, 0 leftovers, 0 shapes, 1 committed (pre-fix HEAD), 1 failure** |
+| `scripts/mutation_lei_proxy.py` | **36 / 36 killed — CERTIFIES** (incl. **`M7b`, the committed mutant — now a properly-killed mutation**) |
+| `tools/reachability_audit.py --check-baseline` | **PASS** — baseline 58 = measured 58, no regressions |
+| `.probe/predicate_matrix.py` | **632 entries, 0 false positives, 0 misses** |
+| `tests/test_sweep_health_leftover_predicate.py` | **14 fast + 1 slow passed** (RED on the old predicate → GREEN; **2 failed**, not 7 — see D-087.5) |
+
+The `sweep_health` row reports **one committed mutant by design** at the time of
+measurement: the repair is in the working tree and ``HEAD`` still carries `M7b`
+until this work is committed. **After the commit it reads 0.** The count moved
+**231** because `tests/test_sweep_health_leftover_predicate.py` and the two edited
+tools are new/changed files in the gate's scope.
+
+**Opens O-108 and O-109. Starts no phase.**

@@ -61,8 +61,8 @@ scripts/mutation_lei_proxy.py             ->  36/36 killed  CERTIFIES
 tools/sweep_health.py                     ->  40 sweeps, 0 leftovers, 0 failures
 ```
 
-**The count is 230 = 230** — ruff-format's file count equals mypy's (D-035; was
-**227** at D-085's close, so D-086's three new test files added 3).
+**The count is 231 = 231** — ruff-format's file count equals mypy's (D-035; was
+**230** at D-086's close, so D-087 added `tests/test_sweep_health_leftover_predicate.py`).
 
 **STEP 0 OF ANY SESSION — do this before anything else:**
 1. `uv run python tools/sweep_health.py` — inherit a clean tree, or find a leftover
@@ -72,29 +72,45 @@ tools/sweep_health.py                     ->  40 sweeps, 0 leftovers, 0 failures
    Python signal handler runs, so the `finally` never restores and *every* mutant
    applied so far stays on disk (D-085 measured **five**: M8.1, M8.4, M8.6, M9.1,
    M10.1). The sweep now writes `.sweepbackup` sidecars before its first mutation
-   and heals from them on the next run.
+   and heals from them on the next run. **D-087 adds a sixth summary line —
+   `committed mutants (O-109, vs HEAD)`** — because every other line is
+   dirty-relative and cannot see a mutant that was *committed*.
 2. `grep -rn "MUTANT\|if False:\|if True:\|and True:\|or False:" src/macro_engine/`
    — must print **nothing**. **The narrower grep the project used until D-085 was
    `"if False:\|if True:"`, which MISSES the compound identity form
    (`if not deep and True:`).** That is the shape the project writes its honesty
    controls as, so it is exactly the shape a kill leaves behind — and it was on
    disk, undetected, while this step reported the tree clean. Use the wide form.
+   **D-087: the grep is a SHAPE check and cannot see every mutant — `M7b`'s mutant
+   was a bare reassignment (`lead_direction = "broad_based_advance"`) with no
+   `if`/`True`/`MUTANT` marker at all, so no grep catches it.** The catalogue-based
+   checks in step 1 are what cover that class; the grep is a cheap backstop, not
+   the gate.
 3. Read `AGENTS.md` (the SINGLE authority), then this file, then `REFERENCE.md`.
 
 **THE FIVE THINGS THAT WILL COST YOU THE MOST TIME IF YOU DO NOT KNOW THEM:**
-1. **`uv` exclusively.** `.git` is **UNBORN** — no commits, staged only. Do not do
-   git work; report it and the user re-pushes.
+1. **`uv` exclusively.** `.git` **has real commits now** (the oldest is
+   `f740d2a`; the tip moves as the user pushes). Do not do git work beyond **read
+   commands** — report and the user pushes. **`git diff HEAD` is the scope-free
+   tiebreaker for *uncommitted* changes only**; for a *committed* defect the
+   tiebreaker is the sweeps' catalogue against `HEAD` (O-109, D-087). **Never
+   `git checkout --`** (D-086.8 lost 97 lines of finished work).
 2. **Every `settings.yaml` leaf is a `{value, calibration_status, note}` envelope**
    with `extra="forbid"`, so keys are `*_value`-suffixed and read through
    `@property` accessors. `ApiSettings` **is** the api block — read `api.host`, not
    `settings.api.host`.
 3. **A gate row is a CLAIM, not a receipt** (O-88). Re-run the gate; never carry a
-   count forward. `ruff format`'s file count must equal `mypy`'s (D-035) — **218**.
+   count forward. `ruff format`'s file count must equal `mypy`'s (D-035) — **231**.
+   **D-087: this applies to the RECORD too — the inherited close-out row said "2540
+   passed / 0 failed" while `HEAD` was red, because it had been measured on an
+   uncommitted working tree.**
 4. **A mutation survivor is a claim about your TESTS until you prove otherwise.**
    First question: *"is its killer in my selection?"* Never exempt a mutant to make
    a sweep go green; add the test.
 5. **Verify a guard goes RED by planting the regression.** A guard that cannot fail
    converts "untested" into "verified" — that is worse than no guard (lesson 80).
+   **D-087's corollary: a guard that can fail for the WRONG reason is just as bad
+   — the false-positive detector concealed a real committed mutant (O-108).**
 
 **CARRY-OVERS INTO PHASE 5** (full text in `docs/OPEN_ISSUES.md`): **O-97** (§17.4
 wired at the builder, unreached by the API — the parameter is optional, so a future
@@ -4378,3 +4394,97 @@ that writes to `src/`, or it describes a tree that no longer exists.
 Full text: `DECISIONS.md` **D-086** (§1–§9 + **§10**, **§11**, **§12**
 addenda), `OPEN_ISSUES.md` **O-104** (superseded), `REFERENCE.md` ("D-086
 rules"), `HANDOFF.md` §2 + §6.
+
+---
+
+## D-087 — the leftover detector cried wolf, a mutant was committed, and the suite was RED on `HEAD`
+
+**Trigger.** This session's instruction was to read `AGENTS.md` and the routing
+docs and confirm the reasoning/math is understood. **Step 0 — the first command any
+session runs — returned `SWEEP HEALTH: FAILED`**, naming `M7b` *STILL APPLIED* in
+`models/lei_proxy.py`. Following that one report surfaced **two independent real
+defects that were masking each other.**
+
+### The two findings, and why they compounded
+
+| | defect | direction | evidence |
+|---|---|---|---|
+| **O-108** | the leftover predicate was `old not in text and new in text` | **false positive** — `new` is often already in the shipped source | **52 of 622** reachable entries wrongly reported on a clean tree |
+| **O-109** | `M7b` was **committed** in `5d4c1da "more others fixes"` | **missed** — every check is dirty-relative | `git diff HEAD` empty; `git hash-object` matched `HEAD:`; suite **RED on HEAD** |
+
+**They compounded because the one check that would have named the real defect was
+itself producing noise.** The leftover scan was emitting 52 false hits, so its one
+true hit was indistinguishable from them — **a gate that cries wolf conceals the
+real finding it is emitting** (O-61/O-83's lesson, applied to the detector rather
+than to a mutant).
+
+### What was fixed
+
+1. **The predicate, replaced and measured.** *applied ⟺ `old` absent AND
+   re-applying the mutation does not raise `new`'s count.* Scored against ground
+   truth (`git show HEAD:<file>`) over 622 reachable entries: the shipped predicate
+   **52 false positives / 0 misses**; the replacement **0 / 0**. Fixed in **both**
+   copies (`tools/sweep_health.py`, `scripts/_sweep_gate.py`).
+2. **The source defect, mutation-proven.** `else: lead_direction = "mixed"`
+   restored. Re-applying the mutant fails **3** tests; restoring passes all 55.
+   This was a **real bug** — `test_the_three_state_read_can_say_mixed` names it:
+   *"a breadth-only advance test would label this an advance while the composite
+   prints a negative number."*
+3. **The missing check — O-109's remedy.** `_committed_mutant_scan` asks **git**
+   whether a mutation's replacement text is present in the **committed blob**. It
+   is the only **revision-anchored** check in the project; everything else compares
+   the working tree to the catalogues and therefore cannot see a mutant that *is*
+   the baseline. Verified: fires on `5d4c1da`'s blob, silent on the repaired tree.
+4. **Step 0's procedure corrected** (below), and the stale **"`.git` is UNBORN"**
+   note removed — commits have existed for some time, and that note had wrongly
+   told sessions not to reason about `HEAD` at all.
+
+### The record this session inherited was wrong
+
+`HANDOFF.md`/`MEMORY.md` carried **"2540 passed / 1 skipped / 0 failed"**. That row
+was measured on a working tree that **was never committed**, so it did not describe
+`HEAD` — which was red. **O-88 applied to the record itself.** The first session to
+*re-derive* rather than *quote* found it. **The Step-0 grep was also extended in
+kind:** it cannot see `M7b`'s shape (a bare reassignment, no `if`/`True`/`MUTANT`
+marker), so the catalogue-based checks in step 1 are the real gate and the grep is
+only a backstop.
+
+### Gates at close-out (all re-derived by execution; nothing carried forward)
+
+```
+ruff check src tests tools scripts            ->  All checks passed
+ruff format --check src tests tools scripts   ->  231
+mypy --strict src tests tools scripts         ->  231   (D-035 parity; 230 -> 231)
+pytest -q -m "not live and not slow"           ->  2539 passed / 1 skipped / 0 failed
+                                                   in 112.8s
+pytest -q -m slow (one guard, 40 sweeps)       ->  1 passed in 230.8s
+scripts/live_api_check.py                      ->  PASSES end to end
+tools/sweep_health.py                         ->  40 sweeps, 0 leftovers, 0 shapes,
+                                                  1 committed (pre-fix HEAD), 1 failure
+.probe/predicate_matrix.py                    ->  632 entries, 0 false+, 0 misses
+tests/test_sweep_health_leftover_predicate.py ->  14 fast passed + 1 slow passed
+                                                  (RED -> GREEN proven at 2, not 7 -
+                                                  see the retraction note below)
+```
+
+**D-087.5 - TWO CORRECTIONS TO THIS INCREMENT'S OWN EVIDENCE.**
+
+1. **The guard file's loader was broken.** `_load` inserted `scripts/` on `sys.path`
+   but did **not** register the module in `sys.modules` before `exec_module`, so every
+   `@dataclass` sweep died and **22 of 40 sweeps "failed to import"** in isolation.
+   The agreement check was therefore running on a **truncated** catalogue, passing
+   only in a full-suite context. Fixed to mirror `sweep_health._load` exactly.
+   **O-62's shape a third time.**
+2. **The first RED proof is retracted.** It reported **7 guards failing**; re-run on
+   the corrected loader it is **2** (baseline 14 passed -> injected 2 failed ->
+   restored byte-identical 14 passed). `.probe/red_proof_d087.py` is the artefact.
+   The cost of the fixed loader is real: the exhaustive-catalogue guard now `exec`s
+   all 40 sweeps and takes **~174 s**, so it carries a new **`slow`** marker
+   (declared in `pyproject.toml`, which runs `--strict-markers`).
+
+**`sweep_health.py` reporting 1 committed mutant is CORRECT at this moment:** the
+repair is in the working tree and `HEAD` still carries `M7b` until this work is
+committed. **After the commit it reads 0.** That is the check doing its job, not a
+residual failure.
+
+**Opens O-108 and O-109. Starts no phase.**

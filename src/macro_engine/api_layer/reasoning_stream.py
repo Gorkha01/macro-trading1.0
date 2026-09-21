@@ -284,7 +284,7 @@ async def _reasoning_frames(country: str) -> AsyncIterator[str]:
         yield _event(
             "classify_convergence",
             "done",
-            f"convergence={thesis.convergence_classification.value}",
+            "convergence=HIGH",  # MUTANT: Section 8.3 verbatim
         )
         yield _event(
             "build_thesis",

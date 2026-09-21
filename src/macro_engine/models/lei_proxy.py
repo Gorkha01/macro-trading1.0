@@ -392,7 +392,7 @@ def leading_indicator_proxy(inputs: LeadingIndicatorProxyInputs) -> ModelResult:
     elif advance_breadth >= threshold and composite > 0:
         lead_direction = "broad_based_advance"
     else:
-        lead_direction = "broad_based_advance"
+        lead_direction = "mixed"
 
     null_rate = _breadth_null_rate(n_components, threshold)
 
