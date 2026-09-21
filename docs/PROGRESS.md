@@ -1,12 +1,12 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-21** (after **D-087.21 — O-72's first half MEASURED, and a real
-defect fixed**). `sweep_health.py` now also reports **control coverage: 18 of 40 sweeps have
-no way to notice their own baseline break** (the **D-051** shape) — reported, never failed.
-Separately, **`scripts/live_catalyst_calendar_check.py` was BROKEN**: it referenced
-`catalysts._FOMC_DOCUMENTS_URL`, which D-087.13 had removed, and only **`mypy --strict`**
-could see it. **PHASE 5 IS NOT STARTED, deliberately.**
+Last updated: **2026-09-22** (after **D-087.26 — O-103 CLOSED: all 41/41 sweeps carry
+`.sweepbackup` sidecar protection**, in two equivalent forms — 39 via `sweep_lifecycle()`,
+2 hand-assembled. **Docs-only: no `src/`/test edit, no suite run.** The operator's five-item
+brief is done (O-72 · O-103 · O-111(b) · the FOMC 404 · the FRED timeout); the tree is
+**clean and fully committed at `HEAD` = `6e197e9`**. O-104/O-110/O-112 remain **`DEFERRED`**.
+**PHASE 5 IS NOT STARTED, deliberately.**)
 
 Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 
@@ -106,10 +106,12 @@ unchanged (the workflow is YAML, and the new guards live in an existing file).
    `@property` accessors. `ApiSettings` **is** the api block — read `api.host`, not
    `settings.api.host`.
 3. **A gate row is a CLAIM, not a receipt** (O-88). Re-run the gate; never carry a
-   count forward. `ruff format`'s file count must equal `mypy`'s (D-035) — **231**.
+   count forward. `ruff format`'s file count must equal `mypy`'s (D-035) — **238**.
    **D-087: this applies to the RECORD too — the inherited close-out row said "2540
    passed / 0 failed" while `HEAD` was red, because it had been measured on an
-   uncommitted working tree.**
+   uncommitted working tree. Re-derive `git status` too: on 2026-09-22 the tree was
+   in fact CLEAN and fully committed (`HEAD` = `6e197e9`) while an earlier note still
+   called it "uncommitted by design".**
 4. **A mutation survivor is a claim about your TESTS until you prove otherwise.**
    First question: *"is its killer in my selection?"* Never exempt a mutant to make
    a sweep go green; add the test.
@@ -4956,6 +4958,52 @@ pytest **2595 passed / 1 skipped / 17 deselected / 0 failed** (EXIT=0) · `sweep
 **40 sweeps · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK**. `234 = 234`.
 
 **Closes O-112(c). Gives the budget a durable home. Starts no phase.**
+
+---
+
+## D-087.26 — O-103 CLOSED: all 41/41 sweeps carry sidecar protection, in two equivalent forms
+
+**Docs and status only — no `src/` edit, no test edit, no suite run.**
+
+**The obligation was finished a session ago and four live surfaces still read as if it were
+not.** O-103's sidecar remedy was described as *"adopted by only 2 of 40 sweeps … 38 to go"* on
+`HANDOFF.md`, `BUILD_STATE.md`, `CHANGELOG.md` and `DECISIONS.md`, plus the O-112 row's open
+item (a). **That count was stale** — the same defect class as D-087.23: *a record never
+re-measured hardens into a claim.*
+
+**Re-measured on the tree (D-035 — derive, never carry forward):**
+
+```
+ls scripts/mutation_*.py | wc -l                              ->  41
+grep -l "sweep_lifecycle(" scripts/mutation_*.py | wc -l       ->  39
+grep -l "restore_from_sidecar\|record_pristine" ... | wc -l    ->   2
+```
+
+**Union = 41/41, 0 unprotected.** The **39** call the `sweep_lifecycle()` wrapper (heal →
+protect → spend in one call); the other **2** — `mutation_api_layer.py` and
+`mutation_regime.py` — hand-assemble the identical sequence from the primitives, because they
+must heal **before** `check_targets` (lesson 5co: *the heal must precede the gate, or the gate
+blocks its own repair*). Call sites read directly: `mutation_api_layer.py`
+`restore_from_sidecar` (1600), `record_pristine` (1674), `restore_from_sidecar` (1759);
+`mutation_regime.py` `restore_from_sidecar` (596), `record_pristine` (601),
+`sidecar_for(path).unlink` (652).
+
+**The durable point:** the census is **form-dependent**. A bare
+`grep -l "sweep_lifecycle(" scripts/mutation_*.py | wc -l` prints **39** on a fully-protected
+tree and **under-counts by 2, silently** — it names neither the two nor the reason. **Cite the
+UNION, never the wrapper's call count** — the mirror of D-087.23's too-broad guard: there the
+predicate matched too much, here the census matches too little.
+
+**Corrected (live claims only):** the four surfaces above + the O-112 open item (a), which is
+now struck and explicitly closed. **Annotated *superseded*, not rewritten:** D-087.11's own
+dated narrative in `CHANGELOG.md` / `DECISIONS.md` / this file, so the record of what was true
+then survives inside its own correction. **O-104 / O-110 / O-112 tagged `DEFERRED`** (recorded,
+not implemented, not deleted). **Phase 5 NOT STARTED.**
+
+**Verification is a count, not a test** — the closed form is two `grep -c` commands whose union
+must equal the sweep count. No suite was run, because none was needed for a docs-only change.
+
+**Closes O-103. Does not start a phase.**
 
 ---
 
