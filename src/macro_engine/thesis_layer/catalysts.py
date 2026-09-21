@@ -361,8 +361,8 @@ def _fetch_fed_fomc_meetings(
     """
     today = as_of or _us_calendar_today()
     # Ask for this year and the next: a horizon that crosses a year boundary
-    # needs both, and asking for a year the Fed has not published returns an
-    # empty set rather than an error, which is the correct reading.
+    # needs both. The next year is usually UNPUBLISHED and answers 404, which
+    # is the ordinary case rather than a fault -- see the module note above.
     years = sorted({today.year, today.year + 1})
 
     rows: list[dict[str, object]] = []
@@ -370,10 +370,34 @@ def _fetch_fed_fomc_meetings(
     for year in years:
         url = f"{documents_url}?provider=federal_reserve&year={year}"
         try:
-            payload = json.loads(_http_get(url, timeout=timeout))
-        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            body = _http_get(url, timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                # The Fed publishes one document set per year. A year it has
+                # not published yet (or a malformed one) answers 404, which is
+                # an EXPECTED ABSENCE, not a failure. Logging it at WARNING
+                # would put a normal December event in the same channel as a
+                # real outage, which is how a real outage gets ignored.
+                logger.info("FOMC documents for %s not published yet (404)", year)
+            else:
+                logger.warning("FOMC documents for %s failed: %s", year, exc)
+            continue
+        except (httpx.HTTPError, TimeoutError) as exc:
             logger.warning("FOMC documents for %s failed: %s", year, exc)
             continue
+
+        # Parse separately from the fetch so that a truncated body is reported
+        # as what it is (a malformed response) rather than as a transport
+        # failure, and so that an empty body cannot reach `json.loads` at all.
+        if not body.strip():
+            logger.warning("FOMC documents for %s returned an empty body", year)
+            continue
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            logger.warning("FOMC documents for %s returned malformed JSON: %s", year, exc)
+            continue
+
         results = payload.get("results") if isinstance(payload, dict) else None
         if isinstance(results, list):
             rows.extend(results)

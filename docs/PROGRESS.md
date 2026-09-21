@@ -4958,6 +4958,73 @@ pytest **2595 passed / 1 skipped / 17 deselected / 0 failed** (EXIT=0) · `sweep
 
 ---
 
+## D-087.24 — the FOMC year-boundary 404 stops reading as a failure (O-114)
+
+**A normal December event was sharing a log channel with a real outage.**
+
+`_fetch_fed_fomc_meetings` asks for `{as_of.year, as_of.year + 1}` — a December
+`as_of` with a 90-day horizon needs next year's calendar. **The request for an
+unpublished year is a 404, not an empty set** (measured live 2026-09-22: published
+years -> 200; `year=2027` / `year=2030` / `year=notayear` -> **404
+`{"detail":"Not Found"}`**, deterministic on re-request). `_http_get` calls
+`raise_for_status()`, so that 404 raised `HTTPStatusError`, landed in a clause shared
+with the transport errors, and was logged at **WARNING**: `FOMC documents for 2027
+failed` — **byte-identical in shape to the dead-port outage** (D-087.10/.13).
+
+### Why the log level IS the defect
+
+An expected absence reported as a failure is **how a real failure gets ignored**. A
+reader who sees that warning every December *for a normal reason* learns to skip the
+channel, and then skips the one that is not. Same class as D-085's conflation — a
+value that means two things — applied to **log levels**: one channel carrying both
+*"the year is not published"* and *"the service is down"*.
+
+### What changed
+
+A **404** is now **INFO**, naming the year, so the absence stays *visible* rather
+than silent. **Everything else stays WARNING** — 5xx, transport error, timeout, empty
+body, malformed JSON — because those *are* failures. The JSON parse is separated
+from the fetch and hardened: an empty body is reported as *"returned an empty body"*
+**before** it can reach `json.loads` (`json.loads("")` raises `ValueError`, which the
+old handler caught only incidentally, which is why an empty body and a transport
+fault were indistinguishable).
+
+### The fixture was the reason it survived
+
+`_fomc_payload_for_year` returned `{"results": []}` for an unknown year — the
+**intended** behaviour, not the **measured** one. A stub that asserts what the code
+was *written to do* rather than what the service *does* cannot fail, and so it
+certified the defect green. The docstring carried the same error in prose
+(*"returns an empty set rather than an error, which is the correct reading"*) —
+**false, and never measured.** Both corrected.
+
+### The guards, and why `caplog` is load-bearing
+
+The assertion is on **log level**, not on returned data: the meetings were always
+correct, only the *reporting* was wrong. A test that only checked the returned list
+would pass against the buggy code.
+
+- `test_an_unpublished_year_is_an_expected_absence` — no WARNING, an INFO naming the
+  year, the published year's meetings intact.
+- `test_a_genuine_fomc_failure_is_still_loud` — **the negative control**. Without it
+  the fix could be satisfied by silencing *everything*, a guard that passes by never
+  firing.
+- `test_an_empty_or_malformed_fomc_body_does_not_crash`.
+
+**Mutation-proven, four mutants, each killed by the intended guard.** Pre-fix handler
+restored -> killed by the absence test with the exact defect message
+(`an expected absence was reported as a failure: ['FOMC documents for 2027 failed: 404']`);
+`== 404` widened to `>= 400` -> killed by the **control**; empty-body guard dropped ->
+killed by the empty-body test. All restores byte-exact.
+
+**Gates:** ruff clean · `ruff format --check` **237** · `mypy --strict` **237**
+(D-035 parity) · pytest **2748 passed / 1 skipped / 17 deselected / 0 failed** ·
+`tools/sweep_health.py` **41 sweeps, 0 leftovers, 0 shapes, 0 committed mutants, 0
+failures, OK**. **No sweep count change** — this adds tests, not a mutation sweep.
+
+**Item 4 of the operator's five is done. Item 5 (the FRED timeout) is untouched and
+next.** No phase started.
+
 ## D-087.23 — O-111(b) closed: the corrected performance record is ENFORCED
 
 **The issue asked for a documentation correction. The correction had already been

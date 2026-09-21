@@ -10,6 +10,41 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.24 - the FOMC year-boundary 404 no longer reads as a failure (O-114)
+
+**Fixed**
+
+- **`thesis_layer/catalysts.py::_fetch_fed_fomc_meetings`** no longer reports an *expected absence*
+  as a *failure*. It asks for `{as_of.year, as_of.year + 1}`, and the request for an unpublished
+  year is a **404**, not an empty set (measured live 2026-09-22: published years -> 200;
+  `year=2027` / `year=2030` / `year=notayear` -> **404 `{"detail":"Not Found"}`**, deterministic).
+  Since `_http_get` calls `raise_for_status()`, that 404 raised `HTTPStatusError` and was logged at
+  **WARNING** - `FOMC documents for 2027 failed` - the same shape as the dead-port outage
+  (D-087.10/.13). It is now **INFO** (naming the year), while 5xx / transport / timeout / empty body /
+  malformed JSON stay **WARNING**. The JSON parse is separated from the fetch, so an empty body is
+  reported as *"returned an empty body"* **before** it can reach `json.loads`.
+
+**Added**
+
+- **Three guards** in `tests/thesis_layer/test_catalysts.py`, all asserting on **log level**
+  (`caplog`), not on returned data - the meetings were always correct, only the *reporting* was wrong:
+  `test_an_unpublished_year_is_an_expected_absence`, `test_a_genuine_fomc_failure_is_still_loud`
+  (**the negative control**: a 503 must still warn, or the fix could be satisfied by silencing
+  everything) and `test_an_empty_or_malformed_fomc_body_does_not_crash`.
+
+**Notes**
+
+- **The fixture was the reason it survived.** `_fomc_payload_for_year` returned `{"results": []}` for
+  an unknown year - the intended behaviour, not the measured one - so the stub could not fail. The
+  same false claim was in the docstring (*"returns an empty set rather than an error"*). Both are
+  corrected; `_FOMC_2027` now records that the live response was a 404 at capture time.
+- **Mutation-proven, four mutants, each killed by the intended guard:** pre-fix handler restored ->
+  killed by the absence test with the exact defect message; `== 404` widened to `>= 400` -> killed by
+  the **control**; the empty-body guard dropped -> killed by the empty-body test. Restores byte-exact.
+- **Gates:** ruff clean - `ruff format --check` **237** - `mypy --strict` **237** (D-035 parity) -
+  pytest **2748 passed / 1 skipped / 17 deselected / 0 failed** - `sweep_health.py` **41 sweeps, 0
+  leftovers, 0 shapes, 0 committed mutants, 0 failures, OK**.
+
 ### D-087.23 - O-111(b) CLOSED: the corrected performance record is ENFORCED, not just written
 
 **Changed**

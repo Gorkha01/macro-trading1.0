@@ -31,6 +31,16 @@ The defects this file exists to pin
 6. **A reachable-but-empty FOMC source is not an answered source.** D-085's
    conflation class, applied to the new command.
    ``test_a_reachable_but_empty_fomc_source_is_not_an_answered_source``.
+7. **An expected absence was reported as a failure (O-111's neighbour).**
+   Measured 2026-09-22: an unpublished ``year=`` answers **404**, not an empty
+   results list, so ``raise_for_status()`` raised and every December run logged
+   ``FOMC documents for 2027 failed`` at WARNING — the same shape as a real
+   outage. The fixture that should have caught this encoded the *intended*
+   ``{"results": []}`` rather than the *measured* 404, which is exactly how it
+   survived. The pins are
+   ``test_an_unpublished_year_is_an_expected_absence``,
+   ``test_a_genuine_fomc_failure_is_still_loud`` (the negative control), and
+   ``test_an_empty_or_malformed_fomc_body_does_not_crash``.
 
 The transport is monkeypatched for the offline tests; the live tests are marked
 ``network`` and deselected by default, so the suite stays deterministic.
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
@@ -116,8 +127,20 @@ _FOMC_2026 = {
     ]
 }
 
-#: A captures the ``year=2027`` response: one January meeting with no
-#: projections. Kept separate so the year-boundary path is exercised.
+#: A captured ``year=2027`` response: one January meeting with no projections.
+#: Kept separate so the year-boundary path is exercised.
+#:
+#: **This was 404 in production when it was captured (measured 2026-09-22).**
+#: The Fed publishes one document set per calendar year, and as of the capture
+#: date the 2027 set did not exist yet. The live response was
+#: ``404 {"detail":"Not Found"}``. The fixture below is deliberately kept in a
+#: shape that a *published* year would have, purely so that
+#: ``test_the_year_boundary_is_crossed`` can prove the second request is issued
+#: and its rows are read; the **absence** case is pinned separately by
+#: ``test_an_unpublished_year_is_an_expected_absence``. Encoding only the
+#: published shape here is what let the 404 defect hide: the fixture asserted
+#: the behaviour the code intended (``{"results": []}``) rather than the one the
+#: service actually returns.
 _FOMC_2027 = {
     "results": [
         {
@@ -582,6 +605,130 @@ def test_the_year_boundary_is_crossed(
     assert dt.date(2027, 1, 27) in dict(meetings), meetings
     years = sorted({int(u.split("year=")[1]) for u in requested})
     assert years == [2026, 2027], f"the 2027 request was never issued: {requested}"
+
+
+# ---------------------------------------------------------------------------
+# The year-boundary 404 — an expected absence must not be logged as a failure
+# ---------------------------------------------------------------------------
+
+
+def _make_status_error(status: int) -> httpx.HTTPStatusError:
+    """An ``HTTPStatusError`` carrying a real ``status_code``.
+
+    The handler branches on ``exc.response.status_code``, so a mock without a
+    response object would test the exception's name rather than the branch that
+    matters. Built from an actual ``httpx.Response`` so the attribute path the
+    production code reads is the one exercised.
+    """
+    request = httpx.Request("GET", "http://127.0.0.1:6901/api/v1/economy/fomc_documents")
+    response = httpx.Response(status, request=request, text='{"detail":"Not Found"}')
+    return httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+
+def test_an_unpublished_year_is_an_expected_absence(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 404 for next year's document set must NOT be reported as a failure.
+
+    Measured live 2026-09-22: ``economy/fomc_documents?provider=federal_reserve
+    &year=N`` answers **200** for a published year and **404
+    ``{"detail":"Not Found"}``** for one the Fed has not published yet. Because
+    ``_http_get`` calls ``raise_for_status()``, every December run crossed the
+    year boundary, hit that 404, and logged ``FOMC documents for 2027 failed``
+    at **WARNING** — byte-identical in shape to the dead-port outage that cost
+    this project hours (D-087.10/.13).
+
+    That is the defect this test pins: a normal event sharing a channel with a
+    real outage teaches a reader to skip the channel, and then skip the one
+    warning that mattered. A 404 must therefore be quiet (at most INFO), while
+    the current year's meetings must still be returned intact.
+
+    The clock is frozen to 2026-09-19 and ``as_of`` moved to 2026-12-01, so the
+    window crosses the boundary exactly as a December run would.
+    """
+
+    def _get(url: str, *, timeout: float) -> str:
+        if _FRED_HOST in url:
+            raise httpx.ConnectError("fred down")
+        if _FOMC_HOST in url:
+            year = int(url.split("year=")[1])
+            if year == 2027:
+                # Exactly what the live service answers for an unpublished year.
+                raise _make_status_error(404)
+            return json.dumps(_FOMC_2026)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(catalysts, "_http_get", _get)
+
+    with caplog.at_level("INFO"):
+        meetings = dict(catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=dt.date(2026, 12, 1)))
+
+    warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings == [], f"an expected absence was reported as a failure: {warnings}"
+
+    # The absence must be VISIBLE at INFO, not silently dropped: a reader must
+    # be able to tell "not published yet" from "never asked".
+    notes = [r.message for r in caplog.records if r.levelno == logging.INFO]
+    assert any("2027" in m and "404" in m for m in notes), notes
+
+    # And the published year's rows must survive the absent one.
+    assert dt.date(2026, 12, 9) in meetings, meetings
+
+
+def test_a_genuine_fomc_failure_is_still_loud(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The 404 branch must not swallow real failures (the negative control).
+
+    Without this, "make 404 quiet" could be satisfied by making *everything*
+    quiet — a guard that passes by never firing. A 500 is a failure, and the
+    distinction is the whole point of the fix.
+    """
+
+    def _get(url: str, *, timeout: float) -> str:
+        if _FRED_HOST in url:
+            raise httpx.ConnectError("fred down")
+        if _FOMC_HOST in url:
+            raise _make_status_error(503)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(catalysts, "_http_get", _get)
+
+    with caplog.at_level("INFO"):
+        catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=dt.date(2026, 12, 1))
+
+    warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("503" in w for w in warnings), warnings
+
+
+def test_an_empty_or_malformed_fomc_body_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A truncated body must be reported, never handed to ``json.loads`` raw.
+
+    The publish transition is the realistic window: the Fed's year endpoint can
+    answer 200 with an empty or partially-written body. ``json.loads("")``
+    raises ``ValueError``, which the old handler caught only incidentally (it
+    was sharing a clause with the transport errors); the empty body was then
+    indistinguishable from a transport fault. Both must be WARNING, and neither
+    may take down the caller.
+    """
+
+    def _get(url: str, *, timeout: float) -> str:
+        if _FRED_HOST in url:
+            raise httpx.ConnectError("fred down")
+        if _FOMC_HOST in url:
+            return "" if url.split("year=")[1] == "2027" else json.dumps(_FOMC_2026)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(catalysts, "_http_get", _get)
+
+    with caplog.at_level("INFO"):
+        meetings = dict(catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=dt.date(2026, 12, 1)))
+
+    warnings = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("empty body" in w for w in warnings), warnings
+    assert dt.date(2026, 10, 28) in meetings, meetings
 
 
 # ---------------------------------------------------------------------------

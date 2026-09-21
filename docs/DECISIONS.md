@@ -14594,3 +14594,101 @@ generalises is the one used here — **make the record machine-checked**, so
 
 **No source behaviour changed** — every edit is a docstring, a config note, or a
 new test/script. **Does not start a phase. Closes O-111(b).**
+
+---
+
+## D-087.24 — The FOMC year-boundary 404: an EXPECTED ABSENCE was being reported as a FAILURE
+
+**Defect (O-114).** `thesis_layer/catalysts.py::_fetch_fed_fomc_meetings` asks for
+**two** years — `{as_of.year, as_of.year + 1}` — because a December `as_of` with a
+90-day horizon needs next year's calendar. **Measured live 2026-09-22, the request
+for an unpublished year is a 404, not an empty set:**
+
+===========================  =========  ==============================
+request                      status     body
+===========================  =========  ==============================
+``year=2025`` (published)    **200**    the 2025 document set
+``year=2026`` (published)    **200**    the 2026 document set
+``year=2027`` (not yet)      **404**    ``{"detail":"Not Found"}``
+``year=2030`` (not yet)      **404**    ``{"detail":"Not Found"}``
+``year=notayear`` (invalid)  **404**    ``{"detail":"Not Found"}``
+===========================  =========  ==============================
+
+Repeated identically on re-request, so the 404 is deterministic rather than flaky.
+**404 is the service's single way of saying "no such document set"** — it does not
+distinguish *unpublished* from *invalid*, which is fine here because both mean "this
+year contributes no rows".
+
+**What the code did instead.** `_http_get` calls `raise_for_status()`, so the 404
+raised `HTTPStatusError`, was caught by a clause shared with the transport errors,
+and was logged at **WARNING** — `FOMC documents for 2027 failed: ...` — which is
+**byte-identical in shape to the dead-port outage that cost this project hours**
+(D-087.10/.13). Reproduced by simulation before the fix: a December `as_of` returned
+the current year's meetings correctly but logged the 2027 request as a failure.
+
+**Why the mislabelling is the defect, not the noise.** An expected absence reported
+as a failure is how a real failure gets ignored: a reader who sees that warning
+every December *for a reason that is normal* learns to skip it, and then skips the
+one that is not. This is the same class as D-085's conflation (a value that means
+two things) applied to **log levels** — one channel carrying both "the year is not
+published" and "the service is down".
+
+**The fix — distinguish the CAUSE, keep the failure loud.**
+
+1. A **404** is an expected absence: logged at **INFO**, naming the year, so
+   *"not published yet"* stays visible rather than silent. Nothing is fabricated for
+   the unpublished year, and the published year's rows are unaffected.
+2. **Everything else stays WARNING** — 5xx, a transport error, a timeout, an empty
+   body, malformed JSON — because those *are* failures.
+3. The **JSON parse is separated from the fetch** and hardened: an empty or
+   whitespace-only body is reported as *"returned an empty body"* **before** it can
+   reach `json.loads`, and a truncated body is reported as malformed JSON rather
+   than being folded into the transport clause. `json.loads("")` raises `ValueError`;
+   the old handler caught it only incidentally, which is why an empty body and a
+   transport fault were indistinguishable.
+
+**The fixture was the reason it survived — and this is the durable half.** The
+test suite's `_fomc_payload_for_year` returned `{"results": []}` for an unknown
+year. That encodes the **intended** behaviour, not the **measured** one. A stub that
+asserts what the code was *written to do* rather than what the service *does* cannot
+fail, and so it certified the 404 defect green. The module docstring carried the
+same error in prose: *"asking for a year the Fed has not published returns an empty
+set rather than an error, which is the correct reading."* **False, and never
+measured.** Both are corrected, and `_FOMC_2027` now carries an explicit note that
+the live 2027 response was a 404 at capture time.
+
+**Three guards, and `caplog` is load-bearing.** The assertion is on **log level**,
+not on returned data — the meetings were always correct; the *reporting* was wrong,
+and a test that only checked the returned list would pass against the buggy code.
+
+* `test_an_unpublished_year_is_an_expected_absence` — a 404 for 2027 produces **no
+  WARNING**, an **INFO** naming the year, and the 2026 meetings intact.
+* `test_a_genuine_fomc_failure_is_still_loud` — **the negative control**. A 503 must
+  still warn. Without it the fix could be satisfied by silencing *everything*, which
+  is a guard that passes by never firing.
+* `test_an_empty_or_malformed_fomc_body_does_not_crash` — an empty body warns and
+  does not take down the caller.
+
+**Mutation-proven, four mutants, each killed by the intended guard:**
+
+* pre-fix handler restored → killed by `test_an_unpublished_year_is_an_expected_absence`
+  with the exact defect message (`an expected absence was reported as a failure:
+  ['FOMC documents for 2027 failed: 404']`);
+* `status_code == 404` widened to `>= 400` (swallow real failures) → killed by the
+  **negative control**;
+* the empty-body guard dropped → killed by the empty-body test.
+
+All restores verified **byte-exact**. The probes are throwaway (`nohup`/pipeline
+detachment is forbidden on win32 — lesson 5cn — so the pre-fix revert ran in-process
+with a `finally` restore and an equality assertion on the file text).
+
+**Gates.** ruff check clean · `ruff format --check` **237** · `mypy --strict` **237**
+(D-035 parity) · pytest **full suite, 0 failed** · `sweep_health.py` **41 sweeps,
+0 leftovers, 0 mutant shapes, 0 failures**. **No sweep count change** — this entry
+adds tests, not a mutation sweep (the guard is per-behaviour and `caplog`-based).
+
+**What stays open.** The FRED timeout investigation (**item 5**) is untouched by
+this entry. The 404-vs-200 semantics are measured against the local OpenBB service;
+if the upstream Fed endpoint's behaviour changes, the INFO/WARNING split degrades to
+"a 200 that no longer occurs" rather than to a wrong verdict, and the docstring's
+table records the date of measurement. **No phase started.**
