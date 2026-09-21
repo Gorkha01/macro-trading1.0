@@ -885,9 +885,72 @@ class RegistrySeries(BaseModel):
     endpoint: str | None = None
     symbol: str | None = None
     tenors: dict[str, str] | None = None
+    tenor_labels: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "For a curve whose provider returns ALL tenors in ONE response keyed by the "
+            "provider's own maturity NAME, the map from this entry's `tenors` key to that "
+            "response's label. Only meaningful when the endpoint is a single-call curve "
+            "command rather than one call per symbol. "
+            "Measured 2026-09-21: `fixedincome/government/yield_curve` returns 11 rows "
+            "labelled `month_1`, `month_3`, `month_6`, `year_1`, `year_2`, ... `year_30`, "
+            "whereas the registry (and every downstream consumer) names the same tenors "
+            "`1mo`, `3mo`, ..., `30yr`. Without this map the join between the two naming "
+            "schemes is implicit regex guesswork in the fetcher, and a tenor that silently "
+            "failed to match would be reported as a MISSING tenor — raising, which is safe, "
+            "but with a message that blames the provider for the reader's own name mismatch. "
+            "Declaring it makes the correspondence data rather than inference."
+        ),
+    )
     description: str = ""
     frequency: str | None = None
     units: str | None = None
+    source_units: str | None = Field(
+        default=None,
+        description=(
+            "The scale the PROVIDER returns ``value`` in, when it differs from ``units`` "
+            "(the scale the ENGINE works in). Both are required to be explicit because the "
+            "same rate is served in two different scales by two routes on the SAME local "
+            "OpenBB service, measured 2026-09-21: "
+            "``economy.fred_series?symbol=SOFR`` returns 3.85 (percent) while "
+            "``fixedincome/rate/sofr`` returns 0.0385 (decimal) for the same observation "
+            "date. A 100x error introduced by an endpoint swap is invisible in the values "
+            "themselves — 3.85 and 0.0385 are both plausible-looking rates — which is "
+            "exactly the plausible-but-wrong class Section 21.0 exists to catch. "
+            "Declaring the source scale lets the fetcher CONVERT rather than assume, and "
+            "lets a validator reject the swap instead of silently publishing it. "
+            "Permitted values: None (source already matches `units`), 'decimal' "
+            "(multiply by 100 to reach percent), 'percent' (multiply by 1)."
+        ),
+    )
+    unit_scale_to_units: float | None = Field(
+        default=None,
+        description=(
+            "The multiplicative factor that converts the provider's value into `units`. "
+            "Derived from `source_units` by the validator below rather than written by "
+            "hand, so the two can never disagree. Present so a reader of a resolved entry "
+            "sees the exact number the fetcher will apply."
+        ),
+    )
+    window_filter_supported: bool = Field(
+        default=True,
+        description=(
+            "Whether the provider's endpoint actually applies a `start_date` window on this "
+            "ROUTE. Default True, because every FRED-backed entry honours it. Set False for a "
+            "route where `start_date` is accepted and silently ignored, and the fetcher will "
+            "then OMIT the parameter rather than send it. "
+            "This exists because sending an ignored parameter is not harmless: it makes the "
+            "code claim a bounded window it does not have, and the caller's own "
+            "`realised_positions` / `withheld` guard (the O-7 forward-dated filter) then "
+            "becomes machinery that can never fire, because a latest-only response cannot "
+            "contain a forward-dated row. A guard that cannot fire is D-037's defect class "
+            "(declared, consumed, unreachable) wearing a window's clothes. "
+            "Measured live 2026-09-21 on `fixedincome/government/yield_curve`: with "
+            "`start_date=2026-09-15` and with no `start_date` at all, the response was "
+            "IDENTICAL — 11 rows, every one dated 2026-09-17. It is a latest-only snapshot "
+            "endpoint, so this entry declares False."
+        ),
+    )
     seasonality: str | None = Field(
         default=None,
         description=(
@@ -1034,6 +1097,48 @@ class RegistrySeries(BaseModel):
                 raise ValueError(
                     f"plausible_range {self.plausible_range} is not an increasing interval."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_unit_scale(self) -> RegistrySeries:
+        """Turn a declared `source_units` into the single factor the fetcher applies.
+
+        The factor is DERIVED, never written by hand: a hand-written factor beside a
+        declared unit pair is two facts that can drift, and a drifted scale is a silent
+        100x error. Deriving it means `source_units` is the only thing to get right.
+
+        `source_units` may only be declared when `units` is also declared, because
+        "convert to what?" has no answer otherwise. That combination is rejected rather
+        than defaulted, since a default here would be a guess about scale.
+        """
+        if self.source_units is None:
+            object.__setattr__(self, "unit_scale_to_units", None)
+            return self
+
+        if self.units is None:
+            raise ValueError(
+                f"registry entry '{self.symbol or self.tenors or '?'}' declares "
+                "source_units without units. source_units describes a conversion INTO "
+                "units, so declaring one without the other is only half a fact."
+            )
+
+        source = self.source_units.strip().lower()
+        target = self.units.strip().lower()
+        if source == target:
+            factor = 1.0
+        elif source == "decimal" and target == "percent":
+            factor = 100.0
+        elif source == "percent" and target == "decimal":
+            factor = 0.01
+        else:
+            raise ValueError(
+                f"registry entry '{self.symbol or self.tenors or '?'}' declares an "
+                f"unsupported conversion: source_units={self.source_units!r} -> "
+                f"units={self.units!r}. Supported pairs are (decimal -> percent), "
+                "(percent -> decimal), and an identical pair (factor 1.0). Any other "
+                "pair needs a named conversion here, not a silent pass-through."
+            )
+        object.__setattr__(self, "unit_scale_to_units", factor)
         return self
 
     @model_validator(mode="after")

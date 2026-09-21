@@ -367,7 +367,17 @@ series:
   fed_funds_rate:
     provider: fred
     symbol: FEDFUNDS
-    description: Effective Federal Funds Rate, monthly average
+    description: >
+      Effective Federal Funds Rate, monthly average. Kept on `fred_series`
+      (D-086): the dedicated `fixedincome/rate/effr` command returns the
+      DAILY effective rate, which is a different series from this MONTHLY
+      average, not a substitute for it. Measured 2026-09-21 — `FEDFUNDS` over
+      a September-only window returns 0 rows (monthly), `effr` returns 12
+      (daily). Substituting one for the other would silently change the
+      series' frequency and every MoM comparison built on it.
+      The dedicated command's `target_range_upper`/`lower` typed fields are
+      recorded as available for a Phase 5+ consumer; adopting them means
+      adding a new field, not re-pointing this one.
     frequency: monthly
     units: percent
     status: verified
@@ -375,6 +385,28 @@ series:
     verified_value: 3.63
     plausible_range: [0.0, 25.0]
 
+  # D-086: the DEDICATED rate commands are NOT adopted, and the reason is
+  # MEASURED rather than stylistic. Two independent blockers, both verified
+  # live 2026-09-21:
+  #
+  # 1. SCALE. `fixedincome/rate/sofr` returns `rate` as a DECIMAL (0.0385)
+  #    where `economy.fred_series?symbol=SOFR` returns PERCENT (3.85) for the
+  #    same observation date. The same trap does NOT apply to `iorb`, which
+  #    returns 3.9 from both routes — so a bulk endpoint swap would look
+  #    CORRECT on one field and introduce a silent 100x error on the next.
+  #    The `source_units: decimal` declaration added in D-086 makes this
+  #    survivable, so scale alone is no longer disqualifying.
+  # 2. COVERAGE. `economy/survey/sloos` returns only THREE symbols —
+  #    DRISCFLM, SUBLPDCLCTSNQ, DRISCFS, all about loan-rate SPREADS. The
+  #    field this registry needs, DRTSCILM (net % tightening C&I lending
+  #    STANDARDS), is NOT among them. That is a coverage limit, not a scale
+  #    one, and no declaration fixes it.
+  #
+  # So the scalar FRED route stays for these fields. It is not a defect: for
+  # a single named series `fred_series` is the correct command. It is the
+  # wrong choice only where a dedicated command returns the SAME series more
+  # cheaply — which is true of the curve (11 calls -> 1, adopted above) and
+  # false of these.
   sofr:
     provider: fred
     symbol: SOFR
@@ -383,6 +415,9 @@ series:
       Secured Overnight Financing Rate. Same same-day-publication condition as
       iorb: SOFR is published in the morning for the prior business day, so a
       tolerance of 1 covers the UTC-date boundary without arming a wider gap.
+      D-086: `fixedincome/rate/sofr` is a live alternative returning percentiles
+      and volume, but it serves `rate` in DECIMAL (0.0385 vs this route's 3.85);
+      not adopted, per the block comment above.
     frequency: daily
     units: percent
     status: verified
@@ -722,13 +757,30 @@ series:
     plausible_range: [0.0, 20.0]
 
   # ------------------------------------------------------------ Yield curve
-  # Treasury curve via FRED's constant-maturity series. The Treasury.gov
-  # route (fixedincome.government.treasury_rates) is the alternative; the
-  # registry keeps them side by side so Phase 0 can pick whichever verifies.
+  # D-086: ONE call replaces eleven, via the Fed's own H.15 curve command.
+  # The Treasury.gov route (fixedincome.government.treasury_rates) is the
+  # alternative; both are `federal_reserve` and both return the same H.15
+  # source, so the cheaper single-call `yield_curve` is used.
+  #
+  # TWO facts had to be declared rather than assumed, and both are silent
+  # 100x-or-mis-assignment defects if guessed:
+  #  * `tenor_labels` — the command names tenors `month_1`/`year_10` while this
+  #    registry (and every downstream consumer) uses `1mo`/`10yr`.
+  #  * `source_units: decimal` — the command returns `rate` as a DECIMAL
+  #    (0.0494) whereas `economy.fred_series` returns PERCENT (4.94) for the
+  #    same observation date. Verified live 2026-09-21 on DGS10 vs year_10.
   treasury_curve:
-    provider: fred
-    endpoint: economy.fred_series
+    provider: federal_reserve
+    endpoint: fixedincome.government.yield_curve
     snapshot_field: yield_curve
+    source_units: decimal
+    # Measured live 2026-09-21: this route IGNORES `start_date`. With
+    # `start_date=2026-09-15` and with no `start_date` at all the response was
+    # IDENTICAL — 11 rows, every one dated 2026-09-17. It is a latest-only
+    # snapshot endpoint. Declaring False makes the fetcher OMIT the parameter
+    # instead of sending a window the provider discards; sending it anyway would
+    # claim a bounded window that does not exist.
+    window_filter_supported: false
     tenors:
       1mo: DGS1MO
       3mo: DGS3MO
@@ -741,16 +793,31 @@ series:
       10yr: DGS10
       20yr: DGS20
       30yr: DGS30
+    tenor_labels:
+      1mo: month_1
+      3mo: month_3
+      6mo: month_6
+      1yr: year_1
+      2yr: year_2
+      3yr: year_3
+      5yr: year_5
+      7yr: year_7
+      10yr: year_10
+      20yr: year_20
+      30yr: year_30
     description: >
       Treasury constant-maturity yields, daily, percent.
       NOTE: registry key is `treasury_curve` but it populates the schema field
       `yield_curve`; declared via `snapshot_field` above rather than assumed.
+      The `symbol`/`tenors` values are retained as documentation of the exact
+      FRED series each tenor corresponds to and are NOT sent to the provider on
+      this route; `tenor_labels` is what joins the response.
     frequency: daily
     units: percent
     status: verified
-    verified_on: 2026-09-16
-    verified_value: 4.97
-    verified_curve: {1mo: 3.94, 3mo: 4.11, 6mo: 4.18, 1yr: 4.37, 2yr: 4.65, 3yr: 4.73, 5yr: 4.8, 7yr: 4.88, 10yr: 4.97, 20yr: 5.37, 30yr: 5.34}
+    verified_on: 2026-09-21
+    verified_value: 4.94
+    verified_curve: {1mo: 3.97, 3mo: 4.12, 6mo: 4.2, 1yr: 4.4, 2yr: 4.67, 3yr: 4.75, 5yr: 4.78, 7yr: 4.86, 10yr: 4.94, 20yr: 5.32, 30yr: 5.29}
 
   tips_yields:
     provider: fred

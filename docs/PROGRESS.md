@@ -42,24 +42,27 @@ not re-open it. Its recorded state: `_apply_risk_axis` in
 `thesis_layer/builder.py`; **9 applied / 8 killed / 1 control survived —
 CERTIFIES**; live check **PASSED exit 0**.
 
-**GATES AT D-085's CLOSE — these exact numbers are the baseline you inherit.**
+**GATES AT D-086's CLOSE — these exact numbers are the baseline you inherit.**
 Any deviation is either your change or a defect; do not assume drift.
 
 ```
 ruff check src tests tools scripts        ->  All checks passed
-ruff format --check src tests tools scripts ->  227 files already formatted
-mypy --strict src tests tools scripts     ->  no issues in 227 source files
-pytest -q                                 ->  2507 passed, 1 skipped, 0 failed
+ruff format --check src tests tools scripts ->  230 files already formatted
+mypy --strict src tests tools scripts     ->  no issues in 230 source files
+pytest -q                                 ->  2537 passed, 1 skipped, 0 failed
 scripts/mutation_api_layer.py             ->  42 applied / 39 killed / 3 survivors
                                                (M1.5 + M4.3 proven inert; M10.1 = the
                                                 honesty CONTROL, which must survive)
                                                CERTIFIES
 scripts/mutation_risk_axis.py             ->  9 applied / 8 killed / 1 survived  CERTIFIES
+scripts/mutation_catalyst_calendar.py     ->  10 applied / 8 killed / 2 survivors  CERTIFIES
+                                               (M2.1 inert-by-construction; M7.1 the control)
+scripts/mutation_lei_proxy.py             ->  36/36 killed  CERTIFIES
 tools/sweep_health.py                     ->  40 sweeps, 0 leftovers, 0 failures
 ```
 
-**The count is 227 = 227** — ruff-format's file count equals mypy's (D-035; was
-**218** at D-073's close, so D-085's fixes added 9 files).
+**The count is 230 = 230** — ruff-format's file count equals mypy's (D-035; was
+**227** at D-085's close, so D-086's three new test files added 3).
 
 **STEP 0 OF ANY SESSION — do this before anything else:**
 1. `uv run python tools/sweep_health.py` — inherit a clean tree, or find a leftover
@@ -4246,3 +4249,132 @@ end-to-end thesis build** from the local OpenBB API: 24/24 fields, a real
 `WATCH`/`NO_SIGNAL` stand-down on a `+0.26%` gap inside `0.86pp` dispersion.
 Full text: `DECISIONS.md` **D-085** (incl. **D-085.8**, the correction to
 D-085.6), `OPEN_ISSUES.md` **O-107** (and the O-103 update).
+
+---
+
+## D-086 — the OpenBB utilization audit §8: applied, one part corrected, and a gate defect found by running it
+
+**Trigger.** The user authorised applying `docs/OPENBB_UTILIZATION_AUDIT.md` (D-084)
+§8, whose five changes had been **recorded but deliberately not applied**.
+
+### Applied
+
+| §8 change | disposition |
+|---|---|
+| 1 — curve 11 calls → 1 | **APPLIED** — `fixedincome.government.yield_curve`, 11-entry `tenor_labels` in config, values live-verified **identical** (`1mo 3.97 … 10yr 4.94 … 30yr 5.29`), `source_units: decimal` declared |
+| 2 — FOMC scrape → command | **APPLIED** — `economy/fomc_documents`, typed `date`/`doc_type`; two regexes **deleted**; live check **PASSED** (34 rows, 6 meetings, 3 with projections) |
+| 3 — dedicated rate commands | **DECLINED with a correction** — see below |
+| 4 — docs-only calendar limitation | **FOLDED INTO D-086** |
+| 5 — coverage guard | **APPLIED** — offline + live tests, skipping when the service is down |
+
+### Declined, and why the audit was wrong
+
+**1. THE SCALE TRAP.** The same service serves the same rate in **two scales by
+route**: `economy.fred_series?symbol=SOFR` → **3.85** (percent) but
+`fixedincome/rate/sofr` → **0.0385** (decimal) — **yet** `fixedincome/rate/iorb` →
+**3.9** matches `fred_series IORB` → **3.9**. **Per-route, not per-family**, so an
+endpoint swap looks correct on the field you check and silently introduces a **100×**
+error on the next one. Remedy: the scale became a **declared, derived** registry
+property (`source_units` → `unit_scale_to_units` derived by `_derive_unit_scale`,
+never hand-written) applied at **one** conversion site per path.
+
+**2. The audit's §4.1 is FALSE.** `economy/survey/sloos` returns **3** symbols
+(`DRISCFLM`, `SUBLPDCLCTSNQ`, `DRISCFS`, all loan-rate *spreads*); **`DRTSCILM` is
+NOT among them**. A **coverage** gap, which no `source_units` declaration can close.
+
+### A gate defect, found by running the gate
+
+After the source changes `sweep_health.py` went **2 → 7 failures**. Four were the
+catalyst sweep's own `check_targets` gate **correctly refusing** (its anchors named
+the deleted parser) and were re-pointed to the equivalent defects on the new
+transport. **Three were a genuine tool defect:**
+
+`sweep_health.py` read targets with **two different readers** — `_own_target_check`
+used `read_text` (translates newlines), `_native` used `read_bytes().decode`
+(**does not**). On a **CRLF** target every LF anchor matched zero times, so the
+resolver assigned the anchor to `candidates[0]` and the checker then reported
+**ABSENT in the wrong file**. The tool's **own docstring records this defect in the
+past tense** — the fix had been applied to one function and **not the other**.
+Measured: `snapshot_builder.py` (814 CRLF) and `config.py` (4447 CRLF) are the two
+entirely-CRLF candidates, and they are **exactly** the two whose mutants were falsely
+reported. **My own edits armed it** — both were LF at HEAD.
+
+Fixed; guarded by **`tests/test_sweep_health_readers.py`** (4 structural assertions,
+mutation-proven). **The fix then exposed a LIVE LEFTOVER**: `model_config =
+ConfigDict(extra="forbid")` was missing from `src/macro_engine/models/lei_proxy.py`
+(mutant `M6e`, an earlier interrupted sweep) — invisible because that file was read
+by the broken reader too. Restored; `git diff HEAD` on it is **empty**.
+
+### Repairing 15 broken tests, and what it proved
+
+The transport swap broke **15 tests in `test_catalysts.py`**, found by the **full
+suite** while the targeted per-file runs were green — **the suite, not the
+neighbourhood, is the gate.** Every pin was re-pointed at the new source rather than
+deleted: the defects had **moved, not vanished**.
+
+**Mutation proving forced two NEW tests into existence** (both the D-037/D-045
+"declared, consumed, unreachable" class — a claim no test could contradict):
+`test_the_projections_flag_survives_a_later_policy_row` (mutant **M3 survived** every
+fixture because they all listed policy first) and
+`test_tenors_are_attributed_by_label_even_when_the_rows_are_shuffled` (mutant **S4
+survived** because no payload was ever shuffled). **11 mutants total, all killed and
+restored.**
+
+### A self-inflicted loss
+
+Cleaning up mutant S4 I ran **`git checkout -- snapshot_builder.py`**, destroying
+**97 lines of finished work** (the probe had already restored the file). Reconstructed
+and verified **behaviourally**, not byte-for-byte. Caught by `grep -n "unit_scale"`
+returning **nothing** — an absence-of-content check. **Never `git checkout --` inside a
+mutation probe.**
+
+### Gates at close
+
+```
+ruff check = format --check = mypy --strict   ->  230 = 230 (D-035 parity; 227 → 230)
+pytest -q                                     ->  2540 passed / 1 skipped / 0 failed
+sweep_health.py                               ->  40 sweeps, 0 leftovers, 0 mutant shapes, 0 failures
+mutation_catalyst_calendar.py                 ->  10/8/2  CERTIFIES
+mutation_lei_proxy.py                         ->  36/36   CERTIFIES
+```
+
+**Registry:** 44 entries, **43 still `provider: fred`**; `treasury_curve` the sole
+exception, carrying the declarations that make it safe. **No phase started.**
+
+### The post-interruption re-verification (D-086.11 + D-086.12)
+
+The D-086 work was interrupted **twice**. A full re-verification pass was run
+rather than trusting the pre-interruption gate line, and it found **three real
+problems — none of them a mere artefact of the interruption**:
+
+1. **A window parameter the route ignores was being sent.** `fetch_curve` sent
+   `start_date` to a **latest-only** endpoint that silently discards it
+   (measured: identical response with and without). That claimed a bounded
+   window the code did not have, and left the O-7 forward-dated guard
+   structurally unable to fire. *Fixed:* the registry declares
+   `window_filter_supported: false` and the fetcher **omits** the parameter.
+   Mutation-proven **2/2**, including the negative control that stops the fix
+   from becoming an unconditional over-fetch.
+2. **A label column could be picked as the value column.** `_pick_value_column`'s
+   last-resort branch returned `'maturity'` on a `['date','maturity']` frame —
+   renaming the label to `value` and casting maturity *names* as rates. Latent on
+   the live shape (the `rate` candidate wins first) but reachable, and in exactly
+   the path D-086 introduced. *Fixed:* a `LABEL_COLUMNS` constant derived from
+   `NORMALIZED_OPTIONAL_COLUMNS`; mutation-proven.
+3. **A SIGTERM'd mutation sweep left `M6d` applied** — `if False:` where
+   `lei_proxy.py` needs `if not isfinite(change):`, i.e. the non-finite guard
+   **permanently disabled**. Caught by the sweep's own `check_targets` on the
+   next run, **not** by `sweep_health.py` — which was telling the truth: its
+   whole-tree scan ran two minutes *before* the mutant was applied. Re-injecting
+   the mutant and calling the scan directly proved the detector works
+   (`hits: 1`). Restored; `git diff HEAD` empty; sweep re-run to completion.
+
+**The lesson, and it is the one worth carrying into the next session:** all three
+were live while `ruff`, `mypy` and the full suite were **green**. Green means
+"nothing I test is broken", never "nothing is broken". And a health result is a
+**photograph, not a watchdog** — run `sweep_health.py` *last*, after everything
+that writes to `src/`, or it describes a tree that no longer exists.
+
+Full text: `DECISIONS.md` **D-086** (§1–§9 + **§10**, **§11**, **§12**
+addenda), `OPEN_ISSUES.md` **O-104** (superseded), `REFERENCE.md` ("D-086
+rules"), `HANDOFF.md` §2 + §6.

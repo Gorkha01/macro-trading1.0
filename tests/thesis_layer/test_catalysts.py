@@ -1,4 +1,4 @@
-"""Tests for ``next_catalyst_calendar`` (§16.4, D-065).
+"""Tests for ``next_catalyst_calendar`` (§16.4, D-065, D-086).
 
 The defects this file exists to pin
 -----------------------------------
@@ -14,11 +14,23 @@ The defects this file exists to pin
    report the next FOMC as *tomorrow, forever*.
    ``test_fomc_dates_come_from_the_fed_not_fred`` and
    ``test_a_daily_feed_would_be_rejected_as_a_meeting_calendar`` are the pins.
-4. **Flattening the Fed's HTML creates phantom meetings.** The flat 2027 panel
-   text yields two January meetings from one (measured).
-   ``test_the_structured_markup_is_read_not_the_flat_text`` is the pin.
+4. **Flattening unstructured text creates phantom meetings.** This defect was
+   originally pinned against the Fed's HTML calendar panel (the 2027 panel's
+   trailing "January 25-26, 2028" note produced a phantom 2027 January
+   meeting). **D-086 replaced that source with the structured
+   ``economy/fomc_documents`` command**, so the markup is gone — but the
+   *class* of defect did not go away, it moved. The pins are now
+   ``test_meeting_dates_come_from_the_typed_field_not_the_url`` (the date must
+   be read from the ``date`` field, not inferred from the document URL, which
+   also carries dates for projections and minutes) and
+   ``test_the_projections_marker_comes_from_a_document_not_a_suffix`` (the
+   dot-plot flag comes from a ``projections`` row, not from a ``*`` convention
+   on a day range).
 5. **A source that failed must not read as a quiet calendar.** D-054's silence
    failure. ``test_every_source_failing_raises_not_returns_empty``.
+6. **A reachable-but-empty FOMC source is not an answered source.** D-085's
+   conflation class, applied to the new command.
+   ``test_a_reachable_but_empty_fomc_source_is_not_an_answered_source``.
 
 The transport is monkeypatched for the offline tests; the live tests are marked
 ``network`` and deselected by default, so the suite stays deterministic.
@@ -27,6 +39,7 @@ The transport is monkeypatched for the offline tests; the live tests are marked
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Any
 
 import httpx
@@ -40,7 +53,7 @@ from macro_engine.thesis_layer.catalysts import (
 )
 
 # ---------------------------------------------------------------------------
-# Fixtures: real, captured markup
+# Fixtures: real, captured payloads
 # ---------------------------------------------------------------------------
 
 #: A real FRED ``pager`` for rid=10 (CPI), captured 2026-09-19 and trimmed to
@@ -69,66 +82,102 @@ _FRED_CPI_PAGER = (
     "        </tbody>\n    </table>\n    </div>\n"
 )
 
-#: A real Fed FOMC calendar fragment, captured 2026-09-19. The 2026 panel holds
-#: a confirmed October meeting and a projections-marked December one, and the
-#: 2027 panel ends with the page's **real** trailing note, verbatim:
-#: ``"Note: A two-day meeting is scheduled for January 25-26, 2028."``
+#: A real ``economy/fomc_documents`` response for ``year=2026``, shaped exactly
+#: as measured live 2026-09-21: rows carry ``date``/``doc_type``/``doc_format``/
+#: ``url`` as typed fields. Trimmed to the three 2026 meetings this suite needs,
+#: with the December meeting carrying BOTH a ``monetary_policy`` row and a
+#: ``projections`` row — which is the shape that encodes §16.4's "dot plot".
 #:
-#: That note is the whole point. It carries a month-plus-day-range that belongs
-#: to **2028** while sitting inside the 2027 panel's markup, so a parser that
-#: flattens the panel to text attributes "January 25-26" to **2027** and emits a
-#: phantom meeting. Measured against the live page: the flat parse returns
-#: **9** hits for 2027, the last being ``('January', '25-26')``. The structured
-#: read returns **8**.
-_FED_HTML = """
-<div id="2026">
-  <h4>2026 FOMC Meetings</h4>
-  <div class="panel panel-default">
-    <div class="fomc-meeting__month"><strong>October</strong></div>
-    <div class="fomc-meeting__date">27-28</div>
-  </div>
-  <div class="panel panel-default">
-    <div class="fomc-meeting__month"><strong>December</strong></div>
-    <div class="fomc-meeting__date">8-9*</div>
-  </div>
-</div>
-<div id="2027">
-  <h4>2027 FOMC Meetings</h4>
-  <div class="panel panel-default">
-    <div class="fomc-meeting__month"><strong>January</strong></div>
-    <div class="fomc-meeting__date">26-27</div>
-  </div>
-  <div class="panel-footer">* Meeting associated with a Summary of Economic Projections.  </div>
-  <p>Note: A two-day meeting is scheduled for January 25-26, 2028. Each meeting date is
-  tentative until confirmed at the
-  meeting immediately preceding it.</p>
-</div>
-"""
+#: The URLs deliberately carry *different* dates from the ``date`` field (a real
+#: property of the Fed's document paths: minutes and projections are posted on
+#: their own URLs), so a reader that parsed the date out of the URL instead of
+#: reading the field would attribute the wrong day. That is defect 4's pin.
+_FOMC_2026 = {
+    "results": [
+        {
+            "date": "2026-10-28",
+            "doc_type": "monetary_policy",
+            "doc_format": "html",
+            "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20261028a.htm",
+        },
+        {
+            "date": "2026-12-09",
+            "doc_type": "monetary_policy",
+            "doc_format": "html",
+            "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20261209a.htm",
+        },
+        {
+            "date": "2026-12-09",
+            "doc_type": "projections",
+            "doc_format": "pdf",
+            "url": "https://www.federalreserve.gov/monetarypolicy/files/fomcprojtabl20261209.pdf",
+        },
+    ]
+}
+
+#: A captures the ``year=2027`` response: one January meeting with no
+#: projections. Kept separate so the year-boundary path is exercised.
+_FOMC_2027 = {
+    "results": [
+        {
+            "date": "2027-01-27",
+            "doc_type": "monetary_policy",
+            "doc_format": "html",
+            "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20270127a.htm",
+        },
+    ]
+}
 
 #: A frozen "today" inside the captured window, so the forward filter is exact.
 _TODAY = dt.date(2026, 9, 19)
 
-#: The two hosts the module is allowed to call.
+#: The two hosts the module is allowed to call. NOTE (D-086): the Fed host is
+#: `127.0.0.1` now — the FOMC source is the local OpenBB command, not
+#: `www.federalreserve.gov`. FRED is still read directly by `httpx` (its
+#: OpenBB alternative is broken by a transport-fingerprint block, §5.3 of the
+#: audit), so both hosts remain, but only one of them is a scrape.
 _FRED_HOST = "fred.stlouisfed.org"
-_FED_HOST = "www.federalreserve.gov"
+_FOMC_HOST = "127.0.0.1:6901/api/v1/economy/fomc_documents"
+
+
+def _fomc_payload_for_year(year: int) -> dict[str, Any]:
+    """The captured FOMC document set for one year, or an empty one."""
+    if year == 2026:
+        return _FOMC_2026
+    if year == 2027:
+        return _FOMC_2027
+    return {"results": []}
 
 
 def _fake_get(
-    *, fred_pager: str | None = _FRED_CPI_PAGER, ptic: int = 3, fed_html: str | None = _FED_HTML
+    *,
+    fred_pager: str | None = _FRED_CPI_PAGER,
+    ptic: int = 3,
+    fomc: dict[int, dict[str, Any]] | None = None,
+    fomc_error: bool = False,
 ) -> Any:
-    """Build a ``_http_get`` replacement routing by host."""
+    """Build a ``_http_get`` replacement routing by host.
+
+    ``fomc`` overrides the per-year document sets; ``fomc_error`` makes the
+    FOMC command raise, which is how the "every source failed" path is reached
+    now that FRED and the FOMC command are the two sources.
+    """
 
     def _get(url: str, *, timeout: float) -> str:
         if _FRED_HOST in url:
             if fred_pager is None:
                 raise httpx.ConnectError("fred down")
-            import json
-
             return json.dumps({"pager": fred_pager, "ptic": ptic})
-        if _FED_HOST in url:
-            if fed_html is None:
-                raise httpx.ConnectError("fed down")
-            return fed_html
+        if _FOMC_HOST in url:
+            if fomc_error:
+                raise httpx.ConnectError("fomc documents down")
+            year = 0
+            for token in url.split("&"):
+                if token.startswith("year="):
+                    year = int(token.removeprefix("year="))
+            if fomc is not None:
+                return json.dumps(fomc.get(year, {"results": []}))
+            return json.dumps(_fomc_payload_for_year(year))
         raise AssertionError(f"unexpected URL: {url}")
 
     return _get
@@ -144,13 +193,16 @@ def _fake_get_by_rid(pager_for_rid: dict[int, str]) -> Any:
 
     def _get(url: str, *, timeout: float) -> str:
         if _FRED_HOST in url:
-            import json
             import re as _re
 
             rid = int(_re.search(r"rid=(\d+)", url).group(1))  # type: ignore[union-attr]
             return json.dumps({"pager": pager_for_rid.get(rid, ""), "ptic": 0})
-        if _FED_HOST in url:
-            return _FED_HTML
+        if _FOMC_HOST in url:
+            year = 0
+            for token in url.split("&"):
+                if token.startswith("year="):
+                    year = int(token.removeprefix("year="))
+            return json.dumps(_fomc_payload_for_year(year))
         raise AssertionError(f"unexpected URL: {url}")
 
     return _get
@@ -309,14 +361,14 @@ def test_ptic_is_never_read_as_a_count(
 
 
 # ---------------------------------------------------------------------------
-# Defects 3 and 4 — the FOMC source and its parse
+# Defects 3 and 4 — the FOMC source and its read
 # ---------------------------------------------------------------------------
 
 
 def test_fomc_dates_come_from_the_fed_not_fred(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
-    """The FOMC entry must reflect the Fed's page even when FRED is down.
+    """The FOMC entry must survive FRED being down entirely.
 
     Defect 3: FRED's FOMC release is a daily press-release feed. If FOMC dates
     came from FRED, killing FRED would kill the FOMC entry. They must survive.
@@ -332,11 +384,13 @@ def test_fomc_dates_come_from_the_fed_not_fred(
 def test_a_daily_feed_would_be_rejected_as_a_meeting_calendar(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
-    """The Fed's parse must yield MEETINGS, not one entry per day.
+    """The FOMC read must yield MEETINGS, not one entry per row of a feed.
 
     Defect 3's consequence: a daily feed read as a calendar reports "tomorrow"
-    every day. The Fed fragment holds exactly three meetings; the output must
-    hold exactly one FOMC entry.
+    every day. The captured 2026 document set holds three rows describing two
+    meetings (October and December — December carries both a policy and a
+    projections document). The output must hold exactly one FOMC entry, and it
+    must be the October meeting, not a December document row.
     """
     monkeypatch.setattr(catalysts, "_http_get", _fake_get())
 
@@ -344,53 +398,118 @@ def test_a_daily_feed_would_be_rejected_as_a_meeting_calendar(
 
     fomc = [e for e in entries if "FOMC" in e]
     assert len(fomc) == 1, fomc
+    assert "2026-10-28" in fomc[0], fomc
 
 
-def test_the_structured_markup_is_read_not_the_flat_text(
+def test_meeting_dates_come_from_the_typed_field_not_the_url(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
-    """Defect 4: the trailing note must not become a phantom meeting.
+    """Defect 4, re-pointed: the date must be READ, not inferred.
 
-    The 2027 panel ends with the page's real note, "Note: A two-day meeting is
-    scheduled for **January 25-26, 2028**." A flat-text parse attributes that
-    January to **2027** and emits a second January meeting (measured: 9 hits for
-    the flat parse, 8 structured). The structured read must yield exactly the
-    three meetings the markup declares — 2026-10-28, 2026-12-09, 2027-01-27 —
-    and in particular **one** January.
+    The old pin caught a parser that flattened markup and invented a meeting.
+    The equivalent hazard on the structured source is a reader that derives the
+    date from the document ``url`` instead of the ``date`` field — the Fed's
+    paths are date-stamped too, and (as captured here) a projections URL is not
+    guaranteed to carry the meeting's day. Here the ``date`` fields say
+    October 28 / December 9 while every ``url`` carries 2026-01-01. A reader
+    that trusted the URL would report January.
+
+    The assertion is therefore two-sided: the returned meeting is the
+    ``date``-field's October 28, and January never appears at all.
     """
-    monkeypatch.setattr(catalysts, "_http_get", lambda url, *, timeout: _FED_HTML)
+    url_decoy = {
+        "results": [
+            {**row, "url": f"https://example.invalid/monetary20260101a-{i}.htm"}
+            for i, row in enumerate(_FOMC_2026["results"])
+        ]
+    }
+    monkeypatch.setattr(catalysts, "_http_get", _fake_get(fomc={2026: url_decoy, 2027: url_decoy}))
 
-    meetings = sorted(catalysts._fetch_fed_fomc_meetings(timeout=5.0))
+    meetings = sorted(catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=_TODAY))
 
-    assert [d for d, _ in meetings] == [
-        dt.date(2026, 10, 28),
-        dt.date(2026, 12, 9),
-        dt.date(2027, 1, 27),
-    ], meetings
+    assert [d for d, _ in meetings] == [dt.date(2026, 10, 28), dt.date(2026, 12, 9)], meetings
+    assert not any(d.month == 1 for d, _ in meetings), (
+        "a date was inferred from the document URL instead of read from the field"
+    )
 
-    january_2027 = [m for m in meetings if m[0].year == 2027 and m[0].month == 1]
-    assert len(january_2027) == 1, january_2027
-    assert january_2027[0][1] is False, "January 2027 carries no projections marker"
-    # The 2028 note's meeting must never appear under 2027.
-    assert not any(m[0].day == 25 for m in meetings), meetings
+
+def test_the_projections_marker_comes_from_a_document_not_a_suffix(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
+) -> None:
+    """The dot-plot flag is a ``projections`` DOCUMENT, not a markup convention.
+
+    Defect 4's other half. The old source encoded "has projections" as a
+    trailing ``*`` on the day range (``"27-28*"``), which the parser had to
+    strip and interpret — a markup convention standing in for the fact. The
+    command returns the fact: a ``projections`` row on the same date.
+
+    Here October has a policy document only and December has both, so the
+    projection flag must be attached to December and NOT to October.
+    """
+    monkeypatch.setattr(catalysts, "_http_get", _fake_get())
+
+    meetings = dict(catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=_TODAY))
+
+    assert meetings[dt.date(2026, 10, 28)] is False, "October carries no projections document"
+    assert meetings[dt.date(2026, 12, 9)] is True, "December carries a projections document"
+
+
+def test_the_projections_flag_survives_a_later_policy_row(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
+) -> None:
+    """Row order must not decide the flag.
+
+    ``by_date[when] = by_date.get(when, False)`` (rather than ``= False``) exists
+    for exactly one reason: a ``projections`` row seen **before** the
+    ``monetary_policy`` row for the same date must not be cleared by it. The
+    captured payload lists policy first, so order never bites in the other tests
+    — this one reverses the two rows, which is the only arrangement in which the
+    ``or`` semantics is observable.
+
+    Without this, ``by_date[when] = False`` passes the whole suite (verified by
+    mutation: the mutant survived before this test existed).
+    """
+    reversed_rows = {
+        "results": [
+            # projections FIRST, policy second — the order the `or` protects.
+            {
+                "date": "2026-12-09",
+                "doc_type": "projections",
+                "doc_format": "pdf",
+                "url": "https://example.invalid/proj.pdf",
+            },
+            {
+                "date": "2026-12-09",
+                "doc_type": "monetary_policy",
+                "doc_format": "html",
+                "url": "https://example.invalid/policy.htm",
+            },
+        ]
+    }
+    monkeypatch.setattr(
+        catalysts, "_http_get", _fake_get(fomc={2026: reversed_rows, 2027: {"results": []}})
+    )
+
+    meetings = dict(catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=_TODAY))
+
+    assert meetings[dt.date(2026, 12, 9)] is True, (
+        "a projections row listed before the policy row was cleared by it"
+    )
 
 
 def test_the_projections_marker_is_surfaced(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
-    """A ``*`` meeting carries the projections §16.4 calls a "dot plot".
+    """A meeting with a projections document says so in the entry text.
 
-    The captured December 2026 meeting is written ``8-9*``. With the October
-    meeting removed from the page so December is the **next** one, the entry
-    must say the meeting carries projections — a SEP meeting is a materially
-    larger event than a statement-only one.
+    With the October meeting removed from the payload so December is the
+    **next** one, the entry must say the meeting carries projections — a SEP
+    meeting is a materially larger event than a statement-only one.
     """
-    october_only = (
-        '<div class="fomc-meeting__month"><strong>October</strong></div>\n'
-        '    <div class="fomc-meeting__date">27-28</div>'
+    december_only = {"results": [r for r in _FOMC_2026["results"] if r["date"] == "2026-12-09"]}
+    monkeypatch.setattr(
+        catalysts, "_http_get", _fake_get(fomc={2026: december_only, 2027: {"results": []}})
     )
-    without_october = _FED_HTML.replace(october_only, "")
-    monkeypatch.setattr(catalysts, "_http_get", _fake_get(fed_html=without_october))
 
     entries = next_catalyst_calendar()
 
@@ -401,9 +520,14 @@ def test_the_projections_marker_is_surfaced(
 def test_a_two_day_meeting_is_dated_by_its_last_day(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
-    """``27-28`` is a meeting ENDING the 28th, which is when the decision lands.
+    """A meeting is dated by the day it ENDS.
 
+    ``27-28`` is a meeting ending the 28th, which is when the decision lands.
     Dating it by the 27th would make every thesis's catalyst one day early.
+
+    The structured command returns a single date per document, so the
+    "last day" is now the only date — and the check is that the entry carries
+    the meeting's date and not the day before it.
     """
     monkeypatch.setattr(catalysts, "_http_get", _fake_get())
 
@@ -411,6 +535,41 @@ def test_a_two_day_meeting_is_dated_by_its_last_day(
 
     assert any("2026-10-28" in e for e in entries), entries
     assert not any("2026-10-27" in e for e in entries), entries
+
+
+def test_the_year_boundary_is_crossed(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
+) -> None:
+    """A horizon crossing New Year must ask for NEXT year's documents.
+
+    Measured shape of the command: it takes a single ``year`` and returns that
+    year's documents, so a December ``as_of`` with a horizon reaching into
+    January must issue **two** requests or it silently truncates at December 31.
+
+    The assertion is directly on ``_fetch_fed_fomc_meetings`` rather than on the
+    rendered calendar, because the rendered calendar returns only the *next*
+    meeting — December 9 is nearer than January 27, so it would mask whether the
+    2027 request was made at all. Pinning it here is what makes "two requests
+    were issued" visible; a one-year implementation returns December alone and
+    fails this test.
+
+    The frozen clock is 2026-09-19, so ``as_of`` is passed explicitly to move the
+    window; the horizon is left at its configured 120 days, which on 2026-12-01
+    reaches 2027-03-31 and therefore contains the January meeting.
+    """
+    requested: list[str] = []
+
+    def _recording(url: str, *, timeout: float) -> str:
+        requested.append(url)
+        return str(_fake_get()(url, timeout=timeout))
+
+    monkeypatch.setattr(catalysts, "_http_get", _recording)
+
+    meetings = catalysts._fetch_fed_fomc_meetings(timeout=5.0, as_of=dt.date(2026, 12, 1))
+
+    assert dt.date(2027, 1, 27) in dict(meetings), meetings
+    years = sorted({int(u.split("year=")[1]) for u in requested})
+    assert years == [2026, 2027], f"the 2027 request was never issued: {requested}"
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +581,7 @@ def test_every_source_failing_raises_not_returns_empty(
     monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
 ) -> None:
     """D-054's silence failure: ``[]`` must not mean two different things."""
-    monkeypatch.setattr(catalysts, "_http_get", _fake_get(fred_pager=None, fed_html=None))
+    monkeypatch.setattr(catalysts, "_http_get", _fake_get(fred_pager=None, fomc_error=True))
 
     with pytest.raises(CatalystSourceError):
         next_catalyst_calendar()
@@ -437,11 +596,44 @@ def test_a_quiet_but_reachable_source_does_not_raise(
     empty does not. Here the pager holds only past events.
     """
     past_pager = _FRED_CPI_PAGER.replace("2026", "2020")
-    monkeypatch.setattr(catalysts, "_http_get", _fake_get(fred_pager=past_pager, fed_html=None))
+    monkeypatch.setattr(
+        catalysts,
+        "_http_get",
+        _fake_get(fred_pager=past_pager, fomc={2026: {"results": []}, 2027: {"results": []}}),
+    )
 
     entries = next_catalyst_calendar()
 
     assert entries == [], entries
+
+
+# ---------------------------------------------------------------------------
+# Defect 6 — a reachable-but-empty FOMC source is not an answered source
+# ---------------------------------------------------------------------------
+
+
+def test_a_reachable_but_empty_fomc_source_is_not_an_answered_source(
+    monkeypatch: pytest.MonkeyPatch, frozen_today: dt.date
+) -> None:
+    """D-085's conflation class, applied to the new command.
+
+    If the FOMC command answers with an empty document set and FRED is down,
+    then *nothing* produced a date. Counting the empty answer as an answered
+    source would make ``next_catalyst_calendar`` return ``[]`` — claiming a
+    quiet calendar on a run where no source had any coverage at all. It must
+    raise instead.
+    """
+    monkeypatch.setattr(
+        catalysts,
+        "_http_get",
+        _fake_get(
+            fred_pager=None,
+            fomc={2026: {"results": []}, 2027: {"results": []}},
+        ),
+    )
+
+    with pytest.raises(CatalystSourceError):
+        next_catalyst_calendar()
 
 
 # ---------------------------------------------------------------------------

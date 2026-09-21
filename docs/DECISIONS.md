@@ -12647,3 +12647,497 @@ now: after any interrupted sweep, believe `git diff` first.
 
 **Also corrected here:** D-085.6's "gates at close" line was written before the
 gates were re-run. The numbers in it are the ones this section re-establishes.
+
+---
+
+## D-086 — the audit's §8 was applied where it was right, corrected where it was wrong, and the unit-scale hazard it missed was the dangerous one
+
+**Context.** `docs/OPENBB_UTILIZATION_AUDIT.md` (D-084) measured the local OpenBB
+service at **278 paths / 575 schemas / 201 commands** and found the engine using
+two of them. Its §8 listed five changes and explicitly recorded them as
+**"RECORDED, NOT APPLIED"**. This entry applies them, and records where applying
+them revealed the audit was materially wrong.
+
+**The measured surface, restated because every decision below turns on it.**
+44 registry entries, **44 use `provider: fred`**, all `status: verified`. The
+audit's premise — that a large fraction of the registry has a dedicated command
+sitting unused — is true. Its conclusion — that the swaps are mechanically safe
+— is **not**, for a reason §8 did not consider.
+
+### D-086.1 — the scale trap, which is the reason a bulk endpoint swap was refused
+
+**The same local service serves the same rate in two scales by route.** Measured
+live 2026-09-21:
+
+| field | route | value | scale |
+|---|---|---|---|
+| SOFR | `economy.fred_series?symbol=SOFR` | **3.85** | percent |
+| SOFR | `fixedincome/rate/sofr` | **0.0385** | decimal |
+| IORB | `economy.fred_series?symbol=IORB` | **3.9** | percent |
+| IORB | `fixedincome/rate/iorb` | **3.9** | percent |
+| Treasury 10yr | `economy.fred_series?symbol=DGS10` | **4.94** | percent |
+| Treasury 10yr | `fixedincome.government.yield_curve` | **0.0494** | decimal |
+
+**SOFR disagrees by 100×; IORB does not. The inconsistency is per-route, not
+per-family.** That is the whole hazard: an endpoint swap looks *correct* on the
+field you happen to check and silently introduces a 100× error on the next one.
+A registry-wide `fred` → dedicated-command edit would have shipped a curve in
+decimals next to scalars in percent, and nothing downstream would have flagged
+it — `units: percent` was a declaration no code ever verified against the value.
+
+**The fix, and its shape.** Rather than forbid the swap, the scale is **declared
+and derived**:
+
+* `RegistrySeries.source_units` (`'decimal'` | `'percent'` | `None`) states what
+  the provider actually returns.
+* `RegistrySeries.unit_scale_to_units` is **derived from it** by
+  `_derive_unit_scale`, never written by hand, so the pair cannot drift. The
+  derived factor is applied at the **single** site where a provider value becomes
+  an `ObservationPoint` (`_points_from_frame`) and at the single site where a
+  curve tenor is published (`fetch_curve`), so a curve cannot be scaled on one
+  path and left raw on another.
+* A `source_units` with no `units` is rejected (there is nothing to convert to);
+  an unsupported pair is rejected rather than guessed.
+
+### D-086.2 — the audit's §4.1 `sloos` claim is FALSE, and no declaration fixes a coverage gap
+
+The audit proposed re-pointing the lending-standards field to
+`economy/survey/sloos`. **Measured: that command returns exactly 3 symbols —
+`DRISCFLM`, `SUBLPDCLCTSNQ`, `DRISCFS` — all loan-rate *spreads*.
+`DRTSCILM` (the net-percentage-of-banks tightening series the field needs) is
+NOT among them.** `DRTSCILM` is what `economy.fred_series` serves.
+
+This is a **coverage** gap, not a **scale** gap, and the two are not
+interchangeable: no `source_units` declaration can conjure a series the endpoint
+does not carry. `fed_funds_rate` and `sofr` stay on `fred_series`, and the
+registry carries a block comment recording **both** independent blockers (scale
+*and* coverage) so a future reader cannot "fix" it with a one-line endpoint edit.
+
+### D-086.3 — the Treasury curve: 11 requests become 1, with identical values
+
+**Adopted.** `treasury_curve` re-pointed from eleven `economy.fred_series` calls
+to **one** `fixedincome.government.yield_curve` call, with an 11-entry
+`tenor_labels` map in config (`1mo: month_1` … `30yr: year_30`).
+
+Live-verified identical to the FRED path: `1mo 3.97 · 3mo 4.12 · 6mo 4.20 ·
+1yr 4.40 · 2yr 4.67 · 3yr 4.75 · 5yr 4.78 · 7yr 4.86 · 10yr 4.94 · 20yr 5.32 ·
+30yr 5.29`. Because the command returns **decimals**, the entry declares
+`source_units: decimal` — without which every tenor would have published at
+1/100th.
+
+The `maturity` label had to be carried through `_normalize`, which previously
+projected to a fixed `NORMALIZED_COLUMNS` allowlist and **silently dropped
+it** — caught by the pivot refusing to run, not by a wrong number. A
+`NORMALIZED_OPTIONAL_COLUMNS` tuple now carries curve labels on the paths that
+have them and is absent elsewhere, so the scalar contract is unchanged.
+
+### D-086.4 — the FOMC catalyst: a scrape becomes a command
+
+**Adopted.** `thesis_layer/catalysts.py` no longer scrapes
+`federalreserve.gov`; it reads `economy/fomc_documents`, which returns
+`date`/`doc_type`/`doc_format`/`url` as **typed fields**. Three consequences,
+all measured:
+
+* **The dot-plot flag is the fact, not a convention.** The markup encoded "has
+  projections" as a trailing `*` on the day range (`"27-28*"`) that the parser
+  had to strip and interpret. The command returns `doc_type='projections'`.
+* **The phantom-meeting hazard is structurally gone.** D-065's defect 2 (a
+  flattened panel inventing a second January meeting) cannot occur when dates
+  arrive typed. `_FED_MONTH_RE` and `_FED_YEAR_RE` were **deleted, not left
+  defined** — a regex nothing calls still reads as a live parser.
+* **`year=` is the only filter that bites.** Measured: `year=2026` → 34 rows;
+  `start_date=` and `limit=` are **silently ignored** and return all 5837 rows.
+  This is the accept-and-ignore class §5.3 of the audit documents, so the
+  function asks for the years it needs and bounds the result **locally** — a
+  filter verified to bite rather than one merely written. History goes back to
+  **1959** (5837 rows, 88 `monetary_policy`) against the scrape's 2021.
+* `_fetch_fred_release` is **kept**: its OpenBB alternative
+  (`economy.calendar`) is broken here by a TLS/HTTP-fingerprint block (the
+  audit's §5.3), which is why the module uses `httpx` at all.
+
+**Also fixed while there:** an empty FOMC history no longer counts as an
+*answered* source. `answered += 1` was unconditional on the `else` branch, so a
+reachable-but-empty command plus a down FRED returned `[]` — a "quiet calendar"
+on a run with no coverage at all. That is exactly the D-085 conflation class,
+and the fix is the same one D-085 applied to the release path.
+
+### D-086.5 — the coverage guard, and what it can and cannot check
+
+**Adopted** as `tests/data_layer/test_registry_endpoint_coverage.py`: every
+registry endpoint is well-formed; `tenor_labels` and `tenors` agree as sets;
+single-call entries must declare `source_units`; and — live, **skipping rather
+than failing** when the service is unreachable — every endpoint exists in
+`/openapi.json`, the curve command serves all 11 labels in one call, and
+`max(rates) < 1.0` proving the decimal claim.
+
+**It cannot check what the audit's §4.1 got wrong.** A guard that asserts an
+endpoint *exists* says nothing about whether it *carries the symbol you need* —
+`sloos` exists and is the wrong series. That class is caught by reading the
+response, which is what D-086.2 did by hand.
+
+### D-086.6 — the tests I broke, and what repairing them actually proved
+
+**The transport swap broke 15 existing tests in `test_catalysts.py`, and the
+full suite caught it — not my targeted runs.** They patched a Fed HTML fragment
+and a host-routed fake, so every one failed with `unexpected URL`. This is
+recorded as a process fact: the per-file runs I was using were green while the
+suite was red, which is the case for the standing rule that the **suite**, not
+the neighbourhood, is the gate.
+
+Repairing them required deciding whether the defects they pinned had **gone
+away** or merely **moved**. They moved. Every pin was preserved against the new
+source — including two that replaced retired-parser tests with equivalent
+assertions: `test_meeting_dates_come_from_the_typed_field_not_the_url` (the date
+must be read, not inferred from the document URL) and
+`test_the_projections_marker_comes_from_a_document_not_a_suffix` (the flag is a
+document, not a markup convention).
+
+**Two tests were added because mutation proving found claims nothing tested:**
+
+* **`test_the_projections_flag_survives_a_later_policy_row`.** The
+  `by_date[when] = by_date.get(when, False)` idiom exists solely so a
+  `projections` row seen **before** the `monetary_policy` row is not cleared by
+  it. Every fixture listed policy first, so `= False` passed the entire suite.
+  **Mutant M3 survived** until this test existed.
+* **`test_tenors_are_attributed_by_label_even_when_the_rows_are_shuffled`.** The
+  refusal message promises the code will not attribute rows by position, and no
+  test could fail on a positional implementation because every payload was
+  served in registry order. **Mutant S4 survived** until this test existed.
+
+Both are the **D-037/D-045 "declared, consumed, unreachable"** class: a comment
+(or an error message) asserting a property, with no test able to contradict it.
+
+### D-086.7 — mutation evidence
+
+Eleven mutants, each injected → named test confirmed **FAILING** → restored →
+confirmed **PASSING**. `ALL KILLED + RESTORED`.
+
+| # | mutant | killed by |
+|---|---|---|
+| M1 | date derived from the document URL | `..._typed_field_not_the_url` |
+| M2 | projections marker never set | `..._comes_from_a_document_not_a_suffix` |
+| M3 | projections flag cleared by policy row | `..._survives_a_later_policy_row` *(added)* |
+| M4 | only the current year requested | `test_the_year_boundary_is_crossed` |
+| M5 | empty history counts as answered | `..._is_not_an_answered_source` |
+| M6 | `answered` requires an **empty** history | `test_fomc_dates_come_from_the_fed_not_fred` |
+| S1 | decimal→percent factor inverted | scale-derivation tests |
+| S2 | scale not applied to scalar fields | `test_fetch_field_applies_the_declared_scale` |
+| S3 | scale not applied to the curve | `..._curve_applies_the_declared_scale` |
+| S4 | curve attributed by position | `..._attributed_by_label_even_when_the_rows_are_shuffled` *(added)* |
+| S5 | missing `maturity` tolerated | `..._without_a_maturity_column_is_refused` |
+
+Probes kept at `.probe/d086_mutation_probe.py` and
+`.probe/d086_scale_mutation_probe.py`.
+
+### D-086.8 — a self-inflicted loss, and the rule it re-confirms
+
+**While cleaning up mutant S4 I ran `git checkout -- snapshot_builder.py`, which
+reverted the file to HEAD and destroyed all 97 lines of D-086's work in it.**
+The mutant wrapper had already restored the file; the `checkout` was pure
+mishandling. The file was reconstructed from the reads taken earlier in the
+session and verified **behaviourally** — all 38 D-086 tests pass, and the three
+gates are green — but the reconstruction is a reconstruction: it is not
+byte-identical to the lost text, and the docstring prose was rewritten.
+
+**The rule this re-confirms, and it is lesson 5ck's corollary:** `git checkout
+--` is a **destructive** operation on uncommitted work and must never be used as
+a cleanup step inside a mutation probe. Mutant cleanup is *restore the saved
+text*, which is what both probes in fact do. The `checkout` was redundant the
+moment the probe's own restore ran, and it is the only reason this happened.
+Also note what caught it: `grep -n "unit_scale"` on the file returning nothing.
+An absence-of-content check, not a presence check — the same shape as Step 0's
+tiebreaker.
+
+### D-086.9 — the dispositions, plainly
+
+| §8 change | disposition |
+|---|---|
+| 1 — curve 11 calls → 1 | **APPLIED**, values live-verified identical, `source_units: decimal` declared |
+| 2 — FOMC scrape → command | **APPLIED**, live check PASSED, both projections branches exercised |
+| 3 — dedicated rate commands | **DECLINED with correction** — the `sloos` coverage claim is false (§4.1) and the scale hazard is undeclared in the audit |
+| 4 — docs-only calendar limitation | **FOLDED INTO THIS ENTRY** |
+| 5 — coverage guard | **APPLIED** as offline + live tests |
+
+**Registry state:** 44 entries, 43 still `provider: fred`; `treasury_curve` is
+the sole exception, and it carries the declarations that make the exception
+safe. `scripts/live_catalyst_calendar_check.py` was rewritten to probe the new
+transport (its old check 5 demonstrated a phantom meeting produced by a parser
+that no longer exists) and **PASSES**: 34 rows, 6 monetary-policy meetings in
+2026, 3 carrying projections.
+
+### D-086.10 — ADDENDUM: `sweep_health.py` was reading targets with two different readers, and one of them could not see a CRLF file
+
+**Found by running the gate, not by reading it.** After the D-086 source changes,
+`sweep_health.py` went from **2 inherited failures to 7**, four of them mine
+(`mutation_catalyst_calendar.py` M2.1/M3.1/M4.1/M5.1) and three that were **not**
+mine to expect (`mutation_lei_proxy.py` M8a/M8b/M8e). The four mine were the
+sweep's own `check_targets` gate working correctly — the D-086 refactor deleted
+the anchors M4.1/M5.1 named, and changed M3.1's call signature — and they were
+re-pointed so each still mutates the *equivalent* defect on the new transport
+(M4.1: the date inferred from the document URL; M5.1: a later `monetary_policy`
+row clearing a `projections` flag).
+
+**The other three were a real tool defect, and its shape is the interesting
+part.** `sweep_health.py` reads a sweep's target files in **two** places, and
+they disagreed about how:
+
+| function | reader | newline translation |
+|---|---|---|
+| `_own_target_check` | `read_text(encoding="utf-8")` | **applies** (CRLF → LF) |
+| `_native` (3-tuple resolver) | `read_bytes().decode("utf-8")` | **none** |
+
+`_own_target_check`'s own docstring records this exact defect in the past tense —
+*"**The read must translate newlines, and the shipped version did not**"* — with
+the measured consequence and the 87%-artefact finding. **The fix was applied to
+one function and left un-applied in the other.**
+
+Disagreeing is worse than either being wrong, because it manufactures findings in
+a *specific, misleading direction*. The resolver asks `old in text` to decide
+**which** candidate file an anchor lives in; reading untranslated, a CRLF file
+matches nothing, so the anchor falls through to `candidates[0]`. The checker then
+reads correctly, does not find the anchor in that file, and reports **ABSENT in
+the wrong file** — a confidently-worded finding about a file nobody was asking
+about.
+
+**Why it surfaced now.** Measured line endings of `_legacy_targets`' four
+candidates for this sweep:
+
+```
+src/macro_engine/data_layer/snapshot_builder.py   CRLF=814   bareLF=0
+src/macro_engine/config.py                        CRLF=4447  bareLF=0
+src/macro_engine/data_layer/validation.py         CRLF=0     bareLF=630
+src/macro_engine/models/lei_proxy.py              CRLF=0     bareLF=509
+```
+
+M8a/M8b target `snapshot_builder.py` and M8e targets `config.py` — **exactly the
+two CRLF members.** At HEAD those files were **LF** (`CRLF=0`), so the bytes
+reader matched and the mutants passed; **my own edits wrote them back as CRLF**,
+which armed a latent bug. The gate reported failures that were 100% real
+findings *about the tree* and 0% findings about the code.
+
+**Fixed in the tool** (`_native` now uses `read_text`, matching the reader its own
+docstring prescribes) **and guarded by a new test file**,
+`tests/test_sweep_health_readers.py` — four `ast`-based assertions that both
+target readers translate newlines, that they **agree with each other**, and that
+the extractor can actually distinguish a function that reads with the wrong
+reader from one that reads nothing. Mutation-proven: re-injecting the bytes
+reader fails **two** of the four; restoring passes all four.
+
+**And the fix exposed a live leftover.** With the resolver reading correctly, the
+LEI sweep's own `check_targets` gate then refused to run at all:
+
+```
+M6e extra=forbid removed from the input model: MUTATION STILL APPLIED in
+    lei_proxy.py (anchor absent AND replacement text present — this is a
+    LEFTOVER, not a drifted anchor; restore the file before sweeping)
+```
+
+`model_config = ConfigDict(extra="forbid")` was **missing from
+`src/macro_engine/models/lei_proxy.py`** — a mutant from an earlier interrupted
+sweep, live in the tree, invisible to `sweep_health.py` because that file was
+being read by the broken reader too. Restored; `git diff HEAD` on the file is now
+**empty**. This is the **second** time a live leftover has been found by a gate
+that could not previously see it (D-081 was the first), and it is the same
+lesson: *a green tick from a gate that reads the wrong bytes certifies nothing.*
+
+**Result:** `sweep_health.py` now reports **40 sweeps, 0 failures, 0 leftovers** —
+better than the 2-inherited-failure baseline, because both "inherited" failures
+were this artefact. `mutation_catalyst_calendar.py` **CERTIFIES at 10 applied /
+8 killed / 2 survivors** (one `expect_killed=False` inert-by-construction, one the
+`M7.1` honesty control).
+
+### D-086.11 — ADDENDUM: the post-interruption re-verification, and the two defects it found
+
+The D-086 work was interrupted mid-flight by a client event. Because an
+interruption can leave a file half-written, a probe un-restored, or an edit
+applied to one of two halves, a **re-verification pass was run from scratch**
+rather than trusting the pre-interruption gate line. That pass found **two real
+defects in the shipped code**, neither of them an artefact of the interruption —
+they were in the D-086 change itself, and the pre-interruption gates had passed
+because **no test pinned either behaviour**.
+
+**Defect 1 — a window parameter the route ignores was being sent.**
+`fetch_curve`'s single-call branch sent `params={"start_date": start}` to
+`fixedincome.government.yield_curve`. Measured live 2026-09-21: with
+`start_date=2026-09-15` and with **no** `start_date`, the response is
+**identical** — 11 rows, every one dated `2026-09-17`. It is a *latest-only
+snapshot* endpoint; the parameter is accepted and silently discarded.
+
+This is the project's own "declared, consumed, unreachable" class (D-037 /
+D-045 / D-048 / O-48) in a window's clothes, and it had a second consequence:
+the O-7 forward-dated guard (`realised_positions` / `withheld`) **cannot fire**
+on a latest-only response, so it was running as machinery that could never
+produce a result. Sending the parameter made the function *claim* a bounded
+window it did not have.
+
+*Fix:* the registry declares `window_filter_supported: false` on
+`treasury_curve`, and the fetcher **consumes** that declaration by omitting
+`start_date` entirely. Verified safe on both transports: the route returns the
+full 11-row curve with only `provider=`, so the package fallback (which calls
+`target(**{})`) is unaffected. The O-7 guard is retained — it is the
+load-bearing guard on the one-request-per-tenor path, which *can* return a
+projection — and the docstring was corrected to say so rather than implying it
+is load-bearing here.
+
+**Defect 2 — a label column could be picked as the value column.**
+`_normalize` picks its value column via `_pick_value_column`, whose last-resort
+branch is `remaining = [c for c in columns if c not in exclude]`. There is no
+`value` column on the curve response, so the branch is genuinely reachable — and
+on a two-column frame `['date', 'maturity']` it returns **`'maturity'`**. The
+label would then be renamed to `value` and maturity *names* cast as numbers. On
+the live shape (`date`, `maturity`, `rate`, `maturity_years`) the `rate`
+candidate wins first, so this is latent rather than active — but it is exactly
+the curve path D-086 introduced, and "the maturity is the rate" deserves to be
+refused at the picker rather than discovered three frames later.
+
+*Fix:* a new `LABEL_COLUMNS` constant, **derived** from
+`NORMALIZED_OPTIONAL_COLUMNS` so the two cannot drift, is excluded from the
+last-resort branch. Blast radius before the fix was a *misleading error* (the
+cast raises), not a silent wrong number — which is why it was latent, and why
+it is now pinned rather than merely repaired.
+
+**Mutation evidence for both fixes.** Probe `.probe/d086_window_probe.py`
+injects two defects one at a time and restores from an in-probe backup (never
+`git checkout --` — D-086.8):
+
+| Mutant | Defect injected | Test that kills it |
+|---|---|---|
+| W1 | declaration not consumed (`start_date` sent regardless) | `test_an_ignored_window_parameter_is_not_sent` |
+| W2 | parameter dropped **unconditionally** (over-fetch everywhere) | `test_a_supported_window_parameter_is_still_sent` |
+
+**2/2 killed.** W2 is the negative control without which a fetcher that dropped
+`start_date` unconditionally would pass W1 while silently over-fetching every
+other registry entry. Defect 2 was mutation-proven separately: removing
+`and c not in LABEL_COLUMNS` fails
+`test_a_label_column_is_never_picked_as_the_value_column` and nothing else.
+
+**What the interruption did *not* damage.** Content verification of every file
+in the change inventory confirmed no partial restore: all four
+`mutation_catalyst_calendar.py` anchors resolve against the shipped source
+(`check_targets: 0 problems`, `check_anchor_landings: 0 problems`), the
+`catalysts.py` transport is complete, `_normalize` is complete,
+`tools/sweep_health.py`'s reader fix and its four guards are intact, and
+`src/macro_engine/models/lei_proxy.py` remains byte-identical to `HEAD` (the
+`M6e` restore held).
+
+**Lesson — re-confirmed, and it is the same one D-086.6 records.** Both defects
+were in code the pre-interruption gates declared green. A gate line is a claim,
+not a receipt (O-88): `ruff`, `mypy` and a 2537-test suite all passed **while
+these two defects were live**, because neither behaviour had a test that
+asserted it. Green means "nothing I test is broken", never "nothing is broken".
+The re-verification was worth running for the code, not just for the
+interruption.
+
+**Gates after the fixes (all re-measured in one run, nothing carried forward):**
+`ruff check` clean; `ruff format --check` **230** = `mypy --strict` **230**
+(D-035 parity holds); `mutation_catalyst_calendar.py` **10/8/2 CERTIFIES**; the
+window probe **2/2 killed**.
+
+### D-086.12 — ADDENDUM: a SIGTERM'd mutation sweep left a live mutant, and the health tool was telling the truth
+
+The re-verification above was interrupted **once more**, by the same client
+event, while running `scripts/mutation_lei_proxy.py`. This time the damage was
+in the source tree, and the sequence is worth recording exactly because the
+first pass of the *gate* said the tree was clean.
+
+**What happened, reconstructed from timestamps.**
+
+1. `tools/sweep_health.py` ran at **08:33** and printed
+   `mutant shapes on disk (O-83, whole tree): 0` plus `SWEEP HEALTH: OK`.
+2. `scripts/mutation_lei_proxy.py` was launched at **08:35** and was **killed by
+   SIGTERM mid-flight** — the same `SIGTERM with no output` symptom lesson 5bl
+   records, but here it was *not* merely a truncating reader: the sweep had
+   already applied mutants and had not yet restored them.
+3. A second invocation then refused at `check_targets` with
+   `M6d ... MUTATION STILL APPLIED in lei_proxy.py`, naming the leftover.
+
+On disk, `lei_proxy.py` line 360 read `if False:` where the shipped code reads
+`if not isfinite(change):` — the **non-finite guard, permanently disabled**. A
+non-finite six-month change would then poison the composite and make every
+`change < 0` breadth comparison evaluate False, counting a missing observation
+as a component that did *not* decline.
+
+**The tool was not at fault, and I had to prove that rather than assume it.**
+The obvious hypothesis — the O-83/O-107 shape scan missed it — was **tested and
+disproved**. Re-injecting the exact mutant and calling `_whole_tree_mutant_scan`
+directly returned:
+
+```
+hits: 1
+  src\macro_engine\models\lei_proxy.py:360: if False:
+```
+
+`_is_mutant_shape("if False:")` is `True`; the scan walks `src/**/*.py` and
+strips every line. So the **08:33 `0` was accurate for the tree as it stood at
+08:33** — the mutant did not exist yet. The gate was correct; the *sequence*
+was the problem. A health check is a photograph, not a watchdog: it cannot
+report a mutant applied two minutes after it ran, and quoting its earlier
+result at close-out would have been exactly the O-88 violation (a gate row is a
+claim, not a receipt).
+
+**The two lessons, both already in the project's own rulebook and now with a
+second confirming instance each.**
+
+* **Lesson 5bi, sharpened.** The rule was "never run the suite while a sweep is
+  in flight". The real rule is broader: **never let anything else touch the tree
+  while a sweep is in flight, and never trust a health result older than the
+  last thing that wrote to `src/`.** `sweep_health.py`'s whole-tree scan must be
+  the *last* check before a close-out, or it is describing a tree that no longer
+  exists.
+* **Lesson 5bl, corrected in scope.** A SIGTERM'd sweep is not merely a
+  lost-output problem. `mutation_lei_proxy.py` applies mutants one at a time and
+  restores each in a `finally` — but SIGTERM on win32 delivers no Python signal
+  handler (O-103), so the `finally` never runs and whatever was applied at that
+  instant **stays applied**. The failure mode is silent source corruption, not
+  truncated stdout. The sweep's own `check_targets` is what caught it, on the
+  *next* run — which is the argument for running every sweep to completion
+  rather than piping it through a reader that can kill it.
+
+**Fix.** The mutant was restored by substitution at the named site, verified by
+`git diff HEAD -- src/macro_engine/models/lei_proxy.py` returning **empty**, and
+the sweep was then re-run **to completion** (`36/36 killed`, CERTIFIES) — a run
+that both re-proves the file and re-establishes the gate row.
+
+**Note for a future session.** `mutation_lei_proxy.py` is a *long* sweep; on
+this machine it exceeds a 120 s foreground timeout and, when auto-backgrounded,
+has **three times** ended in SIGTERM with no output. Run it in the background and
+read the redirected file — never `| tail` it (lesson 5bl) — and afterwards confirm
+`git diff HEAD -- src/macro_engine/models/lei_proxy.py` is empty before
+believing any later gate.
+
+**A refinement earned by watching the third occurrence.** The third kill happened
+with a **stop request** rather than a hard SIGTERM, and the tree came back
+**clean** — `git diff HEAD` empty, all three guards present (`isfinite`,
+the mixed-reading warning, `extra="forbid"`), module imports. The second kill had
+left `M6d` applied. So the sweep's restore **does** run on a graceful
+termination and **does not** on a hard one. Two consequences worth keeping:
+
+- **Prefer a stop request over a SIGTERM** when interrupting this sweep. The
+  difference is between a clean tree and a silently disabled guard.
+- **The mid-flight state is worse than "a mutant applied".** At one point the
+  file read `warnings.append("REMOVED", "same way. ...")` — a **broken file**,
+  not a subtle mutant. A reader who pulled that state and ran the gates would
+  have seen a *spurious* failure (ruff reported `ConfigDict` as an unused import
+  while a mutant removed its last use, then passed again once the sweep moved
+  on). **So: never run a gate, and never read a gate result, while a sweep is in
+  flight** — not just the test suite (lesson 5bi) but the static gates too, which
+  will report errors that belong to the sweep's transient state rather than to
+  the code.
+
+**Gates at close-out (all re-measured in one run, after the `M6d` restore and
+the `lei_proxy` re-sweep; nothing carried forward — O-88):**
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | clean |
+| `ruff format --check src tests tools scripts` | **230** |
+| `mypy --strict src tests tools scripts` | **230** — D-035 parity holds |
+| `pytest -q` | **2540 passed / 1 skipped / 0 failed** |
+| `tools/sweep_health.py` | **40 sweeps, 0 leftovers, 0 mutant shapes, 0 failures** |
+| `scripts/mutation_catalyst_calendar.py` | **10 applied / 8 killed / 2 survivors — CERTIFIES** |
+| `scripts/mutation_lei_proxy.py` | **36/36 killed — CERTIFIES** |
+| `.probe/d086_window_probe.py` | **2/2 killed** |
+
+The `pytest` and `sweep_health` rows were taken **after** the `lei_proxy`
+restore, and `sweep_health` was deliberately run **last** so its whole-tree scan
+describes the final tree (D-086.12).

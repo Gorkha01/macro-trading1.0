@@ -48,7 +48,25 @@ logger = logging.getLogger(__name__)
 
 # OpenBB's normalized frame contract. Anything else is a parse failure and
 # must surface as OpenBBFetchError rather than a downstream KeyError.
+#
+# `maturity` / `maturity_years` are part of the contract ONLY for a
+# single-call curve endpoint, which answers every tenor in one response and has
+# no other way to say which row is which tenor. They are carried when the
+# provider sent them and absent otherwise, so a scalar series' frame is
+# unchanged by their admission here. The alternative — letting `_normalize`
+# drop them and having the curve fetcher recover the tenor by row position —
+# would mis-assign an entire curve from a single reordered response, which is
+# the silent-wrong-number class this module exists to refuse.
 NORMALIZED_COLUMNS: tuple[str, ...] = ("date", "value", "series_id", "source", "retrieved_at")
+#: Optional contract columns, present only when the provider supplied them.
+NORMALIZED_OPTIONAL_COLUMNS: tuple[str, ...] = ("maturity", "maturity_years")
+#: Columns that identify WHICH row a value belongs to, rather than being a
+#: value themselves. `_pick_value_column`'s last-resort branch must never
+#: return one of these: on a two-column curve frame (`date` + `maturity`) it
+#: otherwise picks the label and the maturity NAME is cast as a rate. Derived
+#: from `NORMALIZED_OPTIONAL_COLUMNS` rather than restated, so a label column
+#: added to the contract is automatically protected here too.
+LABEL_COLUMNS: frozenset[str] = frozenset(NORMALIZED_OPTIONAL_COLUMNS)
 
 #: Which transport actually served a request. Recorded as provenance rather
 #: than inferred from ``use_local_api_first``, because the cross-path fallback
@@ -364,7 +382,17 @@ class OpenBBClient:
                 f"got columns {df.columns.tolist()}"
             )
 
-        out = df[[date_col, value_col]].rename(columns={date_col: "date", value_col: "value"})
+        # A curve endpoint answers ALL tenors in one response and identifies each
+        # row by the provider's own maturity label. That label has to survive the
+        # reduction to date/value or the caller cannot tell which tenor a row
+        # belongs to — and a caller reduced to guessing by position would
+        # mis-assign an entire curve. Per-row and null-preserved: it is carried
+        # only when the provider actually sent it, never synthesized, because a
+        # fabricated label would be indistinguishable from a real one.
+        carry = [c for c in ("maturity", "maturity_years") if c in df.columns]
+        out = df[[date_col, value_col, *carry]].rename(
+            columns={date_col: "date", value_col: "value"}
+        )
         # Drop nulls before the float cast so a trailing holiday/blank row does
         # not turn the whole column into object dtype.
         out = out.dropna(subset=["value"])
@@ -406,7 +434,13 @@ class OpenBBClient:
         )
         out["retrieved_at"] = utc_now()
         out = out.sort_values("date").reset_index(drop=True)
-        return out[list(NORMALIZED_COLUMNS)]
+        # Optional contract columns are kept ONLY when the provider sent them.
+        # Projecting to the exact set present — rather than to a fixed list —
+        # is what lets one contract serve both a scalar series and a
+        # single-call curve without either shape acquiring a null column it
+        # never had.
+        present_optional = [c for c in NORMALIZED_OPTIONAL_COLUMNS if c in out.columns]
+        return out[[*NORMALIZED_COLUMNS, *present_optional]]
 
     @staticmethod
     def _index_looks_like_dates(df: pd.DataFrame) -> bool:
@@ -454,13 +488,22 @@ class OpenBBClient:
         specification's sketch did — a mis-picked column is a silent
         wrong-number bug, which is precisely the failure class this system
         exists to prevent. It falls back only among known-plausible names.
+
+        The last-resort branch excludes ``LABEL_COLUMNS`` as well as the date
+        column. Without that, a single-call curve frame carrying only
+        ``date`` + ``maturity`` (measured reachable: `_pick_value_column(['date',
+        'maturity'])` returns ``'maturity'``) would rename the provider's
+        **label** column to ``value`` and cast maturity NAMES to numbers. It
+        would raise rather than publish a wrong number, so the blast radius is a
+        misleading error — but "the maturity is the rate" is a defect worth
+        refusing at the picker rather than discovering three frames later.
         """
         if "value" in columns and "value" not in exclude:
             return "value"
         for candidate in ("close", "adj_close", "rate", "yield", "price", "amount"):
             if candidate in columns and candidate not in exclude:
                 return candidate
-        remaining = [c for c in columns if c not in exclude]
+        remaining = [c for c in columns if c not in exclude and c not in LABEL_COLUMNS]
         if len(remaining) == 1:
             return remaining[0]
         return None

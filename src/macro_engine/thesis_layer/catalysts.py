@@ -60,6 +60,15 @@ flat-text parse produced **2027-01-26 and 2027-01-27 as two separate meetings**
 from one. The structured markup has no such ambiguity, so the parser reads
 ``fomc-meeting__month``/``fomc-meeting__date`` and never a flattened panel.
 
+   **D-086 supersedes this entire hazard.** The Fed is no longer scraped:
+``economy/fomc_documents`` on the local OpenBB service returns
+``date``/``doc_type``/``doc_format``/``url`` as **fields**, so both the meeting
+date and the dot-plot flag arrive typed. The parser above is gone, and with it
+the possibility of a phantom meeting — there is no markup left to mis-read.
+The historical note is kept because the *reason* the scrape existed (FRED's
+FOMC release is a press-release feed, not a meeting calendar) is still why the
+catalyst is sourced from the Fed rather than from FRED.
+
 **3. A cross-month range must not be split.** The Fed writes some meetings as
 a single month with a day range (``"January" 26-27``). A naive "month + first
 day" read would silently drop the second day of every two-day meeting; the
@@ -131,10 +140,12 @@ _FRED_CALENDAR_URL = (
     "https://fred.stlouisfed.org/releases/calendar?po=1&ptic=0&vs={start}&ve={end}&rid={rid}"
 )
 
-#: The Fed's own FOMC meeting calendar. Section 16.4 names this host for the
-#: third catalyst, and D-065's probe is why: FRED's FOMC release is a daily
-#: press-release feed, not a meeting schedule.
-_FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+#: The STRUCTURED FOMC document command on the local OpenBB service (D-086).
+#: Returns ``date``/``doc_type``/``doc_format``/``url`` as fields, so the meeting
+#: date and the dot-plot flag are both read rather than parsed out of markup.
+#: ``provider=federal_reserve`` is required; ``year=`` is the only filter that
+#: actually bites (measured — see ``_fetch_fed_fomc_meetings``).
+_FOMC_DOCUMENTS_URL = "http://127.0.0.1:6901/api/v1/economy/fomc_documents"
 
 #: FRED close the connection for urllib's and aiohttp's TLS/HTTP fingerprint
 #: (measured: ``RemoteDisconnected`` and ``TimeoutError``) while answering
@@ -151,13 +162,15 @@ _FRED_DATE_RE = re.compile(r">(\w+day (\w+) (\d{1,2}), (\d{4}))<")
 #: Price Index</a>``.
 _FRED_EVENT_RE = re.compile(r'<a href="/release\?rid=(\d+)">([^<]+)</a>')
 
-#: The Fed's structured FOMC cells. Read in pair, never from flattened text —
-#: see defect 2 in the module docstring.
-_FED_MONTH_RE = re.compile(
-    r'fomc-meeting__month[^>]*>(.*?)</div>\s*<div class="fomc-meeting__date[^>]*>(.*?)</div>',
-    re.S,
-)
-_FED_YEAR_RE = re.compile(r"(\d{4}) FOMC Meetings")
+#: NOTE (D-086): the two FOMC HTML regexes that used to live here
+#: (`_FED_MONTH_RE` for the month/day cells, `_FED_YEAR_RE` for the year
+#: panels) were removed with the scrape they served. The Fed's calendar page is
+#: no longer fetched at all — see `_fetch_fed_fomc_meetings`, which reads
+#: `economy/fomc_documents` and takes the date and the dot-plot flag as typed
+#: fields. Deleting them rather than leaving them defined-and-unused is the
+#: point: a regex that nothing calls still reads as a live parser to the next
+#: reader, and this module has already been burned once by a parser that could
+#: not be trusted (defect 2 in the docstring above).
 
 _MONTHS: dict[str, int] = {
     "January": 1,
@@ -245,47 +258,88 @@ def _fetch_fred_release(
     return events
 
 
-def _fetch_fed_fomc_meetings(*, timeout: float) -> list[tuple[date, bool]]:
+def _fetch_fed_fomc_meetings(
+    *, timeout: float, as_of: date | None = None
+) -> list[tuple[date, bool]]:
     """Forward FOMC meetings as ``[(last_day, has_projections), ...]``.
 
-    Parsed from the Fed's structured ``fomc-meeting__month`` /
-    ``fomc-meeting__date`` pair, **not** from flattened text — flattening the
-    2027 panel yields phantom duplicates from the trailing explanatory note
-    (measured, defect 2 of the module docstring). The meeting is dated by its
-    **last** day, which is when the statement and projections are published.
-    """
-    html = _http_get(_FED_FOMC_CALENDAR_URL, timeout=timeout)
+    **D-086: this reads a STRUCTURED COMMAND, not the Fed's HTML.** Measured
+    live 2026-09-21 against the same local OpenBB service the rest of the data
+    layer uses:
 
-    meetings: list[tuple[date, bool]] = []
-    # Walk the year panels so each meeting is attributed to the right year.
-    for year_match in _FED_YEAR_RE.finditer(html):
-        year = int(year_match.group(1))
-        next_year = _FED_YEAR_RE.search(html, year_match.end())
-        panel_end = next_year.start() if next_year else len(html)
-        panel = html[year_match.end() : panel_end]
-        for month_cell, date_cell in _FED_MONTH_RE.findall(panel):
-            month_name = re.sub(r"<[^>]+>", " ", month_cell).strip().split("/")[0].strip()
-            if month_name not in _MONTHS:
-                continue
-            # "27-28" / "8-9*" -> the last day, and the projections marker.
-            # The character class takes a hyphen OR an en dash: the Fed's own
-            # markup uses a hyphen today, but an en dash is the typographic
-            # choice a CMS makes when it renders a range, and the difference is
-            # invisible in a rendered page while breaking the parse. Accepting
-            # both costs nothing and is why the noqa is here rather than a
-            # "simplification" to a bare hyphen (D-065).
-            day_match = re.search(
-                r"(\d{1,2})\s*[-–]\s*(\d{1,2})(\*?)",  # noqa: RUF001
-                re.sub(r"<[^>]+>", "", date_cell),
-            )
-            if not day_match:
-                continue
-            try:
-                last_day = date(year, _MONTHS[month_name], int(day_match.group(2)))
-            except ValueError:
-                continue
-            meetings.append((last_day, bool(day_match.group(3))))
-    return meetings
+    ``economy/fomc_documents?provider=federal_reserve`` returns rows carrying
+    ``date``, ``doc_type``, ``doc_format`` and ``url`` as **fields**. The
+    meeting date is the ``monetary_policy`` row's date, and the dot-plot flag
+    is the presence of a ``projections`` row on that same date.
+
+    Why this replaced the scrape (the scrape is strictly worse, not merely
+    less tidy):
+
+    * **The flag was being re-derived.** The Fed's markup encodes "has
+      projections" as a trailing ``*`` on the day range (``"27-28*"``), which
+      the old parser had to strip and interpret. The command returns
+      ``doc_type='projections'`` as a typed field — the fact itself, not a
+      markup convention standing in for it.
+    * **The history is deeper and cleaner.** The scrape parsed meetings back to
+      2021; the command carries **5837 rows back to 1959**, of which 88 are
+      ``monetary_policy``. More history is not automatically wanted, but it
+      means the *forward* filter below is what bounds the result, rather than
+      the source's own reach.
+    * **One less HTML parser, two fewer regexes, and the phantom-meeting
+      hazard disappears.** Defect 2 above (a flattened panel inventing a
+      second January meeting) is structurally impossible when the dates arrive
+      as typed fields.
+
+    **``year`` is the filter that works, and it is the ONLY one.** Measured:
+    ``year=2026`` returns 34 rows (the whole 2026 document set);
+    ``start_date=2026-01-01`` and ``limit=50`` are **silently ignored** and
+    both return all 5837 rows. That is the same accept-and-ignore class as the
+    ``realtime_start`` decoy documented in ``docs/OPENBB_UTILIZATION_AUDIT.md``
+    §5.3, so this function asks for the years it needs and then applies its own
+    date bound locally — a filter that is *verified* to bite rather than one
+    that is merely *written*.
+
+    Falls back to the previous years' worth of documents when the window spans
+    a year boundary, because a December ``as_of`` with a 90-day horizon needs
+    the *next* year's calendar, which does not exist yet and must not be
+    fabricated.
+    """
+    today = as_of or _us_calendar_today()
+    # Ask for this year and the next: a horizon that crosses a year boundary
+    # needs both, and asking for a year the Fed has not published returns an
+    # empty set rather than an error, which is the correct reading.
+    years = sorted({today.year, today.year + 1})
+
+    rows: list[dict[str, object]] = []
+    for year in years:
+        url = f"{_FOMC_DOCUMENTS_URL}?provider=federal_reserve&year={year}"
+        try:
+            payload = json.loads(_http_get(url, timeout=timeout))
+        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            logger.warning("FOMC documents for %s failed: %s", year, exc)
+            continue
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if isinstance(results, list):
+            rows.extend(results)
+
+    by_date: dict[date, bool] = {}
+    for row in rows:
+        raw_date = row.get("date")
+        doc_type = str(row.get("doc_type") or "")
+        if raw_date is None:
+            continue
+        try:
+            when = date.fromisoformat(str(raw_date)[:10])
+        except ValueError:
+            continue
+        if doc_type == "monetary_policy":
+            # A meeting exists at this date. `or` rather than assignment so a
+            # projections row seen FIRST is not cleared by the policy row.
+            by_date[when] = by_date.get(when, False)
+        elif doc_type == "projections":
+            by_date[when] = True
+
+    return sorted(by_date.items())
 
 
 def next_catalyst_calendar(as_of: date | None = None) -> list[str]:
@@ -347,13 +401,28 @@ def next_catalyst_calendar(as_of: date | None = None) -> list[str]:
             entries.append((when, f"{label} release ({expected_name}) — {when.isoformat()}"))
 
     # --- Catalyst 4: the next FOMC meeting, from the Fed. ------------------
+    # D-086: sourced from the structured `economy/fomc_documents` command on the
+    # local OpenBB service rather than by scraping the Fed's calendar HTML. The
+    # `answered` accounting is unchanged in spirit — a command that returned is
+    # an answered source, and one that raised is not — but it now counts a
+    # command that was reached rather than an HTML page that downloaded.
     try:
-        meetings = _fetch_fed_fomc_meetings(timeout=timeout)
-    except (httpx.HTTPError, TimeoutError) as exc:
-        logger.warning("catalyst source federalreserve.gov failed: %s", exc)
+        meetings = _fetch_fed_fomc_meetings(timeout=timeout, as_of=as_of)
+    except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+        logger.warning("catalyst source economy/fomc_documents failed: %s", exc)
         meetings = []
     else:
-        answered += 1
+        # An EMPTY history is not an answered source. The command is reachable
+        # and returned nothing, which would make `answered += 1` claim coverage
+        # this run did not have — the same conflation (reachable-but-empty vs
+        # never-attempted) that D-085 fixed in the release-calendar path.
+        if meetings:
+            answered += 1
+        else:
+            logger.warning(
+                "economy/fomc_documents returned no dated FOMC documents; "
+                "not counted as an answered source"
+            )
         forward_meetings = [(d, proj) for d, proj in meetings if today <= d <= horizon]
         if forward_meetings:
             when, has_projections = min(forward_meetings)
@@ -364,7 +433,7 @@ def next_catalyst_calendar(as_of: date | None = None) -> list[str]:
         raise CatalystSourceError(
             "no catalyst source answered: FRED (rid "
             f"{settings.cpi_id}/{settings.nfp_id}/{settings.pce_id}) and "
-            f"{_FED_FOMC_CALENDAR_URL} all failed. An empty calendar here would be "
+            f"{_FOMC_DOCUMENTS_URL} all failed. An empty calendar here would be "
             "indistinguishable from a genuinely quiet calendar, so it is an error "
             "rather than a silent []."
         )

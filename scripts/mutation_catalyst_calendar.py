@@ -172,17 +172,31 @@ _FRED_ENTRY = (
 )
 
 # --- M2: ptic is a pagination total -----------------------------------------
-_PAYLOAD = "    payload = json.loads(_http_get(url, timeout=timeout))"
+# D-086: `payload = json.loads(...)` is no longer unique — the FOMC documents
+# command now reads a payload the same way — so this anchor carries the FRED
+# release call's own following line to stay unambiguous.
+_PAYLOAD = (
+    "    payload = json.loads(_http_get(url, timeout=timeout))\n"
+    "\n"
+    "    events: list[tuple[date, str]] = []"
+)
 _PTIC_UNUSED = "    events: list[tuple[date, str]] = []\n    current: date | None = None"
 
 # --- M3: FOMC comes from the Fed --------------------------------------------
-_FED_CALL = "        meetings = _fetch_fed_fomc_meetings(timeout=timeout)"
+# D-086: the call site now passes `as_of` as well.
+_FED_CALL = "        meetings = _fetch_fed_fomc_meetings(timeout=timeout, as_of=as_of)"
 
-# --- M4: the structured Fed parse -------------------------------------------
-_FED_STRUCTURED = "        for month_cell, date_cell in _FED_MONTH_RE.findall(panel):"
+# --- M4: the structured FOMC read -------------------------------------------
+# D-086: the Fed's HTML parser is gone; the equivalent defect on the structured
+# command is reading the meeting date from the document URL rather than the
+# typed `date` field. The write is what M4 mutates.
+_FED_STRUCTURED = "            when = date.fromisoformat(str(raw_date)[:10])"
 
-# --- M5: a two-day meeting is dated by its LAST day -------------------------
-_LAST_DAY = "                last_day = date(year, _MONTHS[month_name], int(day_match.group(2)))"
+# --- M5: the projections flag -----------------------------------------------
+# D-086: "dated by the last day" became "the projections flag is a document".
+# The equivalent defect is allowing a later `monetary_policy` row to clear a
+# flag a `projections` row already set.
+_LAST_DAY = "            by_date[when] = by_date.get(when, False)"
 
 # --- M6: the all-sources-failed refusal -------------------------------------
 _ANSWERED = "    if answered == 0:"
@@ -241,7 +255,9 @@ def build_mutations() -> list[Mutation]:
             old=_PAYLOAD,
             new=(
                 "    payload = json.loads(_http_get(url, timeout=timeout))\n"
-                "    _ = payload.get('ptic')"
+                "    _ = payload.get('ptic')\n"
+                "\n"
+                "    events: list[tuple[date, str]] = []"
             ),
             intent=(
                 "Adds a read of ptic without changing behaviour, so this mutant is "
@@ -276,44 +292,37 @@ def build_mutations() -> list[Mutation]:
                 "for every calendar day. The kill is the one-entry assertion."
             ),
         ),
-        # -- M4: the Fed parse --------------------------------------------------
+        # -- M4: the structured FOMC read ---------------------------------------
         Mutation(
             group="M4",
-            name="M4.1 the Fed panel is flattened to text before parsing",
+            name="M4.1 the meeting date is inferred from the document URL, not read",
             path=CATALYSTS,
             old=_FED_STRUCTURED,
             new=(
-                "        _flat = re.sub(r'<[^>]+>', ' ', panel)\n"
-                "        for month_cell, date_cell in [\n"
-                "            (m.group(1), m.group(2))\n"
-                "            for m in re.finditer(\n"
-                "                r'(January|February|March|April|May|June|July|"
-                "August|'\n"
-                "                r'September|October|November|December)"
-                "\\s+(\\d{1,2}-\\d{1,2}\\*?)',\n"
-                "                _flat,\n"
-                "            )\n"
-                "        ]:"
+                "            when = date.fromisoformat(\n"
+                '                str(row.get("url", ""))[-12:-4]\n'
+                "            )"
             ),
             intent=(
-                "The flat 2027 panel contains the trailing note 'A two-day meeting "
-                "is scheduled for January ...', so this yields two January "
-                "meetings from one. The kill is the structured-read test."
+                "D-086's replacement for the flat-text parse defect. The Fed's "
+                "document URLs are date-stamped too, so a reader that trusts the "
+                "URL instead of the `date` field attributes the wrong day. The "
+                "kill is test_meeting_dates_come_from_the_typed_field_not_the_url, "
+                "whose payload makes the two disagree."
             ),
         ),
-        # -- M5: which day of the meeting --------------------------------------
+        # -- M5: the projections flag ------------------------------------------
         Mutation(
             group="M5",
-            name="M5.1 a two-day meeting is dated by its FIRST day",
+            name="M5.1 a later policy row clears the projections flag",
             path=CATALYSTS,
             old=_LAST_DAY,
-            new=(
-                "                last_day = date(year, _MONTHS[month_name], "
-                "int(day_match.group(1)))"
-            ),
+            new="            by_date[when] = False",
             intent=(
-                "Every two-day meeting is dated one day early. The kill is the "
-                "last-day test and the '2026-10-28 not 2026-10-27' assertion."
+                "D-086's replacement for the last-day-dating defect. The `or` "
+                "semantics of `by_date.get(when, False)` exists so a `projections` "
+                "row seen BEFORE the `monetary_policy` row is not cleared by it. "
+                "The kill is test_the_projections_flag_survives_a_later_policy_row."
             ),
         ),
         # -- M6: the refusal ---------------------------------------------------

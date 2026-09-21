@@ -221,6 +221,7 @@ def _points_from_frame(
     series_id: str,
     fallback_source: str,
     release_index: ReleaseDateIndex | None = None,
+    unit_scale: float | None = None,
 ) -> list[ObservationPoint]:
     """Convert a normalized frame into ``ObservationPoint`` records.
 
@@ -240,11 +241,19 @@ def _points_from_frame(
     ``as_of`` filter cannot be fooled into admitting a value *earlier* than the
     true release. Callers that need exact per-observation timing must not treat
     this as vintage-accurate; ``vintage_datetime`` stays ``None`` throughout.
+
+    ``unit_scale`` is the provider's declared scale relative to the registry's
+    ``units`` (D-086), already derived on the registry entry. It is applied
+    **here**, at the single place a raw provider value becomes an
+    ``ObservationPoint``, so no caller can receive an unconverted value and no
+    second conversion site can drift from this one. ``None`` means the provider
+    and the registry agree, and the value passes through untouched.
     """
     if frame.empty:
         return []
 
     release_datetime = release_index.get(series_id) if release_index is not None else None
+    scale = 1.0 if unit_scale is None else float(unit_scale)
 
     points: list[ObservationPoint] = []
     for _, row in frame.iterrows():
@@ -258,7 +267,7 @@ def _points_from_frame(
         points.append(
             ObservationPoint(
                 observation_date=observation_date,
-                value=float(row["value"]),
+                value=float(row["value"]) * scale,
                 series_id=series_id,
                 source=str(row.get("source", fallback_source) or fallback_source),
                 retrieved_at=pd.Timestamp(row["retrieved_at"]).to_pydatetime(),
@@ -305,6 +314,7 @@ def fetch_field(
         series_id=field_name,
         fallback_source=f"{entry.provider}:{entry.symbol}",
         release_index=release_index,
+        unit_scale=entry.unit_scale_to_units,
     )
 
 
@@ -343,6 +353,47 @@ def fetch_curve(
     returned ``YieldCurveSnapshot``'s companion warning path, and a tenor whose
     *entire* history is forward-dated raises rather than falling back to a
     projection.
+
+    **Two wire shapes are supported (D-086).** If the registry entry declares
+    ``tenor_labels``, the endpoint is the provider's *single-call* curve command
+    — one request returning every tenor as a wide frame with a ``maturity``
+    label column — and the loop below pivots that one response. Otherwise the
+    historical one-request-per-tenor path is used unchanged.
+
+    The single-call shape exists because the audit measured **11 separate
+    requests where the provider offers one** (``docs/OPENBB_UTILIZATION_AUDIT.md``
+    §3.1): ``fixedincome.government.yield_curve`` returns the whole Treasury
+    curve in a single call, and the engine was issuing one request per tenor
+    against ``economy.fred_series``. The two paths return **identical values**
+    (live-verified 2026-09-21: 1mo 3.97, 10yr 4.94, 30yr 5.29 on both), so the
+    change is a request-count change, not a value change.
+
+    Three things the single-call path must get right, each of which is a silent
+    failure if it does not:
+
+    * **The label mapping is declared in config, not hardcoded.** The provider's
+      labels (``month_1``, ``year_10``) are not the registry's tenors (``1mo``,
+      ``10yr``), and a partial mapping is refused **before any request** rather
+      than surfacing later as a missing-row error that blames the provider for
+      the registry's own gap.
+    * **The scale is applied on this path too.** The dedicated command returns
+      the curve as a **decimal** (0.0494) where ``economy.fred_series`` returns
+      **percent** (4.94) — measured. The conversion is therefore a declared,
+      derived property of the registry entry (``source_units: decimal`` →
+      ``unit_scale_to_units: 100.0``) applied at the one site that publishes a
+      curve value, so the two paths cannot disagree about scale.
+    * **Rows are attributed by the provider's label, never by position.** The
+      pivot is keyed on ``maturity``; a response carrying no such column is
+      refused rather than assigned in row order, because a positional read
+      silently mis-assigns an entire curve.
+    * **A window parameter the route ignores is not sent.** The single-call
+      endpoint is latest-only (measured 2026-09-21: ``start_date`` changes
+      nothing), so the registry declares ``window_filter_supported: false`` and
+      the request omits ``start_date`` entirely. The O-7 forward-dated filter
+      below still runs and is still correct, but on THIS route it is
+      belt-and-braces rather than load-bearing: a latest-only response cannot
+      carry a forward-dated row for it to catch. It remains the load-bearing
+      guard on the one-request-per-tenor path, which can return a projection.
     """
     if not entry.tenors:
         raise OpenBBFetchError(f"curve '{field_name}' declares no tenors")
@@ -353,25 +404,95 @@ def fetch_curve(
     latest_date: date | None = None
     withheld_by_tenor: dict[str, int] = {}
 
-    for tenor, symbol in entry.tenors.items():
-        frame = client.fetch_series(
+    single_call = bool(entry.tenor_labels)
+    single_call_rows: dict[str, list[tuple[date, float]]] = {}
+
+    if single_call:
+        if set((entry.tenor_labels or {}).keys()) != set(entry.tenors.keys()):
+            missing = sorted(set(entry.tenors) - set(entry.tenor_labels or {}))
+            raise OpenBBFetchError(
+                f"curve '{field_name}' declares tenor_labels that omits {missing}; "
+                "the single-call shape needs one provider label per declared tenor, "
+                "and a partial mapping would silently drop those tenors."
+            )
+        # Do not send a window parameter the route ignores. Measured live
+        # 2026-09-21: `fixedincome/government/yield_curve` returns the same 11
+        # rows for `start_date=2026-09-15` as for no `start_date` at all — it is
+        # a latest-only snapshot endpoint. Sending the parameter anyway would
+        # make this function claim a bounded window it does not have, and would
+        # leave the O-7 forward-dated guard below unable to fire (a latest-only
+        # response cannot contain a forward-dated row). The registry declares
+        # `window_filter_supported: false` and this is where that declaration is
+        # consumed rather than merely recorded.
+        curve_params: dict[str, object] = (
+            {"start_date": start} if entry.window_filter_supported else {}
+        )
+        wide = client.fetch_series(
             provider=entry.provider,
             endpoint=endpoint,
-            params={"symbol": symbol, "start_date": start},
-            series_label=f"{field_name}.{tenor}",
+            params=curve_params,
+            series_label=field_name,
         )
-        if frame.empty:
+        if wide.empty:
             raise OpenBBFetchError(
-                f"curve '{field_name}' tenor '{tenor}' (symbol {symbol}) returned no observations"
+                f"curve '{field_name}' single-call endpoint {endpoint} returned no observations"
+            )
+        # `_normalize` has already reduced the response to date/value, so the
+        # maturity label has to survive that reduction for the pivot to work.
+        # If it did not, the result is a wide frame whose rows cannot be
+        # attributed to a tenor — refused rather than mis-assigned.
+        if "maturity" not in wide.columns:
+            raise OpenBBFetchError(
+                f"curve '{field_name}' is configured for the single-call shape "
+                f"(tenor_labels declared) but the normalized frame from {endpoint} "
+                f"carries no 'maturity' column to pivot on; got {wide.columns.tolist()}. "
+                "Refusing to attribute rows to tenors by position, which would "
+                "silently mis-assign an entire curve."
+            )
+        for _, row in wide.iterrows():
+            raw_date = row["date"]
+            row_date = (
+                raw_date.date()
+                if isinstance(raw_date, pd.Timestamp)
+                else pd.Timestamp(raw_date).date()
+            )
+            single_call_rows.setdefault(str(row["maturity"]).strip().lower(), []).append(
+                (row_date, float(row["value"]))
             )
 
-        # The O-7 filter. Normalise the provider's date column to calendar dates
-        # WITHOUT dropping rows, so the withheld count is measurable rather than
-        # inferred from a row-count difference.
-        tenor_dates = [
-            raw.date() if isinstance(raw, pd.Timestamp) else pd.Timestamp(raw).date()
-            for raw in frame["date"].tolist()
-        ]
+    for tenor, symbol in entry.tenors.items():
+        if single_call:
+            label = str((entry.tenor_labels or {})[tenor]).strip().lower()
+            series_points = single_call_rows.get(label, [])
+            if not series_points:
+                raise OpenBBFetchError(
+                    f"curve '{field_name}' tenor '{tenor}' (provider label "
+                    f"'{label}', declared symbol {symbol}) has no row in the "
+                    f"response from {endpoint}"
+                )
+            tenor_dates = [d for d, _ in series_points]
+            tenor_values = [v for _, v in series_points]
+        else:
+            frame = client.fetch_series(
+                provider=entry.provider,
+                endpoint=endpoint,
+                params={"symbol": symbol, "start_date": start},
+                series_label=f"{field_name}.{tenor}",
+            )
+            if frame.empty:
+                raise OpenBBFetchError(
+                    f"curve '{field_name}' tenor '{tenor}' (symbol {symbol}) "
+                    "returned no observations"
+                )
+            # The O-7 filter. Normalise the provider's date column to calendar
+            # dates WITHOUT dropping rows, so the withheld count is measurable
+            # rather than inferred from a row-count difference.
+            tenor_dates = [
+                raw.date() if isinstance(raw, pd.Timestamp) else pd.Timestamp(raw).date()
+                for raw in frame["date"].tolist()
+            ]
+            tenor_values = [float(v) for v in frame["value"].tolist()]
+
         realised_positions = [i for i, d in enumerate(tenor_dates) if d <= cutoff]
         withheld = len(tenor_dates) - len(realised_positions)
 
@@ -385,11 +506,14 @@ def fetch_curve(
 
         # The latest REALISED row, by date. Not the last row in the frame.
         last_index = max(realised_positions, key=lambda i: tenor_dates[i])
-        row = frame.iloc[last_index]
         tenor_date = tenor_dates[last_index]
         if latest_date is None or tenor_date > latest_date:
             latest_date = tenor_date
-        tenors[tenor] = float(row["value"])
+        # The declared scale is applied here for the same reason it is applied in
+        # `_points_from_frame`: one conversion site, so a curve cannot be scaled
+        # on one path and left raw on another.
+        scale = 1.0 if entry.unit_scale_to_units is None else float(entry.unit_scale_to_units)
+        tenors[tenor] = tenor_values[last_index] * scale
         if withheld:
             withheld_by_tenor[tenor] = withheld
 

@@ -1,5 +1,5 @@
 """Live wiring check: the real official calendar -> ``next_catalyst_calendar``
-(D-065).
+(D-065, re-based on the structured FOMC command at D-086).
 
 Not a test. This directory holds operator scripts, deliberately excluded from
 the default test run because they hit the network. Run with::
@@ -7,13 +7,13 @@ the default test run because they hit the network. Run with::
     uv run python scripts/live_catalyst_calendar_check.py
 
 Section 21.0: unit tests prove the parse, this proves the **wiring** — that the
-two official sources answer from this host, that their forward events are what
-the function returns, and that the two source defects this increment was written
-around are real rather than imagined.
+official sources answer from this host, that their forward events are what the
+function returns, and that the source properties the increment depends on are
+real rather than imagined.
 
 Why this increment needs a live check more than most
 ----------------------------------------------------
-The function's entire job is to reach **two external hosts** and parse their
+The function's entire job is to reach **external sources** and read their
 responses. Every failure mode here is a fact about the network and about the
 servers' current behaviour, not about arithmetic:
 
@@ -24,22 +24,28 @@ servers' current behaviour, not about arithmetic:
   with (FRED renumbers);
 * whether FRED's FOMC release is still a daily feed rather than a meeting
   calendar;
-* whether the Fed's page still carries the trailing note that a flat-text parse
-  turns into a phantom meeting.
+* whether the FOMC document command still returns the typed fields that make the
+  meeting date and the dot-plot flag readable (D-086 — this replaced the HTML
+  scrape, so the property to check is now *the fields are present*, not *the
+  scrape mis-parses*).
 
 None of those can be established offline, and all four are load-bearing.
 
 What is established here, each independently of the function
 ------------------------------------------------------------
-1. **Both hosts answer from this host**, over the transport the module uses.
+1. **Both sources answer from this host**, over the transport the module uses.
 2. **The three FRED release ids name the three expected releases** — asserted
    against the live labels, so a renumbering is caught as a *finding* here
    rather than as a wrong date in a thesis.
 3. **The forward dates are forward**, and ordered.
 4. **FRED's FOMC release really is a daily feed** — the defect the increment was
    written around, demonstrated on live data rather than taken on faith.
-5. **The Fed's flat-text parse really does produce a phantom meeting** — the
-   second source defect, likewise demonstrated.
+5. **The FOMC document command really does carry typed fields** — the property
+   D-086 relies on. The check asserts a ``monetary_policy`` row exists with a
+   parseable date and that ``projections`` is distinguishable **as a doc_type**,
+   which is what the retired scrape had to re-derive from a trailing ``*``.
+   The old check 5 demonstrated the scrape's phantom meeting; that parser is
+   gone, so re-asserting its defect would be checking code that no longer runs.
 6. **The horizon bounds the result**, checked by re-running with a one-day
    horizon.
 
@@ -51,7 +57,7 @@ read and cannot make it calibrated.
 from __future__ import annotations
 
 import datetime as dt
-import re
+import json
 
 import httpx
 
@@ -73,14 +79,21 @@ def _check() -> None:
     today = catalysts._us_calendar_today()
     horizon = today + dt.timedelta(days=int(settings.horizon_days.value))
 
-    # --- (1) both hosts answer over the module's own transport. ------------
+    # --- (1) both sources answer over the module's own transport. ----------
     print(f"  (1) transport check, today={today}, horizon={settings.horizon_days.value}d")
     for label, url in (
         (
             "FRED",
             catalysts._FRED_CALENDAR_URL.format(start=today, end=horizon, rid=settings.cpi_id),
         ),
-        ("Fed", catalysts._FED_FOMC_CALENDAR_URL),
+        # D-086: the FOMC source is now the structured OpenBB command rather
+        # than the Fed's HTML calendar page, so the transport check follows it.
+        # Same transport (httpx/HTTP-1.1) and the same assertion: a body came
+        # back and it was the expected JSON envelope, not an error page.
+        (
+            "FOMC",
+            f"{catalysts._FOMC_DOCUMENTS_URL}?provider=federal_reserve&year={today.year}",
+        ),
     ):
         body = catalysts._http_get(url, timeout=float(settings.http_timeout_seconds.value))
         print(f"      {label:4} answered, {len(body)} chars over httpx/HTTP-1.1")
@@ -153,36 +166,61 @@ def _check() -> None:
             f"{report} -- i.e. essentially always tomorrow"
         )
 
-    # --- (5) the flat-text parse really does produce a phantom. ------------
-    print("\n  (5) flat-text parse of the Fed page yields a phantom meeting (live)")
-    html = catalysts._http_get(
-        catalysts._FED_FOMC_CALENDAR_URL,
+    # --- (5) the FOMC command carries the fields D-086 relies on. ----------
+    #
+    # D-086 replaced the Fed's HTML scrape with `economy/fomc_documents`. The
+    # property to verify moved with it: the old check proved the SCRAPE
+    # mis-parsed (a phantom meeting from a trailing note), whereas the command
+    # has no markup to mis-parse. What can still fail is that the command stops
+    # returning the fields the parse depends on — so that is what is asserted,
+    # against raw rows rather than through `_fetch_fed_fomc_meetings`, which
+    # would only re-test the function with itself.
+    print("\n  (5) economy/fomc_documents returns typed date/doc_type (live)")
+    raw = catalysts._http_get(
+        catalysts._FOMC_DOCUMENTS_URL + f"?provider=federal_reserve&year={today.year}",
         timeout=float(settings.http_timeout_seconds.value),
     )
-    structured = catalysts._fetch_fed_fomc_meetings(
-        timeout=float(settings.http_timeout_seconds.value)
+    payload = json.loads(raw)
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    assert isinstance(rows, list) and rows, "fomc_documents returned no results"
+    doc_types = sorted({str(r.get("doc_type") or "") for r in rows})
+    print(f"      {len(rows)} rows for {today.year}; doc_types={doc_types}")
+    assert "monetary_policy" in doc_types, (
+        "no `monetary_policy` rows: the meeting date is read from this doc_type, "
+        "so its absence means the FOMC catalyst silently disappears."
     )
-    flat_total = 0
-    for year_match in re.finditer(r"(\d{4}) FOMC Meetings", html):
-        nxt = re.search(r"\d{4} FOMC Meetings", html[year_match.end() :])
-        panel_end = year_match.end() + (nxt.start() if nxt else len(html) - year_match.end())
-        flat = re.sub(r"<[^>]+>", " ", html[year_match.end() : panel_end])
-        flat_total += len(
-            re.findall(
-                r"(?:January|February|March|April|May|June|July|August|September"
-                r"|October|November|December)\s+\d{1,2}-\d{1,2}\*?",
-                flat,
-            )
-        )
+    policy_dates = sorted(
+        dt.date.fromisoformat(str(r["date"])[:10])
+        for r in rows
+        if str(r.get("doc_type")) == "monetary_policy" and r.get("date")
+    )
+    assert policy_dates, "monetary_policy rows carry no parseable date"
+    print(f"      {len(policy_dates)} dated monetary_policy meetings; latest {policy_dates[-1]}")
+    # The dot-plot flag must be readable as a FIELD. The retired scrape had to
+    # strip a trailing `*` from the day range to recover it; if `projections`
+    # ever stops appearing as a doc_type, that inference has to come back.
+    projection_dates = {
+        str(r.get("date"))[:10] for r in rows if str(r.get("doc_type")) == "projections"
+    }
+    print(f"      {len(projection_dates)} dates carry a `projections` document (the dot plot)")
+    assert projection_dates, (
+        "no `projections` doc_type: the has_projections flag would always read "
+        "False, silently mislabelling every projected meeting."
+    )
+    # A projected meeting is one whose date has BOTH documents. Measured on the
+    # real 2026 calendar: March/June/September carry projections, the rest do
+    # not — so both branches of the flag must be exercised by live data, or the
+    # assertion above could pass while the flag is a constant.
+    with_proj = [d for d in policy_dates if d.isoformat() in projection_dates]
+    assert 0 < len(with_proj) < len(policy_dates), (
+        f"the projections flag is degenerate: {len(with_proj)} of "
+        f"{len(policy_dates)} meetings carry it. Both branches must occur in "
+        "live data or the flag cannot be distinguished from a constant."
+    )
     print(
-        f"      structured parse: {len(structured)} meetings | flat-text parse: {flat_total} hits"
+        f"      -> {len(with_proj)} of {len(policy_dates)} meetings carry projections "
+        f"(both branches exercised)"
     )
-    if flat_total > len(structured):
-        print(
-            f"      -> the flat parse invents {flat_total - len(structured)} phantom "
-            f"meeting(s) from the page's trailing note. The structured read is "
-            f"load-bearing, not stylistic."
-        )
 
     # --- (6) the horizon bounds the result. --------------------------------
     print("\n  (6) the horizon bounds the result (live, one-day horizon)")
@@ -199,12 +237,12 @@ def _check() -> None:
     )
 
     print()
-    print("  D-065 live check: PASSED")
+    print("  catalyst-calendar live check: PASSED")
 
 
 def main() -> int:
     print("=" * 72)
-    print("LIVE check: the official calendar -> next_catalyst_calendar (D-065)")
+    print("LIVE check: the official calendar -> next_catalyst_calendar (D-065/D-086)")
     print("=" * 72)
     _check()
     return 0

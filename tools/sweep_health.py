@@ -144,7 +144,25 @@ def _native(module: Any) -> list[Any]:
         texts = {}
         for candidate in candidates:
             try:
-                texts[candidate] = candidate.read_bytes().decode("utf-8")
+                # `read_text` (not `read_bytes().decode`) — the SAME fix
+                # `_own_target_check` needed, and it was left un-applied here.
+                #
+                # This resolver decides WHICH candidate file a 3-tuple sweep's
+                # anchor lives in by asking `old in text`. The bytes form does
+                # not translate newlines, so on a CRLF file an LF anchor matched
+                # nothing, the anchor fell through to `candidates[0]`, and
+                # `_own_target_check` — which reads with `read_text` and so sees
+                # the anchor — then reported it ABSENT **in the wrong file**.
+                #
+                # Measured: `_legacy_targets` returns four candidates for
+                # `mutation_lei_proxy.py`, of which `snapshot_builder.py` (814
+                # CRLF) and `config.py` (4447 CRLF) are entirely CRLF while
+                # `validation.py` and `lei_proxy.py` are entirely LF. That is why
+                # the false ABSENTs land on exactly the CRLF members. It is the
+                # same 87%-artefact failure the `_own_target_check` docstring
+                # records (lesson 80: a check manufacturing findings), in the
+                # one place the earlier fix did not reach.
+                texts[candidate] = candidate.read_text(encoding="utf-8")
             except OSError:
                 continue
         resolved: list[Any] = []
