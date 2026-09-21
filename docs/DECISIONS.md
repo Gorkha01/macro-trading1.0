@@ -14473,3 +14473,124 @@ Restored clean.
 OK**. `234 = 234` (D-035).
 
 **Closes O-112(c). Gives the budget a durable home. Starts no phase.**
+
+---
+
+## D-087.23 — O-111(b) CLOSED: the corrected performance record is now ENFORCED, not merely written down
+
+**The issue asked for a documentation correction. The correction had already been
+*drafted* — and the wrong numbers were still on five surfaces, because nothing read
+the note.**
+
+D-087.19 says, in as many words, that the `settings.yaml` note *"has been
+corrected to the warm figures"*. **It had not been**, on four other files, and the
+one note it names was fixed only for `use_local_api_first`. When this pass started,
+the withdrawn figures were live in:
+
+| surface | state before this pass |
+| --- | --- |
+| `config/settings.yaml` → `api.memoize_snapshots_value.note` | **the old claim verbatim** — *"a full live snapshot build took 223.6s over the local OpenBB API and 9.5s in-process"* |
+| `src/macro_engine/config.py` → the same field's fallback `note=` | the **same** old claim |
+| `src/macro_engine/api_layer/reasoning_stream.py` (module docstring) | *"measured 9.5s in-process, 223.6s over the local OpenBB API"* |
+| `src/macro_engine/api_layer/routes_health.py` (module docstring) | *"Building takes 9.5s in-process and 223.6s over the local OpenBB API"* |
+| `src/macro_engine/api_layer/snapshot_provider.py` (module docstring) | *"223.6s over the local OpenBB API against 9.5s in-process"* |
+| `tests/api_layer/test_routes.py` (module docstring) | *"A live build takes 9.5s in-process and 223.6s over the local OpenBB API"* |
+
+**The mechanism mattered more than the numbers.** Every one of those sentences uses
+the figures to justify a *design decision* — why the snapshot is cached, why
+`/health` does not build one. So a reader who trusts the sentence and then measures
+a warm build gets **~4 s**, concludes the justification is obsolete, and may remove
+the cache. **A wrong number in an explanation is a wrong instruction.**
+
+### What changed
+
+**All six surfaces now state the honest, thermally-labelled figures**, and each one
+names the correction so the history is not lost:
+
+> **first build ~46–81 s, subsequent builds ~4 s** (warm means 4.46 s package-first,
+> 3.71 s local-first), because **cold start dominates a build (12–19×)** — and a build
+> time quoted **without its thermal state is ambiguous, not merely imprecise.**
+
+The remedy clause is gone with the numbers: D-087.18 disproved *"batching or
+parallelising the ~24 sequential requests"* by arithmetic on its own figures (the
+loop overhead is **2.41 s of 56 — 4 %**), so it is no longer recommended on any
+surface.
+
+**The old figures survive only inside their own retraction.** `settings.yaml` still
+quotes `223.6s` three times, and all three sit in sentences that withdraw it
+(*"the figures that used to sit here"*, *"did not reproduce"*). That is deliberate:
+deleting the history is how the next reader re-derives the same mistake.
+
+### The enforcement — a NEW sweep, and it is a sweep over PROSE
+
+`scripts/mutation_performance_record.py` (6 mutations, `CANARY1` + M1–M5) plus
+`tests/test_performance_record.py` (18 guards). Every other sweep in this directory
+mutates `src/macro_engine` and asks whether the *suite* notices; **this one mutates
+the recorded explanation** and asks whether the *guard* notices. A prose-only fix is
+unenforceable — which is exactly how the wrong numbers survived a correction that
+claimed to have fixed them.
+
+**The sweep is graded, and each grade earned its place:**
+
+* `CANARY1` — a real YAML **syntax error** at the top level, so the kill is
+  *structural* (the file cannot load), not behavioural. **Verified structural by an
+  in-sweep pre-flight**, not assumed: the first draft injected `<<<ERROR>>>` *inside
+  a folded `>` block scalar*, where it is **ordinary text and parses fine** — an
+  inert canary that would still have printed KILLED for everything else. The sweep
+  now **refuses to run** if its canary stops breaking the parse (lesson 5cl:
+  verify a protection before crediting it).
+* `M1` — the original live claim, restored **verbatim**. The regression itself.
+* `M2` — the claim **and** a retraction coexisting in the file. This is the O-107
+  trap in advance: a guard matching `223.6` against the whole *file* would be
+  satisfied by the nearby retraction.
+* `M3` — the **disproved remedy** restored as advice ("batching … the ~24 sequential
+  requests").
+* `M4` — the honest statement **deleted with no replacement** (the half-fix: forbidding
+  the old sentence must not be satisfiable by having no sentence at all).
+* `M5` — the cold figure kept, the **warm half dropped**.
+
+### Two findings the sweep produced, neither of them cosmetic
+
+**1. The guard was TOO BROAD — the O-107 failure in the direction this project had
+not yet recorded.** M5 survived the first run. Diagnosis: `_REQUIRED_STATEMENT` and
+`_REQUIRED_WARM` were searching the **whole file**, and `warm` occurs **8 times** in
+`settings.yaml`, so a mutant that had deleted the warm half *from the note under
+test* still matched an unrelated occurrence. **Every previous O-107 instance was a
+predicate too NARROW; this one was too WIDE** — the scan was written for the shape
+and matched it *somewhere else*. Fixed by `_scoped_region()`, which bounds the YAML
+search to the `memoize_snapshots_value` note. (Measured both ways: the helper's
+region is asserted in the test, and M5 is killed once scoped.)
+
+**2. My own M5 was an INVALID mutation, and the guard was right to pass it.** After
+scoping, M5 *still* survived — because M5 only replaced the note's *honest
+paragraph*, and the paragraph that follows it legitimately contains *"compared a
+COLD run with a WARM one"*. So the mutant had **not** in fact dropped the warm half;
+it had left it in the retraction. **The sweep reported SURVIVED and the guard was
+correct**; the *mutation* was mis-specified. Re-anchored on the full note body, and
+it is now killed. **That is lesson 5cm again — verify what a predicate actually
+matched before believing its verdict — and here the finding was in the test harness,
+not the software.**
+
+**Final state of the sweep: 6/6 killed, 0 problems, CANARY1 killed.** (And it
+*exercised its own O-103 sidecar for real*: an early run was killed by a shell
+detach mid-mutation, leaving the canary applied in `settings.yaml`; `restore_from_sidecar()`
+healed it **byte-exactly**, which is the D-086/D-087 mechanism proving itself on a
+second, independent interruption.)
+
+### What this closes
+
+**Closes O-111(b)** — the issue's own words were *"correct the performance
+documentation/recorded explanation to state first build ~46–81s, subsequent builds
+~4s, and remove the incorrect API-latency explanation"*, and that is now true on
+every surface that made the claim, **with a sweep behind it so it cannot silently
+return**. O-111 is now **fully closed**: (a) by D-087.15/.17, (b) by this entry,
+(c) by D-087.12.
+
+**A FIFTH instance of the same family** (after D-084, D-087.14, D-087.18, D-087.19):
+*a recorded correction with no reader is a claim, not a fix.* D-087.19 corrected one
+note and asserted the others; **the assertion was the defect.** The remedy that
+generalises is the one used here — **make the record machine-checked**, so
+"corrected" means "a test fails if it regresses" rather than "the author says so".
+
+**No source behaviour changed** — every edit is a docstring, a config note, or a
+new test/script. **Does not start a phase. Closes O-111(b).**

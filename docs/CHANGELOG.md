@@ -10,6 +10,44 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.23 - O-111(b) CLOSED: the corrected performance record is ENFORCED, not just written
+
+**Changed**
+
+- **Six surfaces** that justified the snapshot cache with the withdrawn figures now state the honest
+  ones: `config/settings.yaml` (`api.memoize_snapshots_value`), `src/macro_engine/config.py`'s
+  fallback note, and the module docstrings of `api_layer/reasoning_stream.py`,
+  `api_layer/routes_health.py`, `api_layer/snapshot_provider.py`, plus `tests/api_layer/test_routes.py`.
+  Each read *"223.6s over the local OpenBB API and 9.5s in-process"*; each now reads **first build
+  ~46-81 s, subsequent ~4 s**, names the thermal dependency, and drops the disproved remedy
+  (*"batching the ~24 sequential requests"*). **The withdrawn figures survive only inside their own
+  retraction**, so the history is kept without keeping the claim.
+- **`tests/test_performance_record.py`** (NEW, 18 guards) and **`scripts/mutation_performance_record.py`**
+  (NEW, 6 mutations: CANARY1 + M1-M5, **6/6 killed**) - a sweep over **prose**. Every other sweep here
+  mutates `src/` and asks whether the suite notices; this one mutates the recorded explanation and asks
+  whether the guard notices.
+
+**Notes**
+
+- **D-087.19 claimed this correction had been made.** It had not: the `settings.yaml` note it names was
+  fixed for `use_local_api_first`, and the withdrawn pair was live on four other files. **A recorded
+  correction with no reader is a claim, not a fix** - a FIFTH instance of that family (D-084, D-087.14,
+  D-087.18, D-087.19).
+- **Two findings from the sweep, both real.** (1) The guard was **too BROAD** - `warm` occurs **8x** in
+  `settings.yaml`, so a whole-file search passed on a mutant that had deleted the warm half *from the
+  note under test*; fixed by scoping to the note. That is **O-107's failure in the previously-unrecorded
+  direction** (every prior instance was a predicate too narrow). (2) **One of my own mutants was invalid**
+  and the guard was right to pass it - M5 deleted only the honest paragraph while the retraction below it
+  still said *"compared a COLD run with a WARM one"*; re-anchored on the full note body (lesson 5cm).
+- **The canary is verified structural, not assumed:** the first draft injected its error token *inside a
+  folded `>` block scalar*, where it is ordinary text and parses fine - an inert canary. The sweep now
+  **refuses to run** unless its canary actually breaks the YAML parse.
+- **The O-103 sidecar earned its keep again:** a shell detach killed an early run mid-mutation, leaving
+  the canary applied in `settings.yaml`; `restore_from_sidecar()` healed it **byte-exactly**.
+- **No source behaviour changed.** Every edit is a docstring, a config note, or a new test/script.
+
+**Issues:** closes **O-111(b)** - so **O-111 is now fully closed** ((a) D-087.15/.17, (b) here, (c) D-087.12).
+
 ### D-087.22 - O-112(c) closed: the sweep-driver budget is now DERIVED, not typed
 
 **Added**

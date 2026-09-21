@@ -14,11 +14,10 @@ So this endpoint reports both, and keeps them **distinguishable**:
               about the cost of asking, which is why it is not free.
 ============  ====================================================================
 
-``ready`` is checked **without building a snapshot**. Building takes 9.5s
-in-process and 223.6s over the local OpenBB API (measured, and recorded in
-``config/settings.yaml``), so a health check that built one would be a health
-check that takes four minutes and is load-bearing on the provider it is supposed
-to be diagnosing. Instead it reports:
+``ready`` is checked **without building a snapshot**. A build is slow (D-087.19:
+a first build ~46-81s, a subsequent one ~4s), so a health check that built one
+would be a health check that takes a minute or more and is load-bearing on the
+provider it is supposed to be diagnosing. Instead it reports:
 
 * whether a snapshot is already cached, and how old it is,
 * and — when none is — that it *can* be built, without doing it.

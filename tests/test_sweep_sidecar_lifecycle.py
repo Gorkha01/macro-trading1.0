@@ -151,14 +151,19 @@ def test_the_helper_is_exported(gate: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_sweeps_to_cover() -> None:
+def test_there_are_forty_one_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
     trivially true of an empty set, which is the shape a broken glob produces.
+
+    **40 → 41 at D-087.23**, which added `mutation_performance_record.py` — a
+    sweep over the *recorded explanation* rather than over `src/`, so it is the
+    first member of this set that does not mutate the engine. It carries the same
+    sidecar defence as the rest, which is why it belongs in the count.
     """
     files = _sweep_files()
-    assert len(files) == 40, f"expected 40 sweeps, found {len(files)}"
+    assert len(files) == 41, f"expected 41 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

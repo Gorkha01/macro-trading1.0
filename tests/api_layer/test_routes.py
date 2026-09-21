@@ -16,8 +16,8 @@ are the ones the models produced *this run*, cross-checked against a separately
 built thesis. That is the only form of assertion that a fabricated number can
 fail.
 
-**Why the snapshot is seeded rather than built.** A live build takes 9.5s
-in-process and 223.6s over the local OpenBB API (measured), and these tests are
+**Why the snapshot is seeded rather than built.** A live build is slow (D-087.19:
+a first build ~46-81s, a subsequent one ~4s), and these tests are
 deselected from... no — they are in the default run, so they must not touch the
 network. The cache is seeded from the **persisted parquet snapshot**, which is
 the same object a live build produces and requires no provider. The live path is

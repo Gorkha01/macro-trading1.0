@@ -101,8 +101,9 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
     """Run the real chain, emitting what each stage actually measured.
 
     The steps are yielded as the work happens rather than pre-computed and
-    replayed: ``build_snapshot`` is synchronous and slow (measured 9.5s
-    in-process, 223.6s over the local OpenBB API), so the ``fetch_data``
+    replayed: ``build_snapshot`` is synchronous and slow (measured D-087.19:
+    a FIRST build is ~46-81s because cold start dominates, a SUBSEQUENT build
+    ~4s), so the ``fetch_data``
     ``started`` event is emitted *before* the call and the client sees motion
     during the wait. Pre-computing would make the trace an animation over a
     frozen result — the same fabrication as the hardcoded literals, one layer up.

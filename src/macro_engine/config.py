@@ -4184,11 +4184,13 @@ class ApiSettings(BaseModel):
         calibration_status="institutional_convention",
         note=(
             "Reuse the last built snapshot within snapshot_max_age_hours. "
-            "MEASURED context: a full live snapshot build took 223.6s over the "
-            "local OpenBB API and 9.5s in-process (settings.openbb."
-            "use_local_api_first), so a request-per-build design makes the "
-            "endpoint unusable for a Workspace UI that polls. The cache is "
-            "disclosed on every response, never silent."
+            "MEASURED context (D-087.19): a full live snapshot build is "
+            "dominated by cold start, so the honest operational statement is "
+            "first build ~46-81s, subsequent builds ~4s (warm means 3.71-4.46s) "
+            "-- and a build time quoted without its thermal state is ambiguous. "
+            "A request-per-build design is therefore unusable for a Workspace "
+            "UI that polls. The cache is disclosed on every response, never "
+            "silent."
         ),
     )
     short_yield_tenor_value: CalibratedValue = CalibratedValue(

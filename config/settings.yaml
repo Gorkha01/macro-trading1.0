@@ -3351,12 +3351,17 @@ api:
     value: true
     calibration_status: institutional_convention
     note: >
-      MEASURED (settings.openbb.use_local_api_first): a full live snapshot build
-      took 223.6s over the local OpenBB API and 9.5s in-process. A
-      request-per-build endpoint is unusable for a Workspace UI that polls, so
-      the snapshot is reused within snapshot_max_age_hours. The cache is
-      DISCLOSED on every response — cached and fresh are never
-      indistinguishable.
+      MEASURED (D-087.19): a full live snapshot build is dominated by COLD
+      START, so a build time quoted without its thermal state is ambiguous, not
+      merely imprecise. The honest operational statement is FIRST build
+      ~46-81s, SUBSEQUENT builds ~4s (warm means: 4.46s package-first, 3.71s
+      local-first, 3 runs each). The figures that used to sit here -- 223.6s
+      over the local API against 9.5s in-process -- compared a COLD run with a
+      WARM one and did NOT reproduce; the ~23x they implied is 1.20x when both
+      are measured warm. A request-per-build endpoint is unusable for a
+      Workspace UI that polls, so the snapshot is reused within
+      snapshot_max_age_hours. The cache is DISCLOSED on every response --
+      cached and fresh are never indistinguishable.
   short_yield_tenor_value:
     value: "2yr"
     calibration_status: institutional_convention

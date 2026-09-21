@@ -10,8 +10,9 @@ persist=...)`` returning ``(snapshot, report)`` — with the report deliberately
 snapshot from a half-empty one" (its own docstring).
 
 More importantly, a build is *slow*. Measured and recorded in
-``config/settings.yaml`` under ``openbb.use_local_api_first``: 223.6s over the
-local OpenBB API against 9.5s in-process. A Workspace UI polls; a
+``config/settings.yaml``: a first build is **~46-81s** (cold start dominates)
+and a subsequent one **~4s** — so a build time quoted without its thermal state
+is ambiguous rather than merely imprecise (D-087.19). A Workspace UI polls; a
 request-per-build endpoint would make the thesis unreachable in practice, and the
 temptation would then be to cache it *silently*.
 

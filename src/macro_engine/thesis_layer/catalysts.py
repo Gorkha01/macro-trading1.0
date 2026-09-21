@@ -327,6 +327,37 @@ def _fetch_fed_fomc_meetings(
     a year boundary, because a December ``as_of`` with a 90-day horizon needs
     the *next* year's calendar, which does not exist yet and must not be
     fabricated.
+
+    **An unpublished year is a 404, not an empty set (measured 2026-09-22).**
+    The comment that used to sit here claimed *"asking for a year the Fed has
+    not published returns an empty set rather than an error, which is the
+    correct reading."* That is **false**, and it was never measured:
+
+    ===========================  =========  ==============================
+    request                      status     body
+    ===========================  =========  ==============================
+    ``year=2025`` (published)    **200**    the 2025 document set
+    ``year=2026`` (published)    **200**    the 2026 document set
+    ``year=2027`` (not yet)      **404**    ``{"detail":"Not Found"}``
+    ``year=2030`` (not yet)      **404**    ``{"detail":"Not Found"}``
+    ``year=notayear`` (invalid)  **404**    ``{"detail":"Not Found"}``
+    ===========================  =========  ==============================
+
+    Repeated identically on re-request, so the 404 is deterministic rather than
+    a flaky edge. **404 is the service's single way of saying "no such document
+    set"** — it does not distinguish *unpublished* from *invalid*, which is fine
+    here because both mean "this year contributes no rows".
+
+    **Why the distinction matters rather than being cosmetic.** A 404 raises
+    ``HTTPStatusError`` from ``raise_for_status()``, so before this fix every
+    December run logged ``FOMC documents for 2027 failed: ...`` at **WARNING** —
+    byte-identical in shape to the dead-port outage that cost this project hours
+    (D-087.10/.13). **An expected absence reported as a failure is how a real
+    failure gets ignored**: a reader who sees that warning every December for a
+    reason that is normal learns to skip it, and then skips the one that is not.
+    So a 404 is now ``INFO`` — the year is simply not published yet — while
+    everything else (5xx, a transport error, malformed JSON, an empty body)
+    stays ``WARNING``, because those *are* failures.
     """
     today = as_of or _us_calendar_today()
     # Ask for this year and the next: a horizon that crosses a year boundary

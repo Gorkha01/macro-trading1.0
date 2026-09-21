@@ -804,7 +804,10 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # true: the scan must classify EVERY sweep, and (since O-72's first half) it
     # must find none without a control. If a new sweep is added without one, the
     # count goes up and this test tells you -- it does not fail the build.
-    assert len(sweeps) == 40, f"expected 40 sweeps, found {len(sweeps)}"
+    #
+    # 40 -> 41 at D-087.23 (`mutation_performance_record.py`), which carries the
+    # same CANARY1 gate as the rest.
+    assert len(sweeps) == 41, f"expected 41 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "

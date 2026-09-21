@@ -4955,3 +4955,90 @@ pytest **2595 passed / 1 skipped / 17 deselected / 0 failed** (EXIT=0) · `sweep
 **40 sweeps · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK**. `234 = 234`.
 
 **Closes O-112(c). Gives the budget a durable home. Starts no phase.**
+
+---
+
+## D-087.23 — O-111(b) closed: the corrected performance record is ENFORCED
+
+**The issue asked for a documentation correction. The correction had already been
+*drafted* — and the withdrawn figures were still live on four surfaces, because
+nothing read the note.**
+
+D-087.19 recorded that the `settings.yaml` note *"has been corrected to the warm
+figures"*. It named one note and fixed the `use_local_api_first` one; the
+`memoize_snapshots_value` note — and `config.py`'s fallback for it, and three
+`api_layer` module docstrings, and a test docstring — still read *"a full live
+snapshot build took **223.6s** over the local OpenBB API and **9.5s** in-process"*.
+D-087.19 compares a COLD run with a WARM one, so warm the ratio is **1.20×**, not
+23×, and 223.6 s **does not reproduce**.
+
+**Every one of those sentences justified a design decision** — why the snapshot is
+cached, why `/health` never builds one. A reader who trusts the sentence, measures a
+warm build, gets **~4 s**, and concludes the cache is obsolete **has been misled by
+the record**. A wrong number in an explanation is a wrong instruction.
+
+### What changed
+
+All six surfaces now state the honest, thermally-labelled figures — **first build
+~46–81 s, subsequent ~4 s** (warm means 4.46 s package-first / 3.71 s local-first),
+because **cold start dominates a build (12–19×)** and a build time without its
+thermal state is ambiguous rather than merely imprecise. The disproved remedy
+(*batching the ~24 sequential requests*) is gone. **The withdrawn figures survive
+only inside their own retraction**, so the history is preserved without the claim.
+
+### The enforcement — a sweep over PROSE
+
+`tests/test_performance_record.py` (**18 guards**) + `scripts/mutation_performance_record.py`
+(**6 mutations — CANARY1 + M1–M5 — 6/6 killed**). Every other sweep in `scripts/`
+mutates `src/` and asks whether the *suite* notices; **this one mutates the recorded
+explanation and asks whether the *guard* notices.** A prose-only fix is
+unenforceable — which is precisely how the wrong numbers survived a correction that
+claimed to have fixed them.
+
+The mutations are graded: `M1` restores the live claim verbatim; `M2` makes the claim
+and its retraction **coexist** (defeating a whole-file match); `M3` restores the
+**disproved remedy**; `M4` deletes the honest statement with no replacement (the
+half-fix); `M5` keeps the cold figure and drops the warm half.
+
+### Two findings, both real
+
+**(1) The guard was too BROAD — O-107 in a direction this project had not recorded.**
+M5 survived the first run. `_REQUIRED_WARM` searched the **whole file**, and `warm`
+occurs **8×** in `settings.yaml`, so a mutant that had deleted the warm half *from the
+note under test* matched an unrelated occurrence. **Every previous O-107 instance was
+a predicate too NARROW; this one was too WIDE** — the scan matched the shape
+*somewhere else*. Fixed by `_scoped_region()`, bounding the YAML search to the
+`memoize_snapshots_value` note.
+
+**(2) My own M5 was an INVALID mutation, and the guard was right to pass it.** After
+scoping, M5 *still* survived — because it replaced only the note's honest paragraph,
+and the retraction below it legitimately said *"compared a COLD run with a WARM one"*.
+The mutant had not dropped the warm half at all. **The sweep reported SURVIVED and the
+guard was correct; the mutation was mis-specified.** Re-anchored on the full note body
+(lesson 5cm: verify what a predicate actually matched before believing its verdict).
+
+**The canary is verified structural, not assumed.** The first draft injected
+`<<<ERROR>>>` inside a folded `>` block scalar, where it is ordinary text and **parses
+fine** — an inert canary that would still have printed KILLED for everything else. The
+sweep now **refuses to run** unless its canary actually breaks the YAML parse (lesson
+5cl).
+
+**The O-103 sidecar (item 2 of this session) earned its keep for real:** an early run
+was killed by a shell detach mid-mutation, leaving the canary applied in
+`settings.yaml`; `restore_from_sidecar()` healed it **byte-exactly**, with no catalogue
+match needed. That is the D-086/D-087 mechanism proving itself on a second,
+independent interruption.
+
+### Verification
+
+**18 new guards pass**; **the sweep certifies 6/6 with 0 anchor problems and CANARY1
+killed**. Mutation-proven in both directions — the guard kills each of M1–M5, and each
+of M1–M5 is a distinct failure mode rather than a restatement of another.
+
+**No source behaviour changed:** every edit is a docstring, a config note, or a new
+test/script (plus the `docs/BUILD_STATE.md` table cell, which now cites D-087.19
+beside the D-003 measurement it records).
+
+**Closes O-111(b) — so O-111 is now FULLY CLOSED** ((a) D-087.15/.17 · (b) here ·
+(c) D-087.12). **A fifth instance of the "recorded correction with no reader" family.**
+Does not start a phase.
