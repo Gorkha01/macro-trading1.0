@@ -13609,3 +13609,76 @@ disk`**, which is the half it can answer without a commit — and it is the
 measurement that says the sweeps themselves are leaving nothing behind.
 
 **Opens O-112. Extends O-107 and O-109. Starts no phase.**
+
+---
+
+## D-087.12 — D-084's vintage conclusion RE-MEASURED against `:6900`: it survives, the 502s were a symptom, and the recorded A/B method was fragile
+
+**Context.** O-111(c) left one item explicitly open: *"the `502`s on
+`economy/fred_search` were a symptom of the same dead instance, not the separate
+D-084 vintage limitation, so D-084's vintage conclusion should be re-measured
+against `:6900` before it is relied on."* **This is that re-measurement.** It was
+run through the project's own config (`get_settings().openbb.base_url`), so it
+tests the path the engine actually uses rather than a hard-coded host.
+
+**Service state at measurement:** `:6900` -> **200 in 0.05 s**; `:6901` -> **502 in
+2.04 s**. The dead instance is still bound and still answering 502, which is why
+`_openapi_paths()`'s *"could not ask"* vs *"asked, empty"* distinction matters and
+why a reachability probe is still O-111(a).
+
+### What held, what changed, and what is now closed
+
+| D-084 claim | Re-measured on `:6900` | verdict |
+|---|---|---|
+| `fred_search` returns `502`s | **200**, 3,124 bytes | **502 was a SYMPTOM** — confirmed |
+| 278 operations, **zero** contain `vintage` | **278 paths / 278 operations, zero** `vintage` | **unchanged** |
+| `realtime_*` are **absorbed**, not honoured | `results_a == results_b` -> **True** | **holds** |
+| `realtime_*` is a **marker**, not a selector | `realtime_start == realtime_end == 2026-09-21` (today) beside `last_updated` = `2026-09-17T20:13:25-05:00` | **holds** |
+
+**Not one of D-084's four substantive conclusions was distorted by the dead port.**
+That is worth stating plainly, because the O-111 flag was a real hazard and the
+honest answer is that the exposure happened not to bite: `:6901` was serving the
+OpenAPI document the whole time — it 502'd on **data** routes — so every claim
+derived from the **spec** is exactly as valid as when it was made, and the one
+claim that depended on a **data** call (`fred_search`'s 502s) was itself only ever
+recorded as a symptom, not as a limitation.
+
+### The method correction — the durable half, and the reason this was worth doing
+
+**The recorded A/B compared the WHOLE JSON ENVELOPE for equality and got `True`.
+Re-running that exact test gets `False`.** The difference is entirely transport
+metadata. Measured over the flattened payload: **61 leaf keys, exactly 3 differ,
+all three of them `extra.metadata.duration`, `extra.metadata.timestamp` and the
+request `id`.** Comparing `["results"]` instead gives `True` on all 5 rows.
+
+So D-084's conclusion was **right for the right reason but reproducible only
+once**: the recorded method would, on any re-run, have produced a **false
+negative** — *"the vintage window DID change the data"* — and that false negative
+would have looked like a genuine discovery. **The lesson: an A/B on a service
+response must be scoped to the DATA, never to the envelope.** A response envelope
+carries per-request identity (id, timestamp, duration) by design, so whole-object
+equality between two calls is **never** a valid test of "did the input change the
+output" — it is a coin that lands `True` only while you are lucky.
+
+### What this closes, and what it deliberately does not
+
+**Closes O-111(c).** D-084 can be relied on; the re-measurement is recorded in
+`OPEN_ISSUES.md` beside the flag that asked for it.
+
+**Does not touch:** O-111(a) — **no gate still verifies the configured URL SERVES**,
+so this whole re-measurement had to be initiated by hand, which is precisely the
+gap; and O-111(b) — the snapshot's ~24 sequential requests still cost **83 s** on a
+healthy build. **D-074's FRED/ALFRED direct-vintage route is unaffected**: it was
+established against ALFRED with a real credential, not against the local route, so
+the dead port was never in its path and its conclusion was never at risk.
+
+**No source change. No new issue. Closes O-111(c). Starts no phase.**
+
+**[D-087.11 CLOSED — the operator committed the repairs as `e51a0f4` at 16:50 on
+2026-09-21. Both committed mutants are now GONE FROM `HEAD`, verified by reading
+`git show HEAD:` at both edit sites (`reasoning_stream.py:287` carries the real
+f-string; `convergence.py:330` carries `elif opposed:`), and
+`tools/sweep_health.py` now prints the predicted end state exactly: `leftover
+mutations: 0 · mutant shapes on disk: 0 · committed mutants (O-109, vs HEAD): 0 ·
+failures: 0 · SWEEP HEALTH: OK`. The earlier note that it "reports 2 by design
+until the commit" was correct and is now discharged.]**
