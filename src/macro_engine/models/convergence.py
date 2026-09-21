@@ -327,7 +327,7 @@ def classify_convergence(inputs: ConvergenceInputs) -> ModelResult:
             f"all {len(signals)} signal(s) read neutral — no directional read "
             "exists, so there is nothing to agree or disagree about"
         )
-    elif False:  # CONFLICTED removed
+    elif opposed:
         verdict = "CONFLICTED"
         up_i = [i for i, d in enumerate(directions) if d > 0]
         down_i = [i for i, d in enumerate(directions) if d < 0]

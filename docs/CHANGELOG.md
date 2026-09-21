@@ -10,6 +10,66 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.11 - the FULL 40-sweep run completed: four more defects, three under green gates
+
+**A complete pass over all 40 mutation sweeps (1,286 mutations) was run for the
+first time. It found four defects and the committed-mutant count doubled to 2.**
+No Phase 5 work. `AGENTS.md` unchanged.
+
+**Fixed**
+
+- **`M8.3` was a SECOND committed mutant, live and reachable** - O-109's class,
+  second instance. On the `if fired:` stand-down path, `reasoning_stream.py`
+  emitted the **hardcoded** `"convergence=HIGH"` instead of
+  `f"convergence={thesis.convergence_classification.value}"`, so **every
+  stood-down thesis** reported a fabricated `HIGH` label. The suite **fails** on
+  it (`assert 'NO_SIGNAL' in 'convergence=HIGH'`), so it was always killable - it
+  was simply **committed**, which is why no dirty-relative check saw it.
+  Restored, **RED -> GREEN proved**.
+- **`M3.2` was committed too** (`elif False:  # CONFLICTED removed`, draining the
+  `CONFLICTED` verdict out of `classify_convergence`) and is restored in the
+  working tree. Both mutants remain in `HEAD` (`81fd65a`) until the operator
+  commits; `sweep_health.py` reports **2 by design** and **0 after the commit**.
+- **`_is_mutant_shape` was blind to `elif`** - `startswith(("if False:",
+  "if True:"))` does not match **`elif False:`**, and `mutation_convergence.py`
+  writes `M3.2` in exactly that form. **Two gates inherited the gap** (the O-83
+  whole-tree scan and the O-109 committed scan), so a committed `elif` mutant was
+  invisible to both. Widened; guarded in both directions.
+- **The O-109 committed scan shipped with O-108's predicate in it.**
+  `old not in committed and new in committed` is the **same trivially-satisfiable
+  test** one scope over, and **1 of its 2 findings was a false positive**
+  (`M8.3`). Replaced with a **mutant-shape witness at the edit site**, which needs
+  no pristine reference and cannot be satisfied by an ordinary line.
+- **O-112 - the full-sweep driver sized its timeout to a round number.** A flat
+  `timeout 600` against a sweep whose measured floor is **~1,700 s** (42
+  mutations x ~40 s) means it was **guaranteed** to be killed, and on win32 a
+  killed sweep leaves mutants on disk. The budget now derives from the mutation
+  count and **`rc=124` is a hard stop**, not an ordinary row. Re-run alone,
+  `mutation_api_layer` **CERTIFIES at 42/42 applied, 41 killed, 1 survivor**
+  (`M10.1`, the honesty control) in **1,066 s**.
+
+**Guarded**
+
+- `tests/test_sweep_health_leftover_predicate.py` gains **16** tests (30 total):
+  every mutant branch shape including `elif`, the refusal of ordinary neighbour
+  lines, and the shape-witness requirement. The committed-mutant control is
+  selected from the **live** scan rather than hard-coded, because it was already
+  stale once when `HEAD` advanced.
+
+**Found by the run, recovered by the sidecar**
+
+- Two aborted attempts left **8 `.sweepbackup` sidecars**; **one differed from its
+  source** - a live mutant in `routes_query.py` (`" ".join(...split())` where the
+  `isalnum()` sanitizer belongs), restored **byte-exactly** without any catalogue
+  match. The D-086 sidecar mechanism is adopted by only **2 of 40** sweeps (O-103)
+  and this is the first time it actually had to heal a file.
+
+**Gates:** `ruff check` clean - `format` **231** = `mypy --strict` **231** (D-035)
+- `pytest -q` **2555 passed / 1 skipped / 0 failed** in **109.9 s** (was 2539)
+- `sweep_health.py` **40 sweeps, 0 leftovers, 0 shapes on disk, 2 committed,
+  2 failures** - `mutation_api_layer` **42/42 -> 41 killed - CERTIFIES** -
+  `mutation_lei_proxy` **36/36 - CERTIFIES** - the other 38 sweeps **all CERTIFY**.
+
 ### D-087 - the leftover detector was a false-positive machine, and a mutant had been COMMITTED
 
 **Two defects, each hiding the other. Both fixed and mutation-proven.** No Phase 5

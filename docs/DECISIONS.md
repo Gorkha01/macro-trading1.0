@@ -13430,3 +13430,182 @@ until this work is committed. **After the commit it reads 0.** The count moved
 tools are new/changed files in the gate's scope.
 
 **Opens O-108 and O-109. Starts no phase.**
+
+---
+
+## D-087.11 — the FULL 40-sweep run: three more defects, two of them mine, and the committed-mutant count doubled to 2
+
+**Context.** The user chose *"Let it run to completion"* for a full sweep of all
+40 `scripts/mutation_*.py`. That had not been done before in one pass, and it was
+the right call: **it found four defects, three of which green gates had been
+standing on top of.**
+
+### What the run produced
+
+| | count |
+|---|---|
+| sweeps run | **40 / 40** |
+| `rc=0` | **39** |
+| `rc=124` (timeout) | **1** — `mutation_api_layer` |
+| total mutations | **1,286** |
+
+Every sweep that completed **CERTIFIED**, with only the pre-classified expected
+inert survivors (`M1.5`, `M4.3`, `M2.1`, `M5.7`, `M10.1`-style controls). The
+`rc=124` was the single anomaly, and investigating it is what produced O-112.
+
+### Defect 1 (mine) — the driver's timeout was never big enough — **O-112**
+
+`.probe/run_all_sweeps.sh` used a **flat `timeout 600`** for every sweep. But
+`mutation_api_layer.py` declares **42 mutations** and each `run_pytest` spawns a
+fresh interpreter over four files. Measured, one such run is **~40 s**
+(161 passed in 39.73 s), so the sweep's floor is **~1,700 s** — it was
+**guaranteed** to be killed, and on win32 the kill is what leaves a mutant on
+disk (D-082/O-103: no signal handler runs, so `finally` and the sidecar restore
+never fire).
+
+**So the full run's `rc=124` row was not "a slow sweep" — it was a sweep that
+could never have finished under the budget it was given.** A driver that sizes
+its timeout to a round number instead of to the work is O-62 in the harness
+itself: *the sweep could not run, so it certified nothing, and its row looked
+like every other row.*
+
+**Fixed** in the driver: the budget is derived from the mutation count
+(`declared × 75 s`, floor 300 s) so it tracks the work, and **`rc=124` is now a
+hard stop** rather than an ordinary row — a timeout is not a result, and every
+sweep after it would be measured on a tree the killed one may have corrupted.
+Re-run alone, `mutation_api_layer` **CERTIFIES at 42 / 42 applied, 41 killed,
+1 survivor (`M10.1`, the honesty control, which must survive)** in **1,066 s**.
+
+### Defect 2 — `sweep_health.py`'s committed scan had O-108's predicate in it — **O-109 addendum**
+
+The `_committed_mutant_scan` written earlier **this session** tested
+`old not in committed and new in committed`. That is **the same trivially-satisfiable
+predicate** as O-108, reintroduced one scope over, and it is the reason the fix is
+recorded as *not finished* by the first pass.
+
+**Measured: 1 of its 2 findings was a false positive.** `M8.3` replaces
+`f"convergence={thesis.convergence_classification.value}"` with the fixed string
+`"convergence=HIGH"`, and the shipped `reasoning_stream.py` contains **both** —
+they are two different `yield` sites (a live one and the stood-down one).
+
+**The docstring claimed `_is_applied` could tell the two apart. It cannot.**
+Against the committed blob `_is_applied` reduces to
+`text.count(old) == 0 and new.count(new) == new.count(new)` — i.e. `new in text`.
+It is only meaningful against the file that would be *edited*. **Verified by
+computation, not by reading:** the call returned `True` on a blob whose only
+`"convergence=HIGH"` is legitimate.
+
+**Fixed** by requiring a witness that is specific to the edit site: the committed
+blob must carry a **mutant shape** (`_is_mutant_shape`) inside the region where
+`new` lands. This needs no pristine reference and cannot be satisfied by an
+ordinary line.
+
+### Defect 3 — `_is_mutant_shape` was blind to `elif` — **O-107 addendum**
+
+Found while building Defect 2's fix, and it is the more serious of the two
+because **it propagated to two gates.** The test was
+`stripped.startswith(("if False:", "if True:"))`, and `str.startswith` does not
+treat **`elif False:`** as a match. Verified directly:
+
+```
+_is_mutant_shape('if False:')                    -> True
+_is_mutant_shape('elif False:')                  -> False     <-- blind spot
+_is_mutant_shape('elif False:  # CONFLICTED removed') -> False
+```
+
+**It was live, not hypothetical.** `mutation_convergence.py` writes `M2.2`
+(`if False:` form) and `M3.2` (**`elif False:`** form) — and `M3.2` is one of the
+two mutants committed to `HEAD`. Both this function **and the O-83 whole-tree
+scan** are built on it, so a committed `elif` mutant was invisible to two
+independent gates at once.
+
+**Fixed** by widening the tuple to include `elif False:` / `elif True:` — the same
+justification as the existing `and True` widening: only a sweep writes it.
+
+### Defect 4 — **M8.3 is a SECOND committed mutant, and it is live and reachable**
+
+The headline. What first looked like a false positive is a genuine defect:
+
+```python
+    fired = _fired(thesis.warnings)
+    if fired:
+        yield _event(
+            "classify_convergence",
+            "done",
+            "convergence=HIGH",        # <-- hardcoded, in HEAD, on a LIVE path
+        )
+```
+
+**This is M8.3's exact intent** — *"§8.3's 'HIGH convergence' is emitted on a day
+the builder stood down"* — and it sits on the **reachable** stood-down path, so
+every stood-down thesis streamed the literal `HIGH` instead of its real
+classification.
+
+**My own mid-session "false positive" call was wrong**, and the way it was wrong
+is the lesson: I checked the anchor at line **300** (the `else:` branch's `yield`,
+which *is* intact) and concluded the file was fine. The mutation targets the
+**`if fired:`** branch at line **287**. **A file can contain two structurally
+similar sites and only one of them is the edit site — verifying against the wrong
+one is indistinguishable from verifying nothing.**
+
+**Confirmed by execution, not by reading.** The suite **FAILS** with it applied:
+
+```
+E   AssertionError: assert 'NO_SIGNAL' in 'convergence=HIGH'
+FAILED tests/api_layer/test_routes.py::test_stream_emits_the_real_convergence_and_gate
+```
+
+So `M8.3` was **properly killed by the suite all along** — the mutant was simply
+**committed**, which is O-109 precisely: a sweep re-applying a committed mutant
+gets an ordinary KILLED, and the corruption *is* the baseline.
+
+**Fixed** by restoring the `f"convergence={thesis.convergence_classification.value}"`
+form. **RED → GREEN proved:** the test fails above and passes after
+(11 passed). The reason it survived attention is that the assertion at
+`tests/api_layer/test_routes.py:838` picks the *first* `classify_convergence`
+event, and on the stood-down path that is the hardcoded one.
+
+### The sidecar defence fired for real — twice
+
+The D-086 sidecar mechanism (`record_pristine` → `<name>.sweepbackup` →
+`restore_from_sidecar`) is adopted by only **2 of 40** sweeps (O-103),
+`mutation_api_layer` among them — and it earned its place here. Two aborted runs
+left **8 sidecars**, and on inspection **one differed from its source**:
+
+```
+-  cleaned = "".join(c if c.isalnum() else " " for c in question.lower())
++  cleaned = " ".join(question.lower().split())  # MUTANT: punctuation kept as part of the token
+```
+
+A live mutant in `routes_query.py`, restored **byte-exactly** because the sidecar
+held the pristine text and no catalogue match was needed. `HEAD` was verified to
+carry the correct line, so it was a working-tree leftover, not a third committed
+mutant — **but it is only distinguishable from one by the revision-anchored
+check, which is the whole point of O-109's remedy.**
+
+### Gates at close-out (full run complete)
+
+| Gate | Result |
+|---|---|
+| `ruff check .` | **All checks passed** |
+| `ruff format --check .` | **231** |
+| `mypy --strict .` | **231** — D-035 parity holds |
+| `pytest -q` | **2555 passed / 1 skipped / 0 failed** in **109.9 s** |
+| `tools/sweep_health.py` | **40 sweeps · 0 leftovers · 0 shapes on disk · 2 committed (vs HEAD) · 2 failures** |
+| `scripts/mutation_api_layer.py` | **42 / 42 applied, 41 killed, 1 survivor (`M10.1` control) — CERTIFIES** in **1,066 s** |
+| `scripts/mutation_lei_proxy.py` | **36 / 36 killed — CERTIFIES** |
+| 38 further sweeps | **all CERTIFY** (only pre-classified inert survivors) |
+| `tests/test_sweep_health_leftover_predicate.py` | **30 passed / 1 deselected** (+16 guards added) |
+
+The suite moved **2539 → 2555**; the **16** new guards cover the `elif` shape, the
+ordinary-line refusal, and the shape-witness requirement. **The count is
+`2555 passed / 1 skipped`, not `2539 / 1`** — the earlier figure was measured
+before these guards existed and must not be carried forward (O-88).
+
+`sweep_health.py` reports **2 committed mutants by design**: both repairs are in
+the working tree and `HEAD` (`81fd65a`) still carries them until the user commits.
+**After the commit it reads 0.** It also reports **`0 leftovers · 0 shapes on
+disk`**, which is the half it can answer without a commit — and it is the
+measurement that says the sweeps themselves are leaving nothing behind.
+
+**Opens O-112. Extends O-107 and O-109. Starts no phase.**

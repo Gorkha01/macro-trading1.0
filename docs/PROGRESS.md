@@ -4488,3 +4488,81 @@ committed. **After the commit it reads 0.** That is the check doing its job, not
 residual failure.
 
 **Opens O-108 and O-109. Starts no phase.**
+
+---
+
+## D-087.11 — the FULL 40-sweep run completed, and it found FOUR more defects
+
+**Context.** The operator chose **"Let it run to completion"** for a full pass over
+all **40** `scripts/mutation_*.py`. That had never been done in one run, and it was
+the right call — **three of the four defects were sitting under green gates.**
+
+```
+40 / 40 sweeps ran          1,286 mutations
+39 rc=0                     1 rc=124  (the timeout, see O-112)
+every completed sweep CERTIFIES
+```
+
+**The four defects, in the order found.**
+
+1. **O-112 — the driver's timeout was never big enough (mine).** `.probe/run_all_sweeps.sh`
+   used a flat `timeout 600` for every sweep. `mutation_api_layer.py` declares **42**
+   mutations at **~40 s** each (measured: 161 passed in 39.73 s), so its floor is
+   **~1,700 s** — it was **guaranteed** to be killed, and on win32 the kill is what
+   leaves mutants on disk. **The `rc=124` row was not "a slow sweep"; it was a sweep
+   that could never have finished under its budget, and its row looked like every
+   other row (O-62 in the harness).** Fixed: the budget is derived from the
+   mutation count (`declared × 75 s`, floor 300 s) and `rc=124` is now a **hard stop**.
+
+2. **The committed scan I wrote had O-108's predicate in it.** `old not in committed
+   and new in committed` is **the same trivially-satisfiable test**, reintroduced one
+   scope over. **1 of its 2 findings was a false positive** (`M8.3`). Fixed by
+   requiring a **mutant shape at the edit site** instead.
+
+3. **`_is_mutant_shape` was blind to `elif` — two gates inherited the gap.**
+   `startswith(("if False:", "if True:"))` does not match **`elif False:`**, and
+   `mutation_convergence.py` writes `M3.2` in exactly that form — **and `M3.2` was
+   committed to `HEAD`.** Fixed by widening the tuple.
+
+4. **`M8.3` is a SECOND committed mutant, live and reachable.** On the `if fired:`
+   stand-down path, the stream emitted the **hardcoded** `"convergence=HIGH"` instead
+   of the real classification — on **every** stood-down thesis. The suite **fails** on
+   it (`assert 'NO_SIGNAL' in 'convergence=HIGH'`), so it was always killable;
+   it was simply **committed**, which is O-109 precisely. Fixed, **RED → GREEN proved**.
+
+**The sidecar defence earned its keep, for real.** Two aborted runs left **8
+`.sweepbackup` sidecars**, and **one differed from its source** — a live mutant in
+`routes_query.py` (`" ".join(...split())` where the `isalnum()` sanitizer belongs),
+restored **byte-exactly**. D-086's mechanism, adopted by only **2 of 40** sweeps
+(O-103), is what made that recoverable.
+
+**A correction to my own mid-session reasoning, recorded because it is the lesson.**
+I first concluded `M8.3` was a **false positive** of the scan. That was **wrong**:
+I verified against line **300** (the `else:` branch's `yield`, which *is* intact)
+while the mutation targets line **287** (the `if fired:` branch). **A file can hold
+two structurally similar sites and only one is the edit site — checking the wrong
+one is indistinguishable from checking nothing.**
+
+### Gates at close-out
+
+```
+ruff check .              ->  All checks passed
+ruff format --check .     ->  231
+mypy --strict .           ->  231        (D-035 parity holds)
+pytest -q                 ->  2555 passed / 1 skipped / 0 failed  in 109.9 s
+tools/sweep_health.py     ->  40 sweeps, 0 leftovers, 0 shapes on disk,
+                              2 committed (vs HEAD), 2 failures
+mutation_api_layer.py     ->  42/42 applied, 41 killed, 1 survivor (M10.1 control)
+                              -> CERTIFIES  in 1066 s
+mutation_lei_proxy.py     ->  36/36 killed -> CERTIFIES
+38 further sweeps         ->  all CERTIFY
+test_sweep_health_leftover_predicate.py -> 30 passed / 1 deselected (+16 guards)
+```
+
+**`sweep_health.py` reporting 2 committed mutants is CORRECT right now:** both repairs
+are in the working tree and `HEAD` (`81fd65a`) still carries `M3.2` and `M8.3` until
+this work is committed. **After the commit it reads 0.** Its **`0 leftovers · 0 shapes
+on disk`** is the half it can answer without a commit, and it says the sweeps
+themselves leave nothing behind.
+
+**Opens O-112. Extends O-107 and O-109. Starts no phase.**

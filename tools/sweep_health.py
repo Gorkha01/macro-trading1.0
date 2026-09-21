@@ -471,10 +471,23 @@ def _is_mutant_shape(stripped: str) -> bool:
     ``grep`` did see it, which is how the false OK was caught. A gate that can
     print OK on a mutated tree is worse than no gate, because it is trusted —
     so the detection is now by *structure* rather than by prefix.
+
+    **``elif`` is a second blind spot, found 2026-09-21 the same way.** The
+    prefix tuple above is ``("if False:", "if True:")`` and ``str.startswith``
+    does not treat ``elif False:`` as a match, so a **dead ``elif`` branch is
+    invisible**. That is not a hypothetical shape: ``mutation_convergence.py``
+    writes both ``M2.2`` (``if False:  # NO_SIGNAL removed``) and ``M3.2``
+    (``elif False:  # CONFLICTED removed``), and ``M3.2`` is the mutant that is
+    committed to ``HEAD``. Both this function *and* the O-83 whole-tree scan are
+    built on it, so the blind spot propagated to two gates. Verified:
+    ``_is_mutant_shape('elif False:')`` returned ``False`` while
+    ``_is_mutant_shape('if False:')`` returned ``True``. Widening the tuple to
+    include ``elif`` closes it without loosening the test — ``elif True:`` and
+    ``elif False:`` are, like their ``if`` forms, things only a sweep writes.
     """
     if "MUTANT" in stripped:
         return True
-    if stripped.startswith(("if False:", "if True:")):
+    if stripped.startswith(("if False:", "if True:", "elif False:", "elif True:")):
         return True
     # The compound identity form: ``... and True`` / ``... or False`` at the end
     # of a condition. Matching the bare boolean literal is what makes this safe
@@ -546,23 +559,45 @@ def _committed_mutant_scan(catalogue: list[tuple[str, Path, str, str]]) -> list[
     *supposed* to be absent from the shipped source, so its replacement text being
     present in ``HEAD`` is a defect regardless of what the working tree says.
 
-    The predicate is deliberately **the same one the live sweep uses to apply the
-    mutation** (``old`` absent AND ``new`` present), evaluated against the
-    committed blob. That is a *weaker* test than ``_is_applied`` — which needs the
-    file that would be edited — but it is the right one here: ``HEAD`` is not the
-    working tree, and the question is whether the mutation is *already in the
-    source history*.
+    **The predicate, and the mistake it took two attempts to get right.** The
+    first version tested ``old not in committed and new in committed``, reasoning
+    that a mutation's replacement text has no business being in the shipped
+    source. That is true, and it is *not sufficient*: it is the same defect this
+    file already fixed once for the working-tree path (O-108), and the committed
+    path reintroduced it, because it is the same logical error in a new scope.
+    A catalogue's ``new`` text is frequently a **superset or a substring of a
+    legitimate shipped line**. ``M8.3`` replaces
+    ``f"convergence={thesis.convergence_classification.value}"`` with the fixed
+    string ``"convergence=HIGH"`` — and the shipped ``reasoning_stream.py``
+    contains *both*, because they are two different ``yield`` sites (a live one
+    and the stood-down one). ``old`` is absent from ``HEAD`` for an unrelated
+    reason (the live site's expression differs), ``new`` is present for an
+    unrelated reason (the other site), and the conjunction fires on a file that
+    is entirely correct. Measured 2026-09-21: **1 of the 2 findings was this
+    false positive.**
+
+    So the reduction to a *finding* requires a witness that is specific to the
+    edit site: the committed blob must carry a **mutant shape**
+    (``_is_mutant_shape``) *inside the region where ``new`` lands*. That is not a
+    weaker test but a stronger one, and it needs no reconstruction of the
+    pristine text:
+
+    * ``M3.2`` — ``HEAD``'s ``convergence.py`` carries
+      ``elif False:  # CONFLICTED removed``, a dead branch. Shape found at the
+      site ⇒ genuine committed mutant.
+    * ``M8.3`` — ``HEAD``'s ``reasoning_stream.py`` has ``convergence=HIGH`` as a
+      live, reachable statement with no dead branch. No shape at the site ⇒
+      **not** a mutant, and the anchor-absence is a drifted anchor by another name.
+
+    ``_is_applied(committed, ...)`` must NOT be used here. Against the committed
+    blob it reduces to ``text.count(old) == 0 and new.count == new.count``, which
+    is ``new in text`` — the very trivially-true test being corrected. It is only
+    meaningful against the file that would be *edited*.
 
     **This check would have caught the 2026-09-21 incident.** ``M7b``'s
-    replacement, ``lead_direction = "broad_based_advance"``, is present in the
-    committed ``lei_proxy.py`` where the ``mixed`` arm belongs.
-
-    Mis-reporting is the danger here, because ``old in text`` is how a *drifted*
-    anchor is distinguished, and a drifted anchor also has "``old`` absent, ``new``
-    present". The reduction to a hard finding therefore requires that
-    ``_is_applied`` — the edit-site-aware predicate, which can tell the two apart —
-    agrees, and drifted anchors are reported separately at the call site so the
-    weaker signal is still visible without being fatal.
+    replacement, ``lead_direction = "broad_based_advance"``, sits in the
+    committed ``lei_proxy.py`` where the ``mixed`` arm belongs — and that arm is
+    a genuine branch inversion, so the shape witness fires.
     """
     findings: list[str] = []
     blobs: dict[Path, str | None] = {}
@@ -577,14 +612,28 @@ def _committed_mutant_scan(catalogue: list[tuple[str, Path, str, str]]) -> list[
             else:
                 blobs[target] = _committed_blob(rel)
         committed = blobs[target]
-        if committed is None:
+        if committed is None or old in committed:
             continue
-        if old not in committed and new in committed and _is_applied(committed, old, new):
-            findings.append(
-                f"{name}: the committed {target.name} already carries this mutation's "
-                f"replacement text (old absent, new present in HEAD) — a mutant was "
-                f"COMMITTED, so every dirty-relative check is blind to it"
-            )
+        # The witness must be a mutant SHAPE, and it must be present in the
+        # committed blob *as a line of its own*. ``_is_mutant_shape`` is the
+        # project's structural test (O-107), so an ordinary line cannot satisfy
+        # this. Matching against the blob's stripped lines (rather than against
+        # the indented ``new`` text) is what makes the check indentation-proof:
+        # a catalogue entry and the committed source can differ in leading
+        # whitespace without the finding being lost.
+        committed_shapes = {
+            line.strip() for line in committed.splitlines() if _is_mutant_shape(line.strip())
+        }
+        for line in new.splitlines():
+            stripped = line.strip()
+            if stripped and _is_mutant_shape(stripped) and stripped in committed_shapes:
+                findings.append(
+                    f"{name}: the committed {target.name} already carries this "
+                    f"mutation's replacement text AND a mutant shape at the edit "
+                    f"site (old absent from HEAD, {stripped!r} present) — a mutant "
+                    f"was COMMITTED, so every dirty-relative check is blind to it"
+                )
+                break
     return findings
 
 

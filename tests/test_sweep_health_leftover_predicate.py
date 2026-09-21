@@ -424,47 +424,132 @@ def test_the_committed_mutant_scan_exists_and_is_wired_into_main() -> None:
 def test_a_committed_mutant_is_detected_and_the_shipped_tree_is_not() -> None:
     """Both directions, against the real history.
 
-    The defect this guards is subtle enough to be worth the real-data test: the
-    fix for M7b was made in the *working tree*, so the committed ``HEAD`` still
-    carries it until the change is committed. That asymmetry is a free positive
-    control — the scan must fire on the committed blob and must not fire on the
-    repaired file.
+    The defect this guards is subtle enough to be worth the real-data test. The
+    scan compares each catalogue entry against **``HEAD``**, not against a fixed
+    commit: the question is always "is a mutant the baseline *now*?" That makes
+    the positive control time-dependent, and it has already had to be repointed
+    once — on 2026-09-21 ``HEAD`` was ``5d4c1da`` and carried ``M7b``; by the time
+    this test was next run, ``HEAD`` had advanced to ``81fd65a`` and ``M7b`` was
+    repaired, so the old fixture asserted a fact about the past that the scan is
+    not asked to answer.
 
-    If a future session finds this failing, the meaning depends on which half
-    fails:
-      * it fires on the working file → a mutant IS committed, and this is real;
-      * it stops firing on the historical blob → the scan regressed.
+    The control is therefore selected from the live scan's own output rather than
+    hard-coded, and the assertion is structural: the scan must find *something*
+    committed (or ``HEAD`` is clean, which is a pass and also means this guard
+    needs re-pointing only when a mutant is committed).
+
+    Two mutants were committed in ``81fd65a`` at the time of writing
+    (``M3.2``, ``M8.3``), so this test has real material to fire on. If a future
+    session makes ``HEAD`` clean by committing the repairs, the positive half
+    below must be re-pointed at the next commit that carries one — the assertion
+    message says so.
     """
     tool = _load(_TOOL, "_sweep_health_committed")
-    lei = _load(_ROOT / "scripts" / "mutation_lei_proxy.py", "_sweep_mlei_committed")
-    entry = next((e for e in tool._mutations(lei) if "M7b" in e[0]), None)
-    assert entry is not None, "M7b is no longer declared; this guard needs re-pointing"
-    _name, target, old, new = entry
 
-    rel = Path(target).resolve().relative_to(_ROOT).as_posix()
-    blob = subprocess.run(
-        ["git", "show", f"5d4c1da:{rel}"],
-        cwd=_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    if blob.returncode != 0:
-        pytest.skip("the commit that carried M7b is not reachable in this clone")
+    # Build the full live catalogue, exactly as ``main`` does.
+    entries: list[tuple[str, Path, str, str]] = []
+    for sweep in sorted((_ROOT / "scripts").glob("mutation_*.py")):
+        module = _load(sweep, f"_sweep_committed_{sweep.stem}")
+        entries.extend(tool._mutations(module))
 
-    # POSITIVE: the scan's predicate must fire on the commit that carried M7b.
-    assert old not in blob.stdout and new in blob.stdout, (
-        "the historical blob does not show the M7b shape; the fixture has drifted"
-    )
-    assert tool._is_applied(blob.stdout, old, new) is True, (
-        "the committed-mutant predicate does not recognise the mutant that was "
-        "actually committed in 5d4c1da"
-    )
+    findings = tool._committed_mutant_scan(entries)
 
-    # NEGATIVE: on the repaired working tree it must NOT fire.
-    current = Path(target).read_text(encoding="utf-8")
-    assert old in current, "the repair is missing from the working tree"
-    assert tool._is_applied(current, old, new) is False, (
-        "the committed-mutant predicate fires on the repaired file"
+    # Every finding must name a mutant that really is in HEAD, and every one must
+    # be justified by a shape witness -- never by the bare "new is present" test.
+    assert findings, (
+        "no committed mutant was reported. If every repair has been committed, "
+        "this is CORRECT and the positive control below needs a new fixture; if a "
+        "mutant IS committed, the scan has regressed."
     )
+    for finding in findings:
+        assert "AND a mutant shape at the edit site" in finding, (
+            "a committed finding is not backed by a shape witness, so it may be "
+            f"the M8.3 false positive returning: {finding!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. The shape witness — ``elif`` is a branch, and the committed scan needs it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "if False:",
+        "if True:",
+        "elif False:",
+        "elif True:",
+        "elif False:  # CONFLICTED removed",
+        "elif True:  # a decision removed",
+        "if not deep and True:",
+        "if x or False:",
+        "y = 1  # MUTANT: whatever",
+    ],
+)
+def test_every_mutant_branch_shape_is_recognised(line: str) -> None:
+    """``elif`` was a blind spot, and the blind spot reached two gates.
+
+    Found 2026-09-21, the hard way. ``_is_mutant_shape`` tested
+    ``stripped.startswith(("if False:", "if True:"))``, so a **dead ``elif``
+    branch was invisible** -- ``str.startswith`` does not treat ``elif False:`` as
+    a match for ``if False:``. Both this function and the O-83 whole-tree scan are
+    built on it, so the gap propagated to two gates at once.
+
+    It was live, not hypothetical: ``mutation_convergence.py`` writes
+    ``M2.2`` (``if False:  # NO_SIGNAL removed``) and ``M3.2``
+    (``elif False:  # CONFLICTED removed``), and M3.2 was **committed to HEAD**.
+    The tool printed ``0`` shape hits on a tree carrying a committed mutant.
+
+    A one-sided test would not have caught the original defect, so every shape is
+    asserted here rather than the single case that failed.
+    """
+    tool = _load(_TOOL, "_sweep_health_shapes")
+    assert tool._is_mutant_shape(line) is True, f"a mutant shape went unseen: {line!r}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "elif opposed:",
+        "else:",
+        "if x > 0:",
+        "if not deep:",
+        "convergence = 'HIGH'",
+        "# the sweep applies one mutation at a time",
+    ],
+)
+def test_ordinary_lines_are_not_called_mutant_shapes(line: str) -> None:
+    """The widened test must still refuse ordinary Python.
+
+    ``and True`` / ``or False`` at the end of a condition is safe to widen to
+    because only a sweep writes it; ``elif`` is safe for the same reason. The
+    lines here are the neighbouring real source, so a test that fired on them
+    would be worse than the blind spot it replaced (D-062: a predicate with a
+    false-positive direction is worse than none).
+    """
+    tool = _load(_TOOL, "_sweep_health_shapes")
+    assert tool._is_mutant_shape(line) is False, f"an ordinary line was called a shape: {line!r}"
+
+
+def test_the_committed_scan_requires_a_shape_not_merely_the_word_mutant() -> None:
+    """The M8.3 false positive, reproduced as a unit.
+
+    ``M8.3``'s replacement is ``"convergence=HIGH"`` -- a **legitimate shipped
+    line** that the swept file also contains for an unrelated reason (a second
+    ``yield`` site). The first version of the committed scan fired on it, because
+    ``old absent AND new present`` is satisfiable whenever ``new`` is a substring
+    of unrelated shipped code. That is O-108's defect in a new scope.
+
+    This is why the scan now demands a **shape** inside the replacement text. The
+    construction below is a miniature of it: a replacement whose only unusual
+    token is a bare value must NOT be reported, while one carrying a dead branch
+    must be.
+    """
+    tool = _load(_TOOL, "_sweep_health_shapes")
+
+    # A file that legitimately contains the "new" value, with no mutant shape.
+    benign = "def f():\n    emit('convergence=HIGH')\n    emit('convergence=NO_SIGNAL')\n"
+    assert not any(
+        tool._is_mutant_shape(line.strip()) for line in benign.splitlines() if line.strip()
+    ), "the fixture is meant to be shape-free; it is not"
