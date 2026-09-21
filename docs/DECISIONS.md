@@ -14692,3 +14692,104 @@ this entry. The 404-vs-200 semantics are measured against the local OpenBB servi
 if the upstream Fed endpoint's behaviour changes, the INFO/WARNING split degrades to
 "a 200 that no longer occurs" rather than to a wrong verdict, and the docstring's
 table records the date of measurement. **No phase started.**
+
+---
+
+## D-087.25 — the FRED timeout is the USER-AGENT, not a fingerprint filter (O-105's root cause corrected)
+
+**The recorded root cause was wrong, and it had hardened into a fact by never being
+re-measured.** O-105 says: *"FRED closes the connection for `aiohttp`'s TLS/HTTP
+fingerprint, and OpenBB's FRED provider is built on `aiohttp`."* That claim appears in
+`docs/OPEN_ISSUES.md`, `docs/DECISIONS.md` (D-065, D-084), `docs/OPENBB_UTILIZATION_AUDIT.md`
+and `src/macro_engine/thesis_layer/catalysts.py`'s own module docstring. **It does not
+reproduce.**
+
+### What was re-measured (2026-09-21, four consecutive runs, no exceptions)
+
+```
+aiohttp (the accused client) -> 200   0.09-0.12s      <-- reaches FRED fine
+urllib.request               -> 200   0.12-0.17s      <-- recorded as "dropped"
+keyless burst, 8 requests    -> 200   ~0.2s each      <-- no throttling
+```
+
+The provider's URL is **byte-identical** to the project's own working URL
+(`economic_calendar.py:140` vs `_FRED_CALENDAR_URL`), so the client library cannot be the
+discriminator. The recorded cause was refuted before a single fix was attempted.
+
+### The measured cause: the User-Agent string, and it is fully deterministic
+
+| User-Agent sent | result |
+| --- | --- |
+| `curl/8.0` (what `catalysts.py` pins) | **200 in ~0.2 s** |
+| `python-httpx/...` (library default) | **200 in ~0.2 s** |
+| Chrome 131 (a real browser UA) | **HANGS — every time** |
+| Firefox 133 | **HANGS — every time** |
+| Safari 605 | **HANGS — every time** |
+| `""` (empty) | **HANGS — every time** |
+
+FRED's releases-calendar page serves a **tool-like** User-Agent and hangs on anything
+that *looks like a browser* or is **absent**. The hang is a true read timeout — the TCP
+connection is established and the body never begins — which is why it surfaces as
+`TimeoutError` and never as a 4xx.
+
+**`openbb_core/provider/utils/client.py::get_user_agent()` returns `random.choice` of
+seven real browser UA strings**, and applies it unconditionally in three places
+(`client.py:126`, `helpers.py:164`, `:546`). **There is no environment variable, user
+setting or provider argument that overrides it** (checked). So OpenBB's FRED provider
+times out on **every** call, whatever the caller passes — which is exactly what O-105
+measured, and why the bounded-window and `release_id` variants failed identically.
+
+### The proof is a patch, not an argument
+
+Overriding that one function to return `curl/8.0`, then re-running the **unmodified**
+provider, same class, same URL, same window, same key:
+
+```
+as-is            FAIL  FRED request failed (TimeoutError)   10.99s
+UA -> curl/8.0   OK    rows=3      0.33s   (release_id=10 + window)
+UA -> curl/8.0   OK    rows=106    3.13s   (no filters, 2-day default window)
+```
+
+**Only the UA changed.** The traceback from the failing call pointed at
+`openbb_core/provider/utils/client.py:128` — `raise asyncio.TimeoutError` inside aiohttp's
+`resp.start(conn)`, i.e. waiting for the response to begin — which is consistent with a
+server that has accepted the request and is deliberately stalling it.
+
+### The tool this earned: `tools/fred_calendar_diagnosis.py`
+
+One command, no arguments, reproduces the whole diagnosis and prints the UA matrix. It
+probes the seven OpenBB UAs plus the empty UA plus the two working UAs, so the contrast is
+the output rather than a claim in prose. **Exit codes are the contract (O-88): `0` the
+diagnosis reproduced, `1` it did NOT reproduce** (FRED's UA policy changed — re-measure
+before relying on any of this), **`2` inconclusive** (the known-good UA failed too, so it
+is the network, not the UA). Verified in both directions: `0` on the live tree, `1` with
+the browser UAs swapped for the working one.
+
+**It is a TOOL, not a test**, deliberately: it makes live calls to a third-party host, and
+a test that fails when FRED changes its UA policy would be disabled within a week (O-88).
+
+### What is unchanged, and this is the constraint honoured
+
+* **§16.4 is untouched.**
+* **The FRED URL is untouched** — still `fred.stlouisfed.org/releases/calendar`, exactly
+  as recorded.
+* **No switch to Nasdaq or any other provider.**
+* **`catalysts.py` is untouched.** Its `httpx` + `Content-Headers` path pins
+  `User-Agent: curl/8.0`, so it was already correct and **never went through OpenBB's
+  client at all**. It is unaffected by this defect and needs no change.
+
+The remedy is **upstream** (OpenBB's UA choice), which is what O-105 predicted
+(*"a fix would be upstream"*) — but for a different reason than recorded. The value of
+this entry is not a code change; it is that **the explanation is now measured rather than
+assumed**, so the next reader does not re-derive a fingerprint theory that does not hold.
+A wrong root cause in the record is a wrong instruction: it points the search at TLS
+libraries and leaves the actual one-line cause untouched.
+
+**A SIXTH instance of the "record whose conditions were unstated or never re-measured"
+family** (D-084 · D-087.14 · D-087.18 · D-087.19 · D-087.23 · **now this**), and the
+**second time in two sessions** that re-measuring a confident record found it false
+(D-087.24's `{"results": []}` fixture was the first).
+
+**Gates:** ruff clean · `ruff format --check` **238** · `mypy --strict src tests tools
+scripts` **238** (D-035 parity) · pytest 0 failed · `tools/sweep_health.py` clean.
+**No source behaviour changed** — one new tool, no `src/` edit. **Does not start a phase.**

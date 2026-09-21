@@ -90,8 +90,8 @@ whose calendar is empty because the network was down is worse than one with no
 calendar, because the emptiness is indistinguishable from "no catalysts" (the
 silence failure mode, D-054).
 
-Why the transport is ``httpx`` and not ``urllib`` (D-065)
----------------------------------------------------------
+Why the transport is ``httpx`` with a pinned ``curl/8.0`` UA (D-065, corrected by D-087.25)
+-------------------------------------------------------------------------------------------
 Measured on this host, 2026-09-19, all against the same working URL:
 
 ======================================  ==========  ============================
@@ -103,13 +103,33 @@ client                                  result      note
 ``aiohttp`` (what OpenBB uses)          dropped     ``TimeoutError``
 ======================================  ==========  ============================
 
-The endpoint closes the connection for ``urllib`` and ``aiohttp`` regardless of
-the User-Agent, and answers ``httpx`` on HTTP/1.1. That is TLS/HTTP-fingerprint
-filtering, not an FRED outage — and it is the real reason
-``obb.economy.calendar`` times out here even on its single-call ``release_id``
-path: OpenBB's FRED provider is built on ``aiohttp``. ``httpx`` is already a
-project dependency (``data_layer/openbb_client.py`` uses it for the local-API
-path), so this adds no new one.
+**The two right-hand "dropped" cells were re-measured on 2026-09-21 and DO NOT
+REPRODUCE (D-087.25).** ``aiohttp`` reaches this endpoint in **~0.1 s** and
+``urllib`` in **~0.15 s**; neither is filtered. The client library was never the
+discriminator. **The User-Agent is:**
+
+===============================  ==========================
+User-Agent sent                  result
+===============================  ==========================
+``curl/8.0``                     **200 in ~0.2 s**
+``python-httpx/...`` (default)   **200 in ~0.2 s**
+a real browser UA (Chrome etc.)  **HANGS — every time**
+``""`` (empty)                   **HANGS — every time**
+===============================  ==========================
+
+FRED's releases-calendar page serves a **tool-like** UA and stalls a
+**browser-like or absent** one (a true read timeout: the connection is
+established and the body never begins). That is why ``obb.economy.calendar``
+times out here on **every** path including the single-call ``release_id`` one —
+``openbb_core.provider.utils.client.get_user_agent()`` returns
+``random.choice`` of seven **real browser** UA strings and applies it
+unconditionally, with no supported override (D-087.25).
+
+**So the pinned UA is the load-bearing part, not the choice of library.**
+``httpx`` is still what this module uses (it is already a project dependency —
+``data_layer/openbb_client.py`` uses it for the local-API path), but had it been
+``aiohttp`` **with this UA** it would work equally. ``tools/
+fred_calendar_diagnosis.py`` reproduces the whole matrix on demand.
 """
 
 from __future__ import annotations
@@ -171,9 +191,13 @@ def _fomc_documents_url(base: str | None = None) -> str:
     return f"{base.rstrip('/')}{_FOMC_DOCUMENTS_PATH}"
 
 
-#: FRED close the connection for urllib's and aiohttp's TLS/HTTP fingerprint
-#: (measured: ``RemoteDisconnected`` and ``TimeoutError``) while answering
-#: httpx on HTTP/1.1. This pair is what makes the endpoint respond.
+#: The ``User-Agent`` is what makes the endpoint respond, and it is the ONLY
+#: part of this pair that is load-bearing (corrected by D-087.25). The original
+#: note blamed urllib's and aiohttp's TLS/HTTP fingerprint; re-measured
+#: 2026-09-21, **both reach FRED in ~0.1-0.15 s**, and what actually
+#: distinguishes a working request from a hanging one is a **tool-like** UA
+#: versus a **browser-like or empty** one. ``curl/8.0`` is the measured-good
+#: value; do not "modernise" it to a browser string.
 _REQUEST_HEADERS = {
     "Accept": "application/json, text/html;q=0.9",
     "User-Agent": "curl/8.0",

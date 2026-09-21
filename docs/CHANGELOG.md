@@ -10,6 +10,46 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.25 - the FRED timeout is the USER-AGENT, not a fingerprint filter (O-105's cause corrected)
+
+**Added**
+
+- **`tools/fred_calendar_diagnosis.py`** - one command that reproduces the whole diagnosis and prints the
+  User-Agent matrix, so the finding is checkable rather than a claim in prose. Probes the seven UAs
+  `openbb_core`'s `get_user_agent()` can return, plus the empty UA, plus the two working UAs. **Exit codes
+  are the contract (O-88): `0` reproduced, `1` NOT reproduced** (FRED's policy changed - re-measure),
+  **`2` inconclusive.** Verified in both directions. It is a tool, not a test: it makes live third-party
+  calls, and a test that fails when FRED changes its UA policy would be disabled within a week.
+
+**Corrected**
+
+- **The recorded root cause of O-105 was wrong.** It said *"FRED closes the connection for `aiohttp`'s
+  TLS/HTTP fingerprint, and OpenBB's FRED provider is built on `aiohttp`"*. Re-measured 2026-09-21:
+  `aiohttp` reaches the endpoint in **~0.1 s** and `urllib` in **~0.15 s** - neither is filtered - and the
+  provider's URL is byte-identical to this project's own working URL. **The discriminator is the
+  `User-Agent`**: `curl/8.0` and `python-httpx` defaults serve (**200 in ~0.2 s**); **every real browser UA
+  HANGS**; **the empty UA HANGS**. `get_user_agent()` returns `random.choice` of seven real browser strings
+  and applies it unconditionally with **no supported override**, so every OpenBB FRED call hangs.
+- **Proved by patch, not argument:** overriding that one function to return `curl/8.0` makes the
+  **unmodified** provider return **3 rows in 0.33 s** (bounded, `release_id=10`) and **106 rows in 3.13 s**
+  (default window) - same class, same URL, same key, only the UA changed.
+- The false claim is corrected where it was asserted as fact: `catalysts.py`'s module docstring and its
+  `_REQUEST_HEADERS` note, and `docs/OPENBB_UTILIZATION_AUDIT.md` (two places), plus a D-087.25 addendum on
+  the O-105 row. **`nasdaq` also corrected** - it returns **200 with real rows**; it was never unusable,
+  and `tradingeconomics`/`fmp` fail on **missing credentials**, a separate reason.
+
+**Notes**
+
+- **Nothing in the project changed behaviourally.** `catalysts.py` pins `curl/8.0` and never used OpenBB's
+  client, so it was never affected. **Per the operator's constraint: no switch to Nasdaq, `§16.4`
+  untouched, the FRED URL untouched.** The remedy is upstream (OpenBB's UA choice).
+- **A SIXTH instance of the "record never re-measured" family** (D-084, D-087.14, D-087.18, D-087.19,
+  D-087.23, now this) and the **second in two sessions** where re-measuring a confident record found it
+  false. *A wrong root cause in the record is a wrong instruction* - it points the search at TLS libraries
+  while the real one-line cause sits untouched.
+- **Gates:** ruff clean - `ruff format --check` **238** - `mypy --strict src tests tools scripts` **238**
+  (D-035 parity) - pytest **2748 passed / 1 skipped / 0 failed** (EXIT=0) - `sweep_health.py` clean.
+
 ### D-087.24 - the FOMC year-boundary 404 no longer reads as a failure (O-114)
 
 **Fixed**

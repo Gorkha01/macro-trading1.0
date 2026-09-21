@@ -181,16 +181,34 @@ All four providers were called live:
 | `fmp` | **HTTP 400** `Missing credential 'fmp_api_key'` |
 | `nasdaq` | **HTTP 500** `Unexpected Error -> TimeoutError` (was documented as an Akamai 403) |
 
-**Root cause, established in `catalysts.py` D-065 and re-confirmed here:** FRED closes the connection for
-`aiohttp`'s TLS/HTTP fingerprint, and OpenBB's FRED provider is built on `aiohttp`. The same URL answers
-`httpx` on HTTP/1.1 and `curl`. So this is **not** a FRED outage — it is a transport-fingerprint filter
-that OpenBB's client cannot pass.
+**Root cause — CORRECTED BY D-087.25 (2026-09-21).** The text that stood here said *"FRED closes the
+connection for `aiohttp`'s TLS/HTTP fingerprint, and OpenBB's FRED provider is built on `aiohttp`."*
+**That is false and does not reproduce.** Re-measured, `aiohttp` reaches this endpoint in ~**0.1 s**
+and `urllib` in ~**0.15 s**; the provider's URL is byte-identical to the project's own working URL, so
+the client library was never the discriminator. **The discriminator is the `User-Agent`:**
+
+| User-Agent sent | result |
+| --- | --- |
+| `curl/8.0` | **200 in ~0.2 s** |
+| `python-httpx/…` (library default) | **200 in ~0.2 s** |
+| a real browser UA (Chrome / Firefox / Safari) | **HANGS — every time** |
+| `""` (empty) | **HANGS — every time** |
+
+FRED's releases-calendar page serves a **tool-like** UA and stalls a **browser-like or absent** one
+(a true read timeout — the connection is established and the body never begins). OpenBB's
+`get_user_agent()` returns `random.choice` of **seven real browser UA strings** and applies it
+unconditionally, with **no supported override** — so every OpenBB FRED call hangs. So this is **still
+not a FRED outage**, but it is **not** a fingerprint filter either: it is a one-line UA choice in a
+dependency. `tools/fred_calendar_diagnosis.py` reproduces the matrix on demand.
 
 **Consequence for §5's question.** The user asked whether the local route supplies
-`event / release date / actual / forecast / previous / country / source`. **It cannot be tested, because
-the route never returns a body.** The signature (`start_date`, `end_date`, `release_id`, `country`,
-`importance`, `group`, `calendar_id`) is captured from the spec, but a signature is not data. This must be
-recorded as `AVAILABLE_BUT_PROVIDER_LIMITED` **on transport grounds**, not as "OpenBB has no calendar".
+`event / release date / actual / forecast / previous / country / source`. **It still cannot be tested
+through the FRED provider, because that provider never returns a body** — but the reason is now the UA,
+not the transport. The signature (`start_date`, `end_date`, `release_id`, `country`, `importance`,
+`group`, `calendar_id`) is captured from the spec, but a signature is not data. This stays recorded as
+`AVAILABLE_BUT_PROVIDER_LIMITED` — and `nasdaq`, which is unaffected by the UA defect, **does** return a
+body (D-084 measured it; D-087.25 re-confirmed 200 with results), so "no calendar provider works" was
+too strong for that one provider.
 
 ### 5.2 Two routes return unbounded payloads
 
@@ -335,7 +353,9 @@ is not just tidiness: `effr` returns `target_range_upper`/`lower` as typed field
 ### Change 4 — Record the calendar limitation (docs only)
 
 Do **not** build a scraper. Amend `release_calendar`'s note so the reason is transport-specific
-("OpenBB's FRED provider uses `aiohttp`; FRED filters that fingerprint") rather than "route unavailable".
+— **and per D-087.25 the reason to write is the `User-Agent`, not a fingerprint: OpenBB's FRED
+provider sends a random real-browser UA, and FRED stalls browser-like UAs on that page** — rather
+than "route unavailable".
 Keep `enabled: false`.
 
 ### Change 5 — Add a coverage guard (small, new test)
