@@ -4540,7 +4540,8 @@ every completed sweep CERTIFIES
 `.sweepbackup` sidecars**, and **one differed from its source** — a live mutant in
 `routes_query.py` (`" ".join(...split())` where the `isalnum()` sanitizer belongs),
 restored **byte-exactly**. D-086's mechanism, adopted by only **2 of 40** sweeps
-(O-103), is what made that recoverable.
+(O-103), is what made that recoverable. *(superseded: **O-103 CLOSED, D-087.26 —
+41/41 sweeps protected**.)*
 
 **A correction to my own mid-session reasoning, recorded because it is the lesson.**
 I first concluded `M8.3` was a **false positive** of the scan. That was **wrong**:

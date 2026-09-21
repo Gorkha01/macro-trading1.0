@@ -64,7 +64,11 @@ The defence that does work is `scripts/_sweep_gate.py`'s **sidecar recovery** -
 mutation, `restore_from_sidecar()` heals on the next run. It needs only the
 filesystem, so no kill can bypass it, and it is **strictly stronger than
 `repair_leftover_mutations`**, which can only heal a mutation the catalogue still
-recognises. Adopted so far by **`mutation_regime.py` only** - see **O-103**.
+recognises. Adopted by **all 41 sweeps — O-103 COMPLETE (D-087.26): 39 call the
+`sweep_lifecycle()` wrapper, 2 (`mutation_api_layer.py`, `mutation_regime.py`)
+assemble the same mechanism by hand** because they must heal **before**
+`check_targets` (lesson 5co). A bare `sweep_lifecycle(` grep reads 39/41 and
+under-counts — cite the union.
 
 ### The do-not-fix sweep list is EMPTY, and it was wrong 3 times out of 3 (D-075, D-080)
 

@@ -10,6 +10,24 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.26 - O-103 CLOSED: all 41/41 sweeps carry sidecar protection, in two equivalent forms
+
+**Changed**
+
+- **Corrected a superseded count on four live surfaces** (`HANDOFF.md`, `BUILD_STATE.md`, `CHANGELOG.md`,
+  `DECISIONS.md`) and in the O-112 row's open item (a). The sidecar interrupt defence was still described as
+  *"adopted by only 2 of 40 sweeps - 38 to go"*; **the propagation is complete.**
+- **Re-measured on the tree, not carried forward (D-035):** `41` sweep files; **39** call `sweep_lifecycle()`;
+  the other **2** (`mutation_api_layer.py`, `mutation_regime.py`) assemble the same heal → protect → spend
+  sequence **by hand** from `restore_from_sidecar` + `record_pristine`, because they must heal **before**
+  `check_targets` (lesson 5co). **Union = 41/41, 0 unprotected.**
+- **The durable point:** a bare `grep -l "sweep_lifecycle(" scripts/mutation_*.py | wc -l` reads **39** on a
+  fully-protected tree and **under-counts by 2**. Cite the **union**, never the wrapper's call count.
+- O-104, O-110 and O-112 tagged **`DEFERRED`** (recorded, not implemented, not deleted). **Phase 5 remains
+  NOT STARTED.**
+
+**No source behaviour changed** - documentation only, no `src/` edit, no test edit, no suite run.
+
 ### D-087.25 - the FRED timeout is the USER-AGENT, not a fingerprint filter (O-105's cause corrected)
 
 **Added**
@@ -510,6 +528,7 @@ No Phase 5 work. `AGENTS.md` unchanged.
   `isalnum()` sanitizer belongs), restored **byte-exactly** without any catalogue
   match. The D-086 sidecar mechanism is adopted by only **2 of 40** sweeps (O-103)
   and this is the first time it actually had to heal a file.
+  *(superseded: **O-103 CLOSED, D-087.26 — 41/41 sweeps protected**.)*
 
 **Gates:** `ruff check` clean - `format` **231** = `mypy --strict` **231** (D-035)
 - `pytest -q` **2555 passed / 1 skipped / 0 failed** in **109.9 s** (was 2539)
@@ -687,6 +706,8 @@ load; `failures: 0` afterwards.
 **Open (O-103):** the sidecar recovery is adopted by **one** sweep of 40;
 `install_signal_restore()` should be gated on `sys.platform` with a printed
 notice, or removed.
+*(superseded: **O-103 CLOSED, D-087.26 — 41/41 sweeps protected, 39 via
+`sweep_lifecycle()` and 2 via the hand-assembled primitives**.)*
 
 
 ### D-080 - the last do-not-fix entry was not a limitation either, and it hid a real test gap

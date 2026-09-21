@@ -13571,6 +13571,7 @@ The D-086 sidecar mechanism (`record_pristine` → `<name>.sweepbackup` →
 `restore_from_sidecar`) is adopted by only **2 of 40** sweeps (O-103),
 `mutation_api_layer` among them — and it earned its place here. Two aborted runs
 left **8 sidecars**, and on inspection **one differed from its source**:
+*(superseded: **O-103 CLOSED, D-087.26 — 41/41 sweeps protected**.)*
 
 ```
 -  cleaned = "".join(c if c.isalnum() else " " for c in question.lower())
@@ -14793,3 +14794,60 @@ family** (D-084 · D-087.14 · D-087.18 · D-087.19 · D-087.23 · **now this**)
 **Gates:** ruff clean · `ruff format --check` **238** · `mypy --strict src tests tools
 scripts` **238** (D-035 parity) · pytest 0 failed · `tools/sweep_health.py` clean.
 **No source behaviour changed** — one new tool, no `src/` edit. **Does not start a phase.**
+
+---
+
+## D-087.26 — O-103 CLOSED: all 41/41 sweeps carry sidecar protection, in TWO equivalent forms
+
+**The obligation was completed by an earlier session and the docs still read as if it
+were not.** O-103's remedy — the `record_pristine` → `<name>.sweepbackup` →
+`restore_from_sidecar` sidecar, the only interrupt defence with real reach on `win32`
+where no Python signal handler runs — was recorded as *"adopted by only 2 of 40 sweeps
+… needs propagating to the other 38"*. That count is stale, and **the stale wording sat
+on four live surfaces** (`HANDOFF.md`, `BUILD_STATE.md`, `CHANGELOG.md`, `DECISIONS.md`)
+plus the O-112 row's open item (a). *A superseded count left standing is the same defect
+class as D-087.23: a record never re-measured hardens into a claim.*
+
+### Re-measured on the tree (D-035: derive, never carry forward)
+
+```
+ls scripts/mutation_*.py | wc -l                              ->  41
+grep -l "sweep_lifecycle(" scripts/mutation_*.py | wc -l       ->  39
+grep -l "restore_from_sidecar\|record_pristine" ... | wc -l    ->   2
+```
+
+**The union is 41/41 with 0 unprotected** — but the two numbers are *not* additive
+evidence for the same reason: the **39** call `sweep_lifecycle()` (the wrapper that runs
+heal → protect → spend in one call), and the remaining **2** — `mutation_api_layer.py`
+and `mutation_regime.py` — **assemble the identical mechanism BY HAND** from the
+primitives, because they must heal **before** `check_targets` (lesson 5co: *the heal must
+precede the gate, or the gate blocks its own repair*). Verified by reading both call
+sites: `mutation_api_layer.py` `restore_from_sidecar(...)` (**1600**), `record_pristine(...)`
+(**1674**), `restore_from_sidecar(...)` (**1759**); `mutation_regime.py`
+`restore_from_sidecar(...)` (**596**), `record_pristine(...)` (**601**),
+`sidecar_for(path).unlink(...)` (**652**).
+
+### The durable half: the count is FORM-DEPENDENT, so the SHORT check under-counts
+
+**A clean-looking `grep -l "sweep_lifecycle(" scripts/mutation_*.py | wc -l` returns 39
+on a fully-protected tree — it under-reports by exactly 2, and it is silent about which
+two or why.** The two exceptions are not omissions: they are the two sweeps whose ordering
+requirement the wrapper cannot express. **So the honest check is the UNION, and the honest
+statement names both forms.** *Two equivalent forms is the finding; a single-form census is
+the trap* — and it is the same shape as D-087.23's too-broad guard, in the opposite
+direction: there the predicate matched too much, here the census matches too little.
+
+### What changed in this close
+
+**Documentation only — no implementation change.** Four live surfaces corrected, each
+carrying the *union* count and the two-form explanation so the next reader does not
+re-derive 39 and conclude 2 sweeps are unprotected; the O-112 open item (a) explicitly
+closed; O-104, O-110 and O-112 tagged **`DEFERRED`** (recorded, not implemented, not
+deleted); **Phase 5 remains NOT STARTED**. Historical narrative in the dated sections
+(D-087.11's own CHANGELOG/DECISIONS/PROGRESS text) was annotated *superseded* rather than
+rewritten, so the record of what was true then survives inside its own correction.
+
+**Verification is a count, not a test:** the closed form is two `grep -c` commands whose
+sum must equal the sweep count. **No suite was run** — this close touches no source and
+no test, so the correct gate is the measurement above, and the next full-suite run carries
+it. **Does not start a phase.**
