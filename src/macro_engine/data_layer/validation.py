@@ -197,7 +197,7 @@ def validate_observations(
         # silently enter a YoY window.
         if point.observation_date > point.retrieved_at.date():
             lead_days = (point.observation_date - point.retrieved_at.date()).days
-            if lead_days <= future_date_tolerance_days:
+            if lead_days < future_date_tolerance_days:
                 tolerated_future_dates.append(point.observation_date)
             else:
                 future_dates.append(point.observation_date)
