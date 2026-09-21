@@ -312,6 +312,23 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "        return 999.0",
     ),
     (
+        # O-72's canary (CONTROL). NOT a revert of a D-042 correction: this is a
+        # mutation that is CERTAIN to be caught, and the sweep REFUSES TO
+        # CERTIFY if it survives. Its job is to separate "the suite is strong"
+        # from "the sweep stopped testing" -- the D-051 trap, where a run whose
+        # anchors resolve but whose selection no longer executes anything
+        # reports every mutant as killed and kills its own honesty control.
+        #
+        # CANARY1 is a syntax error at a load-bearing site: `tests/` collects
+        # with a SyntaxError, so `run_tests()` returns False and the mutant is
+        # killed for a reason that is structural rather than incidental. It
+        # cannot silently become inert the way a behavioural mutation can.
+        "CANARY1 the posterior line is replaced with a syntax error (CONTROL)",
+        SRC,
+        _POSTERIOR,
+        "    posterior = <<<CANARY>>>",
+    ),
+    (
         "C1c the tail-multiple property returns a hardcoded value",
         CONFIG,
         _TAIL_PROP,
@@ -418,6 +435,22 @@ def main() -> int:
     print(f"{total - len(survivors)}/{total} killed")
     for name, why in survivors:
         print(f"  SURVIVOR ({why}): {name}")
+
+    # O-72's canary gate. A canary that SURVIVES means the sweep ran but tested
+    # nothing: its selection no longer reaches the mutated module, so every
+    # "killed" above is a statement about the harness rather than about the
+    # suite. This is the D-051 trap, and it is why the canary is REQUIRED to be
+    # killed rather than tolerated as a survivor.
+    canary = next((name for name, _ in survivors if name.startswith("CANARY1 ")), None)
+    if canary is not None:
+        print()
+        print("REFUSING TO CERTIFY: the honesty canary SURVIVED.")
+        print(f"  !! {canary}")
+        print("The sweep executed but its test selection no longer reaches the")
+        print("mutated module, so no kill above is evidence about the suite")
+        print("(O-72, the D-051 trap). Fix the selection before trusting this run.")
+        return 3
+
     return 0 if not survivors else 1
 
 

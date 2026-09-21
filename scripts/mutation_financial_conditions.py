@@ -120,6 +120,23 @@ _WINDOW_PROP = "        return int(self.standardization_window_years_value.value
 _NFCI_PROP = "        return float(self.nfci_divergence_threshold_value.value)"
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
+    # -- O-72 canary (CONTROL) --------------------------------------------
+    # NOT a revert of a project correction: a mutation that is CERTAIN to be
+    # caught, so the sweep can REFUSE TO CERTIFY when it survives. A sweep
+    # whose anchors resolve but whose test selection no longer reaches the
+    # mutated module reports every mutant as killed -- the D-051 trap. The
+    # canary is the only entry here that distinguishes 'the suite is strong'
+    # from 'the sweep stopped testing'.
+    #
+    # It replaces a module-level literal with a SYNTAX ERROR, so the kill is
+    # STRUCTURAL (`tests/` cannot collect) rather than incidental, and the
+    # mutation cannot quietly become inert the way a behavioural one can.
+    (
+        "CANARY1 the module literal is replaced with a syntax error (CONTROL)",
+        SRC,
+        '__all__ = [\n    "FCIComponent",',
+        "__CANARY__ = <<<SYNTAX ERROR>>>",
+    ),
     # --- M1: the standardization -----------------------------------------
     (
         "M1a the division by std REMOVED (the raw-deviation placeholder)",
@@ -421,6 +438,18 @@ def main() -> int:
     print(f"{total - len(survivors)}/{total} killed")
     for name, why in survivors:
         print(f"  SURVIVOR ({why}): {name}")
+    # O-72's canary gate. A canary that SURVIVES means the sweep ran but tested
+    # nothing: its selection no longer reaches the mutated module, so every
+    # "killed" above is a statement about the harness rather than the suite.
+    # This is the D-051 trap, and it is why CANARY1 is REQUIRED to be killed
+    # rather than tolerated as a survivor.
+    if any(name.startswith("CANARY1 ") for name, _ in survivors):
+        print()
+        print("REFUSING TO CERTIFY: the honesty canary SURVIVED.")
+        print("  !! CANARY1 -- the test selection no longer reaches the mutated")
+        print("     module, so no kill above is evidence about the suite (O-72).")
+        return 3
+
     return 0 if not survivors else 1
 
 

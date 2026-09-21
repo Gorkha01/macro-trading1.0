@@ -470,7 +470,7 @@ def leading_indicator_proxy(inputs: LeadingIndicatorProxyInputs) -> ModelResult:
         )
 
     return ModelResult(
-        model_name="leading_indicator_proxy",
+        model_name="lei_composite",
         country="us",
         as_of=utc_now(),
         value={
