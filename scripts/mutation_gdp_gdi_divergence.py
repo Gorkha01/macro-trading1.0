@@ -30,10 +30,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import check_targets, format_problems
+from _sweep_gate import (
+    check_targets,
+    format_problems,
+    sweep_lifecycle,
+)
 
 SRC = Path("src/macro_engine/models/gdp_nowcast.py")
-ORIGINAL = SRC.read_text(encoding="utf-8")
 
 # Named fragments keep the mutation literals under the line limit (E501).
 _CONF_BLOCK = (
@@ -299,6 +302,16 @@ def run_tests() -> bool:
 
 
 def main() -> int:
+    # The whole interrupt defence in one call (O-103): heal, protect, spend.
+    # On win32 no Python signal handler runs for SIGTERM/SIGINT, so the
+    # sidecar -- not a handler -- is the defence with real reach here.
+    with sweep_lifecycle([SRC]) as originals:
+        return _run_sweep(originals)
+
+
+def _run_sweep(originals: dict[Path, str]) -> int:
+    pristine_src = originals[SRC]
+
     # A 3-tuple table against a single SRC; target made explicit.
     #
     # Refuse to measure before anything is mutated (D-048, O-29). An anchor
@@ -307,7 +320,7 @@ def main() -> int:
     # LEFTOVER mutant is reported as such rather than as a drifted anchor
     # (D-081), because those two need opposite responses.
     _table = [(name, SRC, old, new) for name, old, new in MUTATIONS]
-    problems = check_targets({SRC: ORIGINAL}, _table)
+    problems = check_targets({SRC: pristine_src}, _table)
     print(f"check_targets: {len(_table)} mutations, {len(problems)} problem(s)")
     if problems:
         print(format_problems(problems))
@@ -319,13 +332,13 @@ def main() -> int:
 
     survivors: list[tuple[str, str]] = []
     for name, old, new in MUTATIONS:
-        if old not in ORIGINAL:
+        if old not in pristine_src:
             print(f"PATTERN MISSING   {name}")
             survivors.append((name, "pattern-not-found"))
             continue
-        SRC.write_text(ORIGINAL.replace(old, new, 1), encoding="utf-8", newline="")
+        SRC.write_text(pristine_src.replace(old, new, 1), encoding="utf-8", newline="")
         caught = not run_tests()
-        SRC.write_text(ORIGINAL, encoding="utf-8", newline="")
+        SRC.write_text(pristine_src, encoding="utf-8", newline="")
         print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
         if not caught:
             survivors.append((name, "survived"))

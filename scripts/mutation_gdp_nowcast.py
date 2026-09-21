@@ -40,7 +40,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import check_targets, format_problems
+from _sweep_gate import (
+    check_targets,
+    format_problems,
+    sweep_lifecycle,
+)
 
 SRC = Path("src/macro_engine/models/gdp_nowcast.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -471,8 +475,16 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
-    originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in {SRC, CONFIG}}
+    # The whole interrupt defence in one call (O-103): heal any sidecar a killed
+    # previous run left behind, write the healed text to a sidecar BEFORE the
+    # first mutation, and consume it on the way out. On win32 no Python signal
+    # handler runs for SIGTERM/SIGINT, so the sidecar -- not a handler -- is the
+    # defence that actually has reach here.
+    with sweep_lifecycle([SRC, CONFIG]) as originals:
+        return _run_sweep(originals)
 
+
+def _run_sweep(originals: dict[Path, str]) -> int:
     # Heal before measuring. See ``_applied_mutations`` for why this is not
     # optional: a stale mutation would otherwise be adopted as the baseline.
     repaired = repair_leftover_mutations(originals)
@@ -517,7 +529,7 @@ def main() -> int:
     finally:
         # Belt and braces: an exception or a Ctrl-C mid-mutation must never
         # leave the tree mutated. A power loss still can, which is what the
-        # repair pass at the top of this function is for.
+        # sidecar written by ``sweep_lifecycle`` is for.
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8", newline="")
 

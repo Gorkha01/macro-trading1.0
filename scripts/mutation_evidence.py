@@ -32,7 +32,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import check_targets, format_problems
+from _sweep_gate import (
+    check_targets,
+    format_problems,
+    sweep_lifecycle,
+)
 
 SRC = Path("src/macro_engine/models/evidence.py")
 CONTRACTS = Path("src/macro_engine/models/contracts.py")
@@ -319,9 +323,16 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
-    paths = {SRC, CONTRACTS, ENUM}
-    originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in paths}
+    # The whole interrupt defence in one call (O-103): heal any sidecar a killed
+    # previous run left behind, write the healed text to a sidecar BEFORE the
+    # first mutation, and consume it on the way out. On win32 no Python signal
+    # handler runs for SIGTERM/SIGINT, so the sidecar -- not a handler -- is the
+    # defence that actually has reach here.
+    with sweep_lifecycle([SRC, CONTRACTS, ENUM]) as originals:
+        return _run_sweep(originals)
 
+
+def _run_sweep(originals: dict[Path, str]) -> int:
     repaired = repair_leftover_mutations(originals)
     if repaired:
         print("REPAIRED left over from an interrupted run:")
@@ -362,10 +373,13 @@ def main() -> int:
             if not caught:
                 survivors.append((name, "survived"))
     finally:
+        # The restore text comes from the helper's healed originals and is
+        # never substituted per-mutation, so an interrupted loop restores
+        # pristine source rather than a mutant (D-048).
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8", newline="")
 
-    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in paths})
+    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in originals})
     if leftover:
         print()
         print("ERROR: a mutation is still applied after the sweep:")

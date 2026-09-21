@@ -52,8 +52,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _sweep_gate import sweep_lifecycle
+
 SRC = Path("src/macro_engine/models/scorecard.py")
 CONFIG = Path("src/macro_engine/config.py")
+
+#: Every file this sweep may mutate. Declared once, at module level, so
+#: `main` hands the SAME set to the sidecar lifecycle that the loop restores
+#: -- a set written twice is a set that can disagree (O-103).
+SWEEP_PATHS = {SRC, CONFIG}
 
 # --- The shipped text each hand-written mutation targets --------------------
 #
@@ -1084,10 +1091,12 @@ def _mutation_table() -> list[tuple[str, Path, str, str]]:
         # here that separates "the suite is strong" from "the sweep stopped
         # testing". It replaces a module-level literal with a SYNTAX ERROR, so the
         # kill is STRUCTURAL (tests/ cannot collect) rather than incidental.
-        ("CANARY1 the module literal is replaced with a syntax error (CONTROL)",
-         SRC,
-         '__all__ = [\n    "ConvergenceVerdict",',
-         "__CANARY__ = <<<SYNTAX ERROR>>>"),
+        (
+            "CANARY1 the module literal is replaced with a syntax error (CONTROL)",
+            SRC,
+            '__all__ = [\n    "ConvergenceVerdict",',
+            "__CANARY__ = <<<SYNTAX ERROR>>>",
+        ),
     ]
 
 
@@ -1224,8 +1233,16 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
-    paths = {SRC, CONFIG}
-    originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in paths}
+    # O-103: heal, protect, spend in ONE call. The bare `try/finally` this
+    # replaces restored a crash but could not survive a SIGTERM -- on win32
+    # no Python signal handler runs and a killed process gets no `finally`
+    # turn -- and it had no heal-at-start at all, so a previous kill left a
+    # mutant to be adopted as the baseline (D-081).
+    with sweep_lifecycle(sorted(SWEEP_PATHS)) as originals:
+        return _run_sweep(originals)
+
+
+def _run_sweep(originals: dict[Path, str]) -> int:
 
     problems = check_targets(originals)
     if problems:
@@ -1245,24 +1262,20 @@ def main() -> int:
         print()
 
     survived: list[tuple[str, str]] = []
-    try:
-        for name, target, old, new in _MUTATIONS:
-            pristine = originals[target]
-            if old not in pristine:
-                print(f"PATTERN MISSING   {name}  [{target.name}]")
-                survived.append((name, "pattern-not-found"))
-                continue
-            target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
-            caught = not run_tests()
-            target.write_text(pristine, encoding="utf-8", newline="")
-            print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
-            if not caught:
-                survived.append((name, "survived"))
-    finally:
-        for path, text in originals.items():
-            path.write_text(text, encoding="utf-8", newline="")
+    for name, target, old, new in _MUTATIONS:
+        pristine = originals[target]
+        if old not in pristine:
+            print(f"PATTERN MISSING   {name}  [{target.name}]")
+            survived.append((name, "pattern-not-found"))
+            continue
+        target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
+        caught = not run_tests()
+        target.write_text(pristine, encoding="utf-8", newline="")
+        print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
+        if not caught:
+            survived.append((name, "survived"))
 
-    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in paths})
+    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in originals})
     if leftover:
         print()
         print("ERROR: a mutation is still applied after the sweep:")

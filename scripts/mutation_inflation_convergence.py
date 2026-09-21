@@ -41,6 +41,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _sweep_gate import sweep_lifecycle
+
 SRC = Path("src/macro_engine/models/inflation_convergence.py")
 CONFIG_YAML = Path("config/settings.yaml")
 CONFIG_PY = Path("src/macro_engine/config.py")
@@ -481,8 +483,14 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
-    paths = {SRC, CONFIG_YAML, CONFIG_PY}
-    originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in paths}
+    # O-103: heal, protect, spend in one call. On win32 no Python signal
+    # handler runs for SIGTERM/SIGINT, so the sidecar -- not a handler -- is
+    # the defence with real reach here.
+    with sweep_lifecycle([SRC, CONFIG_YAML, CONFIG_PY]) as originals:
+        return _run_sweep(originals)
+
+
+def _run_sweep(originals: dict[Path, str]) -> int:
 
     # Refuse to measure with a broken table (D-048).
     problems = check_targets(originals)
@@ -525,7 +533,7 @@ def main() -> int:
         for path, text in originals.items():
             path.write_text(text, encoding="utf-8", newline="")
 
-    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in paths})
+    leftover = _applied_mutations({p: p.read_text(encoding="utf-8") for p in originals})
     if leftover:
         print()
         print("ERROR: a mutation is still applied after the sweep:")

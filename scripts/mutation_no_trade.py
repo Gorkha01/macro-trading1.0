@@ -100,6 +100,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _sweep_gate import sweep_lifecycle
+
 REPO = Path(__file__).resolve().parent.parent
 NO_TRADE = REPO / "src/macro_engine/thesis_layer/no_trade.py"
 
@@ -729,6 +731,18 @@ def main() -> int:
             return 2
         print(f"restricted to group {args.group}: {len(mutations)} mutation(s)")
 
+    # O-103: the sidecar is the interrupt defence with real reach here. On
+    # win32 no Python signal handler runs for SIGTERM/SIGINT and a killed
+    # process gets no `finally` turn, so `_restore_in_flight` above cannot
+    # fire. This runs after the early returns so a run that mutates nothing
+    # leaves no sidecar behind, and it heals a previous kill BEFORE the
+    # baseline is read -- reading first would adopt a mutant as the baseline
+    # (D-081).
+    with sweep_lifecycle(sorted({mt.path for mt in mutations})):
+        return _run_sweep(mutations)
+
+
+def _run_sweep(mutations: list[Mutation]) -> int:
     results: list[Result] = []
     for mt in mutations:
         print(f"\n--- {mt.group} {mt.name}")

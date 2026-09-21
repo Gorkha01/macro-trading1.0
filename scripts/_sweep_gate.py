@@ -86,6 +86,8 @@ Usage::
 from __future__ import annotations
 
 import signal
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = [
@@ -95,6 +97,7 @@ __all__ = [
     "record_pristine",
     "restore_from_sidecar",
     "sidecar_for",
+    "sweep_lifecycle",
 ]
 
 #: The mutation currently written to disk, so a signal handler can undo it.
@@ -194,6 +197,60 @@ def restore_from_sidecar(paths: list[Path]) -> list[Path]:
         sidecar.unlink()
         restored.append(path)
     return restored
+
+
+@contextmanager
+def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
+    """The full interrupt defence in ONE call: heal, protect, spend (O-103).
+
+    Every sweep needs the same three steps around its mutation loop, and before
+    this helper each of the 38 that lacked them would have had to repeat a
+    three-call dance at two different places in ``main()`` - 76 edit sites, each
+    an opportunity to invert the order or forget the cleanup. The order is what
+    matters and it is not obvious, so it belongs in one tested function:
+
+    1. **HEAL** -- ``restore_from_sidecar`` runs FIRST, before anything is read.
+       A previous run killed mid-mutation left mutated source AND a sidecar; if
+       the sweep read the source before healing, it would adopt the mutant as its
+       baseline and bake the corruption in permanently. That is the D-081 /
+       "a mutant wearing its costume" failure, and it is silent.
+    2. **PROTECT** -- ``record_pristine`` writes the (now healed) text to a
+       sidecar BEFORE the first mutation. On win32 this is the *only* defence
+       that works: no Python signal handler runs for SIGTERM/SIGINT, so neither
+       the registered handler nor the sweep's own ``finally`` gets a turn.
+    3. **SPEND** -- on exit, each sidecar is deleted. Leaving one behind would
+       make the NEXT run "restore" a file that never needed it, silently
+       reverting a legitimate edit made in between. A stale sidecar is worse
+       than none.
+
+    Yields the pristine text of every path, healed, so the caller's ``originals``
+    and the sidecars can never disagree.
+
+    Any ``Path`` may be passed; a path that does not exist is skipped, which lets
+    a sweep share this helper with an optional target (api_layer's routing files).
+
+    ``missing_ok`` on the unlink because step 3 runs in a ``finally``: if
+    ``restore_from_sidecar`` or the sweep itself already consumed a sidecar, the
+    cleanup must not raise on the way out.
+    """
+    existing = [p for p in paths if p.exists()]
+
+    healed = restore_from_sidecar(existing)
+    originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in existing}
+
+    record_pristine(originals)
+    try:
+        if healed:
+            # Reported rather than silent: "this run started from a healed tree"
+            # is a fact the operator needs, because a previous run was killed.
+            print("HEALED from sidecar (a previous run was killed):")
+            for path in healed:
+                print(f"  restored -> {path.name}")
+            print()
+        yield originals
+    finally:
+        for path in existing:
+            sidecar_for(path).unlink(missing_ok=True)
 
 
 def check_targets(

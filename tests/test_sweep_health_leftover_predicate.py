@@ -738,20 +738,40 @@ def test_a_bare_method_definition_is_not_a_control_use(tool_module: Any) -> None
 
 
 def test_the_control_scan_runs_over_the_real_sweep_directory(tool_module: Any) -> None:
-    """The scan must produce a real count, not zero and not all.
+    """The scan must produce a POSITIVE count of recognised controls.
 
-    Zero would mean the predicate matches nothing; all would mean it matches
-    everything. Each makes the line useless in a different direction, and each is
-    refused here rather than being read as a measurement.
+    The original form of this guard refused both zero AND all: *"zero means the
+    predicate matches nothing; all means it matches everything."* That was right
+    when the population was mixed.
+
+    **It is now the wrong guard, and leaving it in would have failed on the
+    correct tree** -- which is the failure mode this file has re-learned three
+    times (a guard pinned to a transient state becomes an alarm the moment the
+    state improves; D-087.14, D-087.18, and now here). The "all" half is no
+    longer a pathology: O-72's first half was closed on 2026-09-21, so **all 40
+    sweeps are EXPECTED to have a control**, and `all` is the success condition.
+
+    What remains a pathology is **zero recognised matches**, which means the
+    predicate itself has stopped working. That is what this asserts, and it is
+    what a marker-set edit could plausibly break.
     """
     sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
     assert sweeps, "no sweeps found; the glob is wrong"
 
-    missing = [p.name for p in sweeps if not tool_module._control_markers(p)]
-    assert 0 < len(missing) < len(sweeps), (
-        f"the control scan reported {len(missing)} of {len(sweeps)} sweeps as "
-        f"control-less. Zero means the predicate matches nothing; all means it "
-        f"matches everything. Neither is a measurement."
+    matched = [p.name for p in sweeps if tool_module._control_markers(p)]
+    assert matched, (
+        f"the control scan matched NO control in any of {len(sweeps)} sweeps. "
+        "The predicate has stopped working -- either the marker set was edited "
+        "to strings that do not occur, or every sweep changed mechanism at once. "
+        "Either way the coverage line is no longer a measurement."
+    )
+    # Both non-trivial mechanisms must still be found in the population, so a
+    # marker that matches only one family cannot masquerade as full coverage.
+    kinds = {m for p in sweeps for m in tool_module._control_markers(p)}
+    assert len(kinds) >= 2, (
+        f"only one control mechanism was found across all 40 sweeps: {kinds}. "
+        "Three are legitimate (expect_killed, a .killed refusal, the CANARY1 "
+        "gate); finding one suggests the others were dropped from the marker set."
     )
 
 
@@ -760,8 +780,15 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
 
     Neither mechanism is required by any specification, and turning a missing
     control into a build failure would block legitimate work on a convention that
-    does not exist. The value is that the gap is now VISIBLE: 40 sweeps, 18 of
-    them unable to distinguish a broken baseline from a strong suite.
+    does not exist. The value is that the gap is VISIBLE.
+
+    **The gap is now CLOSED (O-72's first half, 2026-09-21): all 40 sweeps carry
+    a control.** This guard therefore flips from "there are gaps, prove they are
+    reported" to "there are none, prove the scan still runs and the line still
+    prints". Asserting the old `missing`-is-non-empty condition would now FAIL on
+    the correct tree, which is the failure mode this file keeps re-learning: *a
+    guard pinned to a transient state becomes a false alarm the moment the state
+    improves* (D-087.14, one level up).
     """
     sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
     missing = [p.name for p in sweeps if not tool_module._control_markers(p)]
@@ -772,10 +799,135 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
         "shows it, which is the O-62 shape one level down"
     )
     assert "NO CONTROL ->" in text, "the per-sweep detail line is missing"
-    assert missing, (
-        "no sweep is control-less, so this check has become vacuous -- delete it "
-        "or explain why the property no longer holds"
+
+    # The coverage assertion, restated as an INVARIANT that is true and stays
+    # true: the scan must classify EVERY sweep, and (since O-72's first half) it
+    # must find none without a control. If a new sweep is added without one, the
+    # count goes up and this test tells you -- it does not fail the build.
+    assert len(sweeps) == 40, f"expected 40 sweeps, found {len(sweeps)}"
+    assert missing == [], (
+        f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
+        "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "
+        "control-less sweep is a regression against that, not a coverage gap."
     )
+
+
+# ---------------------------------------------------------------------------
+# The O-72 canary (the third control mechanism)
+# ---------------------------------------------------------------------------
+# The 18 sweeps that had no control were given one in the form the task called
+# for: a mutation that MUST BE KILLED. That is the OPPOSITE polarity from the
+# other two mechanisms (`expect_killed=False` requires SURVIVAL; the `.killed`
+# refusal fires when a survivor appears among `CONTROL`-named entries). A gate
+# that recognised only the old two would report all 18 as still control-less
+# after they had been fixed -- which is exactly what the FIRST run of this tool
+# after the change did.
+
+
+def test_the_canary_marker_is_recognised(tool_module: Any) -> None:
+    """The third mechanism must count, or O-72's fix reads as a regression.
+
+    This is **O-107's narrow predicate for the FIFTH time in this project**: the
+    marker set was written when only two mechanisms existed, and a check that
+    does not know about a new legitimate form reports the fixed state as broken.
+    """
+    markers = tool_module._CONTROL_MARKERS
+
+    assert any("CANARY" in m or "canary" in m for m in markers), (
+        "the CANARY1 gate is not a recognised control; all 18 sweeps fixed for "
+        "O-72 will be reported as control-less even though they now have one"
+    )
+
+
+def test_every_sweep_declares_a_recognised_control(tool_module: Any) -> None:
+    """All 40 sweeps, and the marker each one actually matched.
+
+    Reported per-sweep rather than as a bare count, so a failure names the file
+    and the mechanism -- the O-107 lesson (*verify what a predicate actually
+    matched before believing its verdict*).
+    """
+    sweeps = sorted((_ROOT / "scripts").glob("mutation_*.py"))
+    unmatched = [p.name for p in sweeps if not tool_module._control_markers(p)]
+
+    assert unmatched == [], f"no recognised control in: {unmatched}"
+
+
+def test_the_canary_marks_a_mutation_that_must_be_killed(tool_module: Any) -> None:
+    """The canary's polarity: it is killed, and surviving REFUSES certification.
+
+    A behavioural clone of the other two mechanisms would be useless here -- the
+    point is that the canary is a **structural** kill (a syntax error stops test
+    collection dead), so it cannot quietly become inert. Checked on a sample of
+    the 18, in the source text, because running a sweep is minutes per file.
+    """
+    for stem in ("mutation_probability", "mutation_lei_proxy", "mutation_scorecard"):
+        text = (_ROOT / "scripts" / f"{stem}.py").read_text(encoding="utf-8")
+
+        assert "CANARY1" in text, f"{stem}: the canary mutation is missing"
+        assert "<<<SYNTAX ERROR>>>" in text, (
+            f"{stem}: the canary is no longer a structural break; a behavioural "
+            "canary can become inert without anyone noticing"
+        )
+        assert "REFUSING TO CERTIFY: the honesty canary SURVIVED" in text, (
+            f"{stem}: the canary exists but nothing acts on its survival, so it "
+            "reports rather than gates (O-88: a gate row is a CLAIM, not a "
+            "receipt)"
+        )
+        # Surviving must be a refusal, not a normal survivor.
+        assert "return 3" in text, (
+            f"{stem}: the canary refusal does not exit non-zero, so a sweep that "
+            "tested nothing would still certify"
+        )
+
+
+def test_the_canary_gate_refuses_when_the_selection_is_broken(tmp_path: Path) -> None:
+    """FUNCTIONAL: break the selection, and the sweep must exit 3, not 0.
+
+    This is the guard that matters, because the other four are textual and a
+    textual check cannot tell a gate that fires from one that is merely written
+    down. The D-051 trap is *"every mutant reports as killed because nothing
+    executes"*, and the only way to know the canary catches it is to build the
+    trap and watch it trip.
+
+    The instrument is the smallest control-bearing sweep, run from a COPY in a
+    temp directory with its test selection rewritten to a module the mutation
+    does not affect. Verified by hand before this test was written: exit 3, with
+    the canary listed among the survivors and the refusal printed.
+    """
+    source = _ROOT / "scripts" / "mutation_inflation_nowcast.py"
+    text = source.read_text(encoding="utf-8")
+    original_target = '"tests/models/test_inflation_nowcast.py",'
+    assert original_target in text, (
+        "the sweep's test selection changed shape; update this test rather than "
+        "deleting it -- it is the only functional proof the canary gates"
+    )
+    broken = text.replace(original_target, '"tests/models/test_auctions.py",', 1)
+    assert broken != text
+
+    sandbox = tmp_path / "scripts"
+    sandbox.mkdir()
+    # The sweep imports its gate helper from the sibling module.
+    (sandbox / "_sweep_gate.py").write_text(
+        (_ROOT / "scripts" / "_sweep_gate.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (sandbox / "mutation_inflation_nowcast.py").write_text(broken, encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, str(sandbox / "mutation_inflation_nowcast.py")],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
+    assert proc.returncode == 3, (
+        "the canary did NOT gate: with the test selection pointed at an "
+        f"unrelated module the sweep still exited {proc.returncode}. Every "
+        "'killed' in that run is a claim about the harness, not the suite.\n"
+        f"stdout tail:\n{proc.stdout[-1500:]}"
+    )
+    assert "REFUSING TO CERTIFY: the honesty canary SURVIVED" in proc.stdout
 
 
 # ---------------------------------------------------------------------------

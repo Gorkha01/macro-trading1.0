@@ -35,7 +35,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import check_targets, format_problems
+from _sweep_gate import (
+    check_targets,
+    format_problems,
+    sweep_lifecycle,
+)
 
 SRC = Path("src/macro_engine/models/lei_proxy.py")
 
@@ -105,6 +109,12 @@ _VALIDATION = Path("src/macro_engine/data_layer/validation.py")
 _CONFIG = Path("src/macro_engine/config.py")
 
 _NOT_A_SNAPSHOT_GUARD = "    if entry.not_a_snapshot_field:\n        raise OpenBBFetchError("
+# The tolerance comparison, as shipped: `<=`, so a lead EQUAL to the tolerance is
+# admitted. D-030 settled the semantics -- `future_date_tolerance_days=1` is
+# declared on the daily series precisely so that a 1-day lead (FRED publishing
+# `iorb` for the current UTC day while the process clock is still on the
+# previous one) collapses to an INFO finding rather than an ERROR. A `<` here
+# would admit ZERO days at tolerance 1 and make the declaration inert.
 _TOLERANCE_BRANCH = "            if lead_days <= future_date_tolerance_days:"
 _TOLERANCE_FIELD = (
     "    future_date_tolerance_days: int = Field(\n        default=0,\n        ge=0,\n        le=7,"
@@ -316,7 +326,7 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "            if True:",
     ),
     (
-        "M8d the tolerance boundary off by one (<= becomes <)",
+        "M8d the tolerance boundary off by one (<= becomes <, the declared day is refused)",
         _TOLERANCE_BRANCH,
         "            if lead_days < future_date_tolerance_days:",
     ),
@@ -386,10 +396,18 @@ def _iter_mutations() -> list[tuple[str, Path, str, str]]:
 
 
 def main() -> int:
-    originals: dict[Path, str] = {
-        p: p.read_text(encoding="utf-8") for p in {SRC, _SNAPSHOT_BUILDER, _VALIDATION, _CONFIG}
-    }
+    # The whole interrupt defence in one call (O-103): heal any sidecar a killed
+    # previous run left behind, write the healed text to a sidecar BEFORE the
+    # first mutation, and consume it on the way out. On win32 no Python signal
+    # handler runs for SIGTERM/SIGINT, so the sidecar -- not a handler -- is the
+    # defence that actually has reach here. This file has left a mutant applied
+    # TWICE (M6d, on two separate SIGTERM'd runs), which is why it is one of the
+    # few that needed the defence rather than merely benefiting from it.
+    with sweep_lifecycle([SRC, _SNAPSHOT_BUILDER, _VALIDATION, _CONFIG]) as originals:
+        return _run_sweep(originals)
 
+
+def _run_sweep(originals: dict[Path, str]) -> int:
     # This sweep's table is already 4-tuples.
     #
     # Refuse to measure before anything is mutated (D-048, O-29). An anchor
@@ -409,18 +427,25 @@ def main() -> int:
         return 4
 
     survivors: list[tuple[str, str]] = []
-    for name, target, old, new in _iter_mutations():
-        pristine = originals[target]
-        if old not in pristine:
-            print(f"PATTERN MISSING   {name}  [{target.name}]")
-            survivors.append((name, "pattern-not-found"))
-            continue
-        target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
-        caught = not run_tests()
-        target.write_text(pristine, encoding="utf-8", newline="")
-        print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
-        if not caught:
-            survivors.append((name, "survived"))
+    try:
+        for name, target, old, new in _iter_mutations():
+            pristine = originals[target]
+            if old not in pristine:
+                print(f"PATTERN MISSING   {name}  [{target.name}]")
+                survivors.append((name, "pattern-not-found"))
+                continue
+            target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
+            caught = not run_tests()
+            target.write_text(pristine, encoding="utf-8", newline="")
+            print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
+            if not caught:
+                survivors.append((name, "survived"))
+    finally:
+        # Belt and braces: an exception mid-mutation must never leave the tree
+        # mutated. A SIGTERM on win32 still can -- no handler and no ``finally``
+        # gets a turn -- which is the case the sidecar covers, not this.
+        for path, text in originals.items():
+            path.write_text(text, encoding="utf-8", newline="")
 
     print()
     total = len(MUTATIONS)

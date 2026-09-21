@@ -457,19 +457,32 @@ def _call_gate(gate: Any, native: list[Any]) -> list[str]:
 #:   the summary compares against that. **22 of the 40 sweeps use this.**
 #: * a ``CONTROL``-bearing mutation name whose ``.killed`` is read — the D-051
 #:   refusal, written explicitly. **12 of the 40 use this.**
+#: * the ``REFUSING TO CERTIFY: the honesty canary SURVIVED`` gate (O-72, the 18
+#:   sweeps that had no control before it). This is its own mechanism and its own
+#:   marker: the canary is a mutation that is **required to be KILLED** (rather
+#:   than one required to survive), so the gate fires on the opposite condition
+#:   from the other two. Recognising only the first two would report all 18 as
+#:   still control-less after they had been given one — **O-107's narrow
+#:   predicate**, which this file has already been bitten by once.
 #:
-#: A sweep may use either; the check asks only whether it has **some** way to
-#: notice that its own baseline is broken. Demanding one mechanism would flag
-#: correct sweeps, and a gate that flags correct code is one you learn to ignore.
+#: A sweep may use any of the three; the check asks only whether it has **some**
+#: way to notice that its own baseline is broken. Demanding one mechanism would
+#: flag correct sweeps, and a gate that flags correct code is one you learn to
+#: ignore.
 #:
-#: The markers are **uses, not definitions**: ``.killed`` (an attribute read) and
-#: ``expect_killed`` (a field consulted). This deliberately does NOT accept the
-#: bare token ``killed``, because ``def killed(self) -> bool`` is the *mechanism's
-#: implementation* and is present whether or not anything consults it. Measured on
-#: ``mutation_risk_axis.py``: a mutant that removed both real uses still matched,
-#: because the property definition remained (lesson 5cm — verify what a predicate
-#: actually matched before believing its verdict).
-_CONTROL_MARKERS: tuple[str, ...] = ("expect_killed", ".killed")
+#: The markers are **uses, not definitions**: ``.killed`` (an attribute read),
+#: ``expect_killed`` (a field consulted), and the canary's refusal message (the
+#: point at which the canary's survival is *acted on*). This deliberately does
+#: NOT accept the bare token ``killed``, because ``def killed(self) -> bool`` is
+#: the *mechanism's implementation* and is present whether or not anything
+#: consults it. Measured on ``mutation_risk_axis.py``: a mutant that removed both
+#: real uses still matched, because the property definition remained (lesson 5cm
+#: — verify what a predicate actually matched before believing its verdict).
+_CONTROL_MARKERS: tuple[str, ...] = (
+    "expect_killed",
+    ".killed",
+    "REFUSING TO CERTIFY: the honesty canary SURVIVED",
+)
 
 
 def _control_markers(path: Path) -> list[str]:
