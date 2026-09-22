@@ -85,13 +85,16 @@ Usage::
 
 from __future__ import annotations
 
+import shutil
 import signal
+import subprocess
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = [
     "check_targets",
+    "describe_dirty_targets",
     "format_problems",
     "install_signal_restore",
     "record_pristine",
@@ -161,6 +164,92 @@ def sidecar_for(path: Path) -> Path:
     return path.with_name(path.name + SIDECAR_SUFFIX)
 
 
+def _git_dirty_paths() -> set[Path] | None:
+    """Every path git reports as modified/untracked, as resolved ``Path`` objects.
+
+    ``None`` means **"could not ask"** — no git, no repository, a timeout, or a
+    non-zero exit — and it is deliberately distinct from ``set()`` ("asked, and
+    the tree is clean"). Collapsing the two would make this precondition
+    *vacuously true* in exactly the environment where it is hardest to notice
+    (a stripped container, a source tarball), which is D-062's "a detector whose
+    predicate is trivially true manufactures findings" in its silent direction.
+
+    ``--porcelain`` is used rather than ``git status`` because it is stable
+    across git versions and prints ``XY<space>PATH`` with no decoration; the
+    ``-z`` variant is avoided because its NUL-separated stream with rename
+    records is more machinery than this needs. Paths are resolved so they can be
+    compared with the ``Path`` objects a sweep declares.
+    """
+    try:
+        # `shutil.which` rather than the bare name so S607 ("partial executable
+        # path") is answered honestly instead of suppressed, and `noqa: S603`
+        # because the argv here is four LITERALS plus a resolved interpreter path
+        # — nothing in it comes from the tree, the environment or a caller. Same
+        # suppression, same reason, as `mutation_api_layer.py`'s collect-only run.
+        proc = subprocess.run(  # noqa: S603
+            [shutil.which("git") or "git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    dirty: set[Path] = set()
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        # ``XY PATH`` — the status is two characters and then a space.
+        raw = line[3:].strip()
+        if not raw:
+            continue
+        if " -> " in raw:  # a rename; the NEW name is the one on disk
+            raw = raw.split(" -> ", 1)[1]
+        if raw.startswith('"') and raw.endswith('"') and len(raw) > 1:
+            raw = raw[1:-1]  # git quotes paths containing spaces or non-ASCII
+        dirty.add(Path(raw).resolve())
+    return dirty
+
+
+def describe_dirty_targets(paths: Iterable[Path]) -> list[str]:
+    """The declared targets that are ALREADY modified relative to ``HEAD``.
+
+    **This is O-61's still-open remedy, and it is the durable form of O-112(b).**
+
+    A sweep is an in-place corruption of the working tree that is undone on the
+    way out. That is safe only if the tree it started from was the tree it thinks
+    it started from. Start from a dirty target and two things go wrong at once:
+    the sidecar records the *dirty* text as pristine, so the heal path restores
+    the wrong bytes; and the sweep's diffs become indistinguishable from the
+    operator's own edits, so `git status` can no longer be used to see what a
+    killed run left behind. O-61 is the incident record (severity 3) and its
+    binding rule — *never run a sweep in the background; never run a batch of
+    sweeps while doing anything else* — is unchanged by any of this.
+
+    O-112(b) phrased the same concern from the other end: *"an ``rc=124`` stop is
+    a detection not a prevention."* Removing the driver removed the `rc=124`, but
+    it did not remove the class — a sweep can still be killed by anything, and the
+    only thing that makes a kill recoverable is that the tree was knowably clean
+    when it began.
+
+    **Reports, never refuses.** A legitimate increment *is* a dirty tree: the
+    operator edits `src/` and then sweeps it, and every sweep in this project
+    targets a file the same increment touched. A hard failure here would make the
+    guard unusable on the day it is needed, which is how a guard gets deleted.
+    The caller prints the result loudly; the sidecar remains the actual defence.
+
+    Returns an empty list both when the targets are clean and when git could not
+    be asked — this is a *report*, so an unanswered question is not a finding.
+    Use :func:`_git_dirty_paths` directly if you need to distinguish the two.
+    """
+    dirty = _git_dirty_paths()
+    if dirty is None:
+        return []
+    return sorted(str(p) for p in paths if p.resolve() in dirty)
+
+
 def record_pristine(paths: dict[Path, str]) -> list[Path]:
     """Persist each path's pristine text to a sidecar before any mutation.
 
@@ -223,6 +312,18 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
        reverting a legitimate edit made in between. A stale sidecar is worse
        than none.
 
+    Steps 1 and 2 are read-only w.r.t. the tree's *diffability*: between them the
+    step-0 report (below) is emitted, because after step 2 a killed run is no
+    longer distinguishable by inspection alone.
+
+    **The step-0 report: was this tree clean when the sweep began?** — O-61's
+    remedy, printed rather than enforced (see :func:`describe_dirty_targets` for
+    why it reports and does not refuse). It runs *before* ``restore_from_sidecar``
+    so that the answer describes the state the operator left, not the state this
+    function is about to repair, and it covers the ``healed`` paths too: a sidecar
+    implies a previous kill, which is precisely when a reader most needs to know
+    the target is not what `HEAD` says.
+
     Yields the pristine text of every path, healed, so the caller's ``originals``
     and the sidecars can never disagree.
 
@@ -234,6 +335,18 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
     cleanup must not raise on the way out.
     """
     existing = [p for p in paths if p.exists()]
+
+    dirty = describe_dirty_targets(existing)
+    if dirty:
+        # Reported, not silent, and NOT a refusal: an increment that edits a file
+        # and then sweeps it is the normal case here.
+        print("DIRTY TARGET (O-61): this sweep starts from an uncommitted tree.")
+        for item in dirty:
+            print(f"  modified -> {item}")
+        print("  A kill here cannot be told apart from your own edit by `git")
+        print("  status` alone; check the `.sweepbackup` sidecars before")
+        print("  concluding the tree is what you think it is.")
+        print()
 
     healed = restore_from_sidecar(existing)
     originals: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in existing}

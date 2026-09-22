@@ -152,7 +152,7 @@ def project_shelter_cpi(inputs: ShelterLagInputs) -> ModelResult:
             as_of=utc_now(),
             value=None,
             confidence=compute_confidence(
-                ConfidenceInputs(data_quality_flags_present=True),
+                ConfidenceInputs(data_quality_flags_present=False),
             ),
             interpretation=(
                 f"Insufficient market-rent history to project CPI shelter: "
