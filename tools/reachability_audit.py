@@ -318,13 +318,11 @@ _CANDIDATES: list[tuple[Path, str]] | None = None
 def _parsed(path: Path) -> ast.Module | None:
     """Parse ``path`` once and cache the tree; ``None`` if it will not parse.
 
-    **This is the fix for the real bottleneck.** Caching the candidate *list*
-    (above) solved walking the tree 79 times, but every ``_references`` call
-    still re-*parsed* all 205 files — measured 2.8s per function, so ~220s for
-    a single audit. That was tolerable when ``_references`` ran once per
-    function; adding the same-module resolution (which calls it again per
-    caller) would have doubled it into a tool nobody runs. Parsing is pure and
-    the tree is immutable, so it caches perfectly.
+    Parsing is pure and the tree is immutable, so it caches perfectly. This
+    removed the *parse* half of an O(functions x files) cost that started at
+    ~220 s; the *walk* half survived until ``_call_sites`` was added — see that
+    function for the measurement, and for why this docstring previously claimed
+    the whole cost was gone when only its parsing term had been cached.
 
     A file that fails to parse is cached as ``None`` rather than retried, so a
     syntax error costs one attempt instead of one per function.
@@ -341,6 +339,63 @@ def _parsed(path: Path) -> ast.Module | None:
 _PARSE_CACHE: dict[Path, ast.Module | None] = {}
 
 
+def _call_sites() -> dict[str, list[tuple[Path, str, int, str | None]]]:
+    """Every ``ast.Call`` in the tree, indexed by callee name — built **once**.
+
+    The entry is ``(path, rel, lineno, enclosing_top_level_function)``, where the
+    last element is ``None`` for a call that is not inside a top-level function.
+
+    **This is the fix for the remaining O(functions x files) cost.** The two
+    earlier fixes in this file were real but each closed only half of the same
+    line: caching the candidate *list* stopped re-running ``rglob``, and caching
+    the *parse* stopped re-reading the files — yet ``_references`` still walked
+    every tree once per function name, because the walk was never the thing that
+    got cached. Measured 2026-09-22: 444,683 AST nodes in this repo, of which
+    27,944 are calls, walked **79 times** = 35,129,957 node visits to find 27,944
+    call sites; ``_references`` cost ~400 ms per name. The whole scan is one
+    pass over the trees, so it is done once here and read as a dict thereafter.
+
+    The walk is *not* the slow part — replacing ``ast.walk`` with a
+    ``NodeVisitor`` measured **0.90x**, i.e. slower. Calling it 79 times was the
+    cost, and that is what this removes.
+    """
+    global _CALL_SITES
+    if _CALL_SITES is not None:
+        return _CALL_SITES
+
+    index: dict[str, list[tuple[Path, str, int, str | None]]] = {}
+    for path, rel in _candidate_files():
+        tree = _parsed(path)
+        if tree is None:  # pragma: no cover - unparseable file
+            continue
+
+        # One walk per file. `owner` tracks the enclosing top-level function so
+        # `_local_calls` does not need a second walk to find it.
+        owners: dict[int, str] = {}
+        for parent in tree.body:
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(parent):
+                    owners[id(node)] = parent.name
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            if isinstance(callee, ast.Name):
+                callee_name = callee.id
+            elif isinstance(callee, ast.Attribute):
+                callee_name = callee.attr
+            else:  # e.g. `f()()` — a call whose callee is itself an expression
+                continue
+            index.setdefault(callee_name, []).append((path, rel, node.lineno, owners.get(id(node))))
+
+    _CALL_SITES = index
+    return index
+
+
+_CALL_SITES: dict[str, list[tuple[Path, str, int, str | None]]] | None = None
+
+
 def _local_calls(name: str, module: Path) -> list[str]:
     """``ast.Call`` sites for ``name`` *inside its own defining module*.
 
@@ -350,24 +405,13 @@ def _local_calls(name: str, module: Path) -> list[str]:
     only real call expressions, for the same reason `_references` does: prose
     and imports are how the tool lied to itself in its first version.
     """
-    tree = _parsed(module)
-    if tree is None:  # pragma: no cover - unparseable module
-        return []
-
     out: list[str] = []
-    for parent in ast.walk(tree):
-        if not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for node in ast.walk(parent):
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func
-            matched = (isinstance(callee, ast.Name) and callee.id == name) or (
-                isinstance(callee, ast.Attribute) and callee.attr == name
-            )
-            if matched:
-                out.append(parent.name)
-                break
+    for path, _rel, _lineno, owner in _call_sites().get(name, ()):
+        # `owner is None` means the call sits outside any top-level function, so
+        # it is not evidence about reachability and is skipped — matching the
+        # pre-index behaviour, which only ever reported enclosing functions.
+        if path == module and owner is not None:
+            out.append(owner)
     return out
 
 
@@ -391,7 +435,7 @@ def _references(name: str, defining_module: Path) -> dict[str, list[str]]:
         "local": [],
     }
 
-    for path, rel in _candidate_files():
+    for path, rel, lineno, _owner in _call_sites().get(name, ()):
         if path == defining_module:
             # Docstring prose in the defining module is not a caller — but a
             # same-module ``ast.Call`` IS, and skipping the file wholesale made
@@ -402,25 +446,9 @@ def _references(name: str, defining_module: Path) -> dict[str, list[str]]:
             # before the AST walk. A same-module call is real evidence; it is
             # simply weaker than a pipeline call, so it goes in its own bucket
             # and is resolved against the caller's own reachability below.
-            hits["local"] = _local_calls(name, path)
-            continue
-
-        tree = _parsed(path)
-        if tree is None:  # pragma: no cover - unparseable file
-            continue
-
-        linenos: list[int] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func
-            matched = (isinstance(callee, ast.Name) and callee.id == name) or (
-                isinstance(callee, ast.Attribute) and callee.attr == name
-            )
-            if matched:
-                linenos.append(node.lineno)
-
-        if not linenos:
+            #
+            # Collected here rather than via ``_local_calls`` so the bucket is
+            # built in the same ordered pass; the set is identical.
             continue
 
         if rel.startswith("tests/") or "/tests/" in rel:
@@ -436,9 +464,9 @@ def _references(name: str, defining_module: Path) -> dict[str, list[str]]:
             key = "pipeline"
         else:
             continue
-        for lineno in linenos:
-            hits[key].append(f"{rel}:{lineno}")
+        hits[key].append(f"{rel}:{lineno}")
 
+    hits["local"] = _local_calls(name, defining_module)
     return hits
 
 
