@@ -28,6 +28,7 @@ dependencies = [
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
     "types-PyYAML>=6.0.12",
@@ -178,16 +179,39 @@ pythonpath = ["src", "tools"]
 # at >40 min for a single live snapshot build). Pin run the same either way, but
 # a live run makes its cost explicit; and a default run cannot be dragged by a
 # slow provider. The `slow` marker is the exhaustive-catalogue guard (~4 min).
-addopts = "-ra --strict-markers --strict-config -m 'not live and not slow'"
+#
+# D-087.27 (O-110) adds the SECOND half: `--timeout`. Excluding `live` by marker
+# bounds what a DEFAULT run touches, but nothing bounded a single test once it
+# was asked for — a `-m live` run, or a test that quietly opened a socket, could
+# still hang forever. There is now a per-test limit.
+#
+# `--timeout=300` is DERIVED, not chosen: the slowest legitimate offline test
+# measures **162 s** (`test_the_two_copies_agree_on_the_real_catalogue`, which
+# loads all 42 sweeps), so 300 s clears the worst real case by ~1.9x and still
+# catches the pathological hang (measured >40 min). A timeout BELOW the real
+# worst case is worse than none: it kills a correct test, and on `win32` the kill
+# leaves no `finally` — file-based protection (the sweep sidecars) is the only
+# thing that survives, which is why the bound and the sidecars are complements.
+#
+# `--timeout-method` is left at the default (`signal` where SIGALRM exists,
+# `thread` on win32). It MUST NOT be pinned to `signal`: on this platform that
+# would silently disable the timeout, which is the O-110 defect restored.
+#
+# `--session-timeout=5400` is a belt-and-braces bound on the whole run: it is
+# checked between tests and cannot interrupt one, so it is a backstop for "many
+# tests each under the per-test limit" rather than a substitute for it. Measured
+# offline total: ~323 s; the full `-m live` path is the unbounded one this caps.
+addopts = "-ra --strict-markers --strict-config -m 'not live and not slow' --timeout=300 --session-timeout=5400"
 markers = [
     "live: hits a real external data source; excluded from default CI runs",
     "offline: no network access required",
     "golden: hand-verified expected-value test (Section 21.2 Step 4)",
     "warning_path: proves a ModelResult.warnings condition actually fires (Section 21.2 Step 5)",
-    "slow: loads all 40 mutation sweeps (~4 min); correctness is unaffected by deselection",
+    "slow: loads all 42 mutation sweeps (~4 min); correctness is unaffected by deselection",
 ]
 
 [dependency-groups]
 dev = [
     "pandas-stubs>=3.0.5.260914",
+    "pytest-timeout>=2.4.0",
 ]

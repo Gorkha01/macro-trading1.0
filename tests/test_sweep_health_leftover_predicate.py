@@ -806,8 +806,10 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # count goes up and this test tells you -- it does not fail the build.
     #
     # 40 -> 41 at D-087.23 (`mutation_performance_record.py`), which carries the
-    # same CANARY1 gate as the rest.
-    assert len(sweeps) == 41, f"expected 41 sweeps, found {len(sweeps)}"
+    # same CANARY1 gate as the rest. 41 -> 42 at D-087.27
+    # (`mutation_command_inventory.py`, O-104) -- also a CANARY1 sweep, so the
+    # `missing == []` assertion below still holds without a second edit.
+    assert len(sweeps) == 42, f"expected 42 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "
@@ -913,6 +915,54 @@ def test_the_canary_gate_refuses_when_the_selection_is_broken(tmp_path: Path) ->
     (sandbox / "_sweep_gate.py").write_text(
         (_ROOT / "scripts" / "_sweep_gate.py").read_text(encoding="utf-8"),
         encoding="utf-8",
+    )
+
+    # D-087.27 (O-110) — THE SANDBOX MUST ACTUALLY BE ONE.
+    #
+    # `mutation_inflation_nowcast.py` resolves its target as a RELATIVE path
+    # (`SRC = Path("src/macro_engine/models/inflation_nowcast.py")`). With
+    # `cwd=_ROOT` — which is what this test used — the sweep wrote its mutant
+    # into the REAL tree and relied on its own restore to undo it. That worked
+    # whenever the run completed and failed whenever it was KILLED: measured on
+    # 2026-09-22, a run interrupted at 78% left `confidence=0.55` sitting in
+    # `src/macro_engine/models/inflation_nowcast.py` beside a `.sweepbackup`.
+    # The sidecar healed it byte-exactly (the O-103 mechanism working as
+    # designed) — but a TEST must not need the production safety net to avoid
+    # corrupting the tree it is testing.
+    #
+    # The cwd must STAY `_ROOT`: the sweep shells out to
+    # `pytest tests/models/test_inflation_nowcast.py`, and from a foreign cwd
+    # pytest cannot collect (`tests.helpers` is unimportable and neither
+    # `pythonpath` nor `testpaths` resolves — measured). Repointing the cwd
+    # consequently made EVERY mutation look "killed", including the canary,
+    # because `run_tests()` returned non-zero for an unrelated reason. That is
+    # the D-051 trap re-entering through the fix for a different defect.
+    #
+    # So instead the sandbox copy is given an ABSOLUTE `SRC` inside `tmp_path`:
+    # the sweep runs from the real root (tests collect) but can only write to the
+    # sandbox (no mutant can reach the real tree).
+    sandbox_target = tmp_path / "inflation_nowcast.py"
+    sandbox_target.write_text(
+        (_ROOT / "src" / "macro_engine" / "models" / "inflation_nowcast.py").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    # `as_posix()` so the literal carries forward slashes: on Windows `str(Path)`
+    # yields backslashes, which `repr()` then escapes (`'C:\\Users\\...'`) and the
+    # path-separator doubling makes the "did the replacement land" check below
+    # compare two differently-escaped strings (measured — the first version of
+    # this fix failed exactly there). Forward slashes are valid on Windows and
+    # `Path` normalises them, so the sweep's `SRC` still resolves.
+    src_literal = sandbox_target.as_posix()
+    broken = broken.replace(
+        'SRC = Path("src/macro_engine/models/inflation_nowcast.py")',
+        f"SRC = Path({src_literal!r})",
+        1,
+    )
+    assert src_literal in broken, (
+        "the sweep's SRC declaration changed shape; update this replacement "
+        "rather than deleting it -- it is what keeps the mutation inside the sandbox"
     )
     (sandbox / "mutation_inflation_nowcast.py").write_text(broken, encoding="utf-8")
 

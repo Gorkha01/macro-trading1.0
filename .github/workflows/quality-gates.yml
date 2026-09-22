@@ -96,4 +96,15 @@ jobs:
       - name: Live data-layer tests
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-        run: uv run pytest -m live
+        # O-110: this is the one job that deliberately goes to the network, so it
+        # is the one where an unbounded test can hang a runner. `--timeout` is set
+        # globally in `addopts` (300 s, derived from the slowest real test); the
+        # per-test limit is repeated here EXPLICITLY rather than relied upon
+        # implicitly, because this job selects `-m live` -- a different marker
+        # expression from the default -- and a reader of this file should see that
+        # the expensive path is bounded without having to resolve `addopts`.
+        # `--session-timeout` caps the whole run: it is checked between tests, so
+        # it cannot rescue a single hung test (the per-test limit does that); its
+        # job is to stop "many tests, each just under the limit" from consuming
+        # the runner's entire budget.
+        run: uv run pytest -m live --timeout=300 --session-timeout=3600

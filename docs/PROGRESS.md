@@ -1,11 +1,14 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-22** (after **D-087.26 — O-103 CLOSED: all 41/41 sweeps carry
-`.sweepbackup` sidecar protection**, in two equivalent forms — 39 via `sweep_lifecycle()`,
-2 hand-assembled. **Docs-only: no `src/`/test edit, no suite run.** The operator's five-item
-brief is done (O-72 · O-103 · O-111(b) · the FOMC 404 · the FRED timeout); the tree is
-**clean and fully committed at `HEAD` = `6e197e9`**. O-104/O-110/O-112 remain **`DEFERRED`**.
+Last updated: **2026-09-22** (after **D-087.27 — O-104's residual defect closed: the
+recorded OpenBB command count was STALE** — the docs said *2 of 201* while the tree issued
+**4** (`fixedincome.government.yield_curve` and `economy.fomc_documents` were added by
+D-086). Corrected on the live surfaces and made **machine-checked**
+(`tests/test_openbb_command_inventory.py` + `scripts/mutation_command_inventory.py`,
+6/6 killed), which also takes the sweep census to **42** — 40 via `sweep_lifecycle()`,
+2 hand-assembled. O-103 remains CLOSED (42/42 protected). The tree is
+**clean and fully committed at `HEAD` = `6c3ca66`**. O-110/O-112 remain **`DEFERRED`**.
 **PHASE 5 IS NOT STARTED, deliberately.**)
 
 Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
@@ -4164,8 +4167,8 @@ responses kept under `.workbuddy-ai/audit/probes/`.
 
 | measurement | result |
 | --- | --- |
-| OpenBB commands the engine uses | **2 of 201** (`fred_series`, `fred_search`) |
-| registry series + curves routed through them | **45 + 2 curves (16 tenors)** |
+| OpenBB commands the engine uses | **4 of 201** — `fred_series`, `fred_search`, `fixedincome.government.yield_curve` (D-086 change 1), `economy.fomc_documents` (D-086 change 2) · *superseded: 2 of 201 as measured at D-084, before two of the five §8 changes were applied* |
+| registry series + curves routed through them | **45 + 2 curves (16 tenors)** · *superseded: the curve is now 1 call, not 11* |
 | macro-relevant commands unused | **~14 probed live, all `200`** |
 | dedicated command exists for a registry field | **at least 12** |
 | FRED-namespaced routes available / used | **4 / 2** |
@@ -4182,6 +4185,9 @@ responses kept under `.workbuddy-ai/audit/probes/`.
    `*` from `"27-28*"`. Re-measured, the scrape also returns meetings back to **2021**,
    so it is **strictly worse**. The FRED-release scrape half is **not** duplication and
    must stay: its OpenBB alternative is broken (below).
+   **APPLIED at D-086 (change 2):** the FOMC scrape is **gone** — `catalysts.py` reads
+   `economy/fomc_documents` and the two HTML regexes were deleted, not left unused. What
+   the paragraph above describes is the *pre-D-086* state, kept for provenance.
 3. **The calendar fails on transport, not coverage.** All four providers dead: `fred`
    **400 TimeoutError 3/3**, `tradingeconomics`/`fmp` missing credentials, `nasdaq`
    **500 TimeoutError**. Root cause is OpenBB's own `aiohttp` client being
@@ -4189,6 +4195,11 @@ responses kept under `.workbuddy-ai/audit/probes/`.
    **`AVAILABLE_BUT_PROVIDER_LIMITED` on transport grounds**, not "OpenBB has no
    calendar". The brief's question (`actual`/`forecast`/`previous`) is
    **untestable, because the route never returns a body.**
+   **CORRECTED at D-087.25:** the recorded *cause* is wrong. `aiohttp` is **not**
+   filtered — it reaches this endpoint in **~0.1 s**, as does `urllib` (~0.15 s). The
+   discriminator is the **`User-Agent`**: FRED serves a *tool-like* UA (`curl/8.0`) and
+   **hangs** on a *browser-like or empty* one, and OpenBB applies a random real-browser
+   UA unconditionally. The **transport** conclusion stands; the reason does not.
 
 **The vintage question is closed, at the granularity asked.** Four independent live
 confirmations — `realtime_start`/`realtime_end` are request parameters on **0 routes**;
@@ -4202,7 +4213,13 @@ PIT logic.
 **No code was changed.** `src/` is byte-identical to `HEAD` (`git diff --stat HEAD --
 src/` empty) and `AGENTS.md` is untouched — the brief asked for the *minimal changes*,
 not their application, and several are one-way doors. The five are proposed in the
-report's §8. **Recorded:** D-083, D-084 (+ 6 sub-entries), **O-104** (2-of-201 usage /
+report's §8. **SUPERSEDED at D-086:** four of the five are now **applied** (changes 1,
+2, 4, 5) and **change 3 is DECLINED with a correction** — applying it revealed that the
+same service serves the same rate in **two scales by route** (`fred_series?symbol=SOFR`
+→ **3.85** vs `rate/sofr` → **0.0385**), so a bulk endpoint swap would look right on the
+field you check and be silently **100x** wrong on the next. The scale is now a declared,
+derived registry property instead. See **D-086** and `docs/OPENBB_UTILIZATION_AUDIT.md`.
+**Recorded:** D-083, D-084 (+ 6 sub-entries), **O-104** (2-of-201 usage /
 the FOMC duplication), **O-105** (calendar transport), **O-106** (the `realtime_start`
 decoy now on 3 command families). **Also fixed:** a duplicated **O-103** row in
 `OPEN_ISSUES.md` (byte-identical, written twice).
