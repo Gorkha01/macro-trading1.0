@@ -41,6 +41,14 @@ public" versus "which revision is this" — and only the first is answerable her
 Reporting a current-vintage window as a revision identity would be the exact
 substitution Section 6 prohibits, so it is not done.
 
+**Superseded in part (D-088, 2026-09-22).** "Only the first is answerable here"
+is a claim about **this module**, and it still holds — this route cannot fill a
+vintage and the absorption finding above is unchanged. It is no longer a claim
+about the engine: ``alfred_client.py`` reaches ALFRED directly and fills
+``vintage_datetime`` for a series declared ``vintage_eligible``. The two are
+complementary routes, and this module remains the one that answers publication
+timing.
+
 The exact-match rule
 --------------------
 ``search_type=series_id`` is a **prefix** search. ``UNRATE`` is returned

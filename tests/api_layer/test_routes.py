@@ -43,6 +43,7 @@ that read like genuine API breakage. See ``SnapshotStoreEmptyError``.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +53,7 @@ from macro_engine.api_layer import snapshot_provider
 from macro_engine.api_layer.app import create_app
 from macro_engine.api_layer.orchestration import OrchestrationError
 from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError
+from macro_engine.config import get_settings
 from macro_engine.data_layer.persistence import SnapshotStoreEmptyError, load_snapshot
 from macro_engine.data_layer.schemas import (
     MacroDataSnapshot,
@@ -121,6 +123,40 @@ def persisted_snapshot() -> MacroDataSnapshot:
 @pytest.fixture
 def client(persisted_snapshot: MacroDataSnapshot, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     _seed(monkeypatch, persisted_snapshot)
+    return TestClient(create_app())
+
+
+@pytest.fixture
+def client_with_fresh_snapshot(
+    persisted_snapshot: MacroDataSnapshot, monkeypatch: pytest.MonkeyPatch
+) -> TestClient:
+    """A client whose cached snapshot was assembled *just now*.
+
+    **Why this exists (fixed 2026-09-22).** ``cached_snapshot_provenance``
+    re-ages every cached snapshot to *now*: ``age = _age_hours(snapshot.as_of,
+    utc_now())``. The ``client`` fixture seeds the most recent persisted
+    snapshot, so **the age it reports is a real wall-clock age** — which made
+    ``test_health_reports_the_cached_snapshot_age`` assert a property that
+    **decays with time**: it passed while the newest parquet was under
+    ``api.snapshot_max_age_hours`` and failed once it aged past, with nothing in
+    the code having changed. Measured 2026-09-22: the snapshot was **25.56 h**
+    old against a **24.0 h** threshold, so the suite went red purely because a
+    day had passed.
+
+    A test whose outcome depends on when it is run is not a test — it is a
+    clock. Re-stamping ``as_of`` to a controlled instant makes the assertion
+    deterministic at any hour **while keeping it strict**: the flag is still
+    computed by the real provenance path from a real ``as_of``, so a snapshot
+    genuinely older than the threshold still reports stale. What is pinned is
+    the *input* time, not the *logic*.
+
+    Only ``as_of`` is changed. Every series, curve and field is the real
+    persisted data, so the route, the cache plumbing and the disclosure path are
+    all the production ones — this fixture narrows exactly one variable, which
+    is the whole point.
+    """
+    fresh = persisted_snapshot.model_copy(update={"as_of": utc_now()})
+    _seed(monkeypatch, fresh)
     return TestClient(create_app())
 
 
@@ -196,17 +232,56 @@ def test_health_reports_liveness_without_building(client: TestClient) -> None:
     assert body["deep_check"] is False
 
 
-def test_health_reports_the_cached_snapshot_age(client: TestClient) -> None:
+def test_health_reports_the_cached_snapshot_age(client_with_fresh_snapshot: TestClient) -> None:
     """A cached snapshot must be visible from /health, with its age.
 
     Answering "ok" while a stale snapshot sits in the cache would make the next
     call — which serves that snapshot — the caller's first warning.
+
+    Uses ``client_with_fresh_snapshot`` rather than ``client`` so the assertion
+    does not decay with wall-clock time (see that fixture). Payload shape is
+    unchanged, so the disclosure path exercised here is the production one.
     """
-    body = client.get("/health").json()
+    body = client_with_fresh_snapshot.get("/health").json()
 
     assert body["cached_snapshot"] is True
     assert body["cached_age_hours"] is not None
     assert body["cached_is_stale"] is False
+
+
+def test_health_reports_a_genuinely_stale_snapshot_as_stale(
+    persisted_snapshot: MacroDataSnapshot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control: staleness is still DETECTED, not hardcoded false.
+
+    Without this, ``cached_is_stale is False`` above could be satisfied by a
+    route that always answers ``False`` — the D-051 trap (a green result that
+    cannot distinguish a working check from a dead one). This drives the same
+    route with a snapshot demonstrably older than the threshold and requires
+    the opposite answer.
+
+    It also pins the **threshold boundary is read from config**, not baked in:
+    the age is derived from the configured limit rather than a literal, so
+    changing ``api.snapshot_max_age_hours`` moves this test with it instead of
+    silently invalidating it.
+    """
+    max_age = get_settings().api.snapshot_max_age_hours
+    # Comfortably past the threshold — an hour beyond is unambiguous, while
+    # staying close enough that it fails loudly if the limit is ever raised a
+    # lot (a deliberately different question from "is the comparison right").
+    stale_at = utc_now() - timedelta(hours=max_age + 1.0)
+    stale = persisted_snapshot.model_copy(update={"as_of": stale_at})
+    _seed(monkeypatch, stale)
+    client = TestClient(create_app())
+
+    body = client.get("/health").json()
+
+    assert body["cached_snapshot"] is True
+    assert body["cached_is_stale"] is True, (
+        f"a snapshot {max_age + 1.0} h old was not reported stale against a "
+        f"{max_age} h limit — the staleness comparison is not reaching the route"
+    )
+    assert body["cached_age_hours"] == pytest.approx(max_age + 1.0, abs=0.01)
 
 
 def test_health_exposes_the_loopback_posture(client: TestClient) -> None:

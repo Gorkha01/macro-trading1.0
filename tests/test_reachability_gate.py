@@ -151,3 +151,60 @@ class TestAuditInternals:
             "the same-module call to regime_tension was not found — the "
             "defining-module skip has been reintroduced"
         )
+
+    def test_a_basetemp_tree_inside_the_repo_is_not_scanned_as_source(self) -> None:
+        """A throwaway gate-run tree must not be searched for callers.
+
+        **The defect this guards (measured 2026-09-22).** The gate recipe runs
+        ``pytest --basetemp=.gate_pt`` and hand-run probes have left
+        ``.probe/pt*/`` — both INSIDE the project root, and each holding sandbox
+        COPIES of real ``src/`` modules. ``_candidate_files`` walks ``ROOT`` with
+        ``rglob("*.py")`` and excluded only ``.venv``/``build``/``dist``/``node_modules``,
+        so it was counting those copies as first-party source. Measured on the
+        live tree: **306 candidates, 63 of them phantom** (``.probe`` 44,
+        ``.gate_pt`` 11, ``.iso_pt`` 8) — **21 % of the search surface**.
+
+        Why that matters even though the baseline gate still passed: a copy
+        carries the SAME function names as its original, so a *rename* in the
+        real tree can be satisfied by a stale duplicate. That is a false
+        negative, which is the direction this audit must never fail in — it is
+        the identical shape as the docstring-prose bug pinned above, a stale
+        second copy of the truth standing in for the real one.
+
+        Asserted on the REAL tree, not a fixture, because the property is about
+        the repository as it exists when the gate runs. Every path here is one
+        the project's own tooling creates, so the test is stable anywhere the
+        gate has ever been run; if none exist the loop is vacuously true and the
+        third assertion still checks the rule directly.
+        """
+        for rel in (
+            ".gate_pt/some_test0/module.py",
+            ".gate_pt/test_x/thing.py",
+            ".probe/pt5/diag.py",
+            ".iso_pt/a.py",
+            ".venv/lib/python3.13/site-packages/x.py",
+            "build/thing.py",
+        ):
+            assert not ra._is_scannable_relative(rel), (
+                f"{rel} would be scanned as first-party source; a gate run's "
+                "sandbox copy of src/ is not project source"
+            )
+
+        # The rule must not over-reach: real source and a real dotted config dir
+        # must still be scanned, or the exclusion would silently blind the audit.
+        for rel in (
+            "src/macro_engine/models/regime.py",
+            "tests/test_reachability_gate.py",
+            "tools/reachability_audit.py",
+            ".github/workflows/quality.yml",
+        ):
+            assert ra._is_scannable_relative(rel), (
+                f"{rel} is real source and must remain scannable — the temp-tree "
+                "exclusion has been widened into a blind spot"
+            )
+
+        leaked = [rel for _path, rel in ra._candidate_files() if not ra._is_scannable_relative(rel)]
+        assert leaked == [], (
+            f"the candidate list contains non-source paths: {leaked[:5]} — the "
+            "walk and the predicate have drifted apart"
+        )

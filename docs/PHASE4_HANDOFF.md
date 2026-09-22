@@ -195,10 +195,15 @@ Populated and verified in this session's predecessor:
   **42/42** registry symbols, **0** transport errors. Implemented in
   `src/macro_engine/data_layer/publication_dates.py`. Fallback
   `release_calendar.py` is retained but `enabled: false`.
-- **`vintage_datetime` — NOT OBTAINED, and now established by test** rather than
-  assumed. `realtime_start`/`realtime_end` exist but **always equal today**; passing
-  `realtime_start` as a param is **silently ignored**. Requires a credentialed
-  FRED/ALFRED key → an **entitlement** question, not a routing one.
+- **`vintage_datetime` — NOT OBTAINED via OpenBB, and now established by test**
+  rather than assumed. `realtime_start`/`realtime_end` exist but **always equal
+  today**; passing `realtime_start` as a param is **silently ignored**. It was
+  recorded here as requiring "a credentialed FRED/ALFRED key → an **entitlement**
+  question", and that was the misreading D-088 corrected: the key is not an
+  entitlement to acquire, it is one **OpenBB already holds**. A direct ALFRED route
+  now exists (`data_layer/alfred_client.py`, D-088), off by default, filling
+  `vintage_datetime` for series declared `vintage_eligible`. **Everything above
+  about the OpenBB route remains true** — it still cannot fill a vintage.
 - Live build reports `release_source: publication_dates`, `has_known_release_timing`
   **True on 59/59** points, **no** `RELEASE_TIMING_UNKNOWN` flags.
 

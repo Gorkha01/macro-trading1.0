@@ -241,6 +241,50 @@ def spec_tiers() -> dict[str, int]:
     return tiers
 
 
+#: Directory prefixes that are never first-party source. Two kinds, and the
+#: second is the one that was missing:
+#:
+#: * **Build/vendor** — ``.venv``, ``build``, ``dist``, ``node_modules``.
+#: * **Throwaway temp trees** (defect measured 2026-09-22). A gate run provisions
+#:   its basetemp INSIDE the project root — ``--basetemp=.gate_pt`` in the gate
+#:   recipe, ``.probe/pt*/`` from hand-run probes — and each one holds sandbox
+#:   COPIES of real ``src/`` modules. This scan walks ``ROOT``, so it was reading
+#:   those copies as if they were project source. Measured on the live tree:
+#:   **306 candidates, of which 63 (``.probe`` 44, ``.gate_pt`` 11, ``.iso_pt`` 8)
+#:   were phantom — 21 % of the search surface.** The baseline gate happened to
+#:   still pass at 58/58, because a copy carries the same function names as its
+#:   original. That is luck, not safety: the copies are precisely what lets a
+#:   rename in the real tree be SATISFIED by a stale duplicate, which is the
+#:   false-negative direction this audit exists to catch.
+#:
+#: The prefixes are listed rather than pattern-matched on purpose. A leading-dot
+#: glob (``.*``) would swallow ``.github/`` with its workflows, and a bare
+#: ``test_*`` rule would swallow real tests. These four names are the ones the
+#: project's own gate recipe and probe habit actually create; the leading dot on
+#: three of them is what makes them safe to exclude — VCS tooling, not source.
+_TEMP_AND_BUILD_PREFIXES: tuple[str, ...] = (
+    ".venv/",
+    "build/",
+    "dist/",
+    "node_modules/",
+    ".gate_pt/",
+    ".gate_pt",  # an exact file, and the prefix of `.gate_pt2`-style siblings
+    ".probe/",
+    ".iso_pt/",
+    ".pytest_",  # pytest's own basetemp naming, if the default is ever used
+)
+
+
+def _is_scannable_relative(rel: str) -> bool:
+    """Is a repo-relative POSIX path first-party source?
+
+    Factored out so the rule is stated once and is directly testable — the
+    defect this closes was a hardcoded tuple with no way to notice it had gone
+    stale. See ``_TEMP_AND_BUILD_PREFIXES`` for why these prefixes.
+    """
+    return not rel.startswith(_TEMP_AND_BUILD_PREFIXES)
+
+
 def _candidate_files() -> list[tuple[Path, str]]:
     """Every repo Python file worth scanning, as ``(path, repo-relative-name)``.
 
@@ -248,6 +292,10 @@ def _candidate_files() -> list[tuple[Path, str]]:
     inside the per-function reference scan, so a 77-function audit walked the
     tree 77 times — 7,549 files each time, almost all of them inside ``.venv``.
     It appeared to hang; it was just O(functions x files) for no reason.
+
+    The exclusion set is ``_TEMP_AND_BUILD_PREFIXES``; a throwaway basetemp tree
+    inside the repo is not project source and must not be searched for
+    references (see that constant for the measurement).
     """
     global _CANDIDATES
     if _CANDIDATES is not None:
@@ -256,7 +304,7 @@ def _candidate_files() -> list[tuple[Path, str]]:
     out: list[tuple[Path, str]] = []
     for path in ROOT.rglob("*.py"):
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith((".venv/", "build/", "dist/", "node_modules/")):
+        if not _is_scannable_relative(rel):
             continue
         out.append((path, rel))
     out.sort(key=lambda pair: pair[1])

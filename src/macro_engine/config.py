@@ -1084,6 +1084,20 @@ class RegistrySeries(BaseModel):
             "broken mapping (millions of zeros) from a genuinely working route."
         ),
     )
+    vintage_eligible: bool = Field(
+        default=False,
+        description=(
+            "Whether this series' revisions are retrievable from ALFRED, so that "
+            "`vintage_datetime` can be filled for it. DECLARED, not inferred: a "
+            "curve entry has no single vintage (its tenors revise on different "
+            "schedules), and a series whose provider is not FRED has no ALFRED "
+            "record at all. Defaulting to False means a series is only vintage-read "
+            "when someone has said it should be, which is the same 'no input may be "
+            "invented' discipline Section 21.0 rule 3 applies to sources — the "
+            "alternative is a fetch that returns nothing and is indistinguishable "
+            "from a series that genuinely has no revisions."
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_a_resolution_path(self) -> RegistrySeries:
@@ -1097,6 +1111,44 @@ class RegistrySeries(BaseModel):
                 raise ValueError(
                     f"plausible_range {self.plausible_range} is not an increasing interval."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _vintage_eligibility_needs_a_single_fred_series(self) -> RegistrySeries:
+        """Refuse ``vintage_eligible: true`` on an entry that cannot have one vintage.
+
+        Two ways a declaration is impossible, both rejected at config-load rather
+        than discovered as an empty fetch at runtime:
+
+        * **A curve.** A curve entry resolves through ``tenors``, and its legs
+          revise on different schedules. There is no single instant at which
+          "the curve was revised", so a vintage read would have to collapse
+          several real vintages into one — a fabricated fact, and precisely the
+          kind of substitution Section 6 forbids between the four timestamps.
+        * **A non-FRED provider.** ALFRED is FRED's archive; a series served by
+          any other provider has no ALFRED record, so the read would return an
+          empty set that looks identical to "no revisions exist".
+
+        Rejecting is the right failure because both cases otherwise produce the
+        *same observable* — an empty vintage read — and that observable cannot be
+        distinguished from a genuinely unrevised series once it reaches a caller.
+        A config error is loud and fixable; a silent empty read is neither.
+        """
+        if not self.vintage_eligible:
+            return self
+        if self.tenors:
+            raise ValueError(
+                "vintage_eligible is set on a curve entry, which has no single "
+                "vintage: its tenors revise on different schedules, so one "
+                "`vintage_datetime` for the curve would be a fabricated fact."
+            )
+        if self.provider != "fred":
+            raise ValueError(
+                f"vintage_eligible is set on a '{self.provider}' series, but ALFRED "
+                "is FRED's archive: it holds no record for another provider's series, "
+                "so the read would return an empty set indistinguishable from a "
+                "series that simply has no revisions."
+            )
         return self
 
     @model_validator(mode="after")
@@ -1319,7 +1371,16 @@ class PublicationDates(BaseModel):
     Passing ``realtime_start`` as a query parameter is silently ignored (A/B
     tested: the response differed only in request ``timestamp``/``duration``).
     So this route populates ``release_datetime`` and **cannot** populate
-    ``vintage_datetime``, which remains ALFRED-only and unreachable here.
+    ``vintage_datetime``.
+
+    **Superseded in part (D-088, 2026-09-22).** The clause that used to end the
+    sentence above — "which remains ALFRED-only and unreachable here" — is **no
+    longer true and is corrected rather than left standing.** ALFRED is now
+    reachable, through ``alfred_client.py`` (see :class:`AlfredVintage`). What is
+    unchanged, and was the load-bearing half: **this route** still cannot fill a
+    vintage, and the absorption finding above is still exactly right. The two
+    routes are complementary — this one answers "when did it become public",
+    the direct ALFRED call answers "which revision is this".
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1360,6 +1421,90 @@ class PublicationDates(BaseModel):
     backoff_seconds: float = Field(default=1.0, ge=0.0)
 
 
+class AlfredVintage(BaseModel):
+    """ALFRED vintage retrieval — the direct route to ``vintage_datetime``.
+
+    Section 6 requires four timestamps and ``vintage_datetime`` has been ``None``
+    on every point this system has produced. ``docs/OPEN_ISSUES.md`` O-6 records
+    why, and the shortest form is that ``openbb_fred``'s provider does this to
+    every observation row FRED returns::
+
+        d.pop("realtime_start")
+        d.pop("realtime_end")          # models/series.py:156-157
+
+    so the vintage fields arrive and are discarded one line later. Its query
+    model declares no realtime field either, which means the parameter cannot
+    even be transmitted — passing it through OpenBB is **absorbed silently** and
+    the latest revision comes back with HTTP 200.
+
+    This block configures the one route that can answer the question: a direct
+    call to FRED's observations endpoint with ``realtime_start ==
+    realtime_end == as_of``.
+
+    **The credential is borrowed, not duplicated.** Section 22.2/22.3 forbid the
+    engine holding its own ``FRED_API_KEY``, and O-6's final word cites exactly
+    that as the reason this was never implemented. That objection is honoured
+    rather than waived: no key is read from the environment and none is required
+    in ``.env``. The key used is the one OpenBB already owns, read through
+    OpenBB's own accessor. ``require_credential`` exists so a deployment that
+    *wants* this route off can switch it off explicitly, rather than having it
+    silently skip.
+
+    **Off by default, and that is deliberate.** Unlike ``publication_dates``
+    (on, because it is the accurate source with full coverage), a vintage read is
+    one request per (series, as-of date) and is only meaningful to a caller
+    replaying history. A live current-thesis build has no as-of dates to replay,
+    so leaving it on would cost latency for every snapshot and return nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Off by default. A vintage read costs one request per (series, as-of "
+            "date) and only a historical replay uses it; a live build has no as-of "
+            "date to replay, so enabling it there is pure latency."
+        ),
+    )
+    require_credential: bool = Field(
+        default=True,
+        description=(
+            "When True (the default), a vintage read with no reachable credential "
+            "RAISES rather than returning nothing. This must stay True for any "
+            "caller whose result feeds a backtest: a vintage read that silently "
+            "degrades to the latest revision is undetectable downstream, because "
+            "the values are plausible and the dates match."
+        ),
+    )
+    max_attempts: int = Field(
+        default=3,
+        gt=0,
+        description=(
+            "Retry budget. FRED's endpoint is reliable; a retry exists for a "
+            "transient transport failure."
+        ),
+    )
+    backoff_seconds: float = Field(default=1.0, ge=0.0)
+    timeout_seconds: float = Field(
+        default=20.0,
+        gt=0.0,
+        description=(
+            "Per-request timeout. Larger than the OpenBB client's, because this is "
+            "an internet hop to St. Louis rather than a localhost call."
+        ),
+    )
+    default_lookback_years: int = Field(
+        default=5,
+        gt=0,
+        description=(
+            "Observation window for a vintage read when the caller does not supply "
+            "one, matching ``data.lookback_years``. Wide enough for a YoY "
+            "comparison without asking FRED for an entire series history."
+        ),
+    )
+
+
 class SeriesRegistry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1369,6 +1514,7 @@ class SeriesRegistry(BaseModel):
     blocked: list[BlockedSeries] = Field(default_factory=list)
     release_calendar: ReleaseCalendar = Field(default_factory=ReleaseCalendar)
     publication_dates: PublicationDates = Field(default_factory=PublicationDates)
+    alfred_vintage: AlfredVintage = Field(default_factory=AlfredVintage)
 
     @model_validator(mode="after")
     def _apply_defaults_to_series(self) -> SeriesRegistry:

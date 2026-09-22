@@ -10,6 +10,95 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-090 — O-116: a health test that asserted a wall-clock-decaying property
+
+**Fixed**
+
+- `tests/api_layer/test_routes.py::test_health_reports_the_cached_snapshot_age` asserted
+  `cached_is_stale is False`, but the `client` fixture seeds the most recent persisted parquet and
+  `cached_snapshot_provenance()` re-ages every snapshot to *now* — so the asserted value was a real
+  elapsed age. Measured 2026-09-22: the newest snapshot was **25.56 h** old against
+  `api.snapshot_max_age_hours` = **24.0**, so the suite went red **purely because a day had passed**.
+  A test whose outcome depends on when it runs is a clock, not a test. Fixed by controlling the input
+  time, not by weakening the assertion.
+
+**Added**
+
+- `client_with_fresh_snapshot` fixture — re-stamps only `as_of` to a controlled instant (every series,
+  curve and field remains the real persisted data; staleness is still computed by the production
+  provenance path). The test stays strict.
+- `test_health_reports_a_genuinely_stale_snapshot_as_stale` — the **negative control**, without which
+  `is False` would be satisfiable by a route that always answers `False` (the D-051 trap). Seeds
+  `as_of = now − (max_age + 1 h)`, requires `is True` and `cached_age_hours ≈ max_age + 1`, and derives
+  the age **from config** so raising the threshold moves the test with it. Mutation-proven: hardcoding
+  `age_exceeds_max: False` fails the control while the fresh-path test still passes.
+
+### D-089 — O-115: the reachability audit was scanning throwaway temp trees as source
+
+**Fixed**
+
+- `tools/reachability_audit.py` — `_candidate_files()` walked `ROOT.rglob("*.py")` and skipped only
+  `.venv/`, `build/`, `dist/`, `node_modules/`. Because this project provisions pytest's basetemp
+  **inside the repo root** (`--basetemp=.gate_pt`) and hand-run probes leave `.probe/pt*/`, and because
+  those trees hold sandbox **copies of real modules**, the audit was reading copies of the project's
+  source as though they were the project's source. Measured: **306 candidates, 63 phantom (21 %)** —
+  `.probe` 44, `.gate_pt` 11, `.iso_pt` 8 — including **16 copies of four real files**
+  (`src/macro_engine/models/inflation_nowcast.py`, `scripts/_sweep_gate.py` 26 611 B,
+  `scripts/mutation_inflation_nowcast.py`, `tests/models/test_inflation_nowcast.py`). A copy carries the
+  same function names, so **a rename in the real tree could be satisfied by a stale duplicate** — a false
+  negative, the one direction this audit must never fail in. The baseline gate passed **58/58 before and
+  after**: the copies happen to match today, so wrong and right coincided; the exposure grew silently
+  with every gate run. Fixed by `_TEMP_AND_BUILD_PREFIXES` plus a factored `_is_scannable_relative()`
+  predicate. Candidate count **306 → 243**; measured unreachable set unchanged at **58**.
+
+**Added**
+
+- `tests/test_reachability_gate.py::TestAuditInternals::test_a_basetemp_tree_inside_the_repo_is_not_scanned_as_source`
+  — asserts **both directions**: basetemp paths must be refused, *and* real source plus
+  `.github/workflows/quality.yml` must stay scannable (otherwise the exclusion silently blinds the
+  audit), *and* the walk has not drifted from the predicate. Mutation-proven: dropping the temp prefixes
+  fails the guard naming `.gate_pt/some_test0/module.py`; restored byte-exact.
+
+### D-088 — `vintage_datetime` becomes reachable: ALFRED via a BORROWED credential
+
+**Added**
+
+- `src/macro_engine/data_layer/alfred_client.py` — the **only route in this engine that can answer a
+  vintage question**. `fetch_vintage_observations(series_id, as_of, ...)` sends
+  `realtime_start == realtime_end == as_of` to `api.stlouisfed.org/fred/series/observations` over `httpx`
+  with the pinned `curl/8.0` UA (D-065/D-087.25). `resolve_fred_api_key()` reads the credential **through
+  OpenBB's own public accessor** (`openbb_core.app.service.user_service.UserService`), so the engine holds
+  **no key of its own** — Option A, honouring §22.2/22.3 instead of waiving it. No `FRED_API_KEY` env var,
+  no `.env` entry, no new dependency.
+- `snapshot_builder.fetch_field_vintage(...)` — a **sibling** of `fetch_field`, leaving the existing function
+  untouched. Stamps `vintage_datetime` from the as-of date requested; deliberately leaves `release_datetime`
+  unknown, because that is a different fact with its own source in `publication_dates`.
+- `config.AlfredVintage` + `RegistrySeries.vintage_eligible`, with a validator refusing eligibility on a
+  curve entry (its legs revise on different schedules) or a non-FRED provider (ALFRED is FRED's archive).
+- `tests/data_layer/test_alfred_client.py` (28 guards, 2 **proved to bite** by injected mutants).
+
+**Changed**
+
+- `config/series_registry.yaml` — new `alfred_vintage` block (`enabled: false`, `require_credential: true`);
+  `vintage_eligible: true` on `cpi_headline` and `gdp_real`, both with their vintage evidence recorded.
+- `docs/OPEN_ISSUES.md` O-6 — status annotated **PARTIALLY RESOLVED**, with an explicit warning that the
+  Limitation heading and §21.4 item 14 still stand: ALFRED supplies FRED's revision history, not this
+  process's pre-launch history.
+- `.gitignore` — `.gate_pt*` added, so a gate run's pinned-basetemp tree cannot repeat the D-087.27
+  committed-copies defect.
+
+**Verified live** — CPIAUCSL 2024-01..03 read at vintage 2024-06-01 returns 309.685/311.054/312.230 against
+309.698/310.967/312.345 at the latest vintage; a date before first publication returns an **honest empty
+set**; GDP 2013Q1 was published as 16535.3 against 16648.189 today. End-to-end through the real registry:
+60 points at as-of 2024-01-15, 59 at as-of 2024-06-01, every point stamped with the requested vintage.
+
+**Does not start a phase.** Phase 5 remains not started — this removes a prerequisite rather than beginning it.
+
+**Known, pre-existing, NOT caused by this change:** `tests/api_layer/test_routes.py::test_health_reports_the_cached_snapshot_age`
+fails because the newest snapshot on disk is **24.9 h** old against a **24.0 h** threshold. Proved
+pre-existing by stashing every D-088 edit and re-running on clean `HEAD` — identical failure. The test is
+wall-clock-dependent on data age, not on code.
+
 ### D-087.27 - O-104 and O-110(a) CLOSED; O-112(b) implemented; a BROKEN `HEAD` repaired
 
 **Added**

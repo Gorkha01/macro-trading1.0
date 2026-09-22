@@ -42,6 +42,12 @@ series:
     verified_on: 2026-09-16
     verified_value: 24269.613
     plausible_range: [1000.0, 100000.0]
+    # ALFRED revisions retrievable. Verified 2026-09-22 against the live FRED
+    # API: `series/vintagedates?series_id=GDP` reports 414 vintage dates back to
+    # 1991-12-04, and 2013Q1 was published as 16535.3 against 16648.189 today —
+    # a $113B revision on one quarter, which is exactly the magnitude that makes
+    # a replay against today's values a look-ahead error.
+    vintage_eligible: true
 
   gdp_nominal:
     provider: fred
@@ -142,6 +148,11 @@ series:
     verified_on: 2026-09-16
     verified_value: 334.13
     plausible_range: [50.0, 1000.0]
+    # ALFRED revisions retrievable. Verified 2026-09-22 against the live FRED
+    # API: 669 vintage dates back to 1972-07-21; observations 2024-01..03 read
+    # 309.685/311.054/312.230 at vintage 2024-06-01 against 309.698/310.967/
+    # 312.345 now, so real revision history exists and is retrievable.
+    vintage_eligible: true
 
   cpi_core:
     provider: fred
@@ -1382,9 +1393,16 @@ release_calendar:
 # describe the vintage window in force now, not the revisions that existed
 # before. Passing `realtime_start=2026-01-01` is silently IGNORED (A/B tested —
 # the two responses differed only in request `timestamp`/`duration`).
-# So this fills `release_datetime` and CANNOT fill `vintage_datetime`, which
-# stays None: "when did this become public" and "which revision is this" are
-# different questions, and only the first is answerable here.
+# So this fills `release_datetime` and CANNOT fill `vintage_datetime`: "when did
+# this become public" and "which revision is this" are different questions, and
+# only the first is answerable HERE (this route).
+#
+# PARTLY SUPERSEDED 2026-09-22 (D-088). The sentence that used to continue
+# "...and only the first is answerable here" as "...which stays None" is now
+# out of date: `alfred_vintage` below configures a direct ALFRED route that DOES
+# fill `vintage_datetime`, for a series declared `vintage_eligible`. Everything
+# above stays true of THIS route — the absorption finding is unchanged and this
+# block still cannot fill a vintage. The two routes are complementary.
 #
 # Cross-validated against the events calendar: PCEPILFE reports last_updated
 # 2026-08-26 where the calendar dated the Core PCE release 2026-08-27. A one-day
@@ -1399,3 +1417,47 @@ publication_dates:
   limit: 1000
   max_attempts: 3
   backoff_seconds: 1.0
+
+# ---------------------------------------------------------------------------
+# ALFRED vintage retrieval — the direct route to `vintage_datetime`.
+#
+# Section 6 names four timestamps per observation and requires they not be
+# conflated. Three are populated. `vintage_datetime` has been None on every
+# point this system produced, and O-6 records why: `openbb_fred`'s provider
+# POPS `realtime_start`/`realtime_end` off every observation row FRED returns
+# (models/series.py:156-157) and its query model declares no realtime field,
+# so the parameter cannot even be transmitted. Passing it through OpenBB is
+# absorbed silently and the LATEST revision comes back with HTTP 200.
+#
+# This block configures the only route that can answer the question: a direct
+# call to FRED's observations endpoint with realtime_start == realtime_end.
+#
+# THE CREDENTIAL IS BORROWED, NOT DUPLICATED. Section 22.2/22.3 forbid the
+# engine holding its own FRED_API_KEY, and O-6's final word cites exactly that
+# as the reason this was never built. That objection is honoured here rather
+# than waived: NO key is required in `.env` and none is read from the
+# environment. The key used is the one OpenBB already owns, read through
+# OpenBB's own public accessor. There is one FRED key on this machine.
+#
+# `enabled: false` — OFF BY DEFAULT, deliberately. A vintage read costs one
+# request per (series, as-of date) and is only meaningful to a caller
+# replaying history. A live current-thesis build has no as-of dates to
+# replay, so leaving it on would add latency to every snapshot and return
+# nothing. This mirrors `release_calendar`'s default rather than
+# `publication_dates`'s: it is an as-needed research route, not an always-on
+# accuracy improvement.
+#
+# HONEST LIMIT, unchanged by this route (AGENTS.md line 5574, Loophole Ledger
+# item 14): this recovers revision HISTORY for series that have it. It does
+# NOT make pre-launch vintages recoverable — the forward parquet trail in
+# data/raw/ is still what covers "what this process saw", and the two are
+# complementary, not substitutes.
+# ---------------------------------------------------------------------------
+alfred_vintage:
+  enabled: false
+  require_credential: true
+  max_attempts: 3
+  backoff_seconds: 1.0
+  timeout_seconds: 20.0
+  default_lookback_years: 5
+

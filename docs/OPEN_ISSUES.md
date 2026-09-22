@@ -148,6 +148,29 @@ thesis must not present it as one.
 
 ### O-6 — Pre-launch data vintages are unrecoverable — LIMITATION
 
+> **STATUS 2026-09-22 — PARTIALLY RESOLVED (D-088). The limitation below still
+> stands and is unchanged; what changed is that `vintage_datetime` is no longer
+> *unreachable*.** The `pop()` finding this entry records was correct and was
+> re-verified — OpenBB still discards the vintage fields. But the conclusion
+> drawn from it ("Reaching it would require the engine to hold its own FRED key,
+> which §22.2/22.3 forbid — **Recorded, not implemented**") was too strong: the
+> key can be **borrowed from OpenBB's own credential store** rather than
+> duplicated, which honours the rule instead of waiving it. A direct ALFRED route
+> now exists at `data_layer/alfred_client.py` and is **verified live**:
+> CPIAUCSL 2024-01..03 read at vintage 2024-06-01 returns 309.685/311.054/312.230
+> against 309.698/310.967/312.345 at the latest vintage. Two registry series are
+> declared `vintage_eligible` (CPIAUCSL, GDPC1) and the route is **off by
+> default**.
+>
+> **What this does NOT change — read this before relying on the above.** The
+> *Limitation* heading is still accurate. Item 14 of the §21.4 Loophole Ledger —
+> *"Pre-launch data vintages — unrecoverable"* — remains true in the sense that
+> matters: **this process's own pre-launch history cannot be backfilled.** ALFRED
+> supplies FRED's revision history, not this engine's. The forward parquet trail
+> in `data/raw/` is still the only record of what *this system* saw, and the two
+> are complementary rather than substitutes. A thesis that depends on either must
+> still disclose the dependence in `MacroThesis.warnings`.
+
 Revision analysis (`prior_month_revision`, `two_months_ago_revision`) works
 **only forward**. Vintage storage begins from the first snapshot this system
 persists and cannot be backfilled.
@@ -594,3 +617,12 @@ deliberate trade and the reason the `live-data` job exists on a schedule.
 
 
 **POST-COMMIT CONFIRMATION (D-087.11 closed).** The operator committed the repairs as **`e51a0f4`** ("fix: repair sweep health predicate, model contracts, and update docs", 2026-09-21 16:50) — all 8 files. Verified after the commit: both edit sites read correctly in `HEAD` (`git show HEAD:src/macro_engine/api_layer/reasoning_stream.py` line 287 = the real f-string; `git show HEAD:src/macro_engine/models/convergence.py` line 330 = `elif opposed:`), and `tools/sweep_health.py` prints **`0 leftovers · 0 shapes on disk · 0 committed mutants · 0 failures · SWEEP HEALTH: OK`** — **exactly the predicted end state**, which is the confirmatory half of the fix: the check now agrees with a correct tree instead of flagging one. **O-109's remedy is therefore validated end to end** (fires on a corrupt `HEAD`, silent on a repaired one), and the **2-committed row is no longer expected** — a future session seeing it means a NEW mutant was committed.
+
+---
+
+## Part 6 — Tooling and audit-coverage issues
+
+| Issue | Status | Cost | Detail |
+| --- | --- | --- | --- |
+| **O-115** — **the reachability audit scanned THROWAWAY TEMP TREES inside the repo root as if they were first-party source**, so sandbox COPIES of real `src/` and `scripts/` files stood beside their originals in the search surface — and a stale duplicate could satisfy a caller check for code that had since been renamed | **`CLOSED` 2026-09-22 by D-089** | 1 session | **Found 2026-09-22 while explaining a full-suite failure-count discrepancy, not by looking for it.** The gate recipe runs `pytest --basetemp=.gate_pt` and hand-run probes leave `.probe/pt*/`, **both inside the project root**, and each holds sandbox copies of real modules. `_candidate_files()` walks `ROOT.rglob("*.py")` and excluded only `.venv`/`build`/`dist`/`node_modules` — so **`.gate_pt` and `.probe` were being scanned as project source.** **Measured:** the candidate set was **306 files of which 63 were phantom** (`.probe` 44 · `.gate_pt` 11 · `.iso_pt` 8) — **21 % of the search surface** — and the phantom set carried **16 copies of four real project files**: `src/macro_engine/models/inflation_nowcast.py`, `scripts/_sweep_gate.py` (26 611 B), `scripts/mutation_inflation_nowcast.py` and `tests/models/test_inflation_nowcast.py`, each duplicated across `.gate_pt` and six `.probe/pt*` trees. **Why this is a real defect and not merely slowness:** a copy carries the **same function names** as its original, so a rename in the real tree can be **satisfied by a stale duplicate** — the false-negative direction, the one this audit must never fail in, and the identical shape to the docstring-prose bug already pinned in `test_reachability_gate.py` (*a stale second copy of the truth standing in for the real one*). **The baseline gate passed 58/58 both before and after** — that is luck (the copies happen to match today), not safety; the exposure grows silently with every gate run, which is why the candidate count fell **306 → 243** the moment the rule was fixed while the measured set stayed 58. **Fixed** by `_TEMP_AND_BUILD_PREFIXES` plus a factored `_is_scannable_relative()` predicate, so the rule is stated once and is directly testable — unlike the bare tuple, which had no way to notice it had gone stale. Prefixes are **listed rather than globbed on purpose**: a `.*` rule would swallow `.github/` with its workflows, and a `test_*` rule would swallow real tests. **Guarded** by `test_a_basetemp_tree_inside_the_repo_is_not_scanned_as_source`, which asserts **both directions** (a basetemp path is refused; real source and `.github/workflows/quality.yml` stay scannable, or the exclusion would silently blind the audit) and checks the walk and the predicate have not drifted apart. **Mutation-proven:** dropping the five temp prefixes → the guard **fails** naming `.gate_pt/some_test0/module.py`; restored byte-exact. **Scope of the class:** `integrity_audit.py` walks only `src/`/`tests/`/`tools/`/`scripts/` and is **not** exposed; `reachability_audit.py` was the sole walker that started at `ROOT`, so it was the sole exposure. |
+| **O-116** — **a health test asserted a property that DECAYS WITH WALL-CLOCK TIME**, so the suite went red roughly 24 h after every snapshot build with no code having changed — and it was repeatedly misdiagnosed as a code regression | **`CLOSED` 2026-09-22 by D-090** | 1 session | **`tests/api_layer/test_routes.py::test_health_reports_the_cached_snapshot_age`** asserted `cached_is_stale is False`, and the `client` fixture seeds the **most recent persisted parquet**. `snapshot_provider.cached_snapshot_provenance()` re-ages every cached snapshot to *now* — `age = _age_hours(entry.snapshot.as_of, utc_now())` — so the value under assertion was a **real elapsed age**. **Measured 2026-09-22:** the newest snapshot was `20260921T074340Z.parquet`, **25.56 h** old against `api.snapshot_max_age_hours` = **24.0**, so `stale: True` while the test demanded `False`. **It failed for one reason only: a day had passed.** The misdiagnosis cost a full stash-and-re-measure cycle in a prior session, which is what proved it pre-existing (removing every edit reproduced it on a clean `HEAD`) — **a test whose outcome depends on WHEN it runs is a clock, not a test**, and its failure is evidence about the CALENDAR, not the code. **Fixed by controlling the INPUT time, not by weakening the assertion:** a new `client_with_fresh_snapshot` fixture re-stamps only `as_of` to a controlled instant and seeds that (every series, curve and field is still the real persisted data, and the staleness flag is still computed by the production provenance path). The test stays **strict** — it still asserts `is False`. **Paired with a negative control**, without which the fix would be satisfiable by a route that always answers `False` (the D-051 trap): `test_health_reports_a_genuinely_stale_snapshot_as_stale` drives the same route with an `as_of` of `max_age + 1 h` and requires `is True` **and** `cached_age_hours ≈ max_age + 1` — and derives the age from **config**, so raising `snapshot_max_age_hours` moves the test with it rather than silently invalidating it. **Mutation-proven:** hardcoding `"age_exceeds_max": False` → the **control fails** while the fresh-path test still passes (exactly the discrimination that was absent before); restored byte-exact. **Not a Phase 5 item** — a Phase 0-4 gate correction. |

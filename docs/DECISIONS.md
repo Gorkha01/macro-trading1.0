@@ -15062,3 +15062,394 @@ committed basetemp files. **No leftover mutants; no sidecars.**
 **Does not start a phase.** O-112(c) is confirmed closed by measurement
 (`--budgets` prints the derived table; the new sweep appears at 450 s; serial total
 **98,700 s**), and O-110(b) — the "habit" half — remains recorded rather than mechanised.
+
+---
+
+## D-088 — `vintage_datetime` becomes reachable: ALFRED via a BORROWED credential
+
+**Date:** 2026-09-22
+**Status:** Implemented and verified live
+**Specification reference:** Section 6 (`ObservationPoint`'s four timestamps),
+Section 2.3, Module 13 (vintage/point-in-time integrity), §21.4 Loophole Ledger
+item 14, §22.2/§22.3 (the single instruction file and the credential rule)
+**Closes:** O-6, in the narrow sense recorded below — the *limitation* stands
+
+### The problem, restated precisely
+
+`ObservationPoint` carries four timestamps and Section 6 requires they not be
+conflated. Three are populated. `vintage_datetime` has been `None` on every point
+this system has ever produced, and `None` means UNKNOWN rather than "equal to the
+observation date".
+
+`docs/OPEN_ISSUES.md` O-6 already recorded why, and its finding was **re-verified
+rather than inherited** for this decision:
+
+    .venv/Lib/site-packages/openbb_fred/models/series.py:156-157
+        d.pop("realtime_start")
+        d.pop("realtime_end")
+
+FRED's API returns those fields on **every** observation row. The provider deletes
+them one line later, and `FredSeriesQueryParams` declares no realtime field at all
+(measured: `symbol, start_date, end_date, limit, frequency, aggregation_method,
+transform`), so the parameter cannot be transmitted either. The installed base
+`QueryParams` is `ConfigDict(extra="allow")`, so passing it is **absorbed** —
+`get_querystring` does emit it, the route does receive it, and nothing acts on it.
+Measured live 2026-09-22 on `:6900`: `...&symbol=GDP` and
+`...&symbol=GDP&realtime_start=2014-06-01&realtime_end=2014-06-01` returned
+**byte-identical** 318-row bodies (first row `1947-01-01 = 243.164` both times).
+`grep -ril alfred` over `openbb_fred/` + `openbb_core/` returns **0 files**.
+
+### Why it was previously declined, and why that reasoning was too strong
+
+O-6's final word reads:
+
+> "Reaching it would require the engine to hold its own FRED key and call the
+> provider directly, which is exactly the architecture and credential-duplication
+> §22.2/§22.3 forbid. **Recorded, not implemented.**"
+
+The premise — that reaching ALFRED requires holding a key — is what this decision
+corrects. **It does not.** The key can be *borrowed*.
+
+Measured: OpenBB stores a working FRED credential at
+`~/.openbb_platform/user_settings.json` (`credentials.fred_api_key`, 32 chars), and
+OpenBB exposes a **public accessor** for it:
+
+    openbb_core.app.service.user_service.UserService.read_from_file().credentials
+
+and `openbb_core` is a hard project dependency (`pyproject.toml`: `openbb>=4.3.0`).
+
+**So there is exactly one FRED key on this machine, it is OpenBB's, and this route
+uses it.** No `FRED_API_KEY` is read from the environment, none is added to
+`.env.example`, and none is required in `.env`. A deployment that reconfigures
+OpenBB reconfigures this too, because it is the same store. That is credential
+**reuse**, which the rule does not forbid, rather than **duplication**, which it
+does. The distinction is the whole decision.
+
+### What was built
+
+`src/macro_engine/data_layer/alfred_client.py`:
+
+* `resolve_fred_api_key()` — reads through OpenBB's public accessor. Unwraps
+  `SecretStr` via `get_secret_value()`; a naive `str()` would transmit the
+  **masked** value and fail every request in a way that looks like an outage.
+* `fetch_vintage_observations(series_id, as_of, ...)` — sends
+  `realtime_start == realtime_end == as_of` against
+  `https://api.stlouisfed.org/fred/series/observations`, with `httpx`,
+  `http2=False`, and the pinned `curl/8.0` UA copied from `thesis_layer/
+  catalysts.py` (D-065, corrected by D-087.25 — the load-bearing variable is a
+  tool-like versus browser-like UA, not the client library).
+* `VintageUnavailableError` / `VintageReadError` — both **fatal by design**.
+
+`data_layer/snapshot_builder.py` gains `fetch_field_vintage(...)`, a **sibling** of
+`fetch_field` leaving the existing function untouched. It stamps every point with
+`vintage_datetime = as_of` — the date actually requested — and deliberately leaves
+`release_datetime` unset, because that is a different fact with its own working
+source in `publication_dates`.
+
+`config.py` gains `AlfredVintage` and `RegistrySeries.vintage_eligible`, with a
+validator refusing `vintage_eligible: true` on a curve entry (its legs revise on
+different schedules, so one vintage would be fabricated) or on a non-FRED provider
+(ALFRED is FRED's archive). Both cases otherwise produce the *same observable* —
+an empty read — which is indistinguishable from a genuinely unrevised series.
+
+### The semantics, measured rather than assumed
+
+`realtime_start == realtime_end == D` returns **what was known on D** — neither the
+first release nor the latest:
+
+    CPIAUCSL, observations 2024-01..03
+      as-of 2024-01-15 (before any release)  -> {}          (honest empty set)
+      as-of 2024-02-20 (Jan out, Feb not)    -> {Jan: 309.685}
+      as-of 2024-06-01 (all three out)       -> {Jan: 309.685, Feb: 311.054, Mar: 312.230}
+      latest (no bound)                      -> {Jan: 309.698, Feb: 310.967, Mar: 312.345}
+
+The empty set on the first line is load-bearing: a date before publication returns
+*nothing*, so "not yet published" cannot be read as "published as zero". And the
+GDP magnitude is why this matters at all: **2013Q1 was published as 16535.3 against
+16648.189 today — a $113B revision on one quarter.**
+
+Verified end-to-end against the live API through the real registry after the
+build: `fetch_field_vintage('cpi_headline', ..., as_of=2024-01-15)` returned 60
+points all stamped `vintage=2024-01-15`; `as_of=2024-06-01` returned 59 stamped
+`2024-06-01`, with differing values on the overlapping dates. Persistence was
+confirmed to carry the stamp to parquet while leaving `None` as `NaT` rather than
+coercing it.
+
+### The trap this guards against, structurally
+
+The failure mode is not a crash. It is a caller asking for a vintage and receiving
+the **latest revision** with HTTP 200 and a plausible payload — identical in shape
+to a correct answer. So the guards assert the property in the source, not in a call
+graph: `tests/data_layer/test_alfred_client.py` parses the module's AST and asserts
+no `openbb_client` import exists, that `OpenBBClient`/`OpenBBFetchError` appear
+nowhere in its code, that no URL references `127.0.0.1`/`localhost`/`/api/v1/`, and
+that `FRED_API_KEY`/`os.environ`/`getenv` appear nowhere. Two of these guards were
+**proved to bite** by injecting a mutant: an OpenBB import was caught by two guards
+independently, and dropping the vintage bounds was caught by two others.
+
+**Two of these guards failed on first run, correctly.** They searched raw source and
+matched the module's own docstrings — which *discuss* `OpenBBFetchError` and
+`FRED_API_KEY` precisely because the module refuses to use either. The fix was to
+strip docstrings via `ast.unparse` before searching, so prose cannot satisfy or
+break a guard. Recorded because the naive form is the tempting one.
+
+### The honest boundary — what this does NOT close
+
+**§21.4 Loophole Ledger item 14 stands unchanged: "Pre-launch data vintages —
+unrecoverable; revision analysis only works forward."** This decision does not
+contradict it. ALFRED supplies *FRED's* revision history; it cannot supply *this
+process's* pre-launch history, which no vendor can. The forward parquet trail in
+`data/raw/` (207 snapshots, 2026-09-16 → 2026-09-21) remains the only record of
+what this system saw, and `prior_month_revision` / `two_months_ago_revision` are
+still driven by it.
+
+Two separate needs, two separate mechanisms, neither substituting for the other:
+
+| need | mechanism | scope |
+|---|---|---|
+| revision history for **replaying models** | ALFRED (this decision) | FRED's vintages, back decades |
+| what **this system** saw, as it saw it | forward parquet trail | since 2026-09-16, unrecoverable before |
+
+**Consequence for backtesting, unchanged:** a *model-layer* replay now has real
+vintages. A *full-thesis* replay still cannot be proven honest, because it needs
+what the market was pricing on a past date and this build's market routes are
+latest-only. That wall is not removed by any data vendor.
+
+### Configuration
+
+`alfred_vintage` in `config/series_registry.yaml`: `enabled: false`,
+`require_credential: true`. **Off by default, deliberately** — a vintage read costs
+one request per (series, as-of date) and only a historical replay uses it, so a live
+current-thesis build would pay latency for nothing. `require_credential: true` must
+stay true for any caller feeding a backtest: a vintage read that degrades silently
+to the latest revision is undetectable downstream.
+
+**Does not start a phase.** Phase 5 remains not started; this removes a prerequisite
+rather than beginning the backtester.
+
+
+---
+
+## D-089 — O-115: the reachability audit was scanning throwaway temp trees as source
+
+**Status:** closed. Source fix + one two-directional guard, mutation-proven.
+**Issue:** O-115. **Found:** 2026-09-22, incidentally — while explaining why two
+consecutive full-suite runs in the same session disagreed (`1 failed / 2805 passed`
+versus `6 failed / 2800 passed`). It was **not** found by looking for it.
+
+### The problem
+
+`tools/reachability_audit.py` answers one question: *does anything call this
+function?* It builds its search surface in `_candidate_files()` by walking
+`ROOT.rglob("*.py")` and skipping a hardcoded tuple:
+
+```python
+if rel.startswith((".venv/", "build/", "dist/", "node_modules/")):
+```
+
+`ROOT` is the **project root**. But this project deliberately provisions its
+pytest basetemp **inside** that root — the gate recipe uses
+`--basetemp=.gate_pt` — and hand-run probes have left `.probe/pt*/`. Each of
+those trees holds sandbox **copies of real modules**, because the tests that use
+them copy real files in (the canary test writes a real `_sweep_gate.py` and a real
+`inflation_nowcast.py` into its sandbox). So the audit was reading **copies of
+the project's source as though they were the project's source**.
+
+### The measurement
+
+Not inferred — counted on the live tree:
+
+| | candidates | phantom | share |
+|---|---|---|---|
+| before | **306** | **63** | **21 %** |
+| after | **243** | 0 | 0 % |
+
+Phantom breakdown: `.probe` 44 · `.gate_pt` 11 · `.iso_pt` 8.
+
+And the copies were not junk stubs. **16 copies of four real files** were in the
+search surface, each duplicated across `.gate_pt` and six `.probe/pt*` trees:
+
+- `src/macro_engine/models/inflation_nowcast.py` (13 539 B) — a real `src/` model
+- `scripts/_sweep_gate.py` (26 611 B) — a real `scripts/` file
+- `scripts/mutation_inflation_nowcast.py`
+- `tests/models/test_inflation_nowcast.py`
+
+### Why it is a defect and not just slowness
+
+A copy carries the **same function names** as its original. So a **rename in the
+real tree can be satisfied by a stale duplicate** — a `.probe/pt5` copy from
+04:44 answering a reference check for code renamed at 14:00. That is a
+**false negative**, which is the one direction this audit must never fail in:
+its entire purpose is to catch functions nothing calls, and being wrong in the
+flattering direction is the failure mode its own guard file already warns about
+(`_references` once counted *docstring prose* as a caller — the same defect shape,
+a stale second copy of the truth standing in for the real one).
+
+**The baseline gate passed 58/58 both before and after the fix.** That is the
+point, and it is the reason this is worth a decision record rather than a quiet
+patch: the copies happen to match their originals *today*, so the wrong answer
+and the right answer coincided. The exposure grew silently with every gate run —
+nothing in the project would ever have reported it, and a future rename is
+exactly when it would have bitten.
+
+### The fix
+
+`_TEMP_AND_BUILD_PREFIXES` — `.venv/`, `build/`, `dist/`, `node_modules/` plus
+`.gate_pt/`, `.gate_pt`, `.probe/`, `.iso_pt/`, `.pytest_` — and a factored
+predicate:
+
+```python
+def _is_scannable_relative(rel: str) -> bool:
+    return not rel.startswith(_TEMP_AND_BUILD_PREFIXES)
+```
+
+Factoring it out is the durable half. The bare tuple had **no way to notice it had
+gone stale**; a named predicate is directly testable.
+
+**The prefixes are listed, not globbed, on purpose.** A leading-dot glob (`.*`)
+would swallow `.github/` with its workflows; a `test_*` rule would swallow real
+tests. The four names are the ones the project's own gate recipe and probe habit
+actually create, and the leading dot on three of them is what makes excluding them
+safe — VCS tooling, not source.
+
+### The guard, and its both-directional assertion
+
+`tests/test_reachability_gate.py::TestAuditInternals::test_a_basetemp_tree_inside_the_repo_is_not_scanned_as_source`
+
+It asserts **both directions**, because either half alone is satisfiable by a
+wrong fix:
+
+1. basetemp paths (`.gate_pt/…`, `.probe/pt5/diag.py`, `.iso_pt/a.py`) **must be
+   refused**;
+2. real source (`src/…`, `tests/…`, `tools/…`) **and `.github/workflows/quality.yml`
+   must stay scannable** — otherwise the exclusion has silently blinded the audit,
+   trading a false negative for a bigger one;
+3. the walk and the predicate have **not drifted apart** (`_candidate_files()`
+   contains nothing the predicate would refuse).
+
+Asserted on the **real tree**, not a fixture, because the property is about the
+repository as it exists when the gate runs.
+
+### Mutation proof
+
+Dropped the five temp prefixes, restoring the exact pre-fix tuple. The guard
+**failed**, naming the path and the reason:
+
+```
+AssertionError: .gate_pt/some_test0/module.py would be scanned as first-party
+source; a gate run's sandbox copy of src/ is not project source
+```
+
+Restored byte-exact; `grep -c MUTANT` = 0; 7/7 pass.
+
+### Scope of the class
+
+`tools/integrity_audit.py` walks only `src/`, `tests/`, `tools/`, `scripts/` and is
+**not** exposed. `tools/sweep_health.py` scans `src/` only. `reachability_audit.py`
+was the **sole** walker that started at `ROOT`, so it was the sole exposure — which
+is why one fix closes the issue rather than a sweep of many tools.
+
+### Does not start a phase
+
+Phase 5 remains **not started**. This is a correction to a Phase 0-4 gate, not new
+Phase 5 work.
+
+
+---
+
+## D-090 — O-116: a health test that asserted a wall-clock-decaying property
+
+**Status:** closed. Fixture + negative control, mutation-proven.
+**Issue:** O-116. **Found:** the failure was known for two sessions; **diagnosed correctly
+2026-09-22** by re-measuring the snapshot age against the threshold in config.
+
+### The problem
+
+`test_health_reports_the_cached_snapshot_age` asserted:
+
+```python
+assert body["cached_is_stale"] is False
+```
+
+The `client` fixture seeds the **most recent persisted parquet**, and
+`snapshot_provider.cached_snapshot_provenance()` re-ages every cached snapshot to *now*:
+
+```python
+age = _age_hours(entry.snapshot.as_of, now)
+...
+"age_exceeds_max": age > settings.api.snapshot_max_age_hours,
+```
+
+So the asserted value was a **real elapsed age**, measured against a config threshold.
+
+### The measurement
+
+Not inferred — read from the tree:
+
+| | value |
+|---|---|
+| newest snapshot | `20260921T074340Z.parquet` |
+| its age at test time | **25.56 h** |
+| `api.snapshot_max_age_hours` | **24.0 h** |
+| `age > max` | **True** |
+| test demanded | `False` |
+
+**It failed for one reason only: a day had passed.** The suite goes red roughly 24 h after
+every snapshot build and stays red until someone rebuilds.
+
+### Why this deserved more than a skip
+
+The failure was **misdiagnosed as a code regression** in a prior session and cost a
+stash-and-re-measure cycle to clear. The stash *did* prove it pre-existing — but the correct
+reading is stronger than "pre-existing": **a test whose outcome depends on WHEN it runs is a
+clock, not a test.** Its failure is evidence about the calendar, and a suite that is red for a
+calendar reason teaches readers to discount red.
+
+`test_health_reports_the_cached_snapshot_age` also sits next to a genuine safety property
+(§8.4: answering `ok` while a stale snapshot is cached makes the next call the caller's first
+warning), so deleting or skipping it was not acceptable — the property must stay asserted.
+
+### The fix: control the INPUT, not the assertion
+
+New fixture `client_with_fresh_snapshot`:
+
+```python
+fresh = persisted_snapshot.model_copy(update={"as_of": utc_now()})
+```
+
+Only `as_of` changes. Every series, curve and field is the **real persisted data**, and the
+staleness flag is still computed by the **production provenance path** — the route, the cache
+plumbing and the disclosure path are all unmodified. One variable is narrowed, which is the
+point.
+
+The test stays **strict** (still `assert ... is False`) and simply takes the new fixture.
+
+### The negative control, and why it is not optional
+
+On its own, `is False` is satisfiable by a route that **always** answers `False` — the D-051
+trap (a green result that cannot distinguish a working check from a dead one). Added:
+
+`test_health_reports_a_genuinely_stale_snapshot_as_stale` — seeds `as_of = utc_now() - (max_age + 1 h)`
+and requires
+
+- `cached_is_stale is True`
+- `cached_age_hours == pytest.approx(max_age + 1.0, abs=0.01)`
+
+The age is **derived from config**, so changing `snapshot_max_age_hours` moves the test with it
+instead of silently invalidating it — the same *derive, never type* rule as O-112(c).
+
+### Mutation proof
+
+Hardcoded the comparison to always-fresh:
+
+```python
+"age_exceeds_max": False,  # MUTANT: always fresh
+```
+
+Result: **the control failed, the fresh-path test still passed** — precisely the
+discrimination that was absent before the control existed. Restored byte-exact;
+`grep -c MUTANT` = 0; both stale tests pass.
+
+### Does not start a phase
+
+Phase 5 remains **not started**. This is a Phase 0-4 gate correction.

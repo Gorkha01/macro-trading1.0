@@ -35,12 +35,18 @@ single point-in-time object.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import httpx
 import pandas as pd
 
 from macro_engine.config import get_registry, get_settings
+from macro_engine.data_layer.alfred_client import (
+    ROUTE_NAME,
+    VintageUnavailableError,
+    fetch_vintage_observations,
+)
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
 from macro_engine.data_layer.publication_dates import (
     PublicationDateError,
@@ -64,7 +70,13 @@ if TYPE_CHECKING:
     from macro_engine.config import RegistrySeries
     from macro_engine.data_layer.schemas import MacroDataSnapshot
 
-__all__ = ["SnapshotBuildReport", "build_snapshot", "fetch_curve", "fetch_field"]
+__all__ = [
+    "SnapshotBuildReport",
+    "build_snapshot",
+    "fetch_curve",
+    "fetch_field",
+    "fetch_field_vintage",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +328,95 @@ def fetch_field(
         release_index=release_index,
         unit_scale=entry.unit_scale_to_units,
     )
+
+
+def fetch_field_vintage(
+    field_name: str,
+    entry: RegistrySeries,
+    as_of: date,
+    *,
+    lookback_years: int | None = None,
+    client: httpx.Client | None = None,
+) -> list[ObservationPoint]:
+    """Fetch one registry field **as it was known on ``as_of``**, not as it is now.
+
+    The sibling of :func:`fetch_field`, and the only path in this module that
+    fills ``vintage_datetime``. It is a separate function rather than a flag on
+    ``fetch_field`` on purpose: the two have different failure contracts, and a
+    flag would let a caller ask for a vintage and receive a latest-revision frame
+    without noticing which one it got.
+
+    **What makes this honest.** Every point returned carries
+    ``vintage_datetime = as_of`` — the date the caller actually requested — rather
+    than something inferred from the values. A vintage is a claim about *when a
+    value was in force*, and the only non-inferring source for that claim is the
+    as-of date that was asked for.
+
+    ``release_datetime`` is deliberately **not** filled here. It is a different
+    fact (when the value became public, versus which revision it is), it has its
+    own working source in ``publication_dates``, and conflating the two is the
+    exact substitution Section 6 prohibits. A caller that wants both should merge
+    a :func:`fetch_field` result by ``observation_date`` rather than having this
+    function guess.
+
+    Raises ``VintageUnavailableError`` when no credential is reachable and
+    ``VintageReadError`` when the read fails after its retries — both unchanged
+    from the client, because a silent empty return here would be indistinguishable
+    from a series with no revisions. That distinction is the whole point.
+
+    An empty list IS a legitimate return when ``as_of`` precedes the series'
+    first publication: nothing was known then, and the honest answer is nothing.
+    The caller sees that as an empty window, which is a different observable from
+    the raised errors above.
+    """
+    if not entry.vintage_eligible:
+        raise VintageUnavailableError(
+            f"registry entry '{field_name}' is not declared `vintage_eligible`, so a "
+            "vintage read was not attempted. Set it in config/series_registry.yaml "
+            "once the series is known to have an ALFRED record — this is declared "
+            "rather than inferred so that 'no revisions exist' and 'nobody asked for "
+            "this series' revisions' do not look identical."
+        )
+
+    config = get_registry().alfred_vintage
+    if not config.enabled:
+        raise VintageUnavailableError(
+            "alfred_vintage is disabled in config/series_registry.yaml; enable it "
+            "before requesting a vintage read"
+        )
+
+    lookback = lookback_years if lookback_years is not None else config.default_lookback_years
+    start = date(as_of.year - lookback, as_of.month, as_of.day)
+
+    rows = fetch_vintage_observations(
+        entry.symbol or field_name,
+        as_of,
+        observation_start=start,
+        observation_end=as_of,
+        max_attempts=config.max_attempts,
+        backoff_seconds=config.backoff_seconds,
+        timeout_seconds=config.timeout_seconds,
+        client=client,
+    )
+
+    scale = 1.0 if entry.unit_scale_to_units is None else float(entry.unit_scale_to_units)
+    # ``retrieved_at`` is when THIS process read it — a third fact, and the only
+    # one this process can state about itself. The vintage instant is the as_of
+    # date, stamped identically on every point because it is a property of the
+    # READ, not of the row.
+    retrieved_at = utc_now()
+    vintage_instant = datetime(as_of.year, as_of.month, as_of.day, tzinfo=UTC)
+    return [
+        ObservationPoint(
+            observation_date=row.observation_date,
+            value=row.value * scale,
+            series_id=field_name,
+            source=f"{entry.provider}:{entry.symbol}@{ROUTE_NAME}",
+            retrieved_at=retrieved_at,
+            vintage_datetime=vintage_instant,
+        )
+        for row in rows
+    ]
 
 
 def fetch_curve(

@@ -37,6 +37,14 @@ build/
 .pytest_tmp/
 .pytest_*/
 !.pytest_cache/
+# Other pinned-basetemp spellings, same reasoning as the block above. A gate run
+# uses `--basetemp=.gate_pt` (D-088) and that tree holds sandbox COPIES of real
+# source; committing one would put a copy of a `scripts/mutation_*.py` in the
+# repo and add a non-source file to the `ruff format --check` count. Added so
+# the spelling cannot produce the 251-file defect the `.pytest_*` rules were
+# written to prevent.
+.gate_pt/
+.gate_pt*/
 .coverage
 .coverage.*
 htmlcov/

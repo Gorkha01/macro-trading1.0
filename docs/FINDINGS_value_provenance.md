@@ -23,6 +23,17 @@ four different questions:
 | `vintage_datetime` | Which *revision* of the value is this? | **NOT OBTAINED** |
 | `retrieved_at` | When did *this process* read it? | **OBTAINED** |
 
+> **STATUS 2026-09-22 (D-088) — the row above is now historical.** `vintage_datetime`
+> is **reachable**: `alfred_client.py` reads ALFRED directly using the credential
+> OpenBB already owns, and `fetch_field_vintage` stamps it for any series declared
+> `vintage_eligible` (currently `cpi_headline`, `gdp_real`). The right-hand column
+> recorded the state **of the OpenBB route** at the time this finding was written,
+> and that part is unchanged — the route still cannot do it. Read the rest of this
+> document as the evidence for *why the OpenBB route could not*, which is still
+> correct and is still the reason the direct route exists. The section below that
+> says "not obtainable from this deployment" now needs the qualifier **"via
+> OpenBB"**. ALFRED is off by default (`alfred_vintage.enabled: false`).
+
 The failure mode this guards against is substituting `observation_date` for a
 release date. A month's CPI is stamped the 1st of that month but is published
 mid-way through the *following* month. Treating the stamp as the release date
@@ -95,8 +106,17 @@ only one of its four providers (`nasdaq` works), and again because enumerating a
 
 ## 3. `vintage_datetime` — NOT OBTAINED (established by test, not assumed)
 
+> **SUPERSEDED IN SCOPE 2026-09-22 (D-088).** The verdict below is about the
+> **OpenBB route**, and it is still correct: OpenBB pops the vintage fields
+> (`openbb_fred/models/series.py:156-157`) and cannot transmit the parameter. But
+> "not obtainable from this deployment" was too broad — ALFRED is reachable by a
+> direct call, and D-088 implemented exactly that. Read the evidence below as the
+> proof of why the OpenBB path fails, which remains the reason `alfred_client.py`
+> must never route through it. **The scan for the current state is
+> `docs/DECISIONS.md` D-088.**
+
 This is the field the user asked about directly. Verdict: **not obtainable from this
-deployment**, and here is the evidence.
+deployment** *via OpenBB* — and here is the evidence.
 
 ### What we tried, and what each test showed
 
