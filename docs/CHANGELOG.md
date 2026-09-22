@@ -10,6 +10,68 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-087.27 - O-104 and O-110(a) CLOSED; O-112(b) implemented; a BROKEN `HEAD` repaired
+
+**Added**
+
+- `scripts/_sweep_gate.describe_dirty_targets()` and its helpers `_git_root` / `_git_dirty_paths` - **O-61's
+  still-open remedy**, and the durable form of **O-112(b)**. `sweep_lifecycle` prints it **before** it heals,
+  so the warning describes the operator's tree rather than the sidecar this run is about to write. It
+  **reports and never refuses**: a legitimate increment *is* a dirty tree, so a veto would forbid the normal
+  workflow and the guard would be deleted rather than obeyed.
+- `tests/test_openbb_command_inventory.py` (7 guards) - derives the live OpenBB command set from the parsed
+  registry plus the source literals, **excludes** blocks marked `enabled: false`, asserts the set is exactly
+  four, and forbids the withdrawn "2 of 201" figures outside a supersession-marked sentence.
+- `scripts/mutation_command_inventory.py` (6 mutations, **6/6 killed**) - the second sweep over *prose*.
+- `tests/test_live_time_bound.py` (10 guards) - asserts the per-test bound exists, clears the **measured**
+  worst case, is **not** pinned to `signal` (which would disable it on win32), and that the plugin is
+  declared in **both** dependency tables.
+- Two O-62 guards: `test_every_sweep_catalogue_resolves_against_the_shipped_source` and
+  `test_no_sweep_catalogue_holds_a_leftover_shaped_anchor` - all 42 catalogues, through the same predicate
+  the sweeps use, against the shipped text.
+- `.gitignore` now covers `.pytest_*/`; the old `.pytest_tmp/` pattern was **narrower than what
+  `--basetemp=.pytest_<name>` actually creates**.
+
+**Fixed**
+
+- **`HEAD` WAS RED, independently of this work, and one line caused all of it.**
+  `src/macro_engine/models/inflation_nowcast.py` shipped `data_quality_flags_present=False` on the
+  insufficient-data branch while **its own docstring and its own test both require `True`**. With `False`
+  the two branches returned an identical confidence (`0.7`), so the value stopped distinguishing "no
+  result" from "a result" - the only reason the formula is called there instead of the specification's
+  literal `0.0`. Consequences, all re-measured with every edit stashed: **2 failing tests**;
+  `mutation_inflation_nowcast.py` **could not start at all** (exit 4, anchors M5/M6 absent);
+  `tools/sweep_health.py` **exited 1**. Repaired - 26/26 pass, the sweep runs **20/20 killed**, health is
+  **green**.
+- `_git_dirty_paths` took no `cwd`, so `git status` always answered about the repository containing the
+  *process*. The predicate was **structurally incapable of firing for any target outside the project root**
+  and returned `[]` for a sandbox file git itself reported as modified - invisible from inside the project,
+  which is why the guard is written against a self-built repository.
+- Three stray basetemp trees (`.pytest_dur2`, `.pytest_iso`, `.pytest_g1`) had been **committed**, carrying
+  sandbox copies of `scripts/mutation_*.py`; `ruff format --check .` walked them and read **251** instead of
+  241. Untracked, deleted, and now ignored.
+- The `slow` marker's description said "40 mutation sweeps"; it is **42**.
+
+**Changed**
+
+- `pyproject.toml`: `pytest-timeout>=2.4.0` added to **both** `[project.optional-dependencies].dev` and
+  `[dependency-groups].dev`; `addopts` gains `--timeout=300 --session-timeout=5400`. **300 s is derived**
+  from the measured **162 s** worst offline test (~1.9x), not chosen.
+- `.github/workflows/quality-gates.yml`: the `live-data` job repeats `--timeout=300 --session-timeout=3600`
+  **explicitly**, because that job selects a different marker expression and would not inherit `addopts`.
+- Corrected the OpenBB command count on the live surfaces (**4 of 201**, not 2), and the O-104/O-110/O-112
+  status cells; withdrawn figures survive only inside their own retraction.
+
+**Gates re-derived, never carried forward (D-035):** `ruff check` clean - `ruff format --check` **241** =
+`mypy --strict` **241** (parity holds) - pytest **2773 passed / 1 skipped / 17 deselected**, where the 5
+reported failures are the **sandbox bulk-delete artefact** (all 5 pass in isolation; each fails inside
+`safe-delete`'s per-turn counter during *cleanup*) - `tools/sweep_health.py` run **LAST**: 42 sweeps, 0
+control-less, **0 leftovers**, 0 shapes, 0 committed mutants, **0 failures, OK**.
+
+**No `src/` behaviour changed except the one-line `inflation_nowcast.py` repair above. Does not start a
+phase.**
+
+
 ### D-087.26 - O-103 CLOSED: all 41/41 sweeps carry sidecar protection, in two equivalent forms
 
 **Changed**

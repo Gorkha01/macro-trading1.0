@@ -1123,3 +1123,176 @@ def test_the_budget_constant_is_documented_with_its_reason(tool_module: Any) -> 
         "so a reader cannot tell whether it is earned or invented"
     )
     assert "O-112" in source, "the constant does not name the issue it closes"
+
+
+# ---------------------------------------------------------------------------
+# Every sweep must be able to START (O-62)
+# ---------------------------------------------------------------------------
+# O-62 states the failure mode exactly: *"a sweep that cannot run is
+# indistinguishable from a sweep nobody ran."*
+#
+# Measured on 2026-09-22, and it was not hypothetical: `HEAD` was in a state
+# where `mutation_inflation_nowcast.py` exited **4 on every invocation**, because
+# two of its twenty anchors (M5, M6) were written against a source text the file
+# no longer contained. The module under test had been changed from
+# `data_quality_flags_present=True` to `False` without the anchors or the
+# docstring being updated, so:
+#
+#   * the sweep was silently DISABLED — all 20 mutations would have been reported
+#     as survivors had it been allowed to run, and instead it refused entirely;
+#   * the 2 tests that pinned the intended behaviour were FAILING on `HEAD`;
+#   * `tools/sweep_health.py` — the repository's headline gate, the one run LAST —
+#     exited 1 and reported two phantoms as "source corruption".
+#
+# The recorded snapshot said `0 leftovers, 0 failures, OK`, which is the D-087.23
+# defect class once more: a state that was never re-measured after the tree it
+# described changed under it.
+#
+# These tests ask the question that snapshot failed to ask — *can each sweep
+# still resolve its own anchors?* — by loading every catalogue and running the
+# SAME predicate the sweeps run, against the SHIPPED text.
+
+
+def _as_entry(entry: tuple[object, ...]) -> tuple[str, Path, str, str] | None:
+    """Narrow an untrusted catalogue row to the 4-tuple every sweep uses.
+
+    ``None`` for anything that is not exactly ``(str, path-like, str, str)``.
+    Written as a real predicate rather than a bare ``assert`` so mypy narrows in
+    the callers, and so a malformed row is *reported* by the tests below instead
+    of crashing the guard that is supposed to find malformed rows.
+    """
+    if len(entry) != 4:
+        return None
+    name, target, old, new = entry
+    if not isinstance(name, str) or not isinstance(old, str) or not isinstance(new, str):
+        return None
+    if not isinstance(target, (str, Path)):
+        return None
+    return name, Path(target), old, new
+
+
+def _all_catalogues() -> list[tuple[str, list[tuple[object, ...]]]]:
+    """Load every sweep's mutation table, skipping ones that cannot be loaded.
+
+    Entries are typed ``tuple[object, ...]`` rather than the 4-tuple the sweeps
+    actually use, because these tables are **untrusted input**: they come from
+    modules this test does not own, and a malformed entry is exactly the kind of
+    thing a guard over 42 hand-written catalogues must survive rather than crash
+    on. The narrowing below is therefore real work, not ceremony.
+
+    An import failure is caught by `sweep_health.py` itself and is not this
+    test's claim, so it is skipped here rather than reported twice — and skipped
+    **without `except: continue`**, which ruff flags as `S112` for a reason this
+    project has already recorded: a silent skip makes a broken module look like a
+    module with nothing in it. The error is collected and asserted on instead.
+    """
+    found: list[tuple[str, list[tuple[object, ...]]]] = []
+    broken: list[str] = []
+    for path in sorted((_ROOT / "scripts").glob("mutation_*.py")):
+        spec = importlib.util.spec_from_file_location(f"_cat_{path.stem}", path)
+        if spec is None or spec.loader is None:  # pragma: no cover - defensive
+            broken.append(f"{path.name}: no loader")
+            continue
+        module = importlib.util.module_from_spec(spec)
+        # Required for modules that use `@dataclass`: without registering the
+        # module in `sys.modules` first, `dataclasses` resolves
+        # `sys.modules[cls.__module__]` to None and raises
+        # `AttributeError: 'NoneType' object has no attribute '__dict__'`.
+        # Measured — this is exactly how the first version of this helper failed
+        # on the sweeps that declare dataclasses. `tools/sweep_health.py` carries
+        # the same line for the same reason.
+        sys.modules[spec.name] = module
+        added = str(_ROOT / "scripts")
+        prepended = added not in sys.path
+        if prepended:
+            sys.path.insert(0, added)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # returned and asserted on, not swallowed
+            broken.append(f"{path.name}: {type(exc).__name__}: {exc}")
+            continue
+        finally:
+            if prepended:
+                sys.path.remove(added)
+        table = getattr(module, "_MUTATIONS", None)
+        if callable(table):
+            table = table()
+        if table:
+            found.append((path.name, list(table)))
+
+    assert not broken, (
+        "these sweep modules could not be imported, so their catalogues were "
+        "NOT checked (a sweep that cannot run is indistinguishable from one "
+        "nobody ran — O-62):\n  " + "\n  ".join(broken)
+    )
+    return found
+
+
+def test_every_sweep_catalogue_resolves_against_the_shipped_source() -> None:
+    """**The O-62 guard.** No catalogue may name an anchor the tree does not hold.
+
+    Asserted per sweep so a failure names the sweep, and asserted against the
+    shipped text so the check cannot be satisfied by a stale sidecar.
+
+    A drifted anchor is NOT a cosmetic problem: it disables the mutation, and a
+    disabled mutation reports as a survivor that never ran. The measured
+    instance exited 4 and turned the headline health gate red.
+    """
+    catalogues = _all_catalogues()
+    assert catalogues, "no sweep catalogues could be loaded; the glob is wrong"
+
+    unresolved: list[str] = []
+    malformed: list[str] = []
+    for name, table in catalogues:
+        for raw in table:
+            row = _as_entry(raw)
+            if row is None:
+                malformed.append(f"{name}: malformed catalogue row {raw!r}")
+                continue
+            mutation, target, old, _new = row
+            if not target.exists():
+                unresolved.append(f"{name}: {mutation} — TARGET ABSENT ({target})")
+                continue
+            text = target.read_text(encoding="utf-8")
+            if text.count(old) == 0:
+                unresolved.append(f"{name}: {mutation} — anchor resolves 0 times in {target.name}")
+
+    assert not malformed, (
+        "these catalogue rows are not (name, target, old, new), so they were not "
+        "checked at all:\n  " + "\n  ".join(malformed)
+    )
+    assert not unresolved, (
+        "these sweeps cannot START because their anchors no longer match the "
+        "shipped source (O-62 — a sweep that cannot run looks like a sweep "
+        "nobody ran):\n  " + "\n  ".join(unresolved)
+    )
+
+
+def test_no_sweep_catalogue_holds_a_leftover_shaped_anchor() -> None:
+    """The mirror: an anchor whose ``new`` is already shipped is a leftover.
+
+    `_is_applied`'s discriminator, applied to every catalogue entry against the
+    shipped text. This is the *false*-direction companion to the test above: one
+    asks "can the sweep start", this asks "is the tree already mutated". The
+    M5/M6 incident had both readings available and the recorded snapshot asserted
+    neither.
+    """
+    leftovers: list[str] = []
+    for name, table in _all_catalogues():
+        for raw in table:
+            row = _as_entry(raw)
+            if row is None:
+                continue  # the test above reports malformed rows
+            mutation, target, old, new = row
+            if not target.exists() or not new.strip():
+                continue
+            text = target.read_text(encoding="utf-8")
+            if text.count(old) == 0 and new in text:
+                leftovers.append(f"{name}: {mutation} — `new` text is SHIPPED")
+
+    assert not leftovers, (
+        "these catalogues describe the tree as already-mutated, which is the "
+        "leftover signal — either the tree carries a mutant or the anchor is "
+        "written against a text that no longer exists (the M5/M6 shape):\n  "
+        + "\n  ".join(leftovers)
+    )

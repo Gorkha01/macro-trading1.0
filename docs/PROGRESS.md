@@ -1,15 +1,20 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-22** (after **D-087.27 — O-104's residual defect closed: the
-recorded OpenBB command count was STALE** — the docs said *2 of 201* while the tree issued
-**4** (`fixedincome.government.yield_curve` and `economy.fomc_documents` were added by
-D-086). Corrected on the live surfaces and made **machine-checked**
+Last updated: **2026-09-22** (after **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
+implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
+(the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
 (`tests/test_openbb_command_inventory.py` + `scripts/mutation_command_inventory.py`,
-6/6 killed), which also takes the sweep census to **42** — 40 via `sweep_lifecycle()`,
-2 hand-assembled. O-103 remains CLOSED (42/42 protected). The tree is
-**clean and fully committed at `HEAD` = `6c3ca66`**. O-110/O-112 remain **`DEFERRED`**.
-**PHASE 5 IS NOT STARTED, deliberately.**)
+6/6 killed). O-110(a) closed with a **derived** per-test bound (`--timeout=300`, clearing
+the measured 162 s worst case; `pytest-timeout` in both dependency tables;
+`tests/test_live_time_bound.py`). O-112(b) implemented as **O-61's clean-tree
+precondition** (`describe_dirty_targets` — reports, never refuses). The sweep census is
+**42** — 40 via `sweep_lifecycle()`, 2 hand-assembled. **The finding that matters most:**
+`HEAD` was **RED** independently of this work — 2 failing tests, a sweep that could not
+start (exit 4), and `tools/sweep_health.py` exiting **1** — all from one line in
+`inflation_nowcast.py` that contradicted **its own docstring and its own test**. Repaired;
+`openbb_reachability.py` and `sweep_health.py` are both green. O-103 remains CLOSED
+(42/42 protected). O-112(c) confirmed closed. **PHASE 5 IS NOT STARTED, deliberately.**)
 
 Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 

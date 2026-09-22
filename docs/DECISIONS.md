@@ -14851,3 +14851,204 @@ rewritten, so the record of what was true then survives inside its own correctio
 sum must equal the sweep count. **No suite was run** — this close touches no source and
 no test, so the correct gate is the measurement above, and the next full-suite run carries
 it. **Does not start a phase.**
+
+---
+
+## D-087.27 — O-104 and O-110 CLOSED; O-112(b) implemented as the O-61 clean-tree precondition; `HEAD` was BROKEN and is repaired
+
+**Date:** 2026-09-22
+**Status:** Implemented; all gates re-derived and green
+**Issues:** closes **O-104**, closes **O-110(a)**, implements **O-112(b)**, confirms
+**O-112(c)** closed; **reopens nothing**; findings F1–F3 below are NEW and were not on
+the assignment
+
+This increment did three things and found three more. The findings are the larger half,
+and the first of them means the repository's `HEAD` was not in the state its own records
+described.
+
+### O-104 — closed as a STALE COUNT, not as missing adoption
+
+The issue said the engine "uses 2 of 201 OpenBB commands". **Re-measured, it uses 4.**
+The tree issues `economy.fred_series`, `economy.fred_search`,
+`fixedincome.government.yield_curve` (D-086 change 1) and `economy.fomc_documents`
+(D-086 change 2); `economy.calendar` is declared but carries `enabled: false`, so it is
+not live. All five of the audit's §8 changes are accounted for: **1, 2, 4 and 5 applied;
+3 declined with measurement recorded in-line** on `sofr`, `iorb` and `fed_funds_rate`.
+
+So the residual defect was **a withdrawn figure standing as a live claim on two
+surfaces** — the D-087.23 class exactly, and the costly thing is the next reader planning
+work against it. Both surfaces corrected (`docs/PROGRESS.md`'s D-084 row,
+`docs/OPEN_ISSUES.md`'s O-104 row), the correction marked *superseded* rather than
+rewritten, and the count made **machine-checked**:
+
+* `tests/test_openbb_command_inventory.py` — 7 guards. Derives the callable set from the
+  parsed registry (whose `defaults:` inheritance is applied by a model validator) plus
+  `_SOURCE_LITERAL_COMMANDS`, classifies `enabled: false` as disabled, asserts the set is
+  **exactly 4**, and forbids the stale strings outside a supersession-marked sentence.
+* `scripts/mutation_command_inventory.py` — 6 mutations over the *record* (the second
+  sweep over prose): CANARY1 + M1 (stale row restored) + M2 (new command, count held) +
+  M3 (substitution keeping count) + M4 (disabled calendar re-enabled) + M5 (supersession
+  marker stripped). **Measured 6/6 killed.**
+
+**The sweep census moves 41 → 42.** D-087.26's lesson is that this count is
+form-dependent and lives in more places than a grep finds: the new sweep is counted in
+`test_sweep_health_leftover_predicate.py` (hard assertion), `test_sweep_sidecar_lifecycle.py`
+(hard assertion **and** the function name), and three prose surfaces. All updated.
+
+### O-110(a) — closed with a DERIVED per-test bound
+
+`@pytest.mark.live` was documented as "excluded from default CI runs" and was in fact
+excluded (`-m 'not live and not slow'`, D-087.6) — but that exclusion was **one marker
+expression away from useless**: a plain `uv run pytest -m live` had no upper bound, and
+the retry arithmetic (3 × 15 s timeout + backoff ≈ 49.5 s per series × ~21 series) gives
+**~17 minutes** for a single test, measured at **40+**.
+
+* `pytest-timeout>=2.4.0` added to **both** dependency tables — CI's `uv sync --extra dev`
+  reads `[project.optional-dependencies]` while local `uv run` reads
+  `[dependency-groups]`, so declaring one leaves the other broken (measured).
+* `--timeout=300 --session-timeout=5400` in `addopts`. **300 is derived**, not chosen:
+  the worst measured offline test is **162 s**, so 300 s clears it by 1.85×.
+* **`--timeout-method` is deliberately NOT pinned.** `signal` is the default *where
+  SIGALRM exists* and `thread` on win32; pinning `signal` would silently disable the
+  bound on this platform. A test asserts it is unpinned for that reason.
+* The `live-data` CI job's step now repeats the bound explicitly
+  (`uv run pytest -m live --timeout=300 --session-timeout=3600`), because that job
+  selects a **different marker expression** and would not inherit `addopts`' selection.
+* `tests/test_live_time_bound.py` — 10 guards, including that the bound clears the
+  **measured** worst case rather than a remembered one.
+
+### O-112(b) — implemented as the O-61 clean-tree precondition
+
+O-112(b) asked for the durable form of "`rc=124` is a detection, not a prevention":
+*"background long sweeps to a file so no reader/timeout can reach them."* **The
+backgrounding half is now vacuous** — the driver was a throwaway in `.probe/` and no
+longer exists, so `rc=124` has no author. But the **class** survives, and O-61 names it:
+its still-open remedy is a **clean-tree precondition**, and its binding rule (*never run a
+sweep in the background; never run a batch of sweeps while doing anything else*) is
+**unchanged**.
+
+`scripts/_sweep_gate.py` gains:
+
+* `_git_root(cwd)` and `_git_dirty_paths(cwd)` — the repository is resolved from the
+  **target**, and `None` ("could not ask") is a distinct sentinel from `set()`
+  ("asked, and clean"). Collapsing them makes the guard **vacuously true** in exactly the
+  environment where nobody notices (D-062's trivially-true predicate, silent direction).
+* `describe_dirty_targets(paths)` — the declared targets already modified relative to
+  `HEAD`.
+* `sweep_lifecycle` emits it **before** `restore_from_sidecar` (so the report describes
+  the operator's tree, not this run's own sidecar) and covers the same path set the heal
+  uses (so a previously-killed target is in scope).
+
+**It REPORTS and never REFUSES.** A legitimate increment *is* a dirty tree — the operator
+edits `src/` and sweeps it — so a veto would forbid the normal workflow and the guard
+would be deleted rather than obeyed. The sidecar remains the actual defence.
+
+6 new guards in `tests/test_sweep_sidecar_lifecycle.py` (139 passed in that file), and the
+predicate is **proved to bite**: re-introducing the no-`cwd` defect makes
+`test_the_predicate_asks_the_repository_that_holds_the_target` fail with
+`assert [] == ['...target.py']`, which is the bug reproduced rather than described.
+
+### Finding F1 — `_git_dirty_paths` had no `cwd`, so the predicate could never fire off-root
+
+The first implementation ran `git status --porcelain` with **no `cwd`**. It therefore
+always answered about the repository containing the *process*, and returned `[]` for a
+sandbox file that `git status` in that sandbox reported as ` M t.py`. **The predicate was
+structurally incapable of firing for any target outside the project root** — invisible
+from inside the project, where it happens to be right. Found because a test built its own
+repository instead of trusting the ambient one. Fixed by resolving the root from the
+target and re-resolving porcelain entries against it (git prints paths relative to the
+**root**, not to `cwd`).
+
+### Finding F2 — the `.sweepbackup` sidecar can itself be a CARRIER of corruption
+
+Three stray basetemp trees (`.pytest_dur2`, `.pytest_iso`, `.pytest_g1`) had been
+**committed** by the environment's automated `git add -A`. They contain sandbox *copies*
+of `scripts/mutation_*.py`, so the repo was carrying mutant-shaped files; and because
+`ruff format --check .` walks them, the parity count read **251** instead of 241. Untracked
+and deleted, and `.gitignore` now covers `.pytest_*/` (the existing `.pytest_tmp/` pattern
+is narrower than what `--basetemp=.pytest_<name>` actually creates).
+
+Worse, and measured directly: a stale sidecar recorded a text that **already contained
+M5/M6**. The next run healed from it and reintroduced both mutants as the new baseline —
+the sidecar had become a carrier rather than a defence. `record_pristine` now documents
+this and the call-site ordering is what answers it; `check_targets` correctly refused
+(exit 4), so the layered defence held.
+
+### Finding F3 — `HEAD` WAS BROKEN, and this is the finding that matters most
+
+While verifying F2 I found that **`HEAD` was red, independently of this increment**.
+Proved by stashing every edit of mine and re-measuring:
+
+1. **Two tests FAILED on `HEAD`** —
+   `test_insufficient_history_confidence_is_computed_not_zero` and
+   `test_no_hardcoded_confidence_in_either_branch` (`assert 0.7 < 0.7`).
+2. **`scripts/mutation_inflation_nowcast.py` could not run at all** — exit **4** on every
+   invocation, because M5 and M6 named an anchor the source no longer contained.
+3. **`tools/sweep_health.py` exited 1** — the headline gate, the one run LAST, reporting
+   two phantoms as *source corruption* while the source was byte-identical to `HEAD`.
+
+**One root cause.** `src/macro_engine/models/inflation_nowcast.py` shipped
+`data_quality_flags_present=False` on the insufficient-data branch, while its **own
+docstring (line 132) and its own test (line 201) both require `True`**. With `False` the
+two branches became identical — `compute_confidence()` returns `0.7` either way — so the
+confidence stopped distinguishing "no result" from "a result", which is the only reason
+the formula is called there instead of returning the specification's literal `0.0`.
+
+The docstring and the test agree with each other and with the recorded reasoning; the
+**code was the outlier**. Per the user's decision the source was corrected to match
+(`data_quality_flags_present=True`), which turns the 2 tests green **and** re-enables the
+M5/M6 mutations. **All 26 tests in that file pass; the sweep now runs `20/20 killed`,
+exit 0; `sweep_health.py` is green.**
+
+**The recorded snapshot said `0 leftovers, 0 failures, OK`, and that snapshot was never
+re-measured after the tree it described changed under it** — D-087.23's class, and O-62's
+sentence stated exactly: *a sweep that cannot run is indistinguishable from a sweep nobody
+ran.* So the durable half is a new pair of guards in
+`tests/test_sweep_health_leftover_predicate.py`:
+`test_every_sweep_catalogue_resolves_against_the_shipped_source` (no catalogue may name an
+anchor the tree does not hold — the O-62 guard) and
+`test_no_sweep_catalogue_holds_a_leftover_shaped_anchor` (the mirror). Both load all 42
+catalogues through the **same predicate the sweeps use**, against the shipped text.
+
+**Two hazards met while making that fix, both worth recording:**
+
+* **A comment can disable a mutation.** The first version of the docstring fix put the
+  explanatory note *inside* the call expression, splitting the text M5 anchors on — the
+  sweep went from 2 problems to 1 for the wrong reason. The note now sits above the
+  `return` with a comment explaining why it must. *An anchor's blast radius includes the
+  whitespace between its lines.*
+* **`cp` can back up the corruption.** A backup was taken in the same shell command that
+  wrote a deliberate mutant, so the "good" copy *was* the mutant and every "restore"
+  faithfully reinstated it. Recovered by repairing with an explicit
+  `read_text`/`replace`/`write_text` that asserts the mutant string was found. **A backup
+  is only as good as the moment it was taken.**
+
+### Gates — re-derived at this close, never carried forward (D-035)
+
+| Gate | Measurement |
+|---|---|
+| `ruff check src tests tools scripts` | clean |
+| `ruff format --check src tests tools scripts` | **241** files |
+| `mypy --strict src tests tools scripts` | **241** source files — **parity holds** |
+| `pytest` | **2773 passed / 1 skipped / 17 deselected**, and the 5 reported failures are the **sandbox bulk-delete artefact** (below) |
+| `tools/sweep_health.py` | **run LAST** — 42 sweeps · 0 control-less · **0 leftovers** · 0 shapes · 0 committed mutants · **0 failures · OK** |
+
+**The 5 "failures" are a harness artefact, not defects, and this is proved rather than
+asserted.** All five fail at `safe-delete`'s `SAFE_DELETE_BULK_CONFIRM_REQUIRED`
+(`count ≥ 515`, `threshold 50`) inside `sidecar_for(path).unlink()` — **the cleanup step**.
+For the canary test the refusal message *prints* and the process is then killed before
+`return 3` executes, so the exit code is the harness's, not the sweep's. **All five pass
+in isolation** (215 passed together with the canary excluded; the canary alone passes in
+27.7 s). The documented remedy is to pin `--basetemp` inside the project — which does not
+help here, because the counter is per-turn and the full suite needs more than 50 deletions
+by itself.
+
+**Tree state:** five files modified (`.gitignore`, `docs/*`, `pyproject.toml`,
+`scripts/_sweep_gate.py`, two test files), three new (`tests/test_openbb_command_inventory.py`,
+`tests/test_live_time_bound.py`, `scripts/mutation_command_inventory.py`), plus
+`src/macro_engine/models/inflation_nowcast.py` for F3. Ten staged deletions of the
+committed basetemp files. **No leftover mutants; no sidecars.**
+
+**Does not start a phase.** O-112(c) is confirmed closed by measurement
+(`--budgets` prints the derived table; the new sweep appears at 450 s; serial total
+**98,700 s**), and O-110(b) — the "habit" half — remains recorded rather than mechanised.
