@@ -1,7 +1,10 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-22** (after **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
+Last updated: **2026-09-22** (after **D-092 — PHASE 5 IS STARTED. Module 18's
+`run_regression` is implemented, tested, live-checked and swept.** See the D-092
+block at the end of this file. Tier 5 is no longer 0/20.)
+Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
 (the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
 (`tests/test_openbb_command_inventory.py` + `scripts/mutation_command_inventory.py`,
@@ -40,7 +43,9 @@ Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 
 **WHERE WE ARE.** Phases **0 = 8/8 ✅ · 1 = 9/9 ✅ · 2 = 85/98 (13 outstanding, ALL
 Tier 5 by §22.3) · 3 = 2/2 ✅ · 4 = 4/4 ✅ — CLOSED at D-073.** Tiers **1/2/3/4 =
-23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; Tier 5 = 0/20 **by design**.
+23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; **Tier 5 = 1/20 — STARTED at D-092**
+(Module 18's `run_regression`; the remaining 19 were 0/20 *by design* until the
+operator opened Phase 5).
 **The front of the runway is now Phase 5 — and it has NOT been started, by
 explicit instruction.** Phase 5 begins with the 13 Tier-5 deferrals (§22.3), each
 of which needs its own registry, its own reaction function and its own instruments.
@@ -201,7 +206,7 @@ in Tier 4, not here.
 | **Tier 2** — depend on Tier 1 | 29 | 29 | **100%** | `████████████████████` |
 | **Tier 3** — synthesis | 15 | 15 | **100%** | `████████████████████` ✅ |
 | **Tier 4** — construction | 11 | 11 | **100%** | `████████████████████` ✅ |
-| **Tier 5** — Phase 5+ stubs | 0 | 20 | **0%** | by design |
+| **Tier 5** — Phase 5+ | 1 | 20 | **5%** | **STARTED** — D-092, `run_regression` |
 
 **Read the "85 / 98" correctly — it is not a backlog.** 85 = 23 + 29 + 15 + 11,
 i.e. **every Tier 1–4 function**. The 13 outstanding are **all Tier 5**, and
@@ -5255,3 +5260,81 @@ beside the D-003 measurement it records).
 **Closes O-111(b) — so O-111 is now FULLY CLOSED** ((a) D-087.15/.17 · (b) here ·
 (c) D-087.12). **A fifth instance of the "recorded correction with no reader" family.**
 Does not start a phase.
+
+---
+
+## Next (2026-09-22, after D-092) — **PHASE 5 IS STARTED** · sub-increment 1 of 13+
+
+**Where we are.** **Phase 0 = 8/8 · 1 = 9/9 · 2 = 85/98 (13 outstanding, all Tier 5) ·
+3 = 2/2 ✅ · 4 = 4/4 ✅.** Tiers 1/2/3/4 = **23/23 · 29/29 · 15/15 · 11/11**.
+**Tier 5 = 1/20** — no longer 0/20: D-092 implemented Module 18's
+`run_regression`.
+
+**Phase 5 was opened by explicit operator instruction** — *"Proceed with Phase 5
+sequentially, executing each step individually rather than as a batch. Implement
+every step to production-grade standards."* The standing rule is unchanged: **one
+function per increment, then report and wait.** Do not batch, do not skip ahead.
+
+### What D-092 established, and what it means for the next step
+
+Module 18's functions **did not exist as stubs**. §15.18's block F specifies them
+as *"formulas in prose only, no callable signatures"*, and measured, **22 of the 23
+Tier-5 names appear nowhere in `src/`** — only `compute_risk_parity_weights`
+(Phase 4, D-071) exists. So §22.1's *"every function exists as a correctly-signed
+stub immediately"* was not honoured for Tier 5, and each Phase-5 sub-increment
+therefore writes a **new file**, not a stub body.
+
+**Module 18's remaining five functions, in dependency order:**
+
+| # | function | depends on | status |
+|---|---|---|---|
+| 1 | `run_regression` | — | ✅ **D-092** |
+| 2 | `test_stationarity` | — | **← the binding Next** |
+| 3 | `test_cointegration` | `run_regression`, `test_stationarity` | not started |
+| 4 | `compute_pca` | — (**needs `scikit-learn`, NOT yet a dependency**) | not started |
+| 5 | `kalman_latent_state` | — | not started |
+| 6 | `yield_curve_pca` | `compute_pca` | not started (§6.6 stub) |
+
+**Next: `test_stationarity`.** Two reasons it is next rather than `compute_pca`,
+which has no dependency at all: (a) `test_cointegration` needs **both**
+`run_regression` and `test_stationarity`, so it is the shorter path to the RV-pair
+tooling Module 15 will want; and (b) `run_regression`'s own `limitations` field
+**names it by name** — *"Run test_stationarity on both sides first"* — so until it
+exists, that instruction is advice with no instrument behind it. It ships in
+`models/econometrics.py` beside `run_regression`, with its own sweep additions
+(extend `scripts/mutation_econometrics.py` rather than adding a 44th sweep).
+
+**One dependency fact to settle before `compute_pca`:** `scikit-learn` is **not**
+in `pyproject.toml` and **not installed** (measured: `import sklearn` →
+`ModuleNotFoundError`). §F says `compute_pca` "requires scikit-learn". Adding a
+dependency is a §4 decision and needs to be recorded, not assumed — and note that
+PCA is also reachable with `numpy.linalg.eigh` alone, which would avoid the
+dependency entirely. **That is a decision for its increment, not this one.**
+
+### Carry-overs from D-092
+
+- **The OpenBB service is in the O-111 state — bound but answering HTTP 502.**
+  `tools/openbb_reachability.py` exits **1** and says so. It was serving earlier
+  the same day (the D-092 live check ran against it and passed). This is
+  environmental and no change in the engine can affect it. Its visible cost is
+  **3 conditional skips** in `tests/data_layer/test_registry_endpoint_coverage.py`
+  — O-62 applies: a skip deletes assertions without failing anything. **Start the
+  service before running a live check or trusting the coverage tests.**
+- **The sweep census is 43.** Adding a sweep means editing **three** pinned
+  places (two assertions plus the function name
+  `test_there_are_forty_three_sweeps_to_cover`). This is deliberate — a single
+  soft count goes stale (O-104). The test failed on the first run of this
+  increment, which is the mechanism working as designed.
+- **`_MEASURED_WORST_OFFLINE_SECONDS = 162.0`** in `tests/test_live_time_bound.py`
+  is now stale by one sweep (43 vs 42 when measured). It was **annotated, not
+  re-taken**: the derived floor is 243 s against a 300 s bound, so the staleness
+  is in the safe direction. Re-measure before relying on the headroom.
+- **O-94** (Q12's exposure half) is the reason Module 18 came first. It is still
+  open and will close once the Module 18 tooling exists — it is **not** closed by
+  this increment.
+
+**Standing obligations at every close:** run the full gate set **sequentially**
+(never alongside a sweep — lesson **5bi**); run `tools/sweep_health.py` **LAST**
+and read its output critically (lesson **5bl**); quote the **measured** file count
+and never carry one forward (D-035); stage by **explicit filename**; and check the
+**GitHub run** before claiming green.

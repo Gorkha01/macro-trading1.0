@@ -10,6 +10,63 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-092 — Module 18 begins: `run_regression` with a mandatory mechanism gate
+
+**Phase 5 is STARTED** (operator instruction: sequential, one step at a time).
+First sub-increment of the Tier-5 deferrals.
+
+**Added**
+
+- `src/macro_engine/models/econometrics.py` — `RegressionResult(ModelResult)` and
+  `run_regression(y, X, require_mechanism)`, a statsmodels OLS wrapper. Section
+  15.18's ordering is enforced by the signature: `require_mechanism` is a required
+  argument, so a caller that cannot state the mechanism it is testing cannot call
+  the function. An intercept is always added and reported under `'const'`.
+- `config/settings.yaml` — an `econometrics:` section with four thresholds
+  (`mechanism_min_length`, `min_observations`, `low_r_squared_threshold`,
+  `vif_concern_threshold`), each wrapped in the `CalibratedValue` envelope so
+  `is_calibrated()` can price them, plus a validator rejecting a non-positive
+  threshold (which would make the guard that consumes it unfalsifiable).
+- `tests/models/test_econometrics.py` — **36 tests**. The golden case is derived
+  by exact rational arithmetic (`R² = 625/729`, `adj R² = 68/81`, `beta = {12/5, 5}`),
+  and every warning carries a **negative control** so a warning that always fired
+  could not pass.
+- `scripts/live_econometrics_check.py` — live check on real FRED data.
+- `scripts/mutation_econometrics.py` — **19 mutations, 19/19 killed**, with a
+  CANARY1 gate. The sweep census moved **42 → 43** in the three places it is
+  pinned by design.
+
+**Fixed**
+
+- **Perfect collinearity was not refused.** Detection was a finiteness test on the
+  variance inflation factors, but for a singular design
+  `variance_inflation_factor` returns a **large FINITE number** and merely warns —
+  so the guard passed exactly the case it was written to catch, and solver
+  artefacts were returned as coefficients. Replaced with an exact
+  `np.linalg.matrix_rank` check; the finiteness branch was deleted rather than kept
+  as unreachable defence in depth.
+- **A weak test, found by the new sweep.** M15 replaced a `decision_prohibition`
+  with a *permission* ("Coefficients may be read as causal effects") and
+  **survived**, because the test asserted only that the word `"causal"` appeared.
+  The test now asserts the property — every prohibition must contain a negation.
+
+**Behaviour**
+
+- `run_regression` **reports, never repairs**: mismatched length or index,
+  non-numeric or bool columns, non-finite values, a constant regressor, too few
+  observations, fewer residual dof than parameters, or a rank-deficient design all
+  raise. Dropping a row or column would change `n_obs` and therefore the answer.
+- The stationarity caveat is a standing `limitations` entry, not a warning: a
+  warning that fires on every call is noise. The live check **reproduced the
+  hazard** on real data — core-CPI level on retail-sales level gave R² **0.9854**
+  and p **0.00e+00** with no mechanism stated.
+
+**Gates:** ruff clean · format **247** = mypy **247** · pytest **2844 passed ·
+4 skipped · 17 deselected · 0 failed** · `sweep_health.py` **43 sweeps, 0
+failures, OK**. `openbb_reachability.py` exits **1** — the OpenBB service is bound
+but answers HTTP 502 (O-111's state), which is environmental and independent of
+this change; it accounts for the 3 extra skips.
+
 ### D-090 — O-116: a health test that asserted a wall-clock-decaying property
 
 **Fixed**

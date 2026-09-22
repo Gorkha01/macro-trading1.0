@@ -8201,3 +8201,87 @@ verbatim** (73-line body, twice, second to EOF). Second copy removed after the
 bodies were verified byte-identical — **76 deletions, 0 additions**.
 
 **Not committed.** The tree is left dirty with this fix; the user pushes.
+
+---
+
+## Module 18 — `run_regression`, with a mandatory mechanism gate (`D-092`) — **PHASE 5, 1 of 13+**
+
+**Files:** `src/macro_engine/models/econometrics.py` (**NEW**),
+`config/settings.yaml` (the `econometrics:` section), `src/macro_engine/config.py`
+(`EconometricsSettings` + the `Settings` field), `tests/models/test_econometrics.py`,
+`scripts/live_econometrics_check.py`, `scripts/mutation_econometrics.py`, plus the
+three-place sweep-census bump.
+
+**Spec:** §15.18 (Module 18 — *"Regression requires an economic mechanism BEFORE
+statistical significance is trusted (never data-mine)"*; *"low R² = genuine
+humility signal, not failure"*; *"non-stationary level regression is spurious"*;
+*"PCA on daily changes, never levels"*), §15.18-F (the prose-only function block),
+§21.0 (the no-prototyping rule), §21.2 Steps 4-5 (hand-verified values; warning
+paths), §22.1 (stub-then-implement), §22.3 (US-only through Phase 4), §22.8
+(confidence is computed, never asserted), §3 (the reasoning-object contract).
+
+### Completion checklist (§21.0 / §21.2 Step 9)
+
+- [x] **Implemented exactly as specified** — `run_regression(y, X, require_mechanism)`
+      with the §F signature, returning `RegressionResult` carrying `beta`,
+      `r_squared`, `adj_r_squared`, `p_values`, `n_obs`, `multicollinearity_vif`.
+- [x] **Unit test with hand-verified expected values passes** — 36 tests; the golden
+      case is derived by **exact rational arithmetic** in the test file's header
+      (`beta = {const: 12/5, x: 5}`, `R² = 625/729`, `adj R² = 68/81`).
+- [x] **Executed against real data from its documented source** — `FEDFUNDS` and
+      `CPILFESL`, transcribed from `config/series_registry.yaml` and re-asserted
+      against it at run time so a re-pointed registry cannot go unnoticed.
+- [x] **The real-data output is economically plausible, and that assessment is
+      written down** — see below.
+- [x] **Every `warnings` condition triggered at least once** — three warnings, each
+      with a test that it fires **and a negative control** that it does not fire on
+      a fit that lacks the condition.
+- [x] **`ruff` and `mypy --strict` clean** — and the whole-tree parity holds,
+      247 = 247.
+- [x] **Documented with its real-data validation record** — this section.
+
+### Real-data validation record
+
+**Source:** FRED, through the registry's own provider route (`economy.fred_series`).
+**Run:** `uv run python scripts/live_econometrics_check.py` → **LIVE CHECK PASSED**.
+**Service state at the time:** the OpenBB API was serving (it later degraded to the
+O-111 bound-but-502 state, which is unrelated to this module).
+
+| Check | Observed | Assessment |
+|---|---|---|
+| Fisher relation: policy rate on YoY **core** inflation | slope **+1.0972**, R² **0.5688**, **823** months, 1957-01..2026-08 | **Plausible.** The sign is what the mechanism predicts, and the *magnitude* read against 1.0 is **above** full compensation over this window — a property of this sample and this inflation measure, not a structural claim. The fit is loose (R² ≈ 0.57), which is a real finding about the relation rather than a defect: the policy rate responds to *expected* inflation and to growth, and this regression has only realised inflation. |
+| Mechanism gate on the same real frame | **3/3** insubstantial mechanisms refused | The gate is not a synthetic-only path: the identical frame that produced the fit above refuses a blank, whitespace and placeholder mechanism. |
+| Spurious level regression: core-CPI **level** on retail-sales **level** | coefficient **+0.000310**, R² **0.9854**, p **0.00e+00**, **415** months | **This is the hazard, reproduced.** No mechanism links the two *levels*; both simply trend, and the fit reports a "highly significant" coefficient anyway. That is exactly what `limitations` warns about, measured rather than quoted. |
+
+**Two defects this increment found in itself, both recorded in D-092:**
+
+1. **Perfect collinearity was not refused.** Detection was a finiteness test on the
+   variance inflation factors — but for a singular design
+   `variance_inflation_factor` returns a **large FINITE number** and only warns, so
+   the guard passed exactly the case it existed to catch. Replaced with an exact
+   `np.linalg.matrix_rank` check; the now-unreachable finiteness branch was deleted.
+2. **A weak test, found by the new sweep.** M15 turned a `decision_prohibition`
+   into a *permission* and **survived**, because the test asserted only that the
+   word `"causal"` appeared. The test now asserts the property — every prohibition
+   must contain a negation. Re-run: **19/19 killed**.
+
+### Sweep
+
+`scripts/mutation_econometrics.py` — **19 mutations, 19/19 killed**, CANARY1
+required-killed and confirmed killed (so the selection demonstrably reaches the
+mutated module). Covers the mechanism gate, the confidence derivation, the three
+warnings, all six refusals, the VIF intercept exclusion, the `None`-vs-`{}`
+contract, `adj_r_squared`, the stationarity caveat, the causal prohibition, and
+`value == beta`.
+
+### Not done here, and named rather than left silent
+
+- **`test_stationarity` does not exist.** `run_regression` therefore cannot test
+  what §15.18 tells it to test first, and says so in `limitations` on every call.
+  It is the next sub-increment.
+- **`compute_pca` needs `scikit-learn`, which is not a dependency.** Measured:
+  `import sklearn` → `ModuleNotFoundError`. §4 requires a recorded decision before
+  adding one — and `numpy.linalg.eigh` may make the dependency unnecessary. That
+  decision belongs to its own increment.
+- **`O-94` is not closed by this.** It needs the Module 18 tooling; this is the
+  first of the six functions it will use.

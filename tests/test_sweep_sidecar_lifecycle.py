@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_two_sweeps_to_cover() -> None:
+def test_there_are_forty_three_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -444,9 +444,17 @@ def test_there_are_forty_two_sweeps_to_cover() -> None:
     (`test_sweep_health_leftover_predicate.py` and here) and the function name
     carries it a third time — adding a sweep means editing all three, which is
     deliberate: a single soft count is easy to leave stale (the O-104 defect).
+
+    **42 → 43 at D-092**, which added `mutation_econometrics.py` — Module 18's
+    first sweep, over `models/econometrics.py`. It uses `sweep_lifecycle` and
+    carries a CANARY1 gate, so the per-file wiring check below and the
+    control-coverage check in the sibling file both cover it without a second
+    edit. This is the first sweep added *by the rule* rather than retrofitted:
+    the two prose sweeps above arrived during a repair pass, so this is the
+    first time the three-place edit was made as part of the increment itself.
     """
     files = _sweep_files()
-    assert len(files) == 42, f"expected 42 sweeps, found {len(files)}"
+    assert len(files) == 43, f"expected 43 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

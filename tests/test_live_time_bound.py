@@ -40,9 +40,15 @@ _PYPROJECT = _PROJECT_ROOT / "pyproject.toml"
 
 #: The slowest legitimate OFFLINE test, measured (D-087.27):
 #: ``test_the_two_copies_agree_on_the_real_catalogue`` at **162 s** — it loads all
-#: 42 sweeps. Recorded here as a number because the timeout must clear it; if a
+#: sweeps. Recorded here as a number because the timeout must clear it; if a
 #: future test legitimately exceeds the timeout, THIS is the constant to re-derive
 #: (and then the timeout, together).
+#:
+#: NOTE (D-092): the sweep census is now **43**, one more than when this was
+#: measured, and this constant has **not** been re-taken. The staleness is in the
+#: safe direction — the derived floor is 162 x 1.5 = 243 s against a 300 s bound,
+#: so one additional sweep cannot move the verdict. Re-measure before relying on
+#: the *headroom*; the gate itself is unaffected.
 _MEASURED_WORST_OFFLINE_SECONDS = 162.0
 
 #: The headroom the timeout must keep over the measured worst case. 1.5x is the

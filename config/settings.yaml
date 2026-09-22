@@ -3302,6 +3302,56 @@ confidence:
       forecast. Raising this above 0.95 is a scope change, not a tuning choice.
 
 # ---------------------------------------------------------------------------
+# Module 18 — Quantitative Tools (Section 15.18, Phase 5+). The four thresholds
+# below are the only tunable numbers `run_regression` uses. They are in config
+# for the same reason every other threshold is: a reader must be able to see
+# what the function is willing to accept, and `is_calibrated()` feeds the
+# heuristic penalty so an illustrative placeholder LOWERS the reported
+# confidence rather than inheriting the number's apparent precision.
+# ---------------------------------------------------------------------------
+econometrics:
+  mechanism_min_length:
+    value: 20
+    calibration_status: conventional
+    note: >
+      Module 18's discipline is mechanism first, statistics second: a caller
+      must state the economic mechanism it hypothesised BEFORE fitting, and a
+      caller that cannot articulate one "should not be running the regression".
+      The minimum is a length floor, not a quality judgement — it rejects
+      `""`, `"test"` and `"because"` without pretending to grade prose. It
+      cannot detect a mechanism that is stated but wrong, and it is not meant
+      to: the field exists so the hypothesis is on the record before the
+      p-value is, which is what makes a later data-mined regression visible.
+  min_observations:
+    value: 8
+    calibration_status: conventional
+    note: >
+      Absolute floor on usable rows. This is NOT the binding constraint for
+      most fits — the derived requirement `n_obs > n_parameters` binds first
+      and is computed, not configured, because it is arithmetic rather than a
+      judgement. This floor exists to catch the case the dof check cannot: a
+      single-regressor fit with 3 points is arithmetically legal and
+      statistically meaningless, and no dof test will say so.
+  low_r_squared_threshold:
+    value: 0.10
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Below this, the fit is REPORTED as a weak mechanism — never as an error
+      and never as a reason to refit. Section 15.18 states plainly that "low
+      R-squared = genuine humility signal, not failure"; the failure mode this
+      guards against is the opposite one, where a high R-squared over a
+      spurious level regression is read as confirmation. The 0.10 value is a
+      placeholder awaiting calibration.
+  vif_concern_threshold:
+    value: 10.0
+    calibration_status: conventional
+    note: >
+      The textbook cutoff (VIF > 10 implies the regressor's variance is
+      inflated more than tenfold by its linear dependence on the others).
+      Reported as a warning, never enforced by dropping a column: which
+      regressor to drop is an economic judgement, not this function's to make.
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

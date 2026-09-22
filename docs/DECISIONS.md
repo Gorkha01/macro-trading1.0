@@ -15528,3 +15528,153 @@ CI run `35718113050` on `560862d`: **every step success**.
 ### Does not start a phase
 
 Phase 5 remains **not started**. This is a tooling-cost fix, not a scope change.
+
+---
+
+## D-092 — Module 18 begins: `run_regression`, with a mandatory mechanism gate
+
+**Scope:** a NEW file, `src/macro_engine/models/econometrics.py`; a new
+`econometrics:` config section; `tests/models/test_econometrics.py`;
+`scripts/live_econometrics_check.py`; `scripts/mutation_econometrics.py`.
+**No `src/` behaviour changed outside the new module.** **Phase 5 is STARTED**
+(see the phase note at the end) — this is its first sub-increment.
+
+### Why this function first
+
+`docs/PROGRESS.md`'s *Next* block records that **O-94** (Q12's exposure half)
+needs Module 18, and Module 18 is the tooling the other Tier-5 items will lean
+on. It is also the only Tier-5 module whose functions **do not exist as stubs**:
+§15.18's block F specifies them as *"formulas in prose only, no callable
+signatures"*, so `run_regression`, `test_stationarity`, `test_cointegration`,
+`compute_pca`, `kalman_latent_state` and `yield_curve_pca` are absent from
+`src/` entirely. **Measured before writing anything:** 22 of §21.3's 23 Tier-5
+names appear nowhere in the tree; only `compute_risk_parity_weights` exists
+(Phase 4, D-071). §22.1's *"every function exists as a correctly-signed stub
+immediately"* was **not** honoured for Tier 5, and that is now recorded rather
+than assumed.
+
+### What the function does
+
+`run_regression(y, X, require_mechanism) -> RegressionResult`, a statsmodels OLS
+wrapper. Three of §15.18's disciplines are encoded rather than left to memory:
+
+1. **Mechanism first.** `require_mechanism` is a required positional argument and
+   is length-checked (`econometrics.mechanism_min_length`). The floor is a
+   *length* check, not a quality judgement — it cannot tell a sound mechanism
+   from a confident wrong one and does not try. Its work is **evidentiary**: it
+   puts the hypothesis on the record *before* the p-value exists, which is the
+   only thing that makes a later data-mined fit visible as such.
+2. **A low R-squared is information, not failure.** Below
+   `econometrics.low_r_squared_threshold` the fit warns and is still returned.
+3. **Non-stationary level regression is spurious.** This function cannot test it
+   (`test_stationarity` is a separate increment), so the caveat is a standing
+   **`limitations`** entry, not a warning. A warning that fires on every call is
+   noise, and noise is how a real warning gets ignored.
+
+**Report, never repair.** Every input defect raises: mismatched length, a
+non-identical index, non-numeric or bool columns, non-finite values, a constant
+regressor, too few observations, fewer residual dof than parameters, or a
+rank-deficient design. Dropping a row or a column changes `n_obs` and therefore
+changes the answer; Section 3's rule is that a system which cannot say "I don't
+know" will fabricate.
+
+### Two defects found by building it, both worth recording
+
+**1. Perfect collinearity was NOT refused — the finiteness test missed exactly
+its own case.** The first implementation detected collinearity by testing the
+variance inflation factors for non-finiteness. Measured: for a singular design
+(`b == 2*a`), `variance_inflation_factor` returns a **large FINITE number** and
+merely emits a conditioning warning — it does not return `inf`. So the guard
+passed precisely the case it was written to catch, and the function returned
+solver artefacts as coefficients. **Fixed with `np.linalg.matrix_rank`** (SVD),
+which is exact. The finiteness branch was then **deleted rather than kept as
+defence in depth**, because a full-rank design makes it unreachable and an
+unreachable branch is itself a defect class in this project.
+
+**2. The mutation sweep found a weak test — in the test I had just written.**
+M15 replaced the causal-reading *prohibition* with a *permission*
+("Coefficients may be read as causal effects"). It **SURVIVED**, because the
+test asserted only that the word `"causal"` appeared, and the word survived the
+edit. This is **O-107's too-narrow predicate again**. The test now asserts the
+**property** — every `decision_prohibition` entry must contain a negation
+(`do not` / `must not` / `never`) — plus the two subjects. Re-run: **19/19
+killed**. The generalisable form: *assert that a prohibition forbids, not that
+it mentions the thing it forbids.*
+
+### Evidence
+
+**Golden test, exact rational arithmetic.** `x = [0,0,0,0,0,1,1,1,1,1]`,
+`y = [1,2,3,2,4,6,7,8,9,7]`: `beta = {const: 12/5, x: 5}`, `R² = 625/729`,
+`adj R² = 68/81`, `n_obs = 10`. Every quantity is derived by hand in the test
+file's header; a two-valued regressor is chosen so all of it is checkable.
+
+**36 tests**, including a **negative control for each warning** (the weak-mechanism
+warning must be *absent* on a strong fit; the perfect-fit warning *absent* on a
+noisy one; the collinearity warning *absent* on independent regressors) — without
+those, a warning that always fired would pass.
+
+**Live check PASSED against real FRED data** (run while the OpenBB service was
+serving, before it entered the O-111 state noted below):
+
+| check | result |
+|---|---|
+| Fisher relation: policy rate on YoY core inflation | **+1.0972**, R² **0.5688**, **823** months, 1957-01..2026-08 |
+| mechanism gate on the same real frame | **3/3** insubstantial mechanisms refused |
+| spurious level regression (core CPI level on retail-sales level) | R² **0.9854**, p **0.00e+00**, no mechanism stated |
+
+The third line is the point: **the stationarity limitation was reproduced on live
+data**, not quoted from a textbook — a "highly significant" coefficient from a
+pair with no stated mechanism. And the live check caught a defect in *itself*:
+its plausibility prose asserted "below 1 means the policy rate moved less than
+one-for-one", and the live coefficient came back **above** 1. The reading is now
+**derived from the fitted value**, because a live check whose commentary is
+hardcoded is a claim the data has not agreed to yet.
+
+**Mutation sweep: 19/19 killed**, canary included. Registered automatically
+(`scripts/mutation_*.py`), gated (`check_targets`), controlled (CANARY1 refusal).
+
+### The sweep census moved 42 → 43, in the three documented places
+
+`test_there_are_forty_two_sweeps_to_cover` → `..._forty_three_...`, plus the
+assertions in `test_sweep_sidecar_lifecycle.py` and
+`test_sweep_health_leftover_predicate.py`. The count is pinned in three places
+**deliberately** (a single soft count goes stale — the O-104 defect), and the
+test failed on the first run, which is the mechanism working. The dated
+`_MEASURED_WORST_OFFLINE_SECONDS = 162.0` in `test_live_time_bound.py` was
+**annotated, not re-taken** — the staleness is in the safe direction (derived
+floor 243 s against a 300 s bound) and D-087.23's rule is to annotate a
+superseded measurement rather than silently rewrite it.
+
+### Gates (all re-derived; D-035 — counts must match)
+
+| gate | result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | **247** files already formatted |
+| `mypy --strict src tests tools scripts` | **247** source files, no issues |
+| pytest (chunked) | **2844 passed · 4 skipped · 17 deselected · 0 failed** |
+| `tools/openbb_reachability.py` | **FAILED, exit 1** — the service is bound but answers HTTP 502 (the O-111 state) |
+| `tools/sweep_health.py` (**LAST**) | **43** sweeps · 0 control-less · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · **OK** |
+
+**D-035 parity: 247 = 247** (243 + 4 new files). The suite moved 2808 → 2844 =
+**+36**, exactly the new tests.
+
+**The 3 extra skips are environmental, not a regression.** They are
+`tests/data_layer/test_registry_endpoint_coverage.py`'s conditional coverage
+tests, which skip when the OpenBB service is not serving. The probe detects the
+condition and exits 1 (O-111 closed at D-087.23), so the skip is **reported**
+rather than silent — but O-62 still applies: a skip deletes assertions without
+failing anything. The service was serving earlier in this session (the live check
+above ran against it); it degraded to bound-but-502 afterwards. **No change in
+this increment can affect the service**, and nothing here reads it.
+
+### Does this start a phase?
+
+**Yes — Phase 5 is now STARTED**, by explicit operator instruction (*"Proceed with
+Phase 5 sequentially, executing each step individually rather than as a batch"*).
+This is sub-increment 1 of 13+ (the Tier-5 deferrals). §22.3 requires each to
+bring its own registry, its own reaction function and its own instruments; Module
+18 is the shared quantitative tooling that several of them depend on, which is
+why it comes first rather than a country module. **Sub-increment 2 will be
+`test_stationarity`**, because `test_cointegration` depends on both and this
+module's own limitation names it.

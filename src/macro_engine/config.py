@@ -4457,6 +4457,60 @@ class ApiSettings(BaseModel):
         return self.host in {"127.0.0.1", "localhost", "::1"}
 
 
+class EconometricsSettings(BaseModel):
+    """Module 18's acceptance thresholds (Section 15.18, Phase 5+).
+
+    The four leaves below are the only tunable numbers ``run_regression`` uses.
+    They are typed as ``CalibratedValue`` rather than as bare floats so that
+    ``Settings.is_calibrated()`` can price them: a model leaning on an
+    illustrative placeholder must report LOWER confidence about it, and the
+    envelope is what makes that mechanically possible instead of a promise.
+
+    The two non-illustrative leaves are ``conventional`` for an honest reason —
+    they encode textbook conventions (VIF > 10) and arithmetic sanity floors,
+    not claims about this data. Only ``low_r_squared_threshold`` is a genuine
+    placeholder, because the R-squared below which a mechanism is "weak" is
+    specific to the instrument and horizon under study.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mechanism_min_length: CalibratedValue
+    min_observations: CalibratedValue
+    low_r_squared_threshold: CalibratedValue
+    vif_concern_threshold: CalibratedValue
+
+    @model_validator(mode="after")
+    def _validate_positive_thresholds(self) -> EconometricsSettings:
+        """Every threshold must be positive.
+
+        Checked at config-load time rather than at call time because a zero or
+        negative floor silently changes the meaning of the check that consumes
+        it: a ``min_observations`` of 0 makes the guard unfalsifiable, and a
+        ``mechanism_min_length`` of 0 makes the mechanism requirement decorative
+        — the exact "declared but unreachable" shape this project has now
+        recorded nine times. Failing here means a bad value cannot reach a
+        model at all.
+        """
+        for name in (
+            "mechanism_min_length",
+            "min_observations",
+            "low_r_squared_threshold",
+            "vif_concern_threshold",
+        ):
+            value = getattr(self, name).value
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(
+                    f"econometrics.{name} must be a number, got {type(value).__name__}"
+                )
+            if value <= 0:
+                raise ValueError(
+                    f"econometrics.{name} must be > 0, got {value!r}. A non-positive "
+                    "threshold makes the guard that consumes it unfalsifiable."
+                )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -4496,6 +4550,7 @@ class Settings(BaseModel):
     data: DataSettings
     validation: ValidationSettings
     confidence: ConfidenceSettings
+    econometrics: EconometricsSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

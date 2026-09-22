@@ -809,7 +809,9 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # same CANARY1 gate as the rest. 41 -> 42 at D-087.27
     # (`mutation_command_inventory.py`, O-104) -- also a CANARY1 sweep, so the
     # `missing == []` assertion below still holds without a second edit.
-    assert len(sweeps) == 42, f"expected 42 sweeps, found {len(sweeps)}"
+    # 42 -> 43 at D-092 (`mutation_econometrics.py`, Module 18) -- likewise a
+    # CANARY1 sweep, so the same holds a third time.
+    assert len(sweeps) == 43, f"expected 43 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "
