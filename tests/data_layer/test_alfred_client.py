@@ -606,6 +606,39 @@ def _enable_vintage(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
     monkeypatch.setattr(config, "enabled", enabled, raising=True)
 
 
+@pytest.fixture(autouse=True)
+def _stub_fred_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test in this module a synthetic FRED key.
+
+    Why this is ``autouse`` and module-wide
+    ---------------------------------------
+    ``fetch_vintage_observations`` resolves the credential **eagerly** — before
+    the injected ``httpx.Client`` is used — so a test that fakes the transport
+    still reaches for a real key. Without this fixture the tests read the
+    developer's ``~/.openbb_platform/user_settings.json``: they passed on a
+    machine that had a ``fred_api_key`` and failed on every machine that did
+    not, including CI (`quality-gates` run 35712094862, `11 failed, 2744
+    passed`). **A test that borrows a secret is not testing the code.**
+
+    The key is a fixed dummy, never a real one, and the store is replaced at
+    the ``sys.modules`` level so no file is read or written. Tests that
+    deliberately exercise the *missing* or *malformed* key cases override this
+    by re-patching the same module (see
+    ``test_an_empty_key_string_is_rejected``).
+    """
+    fake_credentials = MagicMock()
+    fake_credentials.fred_api_key = "s" * 32
+
+    fake_service = MagicMock()
+    fake_service.read_from_file.return_value.credentials = fake_credentials
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "openbb_core.app.service.user_service",
+        MagicMock(UserService=fake_service),
+    )
+
+
 def test_vintage_observation_equality_is_by_value() -> None:
     """``VintageObservation`` compares by value, so a guard can assert on a list."""
     assert VintageObservation(date(2024, 1, 1), 1.0) == VintageObservation(date(2024, 1, 1), 1.0)
