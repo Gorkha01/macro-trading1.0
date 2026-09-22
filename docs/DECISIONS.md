@@ -15807,3 +15807,150 @@ guards) **+3 restored assertions** (the service being up).
 
 **No.** It is a review of Phase 5's first sub-increment, not a new one. Module 18
 still has five functions outstanding and **`test_stationarity` is still next**.
+
+---
+
+## D-094 — Module 18 #2: `test_stationarity`, and the tie neither test may break
+
+**Scope:** `src/macro_engine/models/econometrics.py` (+`test_stationarity` and four
+helpers), `config/settings.yaml` (+6 leaves), `src/macro_engine/config.py`,
+`tests/models/test_econometrics.py` (+23 tests), `scripts/live_econometrics_check.py`
+(§4 added), `scripts/mutation_econometrics.py` (+12 mutations). **Phase 5, Tier 5
+2/20.** No behaviour changed outside the new function.
+
+### What the function does, and the discipline it encodes
+
+`test_stationarity(series) -> ModelResult` runs **both** ADF and KPSS. §15.18-F is
+explicit about why: their nulls are **inverted** — ADF's H0 is a unit root, KPSS's
+H0 is stationarity — so they are two pieces of evidence rather than two opinions
+about one hypothesis, and a series is only confidently classified when they
+**agree**. Disagreement is *"itself informative (inconclusive), not something to
+resolve by picking the convenient one"*. Four verdicts, all reachable and all
+tested:
+
+| verdict | ADF | KPSS | meaning |
+|---|---|---|---|
+| `stationary` | rejects | does not reject | both agree |
+| `non_stationary` | does not reject | rejects | both agree |
+| `inconclusive_conflict` | rejects | **rejects** | they contradict — fractional integration or a structural break |
+| `inconclusive_low_power` | does not reject | does not reject | absence of evidence, not evidence of stationarity |
+
+**The two inconclusive kinds are deliberately distinct.** Collapsing them would
+report "the tests disagree" and "the tests are silent" as one finding, and those
+imply opposite next steps.
+
+### Three facts the spec does not state, found by probing before writing
+
+1. **KPSS p-values are CLIPPED to the look-up table's range, `[0.01, 0.10]`**, and
+   statsmodels signals it only via an `InterpolationWarning`. A returned `0.01`
+   means *at most* 0.01 and `0.10` means *at least* 0.10 — **bounds, not point
+   estimates**. The clipping does not change the decision at conventional sizes,
+   but quoting the number as an exact p-value is the misreading it invites, so the
+   result discloses it whenever it happens. Detected by **capturing the warning**,
+   which is the authoritative signal; comparing against 0.01/0.10 would be
+   guessing at the table's range.
+2. **Both `adfuller` and `kpss` emit a `FutureWarning`** announcing that the plain
+   tuple's layout changes in statsmodels 0.16 (or after July 2027). Indexing
+   `result[1]` would work today and break on an upgrade **with no test failing**,
+   so both calls pass `result_object=True` — the explicitly stable surface. The
+   switch carries a **trap**: the tuple's third element is `usedlag`, but the
+   result object calls the same quantity **`lags`**. A mechanical
+   `result[2] -> result.usedlag` raises `AttributeError`; it was caught by probing
+   the object rather than assuming the mapping.
+3. **ADF can reject a unit root that is definitionally present.** Measured: a
+   genuine random walk at n=200 gave ADF p = 0.037 — a rejection. That is ADF's
+   low power, and it means a "random walk" fixture is **not** reliably a clean
+   non-stationary case. Every fixture in the test file was found by sweeping seeds
+   rather than by taking the first candidate that worked.
+
+### A fourth condition, disclosed rather than swallowed
+
+On a deterministic sine, statsmodels raises `SingularMatrixWarning` during ADF's
+lag selection — its **internal** lag-augmented regression is rank-deficient. The
+test still returns a statistic, **which is exactly why it must be disclosed**: a
+number computed from a degenerate design is not an ordinary result. Captured and
+reported, with a negative control that it is *not* reported on a well-conditioned
+series.
+
+### The infrastructure invariant that rejected the first design
+
+The four *choice* leaves were first written as `CalibratedValue` envelopes, on the
+reasoning that every tunable in this project carries one. **`tests/test_infrastructure.py`
+rejected it**, correctly: it requires every envelope to be readable as a plain
+**number** by a property or `Settings.scalar()`, and `scalar()` returns `float`.
+The envelope answers *"is this number a fact, a convention, or a placeholder?"* —
+a question that does not apply to a **selection**, so the leaves are plain `str`
+and the reasoning lives in `settings.yaml` as a comment beside the value.
+**The invariant was respected, not weakened.** A validator still rejects a
+nonsense value, and `adf_regression` must equal `kpss_regression` — testing ADF
+with a trend and KPSS without one would compare two different nulls and make their
+"disagreement" a property of the mismatch.
+
+### The live check, and an over-claim it refuted
+
+§4 of `scripts/live_econometrics_check.py` **closes the thread D-092 left open**.
+D-092 reproduced a spurious fit (core-CPI level on retail-sales level, R² 0.9854)
+and said plainly it could not *diagnose* it because `test_stationarity` did not
+exist. It exists now:
+
+| series | verdict | ADF p | KPSS p |
+|---|---|---|---|
+| core CPI, **LEVEL** | `non_stationary` | 0.9991 | 0.0100 (clipped) |
+| retail sales, **LEVEL** | `non_stationary` | 0.9987 | 0.0100 (clipped) |
+| core CPI, **first difference** | `non_stationary` | 0.1558 | 0.0100 (clipped) |
+
+**The first draft asserted that the difference must read `stationary`, and the
+live run FAILED.** The assertion was wrong, not the data: core CPI's *growth rate*
+itself shifted across the window (double-digit inflation in the 1970s against
+roughly 2% recently), and KPSS's null is stationarity around a **constant**, which
+a change series with a moving mean does not satisfy. So the difference reading is a
+**second finding** — the Great Moderation visible in a stationarity test — and not
+a contradiction. The assertion now requires only the necessary condition (both
+levels non-stationary) and **reports** the difference. *A live check that requires
+the data to agree with the narrative is a check that asserts the data into
+agreement.*
+
+### Evidence
+
+**61 tests** in the module's file, including: all four verdicts; an explicit test
+that the **inverted nulls are not transposed** (a transposition would invert every
+verdict while both tests still ran and returned numbers); a negative control that
+the inconclusive warnings do not fire on agreement; the clip flag agreeing with
+the clip disclosure; and the ill-conditioning disclosure with its own control.
+
+**Mutation sweep: 33/33 killed.** Two survivors on the first run, both genuine
+weak tests, both fixed:
+
+* **M28** replaced the published `significance_level` with a literal `0.05`, and
+  **survived** — the test compared against the config, which *is* 0.05. Fixed by
+  **moving the config** to 0.20 and requiring the published value *and the verdict*
+  to follow (at 0.20 both tests reject on white noise, so the verdict becomes
+  `inconclusive_conflict`). That separates a derivation from a coincidence.
+* **M30** deleted the constant-series guard and **survived**, because statsmodels
+  then raises its own `ValueError: Invalid input, x is constant` — and the test
+  matched the bare word `constant`. The test was passing on **the library's error
+  rather than our refusal**. Re-matched on a phrase unique to this module's message.
+
+### Gates (re-derived; D-035)
+
+| gate | result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | **247** files already formatted |
+| `mypy --strict src tests tools scripts` | **247** source files, no issues |
+| pytest (chunked) | **2872 passed · 1 skipped · 17 deselected · 0 failed** |
+| `tools/reachability_audit.py` | Tier 1-4 baseline unchanged at **58**; SCRIPT-ONLY Tier 5 = **2**; gate **7 passed** |
+| `tools/sweep_health.py` (**LAST**) | **43** sweeps · 0 control-less · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · **OK** |
+| `scripts/mutation_econometrics.py` | **33/33 killed** (was 21/21) |
+| `scripts/live_econometrics_check.py` | **PASSED**, exit 0 |
+
+**D-035 parity: 247 = 247.** The suite moved 2849 → 2872 = **+23**, exactly the new
+tests. The sweep census stayed **43** — this increment **extended** the existing
+sweep rather than adding a 44th, which is the documented preference.
+
+### Does this start or close a phase?
+
+**No — it continues Phase 5.** Tier 5 is now **2/20**. Module 18 has **four**
+functions left (`test_cointegration`, `compute_pca`, `kalman_latent_state`,
+`yield_curve_pca`); `test_cointegration` is unblocked as of this increment, since
+it needs both `run_regression` and `test_stationarity`. **O-94 is still open.**

@@ -3350,6 +3350,55 @@ econometrics:
       inflated more than tenfold by its linear dependence on the others).
       Reported as a warning, never enforced by dropping a column: which
       regressor to drop is an economic judgement, not this function's to make.
+  significance_level:
+    value: 0.05
+    calibration_status: conventional
+    note: >
+      The size at which ADF and KPSS reject their own null. ONE value governs
+      both, deliberately: the two tests have INVERTED nulls (ADF's H0 is a unit
+      root, KPSS's H0 is stationarity), so judging them against different
+      thresholds would make their "agreement" an artefact of the thresholds
+      rather than of the data. 0.05 is the textbook size.
+  stationarity_min_observations:
+    value: 30
+    calibration_status: conventional
+    note: >
+      A floor for a stationarity test, separate from and far above
+      ``min_observations`` (8), which is a floor for a regression. Both ADF's
+      and KPSS's critical values are ASYMPTOTIC, so on a short series the
+      reported p-value is a small-sample approximation whose error is not
+      disclosed by either function. 30 is a conventional rule of thumb, not a
+      derived bound, and it is a floor rather than a guarantee of adequacy.
+  # The four leaves below are CHOICES, not calibrated quantities, so they are
+  # plain scalars rather than `{value, calibration_status}` envelopes.
+  # `tests/test_infrastructure.py` requires every envelope to be readable as a
+  # plain NUMBER by a property or `Settings.scalar()`, and `scalar()` returns
+  # `float` — so a string leaf cannot be one. The envelope's question ("is this
+  # a fact, a convention, or a placeholder?") does not apply to a selection, and
+  # the reasoning that would have been a `note` is here instead.
+  #
+  # `adf_regression` — the deterministic terms ADF includes: "c" = constant
+  # only, "ct" = constant plus linear trend. THIS CHOICE CHANGES THE ANSWER and
+  # is the most consequential parameter here: a series with a deterministic
+  # trend tested with "c" fails to reject a unit root, so a trend-stationary
+  # series is reported as non-stationary. "c" is the conventional default and is
+  # right only when the series has no deterministic trend. The result's context
+  # names the setting used, so a reader can always tell which was applied.
+  adf_regression: "c"
+  # `kpss_regression` — must be kept CONSISTENT with `adf_regression`: testing
+  # ADF with a trend and KPSS without one compares two different null
+  # hypotheses, and their disagreement would then be a property of the mismatch
+  # rather than of the data. Enforced by a validator, not left to discipline.
+  kpss_regression: "c"
+  # `adf_autolag` — lag selection for the augmented term. "AIC" is statsmodels'
+  # own default and the conventional choice; "t-stat" and "BIC" select a shorter
+  # lag and therefore buy power at the cost of size.
+  adf_autolag: "AIC"
+  # `kpss_nlags` — the Newey-West bandwidth. "auto" is the conventional choice.
+  # Note the KPSS p-value is CLIPPED to its look-up table's range (0.01..0.10);
+  # the function reports that whenever it happens, because a clipped p-value is
+  # a BOUND and reading it as a point estimate is the misreading it invites.
+  kpss_nlags: "auto"
 
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture

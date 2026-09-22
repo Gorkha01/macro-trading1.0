@@ -8285,3 +8285,87 @@ contract, `adj_r_squared`, the stationarity caveat, the causal prohibition, and
   decision belongs to its own increment.
 - **`O-94` is not closed by this.** It needs the Module 18 tooling; this is the
   first of the six functions it will use.
+
+---
+
+## Module 18 — `test_stationarity`, and the tie neither test may break (`D-094`) — **PHASE 5, 2 of 13+**
+
+**Files:** `src/macro_engine/models/econometrics.py` (`test_stationarity` + four
+helpers), `config/settings.yaml` (+6 leaves), `src/macro_engine/config.py`,
+`tests/models/test_econometrics.py` (+23 tests), `scripts/live_econometrics_check.py`
+(§4), `scripts/mutation_econometrics.py` (+12 mutations).
+
+**Spec:** §15.18 (Module 18 — *"non-stationary level regression is spurious (test
+stationarity first)"*), §15.18-F (the function's own block: ADF **and** KPSS, nulls
+**inverted**, disagreement *"itself informative (inconclusive), not something to
+resolve by picking the convenient one"*), §21.0, §21.2 Steps 4-5, §22.8, §3.
+
+### Completion checklist (§21.0 / §21.2 Step 9)
+
+- [x] **Implemented exactly as specified** — `test_stationarity(series) -> ModelResult`
+      with the §F signature, running **both** tests and publishing each statistic,
+      each p-value, each rejection boolean, and the verdict.
+- [x] **Unit test with hand-verified expected values passes** — 61 tests in the file.
+      The fixtures are **seeded and found by sweeping**, not taken from the first
+      candidate: a genuine random walk at n=200 gave ADF p = 0.037 (a rejection),
+      so "random walk" is not reliably a clean non-stationary case.
+- [x] **Executed against real data from its documented source** — FRED, through the
+      registry's provider route; the live check re-asserts the transcribed symbols
+      against `series_registry.yaml` at run time.
+- [x] **The real-data output is economically plausible, and that assessment is
+      written down** — see below.
+- [x] **Every `warnings` condition triggered at least once** — four disclosures
+      (KPSS clipping, conflict, low power, rank-deficient ADF design), each with a
+      test that it fires **and** a negative control that it does not.
+- [x] **`ruff` and `mypy --strict` clean** — whole-tree parity, 247 = 247.
+- [x] **Documented with its real-data validation record** — this section.
+
+### Real-data validation record
+
+**Source:** FRED (`CPILFESL`, `RSAFS`, `FEDFUNDS`) through the registry's own route.
+**Run:** `uv run python scripts/live_econometrics_check.py` → **LIVE CHECK PASSED**.
+**Service:** the OpenBB API was serving (278 paths).
+
+| Series | Verdict | ADF p | KPSS p | Assessment |
+|---|---|---|---|---|
+| core CPI, **LEVEL** | `non_stationary` | 0.9991 | 0.0100 (clipped) | **Plausible.** A price index is the textbook I(1) series; both tests agree. |
+| retail sales, **LEVEL** | `non_stationary` | 0.9987 | 0.0100 (clipped) | **Plausible.** Nominal retail sales trend strongly; both agree. |
+| core CPI, **first difference** | `non_stationary` | 0.1558 | 0.0100 (clipped) | **A second finding, and the reason the first draft of this check was wrong.** The *growth rate* itself shifted across 1957–2026 (double-digit inflation in the 1970s against roughly 2% recently), and KPSS's null is stationarity around a **constant** — which a change series with a moving mean does not satisfy. This is the Great Moderation visible in a stationarity test. |
+
+**The payoff:** D-092 reproduced a spurious fit (core-CPI level on retail-sales
+level, R² 0.9854, p 0.00e+00) and stated plainly that it **could not diagnose** it
+because `test_stationarity` did not exist. It exists now, and both levels reading
+`non_stationary` is the missing half of that argument: two I(1) series regressed on
+each other produce a significant coefficient from their shared trend.
+
+### Two defects this increment found in itself
+
+1. **The live check's assertion was an over-claim about real data**, and the live
+   run **failed** on it. Requiring the first difference to be stationary was an
+   assumption, not a property of the method. The assertion now requires only the
+   necessary condition and *reports* the difference.
+2. **Two weak tests, both mutation survivors.** M28 (a hardcoded
+   `significance_level`) survived because the config *is* 0.05 — fixed by moving the
+   config and requiring the verdict to follow. M30 (the constant-series guard
+   deleted) survived because statsmodels raises its own `Invalid input, x is
+   constant`, which the test's bare-word match accepted — **the test was passing on
+   the library's error rather than on our refusal.**
+
+### Sweep
+
+`scripts/mutation_econometrics.py` — **33/33 killed** (was 21/21). Twelve new
+mutations, of which **M21 is the one that matters**: swapping the two inverted-null
+booleans transposes **every verdict the function ever produces**, while both tests
+still run and still return numbers.
+
+### Not done here, and named rather than left silent
+
+- **`test_cointegration` is now UNBLOCKED** — both of its dependencies exist. It is
+  the next increment, and §15.18-F requires more of it than of either predecessor:
+  the spread series, its half-life, a regime-stability check, and two mandatory
+  warnings (backward-looking estimates break in regime change; multiple pairwise
+  tests without a correction inflate false positives).
+- **`compute_pca` still needs a §4 `scikit-learn` decision** — not a dependency, not
+  installed, and `numpy.linalg.eigh` may make it unnecessary.
+- **`O-94` is not closed by this.** It needs the Module 18 tooling; two of the six
+  functions now exist.

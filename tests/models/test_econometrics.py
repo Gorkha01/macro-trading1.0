@@ -18,13 +18,45 @@ The two disciplines this file exists to protect, both from Section 15.18:
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from macro_engine.config import get_settings
-from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
+from macro_engine.models import econometrics as _econ
+from macro_engine.models.contracts import ConfidenceInputs, ModelResult, compute_confidence
 from macro_engine.models.econometrics import RegressionResult, run_regression
+
+# `test_stationarity` is bound to a PRIVATE alias, never imported by bare name.
+# Section 15.18-F mandates that name and it begins with `test_`, so
+# `from ... import test_stationarity` makes pytest collect the MODEL FUNCTION as
+# a test case — and it fails with a fixture error rather than anything naming the
+# cause. Measured 2026-09-22: `ERROR tests/models/test_econometrics.py::test_stationarity`
+# with no indication that the "test" was a model. Aliasing to `_stationarity`
+# works because pytest's `python_functions = test*` does not match a leading
+# underscore. Any future module exporting a `test_*` function needs the same.
+_stationarity = _econ.test_stationarity
+
+
+def _value(result: ModelResult) -> dict[str, Any]:
+    """Narrow ``test_stationarity``'s ``value`` to a mapping, asserting not casting.
+
+    The published dict is **mixed-type** — a verdict string, float statistics,
+    int lags and bool flags — so ``tests.helpers.as_dict`` (which returns
+    ``dict[str, float]``) does not fit it. Indexing ``result.value`` directly is
+    a type error under ``--strict``, because the union includes
+    ``float | str | bool | None``, and a ``cast`` would hide a result that
+    returned a bare scalar where a mapping was promised. So the type is
+    asserted, exactly as ``as_dict`` does.
+    """
+    value = result.value
+    assert isinstance(value, dict), (
+        f"{result.model_name}: expected a dict value, got {type(value).__name__}"
+    )
+    return value
+
 
 #: Comfortably above ``econometrics.mechanism_min_length``. Used wherever the
 #: test is about the FIT rather than about the gate.
@@ -476,3 +508,275 @@ def test_decision_prohibition_forbids_causal_and_sizing_readings() -> None:
 
 def test_model_name_is_stable() -> None:
     assert _golden_result().model_name == "run_regression"
+
+
+# ---------------------------------------------------------------------------
+# test_stationarity (Section 15.18-F). The four verdicts.
+#
+# The fixtures below were found by PROBING, not by assuming, because the two
+# tests do not behave the way a reader expects:
+#   * a genuine random walk at n=200 can give ADF p = 0.037 — the test REJECTS
+#     the unit root that is definitionally present (ADF's low power), so a
+#     "random walk" fixture is not reliably a clean non-stationary case;
+#   * KPSS's p-value is CLIPPED to [0.01, 0.10], so it is a bound;
+#   * the two disagreement branches need deliberately constructed series.
+# Every seed is fixed, so the verdicts are reproducible rather than incidental.
+# ---------------------------------------------------------------------------
+
+
+def _white_noise(n: int = 300, seed: int = 42) -> pd.Series:
+    """Stationary by construction; both tests should agree."""
+    return pd.Series(np.random.default_rng(seed).normal(size=n), name="white_noise")
+
+
+def _random_walk(n: int = 300, seed: int = 42) -> pd.Series:
+    """A unit root by construction; both tests should agree at this length."""
+    return pd.Series(np.cumsum(np.random.default_rng(seed).normal(size=n)), name="random_walk")
+
+
+def _conflicted(n: int = 300) -> pd.Series:
+    """A slow sine: strongly mean-reverting AND strongly low-frequency.
+
+    ADF sees the mean reversion and rejects a unit root; KPSS sees the
+    low-frequency power and rejects stationarity. Neither is wrong — the series
+    genuinely has both properties, which is why the conflict is informative
+    rather than a bug to be resolved.
+    """
+    t = np.arange(n)
+    return pd.Series(np.sin(2 * np.pi * t / 200), name="slow_sine")
+
+
+def _low_power(n: int = 50, seed: int = 3) -> pd.Series:
+    """A short random walk: too little data for either test to reject.
+
+    The seed and length are not incidental. A fixture drawn from a *shared* RNG
+    stream is not reproducible once anything upstream consumes that stream —
+    the first draft of this helper reused a seed whose earlier draws had shifted
+    it, and it silently produced `non_stationary` instead. Each helper here
+    builds its own generator, and this pair was found by sweeping seeds rather
+    than by taking the first candidate that happened to work.
+    """
+    return pd.Series(np.cumsum(np.random.default_rng(seed).normal(size=n)), name="short_walk")
+
+
+def test_white_noise_reads_as_stationary() -> None:
+    result = _stationarity(_white_noise())
+    assert _value(result)["verdict"] == "stationary"
+    assert _value(result)["adf_rejects_unit_root"] is True
+    assert _value(result)["kpss_rejects_stationarity"] is False
+
+
+def test_random_walk_reads_as_non_stationary() -> None:
+    result = _stationarity(_random_walk())
+    assert _value(result)["verdict"] == "non_stationary"
+    assert _value(result)["adf_rejects_unit_root"] is False
+    assert _value(result)["kpss_rejects_stationarity"] is True
+
+
+def test_the_inverted_nulls_are_not_transposed() -> None:
+    """ADF rejecting means STATIONARY; KPSS rejecting means NON-stationary.
+
+    This is the single comparison a transposition would invert silently — both
+    tests would still run, still return numbers, and every verdict would be
+    wrong. Asserting the two booleans on the two fixtures above pins it, and
+    this test names the direction explicitly so a future edit has to confront it.
+    """
+    stationary = _value(_stationarity(_white_noise()))
+    unit_root = _value(_stationarity(_random_walk()))
+
+    # ADF's H0 is a unit root, so a SMALL p-value is evidence FOR stationarity.
+    assert stationary["adf_p_value"] < unit_root["adf_p_value"]
+    # KPSS's H0 is stationarity, so a SMALL p-value is evidence AGAINST it.
+    assert stationary["kpss_p_value"] > unit_root["kpss_p_value"]
+
+
+def test_both_rejecting_is_reported_as_conflict() -> None:
+    """Neither test is allowed to break the tie (Section 15.18)."""
+    result = _stationarity(_conflicted())
+    assert _value(result)["verdict"] == "inconclusive_conflict"
+    assert _value(result)["adf_rejects_unit_root"] is True
+    assert _value(result)["kpss_rejects_stationarity"] is True
+    assert any("CONTRADICT" in w for w in result.warnings)
+
+
+def test_neither_rejecting_is_reported_as_low_power_not_contradiction() -> None:
+    """An absence of evidence is a DIFFERENT finding from a contradiction."""
+    result = _stationarity(_low_power())
+    assert _value(result)["verdict"] == "inconclusive_low_power"
+    assert _value(result)["adf_rejects_unit_root"] is False
+    assert _value(result)["kpss_rejects_stationarity"] is False
+    assert any("NEITHER TEST REJECTS" in w for w in result.warnings)
+    # The two inconclusive kinds must not be conflated.
+    assert not any("CONTRADICT" in w for w in result.warnings)
+
+
+def test_the_two_inconclusive_kinds_are_distinct_verdicts() -> None:
+    """A classifier that answered 'inconclusive' for both would pass the two
+    tests above; this one would not."""
+    assert (
+        _value(_stationarity(_conflicted()))["verdict"]
+        != _value(_stationarity(_low_power()))["verdict"]
+    )
+
+
+def test_agreement_does_not_produce_an_inconclusive_warning() -> None:
+    """NEGATIVE CONTROL: the inconclusive warnings must not fire on agreement."""
+    for series in (_white_noise(), _random_walk()):
+        result = _stationarity(series)
+        assert not any(
+            marker in w
+            for w in result.warnings
+            for marker in ("CONTRADICT", "NEITHER TEST REJECTS")
+        )
+
+
+def test_clipped_kpss_p_value_is_disclosed() -> None:
+    """A clipped p-value is a BOUND and the result must say so.
+
+    Both fixtures here sit at a table edge (0.10 and 0.01), so the disclosure
+    must fire — and the flag must agree with the warning, not merely accompany it.
+    """
+    result = _stationarity(_white_noise())
+    assert _value(result)["kpss_p_value_is_clipped"] is True
+    assert any("BOUND, NOT A POINT ESTIMATE" in w for w in result.warnings)
+
+
+def test_the_clip_flag_matches_the_disclosure() -> None:
+    """The boolean and the warning are two spellings of one fact."""
+    for series in (_white_noise(), _random_walk(), _conflicted(), _low_power()):
+        result = _stationarity(series)
+        flagged = _value(result)["kpss_p_value_is_clipped"]
+        disclosed = any("BOUND, NOT A POINT ESTIMATE" in w for w in result.warnings)
+        assert flagged == disclosed, f"clip flag {flagged} but disclosed {disclosed}"
+
+
+def test_verdict_is_always_one_of_the_four() -> None:
+    """A Literal-by-hand: no fixture may produce an unclassified verdict."""
+    allowed = {
+        "stationary",
+        "non_stationary",
+        "inconclusive_conflict",
+        "inconclusive_low_power",
+    }
+    for series in (_white_noise(), _random_walk(), _conflicted(), _low_power()):
+        assert _value(_stationarity(series))["verdict"] in allowed
+
+
+def test_the_significance_level_used_is_published() -> None:
+    """The verdict is only interpretable against the size it was judged at."""
+    result = _stationarity(_white_noise())
+    alpha = get_settings().econometrics.significance_level.value
+    assert _value(result)["significance_level"] == alpha
+
+
+def test_the_significance_level_is_read_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the config and require the published size AND the verdict to follow.
+
+    The first version of the test above compared against
+    ``get_settings().econometrics.significance_level.value`` — which **is** 0.05 —
+    so a hardcoded ``0.05`` inside the function satisfied it. The sweep's M28 did
+    exactly that and **SURVIVED**. Changing the setting and asserting the result
+    *moves* is what separates a derivation from a coincidence.
+
+    The verdict assertion is the stronger half: at alpha = 0.20 both tests reject
+    on white noise (ADF p = 0.0000, KPSS p = 0.1000), so a function that echoed
+    the setting but compared against a literal would publish 0.20 beside a
+    ``stationary`` verdict — a self-contradiction this test forbids.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings.econometrics.significance_level, "value", 0.20, raising=False)
+
+    result = _stationarity(_white_noise())
+    assert _value(result)["significance_level"] == 0.20
+    assert _value(result)["verdict"] == "inconclusive_conflict"
+    assert _value(result)["kpss_rejects_stationarity"] is True
+
+
+def test_the_regression_type_used_is_named_in_the_context() -> None:
+    """The deterministic-terms choice changes the answer, so it must be visible."""
+    result = _stationarity(_white_noise())
+    assert "constant only" in result.context or "constant and linear trend" in result.context
+
+
+def test_stationarity_limitations_name_the_low_power_asymmetry() -> None:
+    result = _stationarity(_white_noise())
+    joined = " ".join(result.limitations)
+    assert "LOW POWER" in joined
+    assert "STRUCTURAL BREAK" in joined
+
+
+def test_stationarity_forbids_breaking_the_tie() -> None:
+    """Section 3's load-bearing field, on the discipline this function exists for."""
+    prohibitions = _stationarity(_white_noise()).decision_prohibition
+    assert any("inconclusive" in p.lower() for p in prohibitions)
+    for prohibition in prohibitions:
+        lowered = prohibition.lower()
+        assert any(n in lowered for n in ("do not", "must not", "never"))
+
+
+def test_a_rank_deficient_adf_design_is_disclosed() -> None:
+    """statsmodels' SingularMatrixWarning must reach the consumer.
+
+    A deterministic sine makes ADF's *internal* lag-augmented regression
+    rank-deficient, so the statistic is computed from a degenerate design.
+    statsmodels warns and returns a number anyway — which is exactly why the
+    result has to carry the fact, or a reader takes a degenerate fit for an
+    ordinary one.
+    """
+    result = _stationarity(_conflicted())
+    assert _value(result)["adf_design_was_ill_conditioned"] is True
+    assert any("RANK-DEFICIENT" in w for w in result.warnings)
+
+
+def test_a_well_conditioned_adf_design_is_not_flagged() -> None:
+    """NEGATIVE CONTROL for the ill-conditioning disclosure."""
+    result = _stationarity(_white_noise())
+    assert _value(result)["adf_design_was_ill_conditioned"] is False
+    assert not any("RANK-DEFICIENT" in w for w in result.warnings)
+
+
+# --- refusals -------------------------------------------------------------
+
+
+def test_a_short_series_is_refused() -> None:
+    floor = int(get_settings().econometrics.stationarity_min_observations.value)
+    with pytest.raises(ValueError, match="below the configured floor"):
+        _stationarity(pd.Series(np.arange(floor - 1, dtype="float64"), name="s"))
+
+
+def test_a_constant_series_is_refused() -> None:
+    """The refusal must be OURS, not statsmodels'.
+
+    Matched on a phrase unique to this module's message. The first version
+    matched the bare word ``constant`` — and the mutation sweep's M30, which
+    deletes this guard entirely, **SURVIVED**, because statsmodels then raises
+    its own ``ValueError: Invalid input, x is constant``. The test was passing on
+    the library's error rather than on our refusal, which is the difference
+    between testing our contract and testing someone else's.
+    """
+    with pytest.raises(ValueError, match="no dynamics to test"):
+        _stationarity(pd.Series([3.0] * 100, name="s"))
+
+
+def test_a_non_finite_series_is_refused() -> None:
+    values = pd.Series(np.random.default_rng(9).normal(size=100), name="s")
+    values.iloc[5] = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        _stationarity(values)
+
+
+def test_a_non_numeric_series_is_refused() -> None:
+    with pytest.raises(ValueError, match="must be numeric"):
+        _stationarity(pd.Series(["a"] * 100, name="s"))
+
+
+def test_an_empty_series_is_refused() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        _stationarity(pd.Series([], dtype="float64", name="s"))
+
+
+def test_a_non_series_is_refused() -> None:
+    with pytest.raises(TypeError, match="pandas Series"):
+        _stationarity([1.0, 2.0, 3.0])  # type: ignore[arg-type]

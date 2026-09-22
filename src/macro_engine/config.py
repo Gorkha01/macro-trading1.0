@@ -4479,27 +4479,50 @@ class EconometricsSettings(BaseModel):
     min_observations: CalibratedValue
     low_r_squared_threshold: CalibratedValue
     vif_concern_threshold: CalibratedValue
+    significance_level: CalibratedValue
+    stationarity_min_observations: CalibratedValue
+
+    # These four are CHOICES, not calibrated quantities, and they are plain
+    # `str` rather than `CalibratedValue` on purpose. `tests/test_infrastructure.py`
+    # enforces that every `CalibratedValue` leaf is readable as a plain NUMBER by
+    # a property or `Settings.scalar()` — and `scalar()` returns `float`, so a
+    # string leaf cannot satisfy it. Wrapping these in the envelope was tried
+    # first and failed that invariant, correctly: the envelope answers "is this
+    # number a fact, a convention, or a placeholder?", and there is no such
+    # question about a selection. The reasoning that would have gone in each
+    # `note` lives in `settings.yaml` as a comment, beside the value.
+    adf_regression: str
+    adf_autolag: str
+    kpss_regression: str
+    kpss_nlags: str
 
     @model_validator(mode="after")
-    def _validate_positive_thresholds(self) -> EconometricsSettings:
-        """Every threshold must be positive.
+    def _validate_leaves(self) -> EconometricsSettings:
+        """Every numeric leaf must be positive; every choice leaf must be permitted.
 
-        Checked at config-load time rather than at call time because a zero or
-        negative floor silently changes the meaning of the check that consumes
-        it: a ``min_observations`` of 0 makes the guard unfalsifiable, and a
-        ``mechanism_min_length`` of 0 makes the mechanism requirement decorative
-        — the exact "declared but unreachable" shape this project has now
-        recorded nine times. Failing here means a bad value cannot reach a
-        model at all.
+        Checked at config-load time rather than at call time because a bad value
+        silently changes the meaning of the check that consumes it: a
+        ``significance_level`` of 0 makes every test reject, a
+        ``mechanism_min_length`` of 0 makes the mechanism requirement
+        decorative, and an ``adf_regression`` of "n" is not a regression type at
+        all — the exact "declared but unreachable" shape this project has now
+        recorded nine times. Failing here means a bad value cannot reach a model.
+
+        The choice leaves are validated as an explicit **permitted set** rather
+        than merely being passed through, because statsmodels would accept a
+        nonsense string and raise from inside the library — naming neither the
+        setting nor the file it came from.
         """
         for name in (
             "mechanism_min_length",
             "min_observations",
             "low_r_squared_threshold",
             "vif_concern_threshold",
+            "significance_level",
+            "stationarity_min_observations",
         ):
             value = getattr(self, name).value
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"econometrics.{name} must be a number, got {type(value).__name__}"
                 )
@@ -4508,6 +4531,39 @@ class EconometricsSettings(BaseModel):
                     f"econometrics.{name} must be > 0, got {value!r}. A non-positive "
                     "threshold makes the guard that consumes it unfalsifiable."
                 )
+
+        if not 0.0 < float(self.significance_level.value) < 1.0:
+            raise ValueError(
+                f"econometrics.significance_level must lie strictly inside (0, 1), "
+                f"got {self.significance_level.value!r}. A size of 0 rejects every "
+                f"null and a size of 1 rejects none, so either makes the test "
+                f"unfalsifiable in one direction."
+            )
+
+        permitted: dict[str, set[str]] = {
+            "adf_regression": {"c", "ct"},
+            "kpss_regression": {"c", "ct"},
+            "adf_autolag": {"AIC", "BIC", "t-stat"},
+            "kpss_nlags": {"auto", "legacy"},
+        }
+        for name, allowed in permitted.items():
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(
+                    f"econometrics.{name} must be one of {sorted(allowed)}, got "
+                    f"{value!r}. statsmodels would accept a nonsense value and raise "
+                    f"from inside the library, naming neither the setting nor this file."
+                )
+
+        if self.adf_regression != self.kpss_regression:
+            raise ValueError(
+                f"econometrics.adf_regression ({self.adf_regression!r}) and "
+                f"econometrics.kpss_regression ({self.kpss_regression!r}) must "
+                f"match. The two tests are compared against each other, so testing "
+                f"ADF with a trend and KPSS without one would compare two different "
+                f"null hypotheses — and their disagreement would then be a property "
+                f"of the mismatch rather than of the data."
+            )
         return self
 
 

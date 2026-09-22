@@ -48,7 +48,12 @@ import pandas as pd
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.openbb_client import OpenBBClient
-from macro_engine.models.econometrics import RegressionResult, run_regression
+from macro_engine.models.contracts import ModelResult
+from macro_engine.models.econometrics import (
+    RegressionResult,
+    run_regression,
+    test_stationarity,
+)
 
 # Transcribed from config/series_registry.yaml — the registry is the only place
 # that names providers, and a live check is not an exception to that. The
@@ -242,6 +247,76 @@ def _spurious_level_regression(client: OpenBBClient) -> RegressionResult:
     return result
 
 
+def _verdict(result: ModelResult) -> str:
+    """Read the verdict out of a ``test_stationarity`` result, asserting the shape."""
+    value = result.value
+    assert isinstance(value, dict), f"expected a dict value, got {type(value).__name__}"
+    return str(value["verdict"])
+
+
+def _diagnose_the_spurious_pair(client: OpenBBClient) -> tuple[str, str, str]:
+    """Test both LEVELS and one CHANGE for stationarity — the missing half.
+
+    D-092's live check could only *illustrate* the spurious regression: it
+    reproduced a high R-squared from a pair with no stated mechanism and said
+    plainly that it could not diagnose it, because ``test_stationarity`` did not
+    exist yet. It exists now, so the argument can be **completed** rather than
+    left as an assertion: if both LEVELS carry a unit root and the CHANGE does
+    not, the spurious fit is explained rather than merely observed.
+
+    Returns ``(cpi_level_verdict, sales_level_verdict, cpi_change_verdict)``.
+    """
+    cpi = _monthly(_fetch(client, "cpi_core"), "cpi_core")
+    sales = _monthly(_fetch(client, "retail_sales"), "retail_sales")
+    joined = pd.DataFrame({"cpi_level": cpi, "sales_level": sales}).dropna()
+
+    cpi_result = test_stationarity(joined["cpi_level"])
+    sales_result = test_stationarity(joined["sales_level"])
+    # The first difference has no value for its first row BY CONSTRUCTION, so the
+    # caller drops it explicitly. The model refuses non-finite input and would
+    # (correctly) raise if the NaN were passed through.
+    cpi_change_result = test_stationarity(joined["cpi_level"].diff().dropna())
+
+    for label, result in (
+        ("core CPI, LEVEL", cpi_result),
+        ("retail sales, LEVEL", sales_result),
+        ("core CPI, first DIFFERENCE", cpi_change_result),
+    ):
+        value = result.value
+        assert isinstance(value, dict)
+        clip = " (KPSS p clipped)" if value["kpss_p_value_is_clipped"] else ""
+        print(
+            f"   {label:28s} {value['verdict']:24s} "
+            f"adf p={value['adf_p_value']:.4f}  kpss p={value['kpss_p_value']:.4f}{clip}"
+        )
+
+    cpi_verdict = _verdict(cpi_result)
+    sales_verdict = _verdict(sales_result)
+    change_verdict = _verdict(cpi_change_result)
+
+    # THE DIAGNOSIS, stated as exactly what the data can support. Both LEVELS
+    # must read non-stationary — that is the *necessary* condition for the
+    # spurious-regression explanation, and the whole of it.
+    assert cpi_verdict == "non_stationary", (
+        f"the core-CPI LEVEL read as {cpi_verdict!r}, so this pair is not the "
+        f"spurious-regression case the section above claims to demonstrate"
+    )
+    assert sales_verdict == "non_stationary", f"the retail-sales LEVEL read as {sales_verdict!r}"
+
+    # The first difference is REPORTED, never asserted. An earlier draft required
+    # it to read `stationary` and the live run **failed** — correctly, because
+    # that requirement was an assumption about real macro data rather than a
+    # property of the method. Measured 2026-09-22: core CPI's monthly change
+    # reads `non_stationary` (ADF p = 0.1558, KPSS p = 0.0100), because the
+    # GROWTH RATE itself shifted across the window — double-digit inflation in
+    # the 1970s against roughly 2% recently. KPSS's null is stationarity around a
+    # CONSTANT, and a change series whose mean moves is not that. So a
+    # non-stationary difference is a further finding about the series (the Great
+    # Moderation is visible in it), not a contradiction of the diagnosis.
+    # Requiring it would have made this check assert the data into agreement.
+    return cpi_verdict, sales_verdict, change_verdict
+
+
 def main() -> int:
     print("=" * 78)
     print("LIVE CHECK: run_regression (Module 18) against real FRED data")
@@ -278,6 +353,18 @@ def main() -> int:
         "   carries the caveat rather than implying the check was done."
     )
     spurious = _spurious_level_regression(client)
+
+    print()
+    print("4. THE DIAGNOSIS -- test_stationarity closes the thread D-092 left open")
+    print(
+        "   D-092 reproduced a spurious fit and said plainly that it could NOT\n"
+        "   diagnose it, because test_stationarity did not exist. It exists now.\n"
+        "   The NECESSARY condition is that both LEVELS carry a unit root; if\n"
+        "   they do, the spurious fit above is EXPLAINED rather than observed.\n"
+        "   The first difference is reported too, but NOT required to be\n"
+        "   stationary -- see the note at the assertion."
+    )
+    level_cpi, level_sales, change_cpi = _diagnose_the_spurious_pair(client)
 
     print()
     print("=" * 78)
@@ -324,10 +411,22 @@ def main() -> int:
     )
     print()
     print(
-        "  * NOT established here: stationarity of either series. This script does\n"
-        "    not run test_stationarity, because that function is a separate Module\n"
-        "    18 increment that does not exist yet. The level regression above is\n"
-        "    therefore an illustration of the hazard, not a diagnosis of it."
+        f"  * THE DIAGNOSIS (new in D-094): the spurious fit is now EXPLAINED, not\n"
+        f"    merely observed. The levels read '{level_cpi}' and '{level_sales}':\n"
+        f"    two non-stationary series regressed on each other produce a significant\n"
+        f"    coefficient from their shared trend. D-092 could only assert this; it\n"
+        f"    is now measured.\n"
+        f"    The first difference of core CPI reads '{change_cpi}' too, which is a\n"
+        f"    SECOND finding rather than a contradiction: the growth rate itself\n"
+        f"    shifted across the window, so it is not stationary around a constant.\n"
+        f"    That is the Great Moderation showing up in a stationarity test."
+    )
+    print(
+        "  * Still NOT established: that these verdicts hold outside this window.\n"
+        "    A unit root is a statement about the sample. The structural-break\n"
+        "    ambiguity is also unresolved — ADF and KPSS cannot distinguish 'a\n"
+        "    random walk' from 'stationary around a level that moved once', and\n"
+        "    those imply opposite things for a relative-value trade."
     )
     print()
     print("LIVE CHECK PASSED")

@@ -1,9 +1,10 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-22** (after **D-092 — PHASE 5 IS STARTED. Module 18's
-`run_regression` is implemented, tested, live-checked and swept.** See the D-092
-block at the end of this file. Tier 5 is no longer 0/20.)
+Last updated: **2026-09-22** (after **D-094 — Module 18 #2, `test_stationarity`.** Two
+functions of Module 18 are now implemented and the spurious-regression thread D-092
+left open is **closed**: the live check diagnoses it instead of merely illustrating
+it. Tier 5 = **2/20**.)
 Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
 (the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
@@ -43,9 +44,8 @@ Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 
 **WHERE WE ARE.** Phases **0 = 8/8 ✅ · 1 = 9/9 ✅ · 2 = 85/98 (13 outstanding, ALL
 Tier 5 by §22.3) · 3 = 2/2 ✅ · 4 = 4/4 ✅ — CLOSED at D-073.** Tiers **1/2/3/4 =
-23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; **Tier 5 = 1/20 — STARTED at D-092**
-(Module 18's `run_regression`; the remaining 19 were 0/20 *by design* until the
-operator opened Phase 5).
+23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; **Tier 5 = 2/20 — STARTED at D-092**
+(`run_regression`), continued at D-094 (`test_stationarity`).
 **The front of the runway is now Phase 5 — and it has NOT been started, by
 explicit instruction.** Phase 5 begins with the 13 Tier-5 deferrals (§22.3), each
 of which needs its own registry, its own reaction function and its own instruments.
@@ -206,7 +206,7 @@ in Tier 4, not here.
 | **Tier 2** — depend on Tier 1 | 29 | 29 | **100%** | `████████████████████` |
 | **Tier 3** — synthesis | 15 | 15 | **100%** | `████████████████████` ✅ |
 | **Tier 4** — construction | 11 | 11 | **100%** | `████████████████████` ✅ |
-| **Tier 5** — Phase 5+ | 1 | 20 | **5%** | **STARTED** — D-092, `run_regression` |
+| **Tier 5** — Phase 5+ | 2 | 20 | **10%** | **STARTED** — D-092 `run_regression` · D-094 `test_stationarity` |
 
 **Read the "85 / 98" correctly — it is not a backlog.** 85 = 23 + 29 + 15 + 11,
 i.e. **every Tier 1–4 function**. The 13 outstanding are **all Tier 5**, and
@@ -5338,3 +5338,74 @@ dependency entirely. **That is a decision for its increment, not this one.**
 and read its output critically (lesson **5bl**); quote the **measured** file count
 and never carry one forward (D-035); stage by **explicit filename**; and check the
 **GitHub run** before claiming green.
+
+---
+
+## Next (2026-09-22, after D-094) — **PHASE 5, Tier 5 = 2/20** · Module 18 is 2 of 6
+
+**Where we are.** **Phase 0 = 8/8 · 1 = 9/9 · 2 = 85/98 (13 outstanding, all Tier 5) ·
+3 = 2/2 ✅ · 4 = 4/4 ✅.** Tiers 1/2/3/4 = **23/23 · 29/29 · 15/15 · 11/11**.
+**Tier 5 = 2/20** — D-092 `run_regression`, D-094 `test_stationarity`.
+
+**Phase 5 continues by explicit operator instruction** — *sequential, one step at a
+time, production-grade*. **One function per increment, then report and wait.**
+
+### Module 18 — 2 of 6 done
+
+| # | function | depends on | status |
+|---|---|---|---|
+| 1 | `run_regression` | — | ✅ **D-092** (reviewed + fixed at D-093) |
+| 2 | `test_stationarity` | — | ✅ **D-094** |
+| 3 | `test_cointegration` | `run_regression`, `test_stationarity` | **← the binding Next — now UNBLOCKED** |
+| 4 | `compute_pca` | — (**needs a §4 `scikit-learn` decision**) | not started |
+| 5 | `kalman_latent_state` | — | not started |
+| 6 | `yield_curve_pca` | `compute_pca` | not started (§6.6 stub) |
+
+**Next: `test_cointegration`.** Both of its dependencies now exist, and §15.18-F
+imposes more on it than on either predecessor — it **MUST** return, alongside the
+test statistic: **the spread series, its estimated half-life of mean reversion, and
+a regime-stability check**, and it **MUST** warn that cointegration is a
+**backward-looking** estimate that breaks in regime change (LTCM) and that multiple
+pairwise tests without a multiple-testing correction produce false positives at
+roughly the nominal rate. The half-life is a new derivation (an AR(1) on the
+spread), and the multiple-testing warning is a *counting* obligation, not a string.
+It ships in `models/econometrics.py`, extending `scripts/mutation_econometrics.py`
+rather than adding a 44th sweep.
+
+**Two things D-094 established that the next increment should reuse:**
+
+- **`result_object=True` on both `adfuller` and `kpss`.** statsmodels has announced
+  the plain tuple's layout changes in 0.16 / after July 2027, so `result[1]` would
+  work today and break on an upgrade with no test failing. **The field rename is the
+  trap**: the tuple's third element is `usedlag`, the object calls it `lags`.
+  `test_cointegration` ADFs its residuals, so it needs the same call shape.
+- **KPSS p-values are CLIPPED to `[0.01, 0.10]`** and signalled only by an
+  `InterpolationWarning`. If the cointegration increment reports a KPSS-adjacent
+  statistic, the same bound-not-point disclosure applies.
+
+**One dependency fact to settle before `compute_pca`:** `scikit-learn` is **not** in
+`pyproject.toml` and not installed. §F says it is required. Adding a dependency is a
+§4 decision to be **recorded, not assumed** — and `numpy.linalg.eigh` may make it
+unnecessary. That decision belongs to its own increment.
+
+### Carry-overs from D-094
+
+- **The sweep census stays 43.** D-094 **extended** `mutation_econometrics.py`
+  (21 → 33 mutations) rather than adding a sweep. Do the same again: the three
+  pinned count locations only move when a *new* sweep file appears.
+- **`test_stationarity` must be imported under a private alias in tests.** Its name
+  begins with `test_` because §15.18-F mandates it, so
+  `from ... import test_stationarity` makes **pytest collect the model function as
+  a test case** — failing with a fixture error that names nothing. `tests/` uses
+  `_stationarity`; `scripts/` is safe because `testpaths = ["tests"]`.
+- **`CalibratedValue` is for NUMBERS only.** `tests/test_infrastructure.py` requires
+  every envelope to be readable as a plain number by a property or
+  `Settings.scalar()`, and `scalar()` returns `float`. A string *choice* belongs in
+  a plain `str` leaf with its reasoning as a YAML comment.
+- **O-94** (Q12's exposure half) is still open and still the reason Module 18 came
+  first.
+
+**Standing obligations at every close:** run the full gate set **sequentially**
+(never alongside a sweep — lesson **5bi**); run `tools/sweep_health.py` **LAST**
+(lesson **5bl**); quote the **measured** file count (D-035); stage by **explicit
+filename**; and check the **GitHub run** before claiming green.

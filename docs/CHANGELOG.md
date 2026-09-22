@@ -10,6 +10,76 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-094 — Module 18 #2: `test_stationarity` (Phase 5, Tier 5 = 2/20)
+
+**Added**
+
+- `test_stationarity(series) -> ModelResult` in
+  `src/macro_engine/models/econometrics.py`. Runs **both** ADF and KPSS because
+  their nulls are **inverted** (ADF's H0 is a unit root, KPSS's is stationarity),
+  so they are two pieces of evidence rather than two opinions — and §15.18-F
+  requires disagreement to be reported, *"not resolved by picking the convenient
+  one"*. Four verdicts, all reachable: `stationary`, `non_stationary`,
+  `inconclusive_conflict` (both reject) and `inconclusive_low_power` (neither
+  rejects). The two inconclusive kinds stay **distinct**, because "the tests
+  disagree" and "the tests are silent" imply opposite next steps.
+- Six config leaves, with validators rejecting a non-positive threshold, a size
+  outside `(0, 1)`, a nonsense choice, and an `adf_regression` that disagrees with
+  `kpss_regression` (mismatched deterministic terms would make their disagreement a
+  property of the mismatch rather than of the data).
+- **23 tests** and **12 mutations** (sweep now **33/33 killed**).
+
+**Behaviour**
+
+- **KPSS p-values are CLIPPED to `[0.01, 0.10]`** and statsmodels signals it only
+  via an `InterpolationWarning`. A returned `0.01` means *at most* 0.01 and `0.10`
+  means *at least* 0.10 — **bounds, not point estimates** — so the result discloses
+  it whenever it happens. Detected by capturing the warning, not by guessing the
+  table's range.
+- **Both `adfuller` and `kpss` are called with `result_object=True`.** statsmodels
+  has announced the plain tuple's layout changes in 0.16 (or after July 2027), so
+  `result[1]` would work today and break on an upgrade with no test failing. The
+  switch carries a trap: the tuple's third element is `usedlag`, the object calls it
+  `lags`.
+- **A rank-deficient ADF design is disclosed**, not swallowed: on a deterministic
+  sine statsmodels' internal lag regression is degenerate and still returns a
+  number, which is exactly why the consumer must be told.
+
+**Fixed (found by the live check and the sweep, not by the tests)**
+
+- **The live check's own over-claim.** Its first draft required the first
+  difference of core CPI to read `stationary`, and the run **failed** — the
+  assertion was wrong, not the data: the growth rate itself shifted across the
+  window, so the change is not stationary around a constant. The requirement now
+  covers only the necessary condition (both levels non-stationary) and **reports**
+  the difference as a second finding.
+- **Two weak tests, both survivors on the first sweep run.** M28 replaced the
+  published `significance_level` with a literal and survived because the config *is*
+  0.05 — fixed by **moving the config** and requiring the value *and the verdict* to
+  follow. M30 deleted the constant-series guard and survived because statsmodels
+  raises its own `Invalid input, x is constant`, which the test's bare-word match
+  accepted — the test was passing on **the library's error rather than our refusal**.
+
+**Changed**
+
+- The four *choice* leaves (`adf_regression`, `adf_autolag`, `kpss_regression`,
+  `kpss_nlags`) are plain `str`, not `CalibratedValue`. `tests/test_infrastructure.py`
+  requires every envelope to be readable as a plain **number** by a property or
+  `Settings.scalar()`, and `scalar()` returns `float`. The envelope asks *"is this
+  number a fact, a convention, or a placeholder?"* — a question that does not apply
+  to a selection. **The invariant was respected, not weakened.**
+
+**Closes D-092's open thread**
+
+`scripts/live_econometrics_check.py` §4 now **diagnoses** the spurious regression
+D-092 could only illustrate: core CPI level `non_stationary` (ADF p 0.9991), retail
+sales level `non_stationary` (ADF p 0.9987). D-092 asserted the hazard; it is now
+measured. **LIVE CHECK PASSED.**
+
+**Gates:** ruff clean · format **247** = mypy **247** · pytest **2872 passed ·
+1 skipped · 17 deselected · 0 failed** · reachability baseline **58**, gate 7/7 ·
+`sweep_health.py` **43 sweeps, OK** · sweep **33/33 killed**.
+
 ### D-093 — post-commit review of `run_regression`: two silent-failure paths
 
 **Fixed**

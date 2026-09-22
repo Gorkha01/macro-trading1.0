@@ -72,6 +72,7 @@ PYTEST_TARGETS = [
 # ---------------------------------------------------------------------------
 
 _CONFIDENCE_PENALTY = (
+    "                # apparent precision (Section 22.8).\n"
     "                is_heuristic_not_calibrated=not _r_squared_floor_is_calibrated(),"
 )
 
@@ -111,6 +112,7 @@ MUTATIONS: list[tuple[str, str, str]] = [
     (
         "M2 heuristic penalty dropped from compute_confidence",
         _CONFIDENCE_PENALTY,
+        "                # apparent precision (Section 22.8).\n"
         "                is_heuristic_not_calibrated=False,  # MUTANT M2",
     ),
     # ------------------------------------------------------------ the VIFs
@@ -186,6 +188,79 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "M20 duplicate-name guard removed",
         "    if duplicated_names:",
         "    if False:  # MUTANT M20 -- a duplicated label may reach the pandas dtype check",
+    ),
+    # ------------------------------------------- test_stationarity (D-094)
+    #
+    # M21 is the one that matters. The two tests have INVERTED nulls, so writing
+    # the two booleans the other way round transposes every verdict the function
+    # ever produces — and the function would still run, still return numbers, and
+    # still look entirely healthy. Nothing but a test that pins the DIRECTION can
+    # catch it.
+    (
+        "M21 the inverted nulls transposed (ADF/KPSS booleans swapped)",
+        "    adf_rejects_unit_root = adf_p_value < alpha\n"
+        "    kpss_rejects_stationarity = kpss_p_value < alpha",
+        "    adf_rejects_unit_root = kpss_p_value < alpha  # MUTANT M21\n"
+        "    kpss_rejects_stationarity = adf_p_value < alpha",
+    ),
+    (
+        "M22 the two inconclusive verdicts collapsed into one",
+        '        verdict = "inconclusive_conflict"\n'
+        "    else:\n"
+        '        verdict = "inconclusive_low_power"',
+        '        verdict = "inconclusive_low_power"  # MUTANT M22\n'
+        "    else:\n"
+        '        verdict = "inconclusive_low_power"',
+    ),
+    (
+        "M23 conflict warning dropped",
+        '    if verdict == "inconclusive_conflict":',
+        "    if False:  # MUTANT M23",
+    ),
+    (
+        "M24 low-power warning dropped",
+        '    if verdict == "inconclusive_low_power":',
+        "    if False:  # MUTANT M24",
+    ),
+    (
+        "M25 KPSS clipping disclosure dropped",
+        "    if kpss_clipped:",
+        "    if False:  # MUTANT M25 -- a clipped p-value would read as an exact one",
+    ),
+    (
+        "M26 rank-deficiency disclosure dropped",
+        "    if adf_ill_conditioned:",
+        "    if False:  # MUTANT M26",
+    ),
+    (
+        "M27 the clip flag published as a constant False",
+        '            "kpss_p_value_is_clipped": kpss_clipped,',
+        '            "kpss_p_value_is_clipped": False,  # MUTANT M27',
+    ),
+    (
+        "M28 the significance level dropped from the published value",
+        '            "significance_level": alpha,',
+        '            "significance_level": 0.05,  # MUTANT M28 -- a literal, not the setting used',
+    ),
+    (
+        "M29 the low-power limitation dropped",
+        '        "ADF has LOW POWER against a near-unit-root alternative, so \'fails to "',
+        '        "MUTANT M29 removed the low-power limitation. "',
+    ),
+    (
+        "M30 constant-series guard removed from the stationarity path",
+        "    if math.isclose(float(values.max()), float(values.min()), rel_tol=0.0, abs_tol=0.0):",
+        "    if False:  # MUTANT M30",
+    ),
+    (
+        "M31 stationarity observation floor removed",
+        "    if len(values) < minimum:",
+        "    if False:  # MUTANT M31",
+    ),
+    (
+        "M32 non-finite guard removed from the stationarity path",
+        "    if not bool(np.isfinite(values.to_numpy()).all()):",
+        "    if False:  # MUTANT M32",
     ),
     # ------------------------------------------- reasoning-object fields
     (
