@@ -10,6 +10,57 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-093 — post-commit review of `run_regression`: two silent-failure paths
+
+**Fixed**
+
+- **A regressor column named `const` silently destroyed a coefficient.** The
+  function prepends an intercept under that name, so a caller column with the same
+  label produced a design matrix with two `const` columns, a params Series with a
+  duplicated index, and a `{name: value}` comprehension that **kept only the last**
+  — reporting **fewer coefficients than were supplied, with no error at all**. Now
+  refused, naming the collision.
+- **A duplicated column label escaped as a pandas `AttributeError`.** `X[name]`
+  returns a DataFrame when the name is duplicated, so the dtype check raised
+  `'DataFrame' object has no attribute 'dtype'` — naming neither the problem nor
+  the column. Now refused, naming the duplicates. This also removes the same
+  latent hazard from the finiteness and constant-column loops.
+
+**Changed**
+
+- `_thresholds_calibrated()` → **`_r_squared_floor_is_calibrated()`**. The old name
+  was plural while the helper read exactly one config leaf; a future reader adding
+  a second illustrative threshold would have assumed it was already covered.
+
+**Added**
+
+- Two tests pinning the new guards, and two mutations (**M19**, **M20**) so the
+  guards are swept — a guard added in response to a review is exactly the kind that
+  is never exercised again. The sweep is now **21/21 killed**.
+
+**Verified after the OpenBB service was restored**
+
+- `tools/openbb_reachability.py` → **OK, serving 278 paths** (was exiting 1 in the
+  O-111 bound-but-502 state).
+- The live check **re-ran and PASSED with identical numbers** (Fisher slope
+  +1.0972, R² 0.5688, 823 months) — the evidence that the two new guards change
+  nothing for a valid input.
+- **3 conditional skips became 3 passes**: chunk 2 went from *354 passed, 3
+  skipped* to **357 passed, 0 skipped**. Those assertions had been silently absent
+  from every run made while the service was down.
+
+**Note on `sweep_health`'s "LEFTOVER" report.** Renaming the helper made M2's anchor
+absent, and the tool reported `MUTATION STILL APPLIED ... this is a LEFTOVER, not a
+drifted anchor`. The tree was **not** mutated. The classifier returns "applied"
+whenever the anchor is absent and re-applying is a no-op — which is also true when
+an anchor has been renamed out of existence. Recorded as an **observation, not a
+defect**: the false positive is in the safe direction (it makes you look, and
+looking found the genuinely stale anchor). The *wording* is what misleads.
+
+**Gates:** ruff clean · format **247** = mypy **247** · pytest **2849 passed ·
+1 skipped · 17 deselected · 0 failed** · reachability baseline **58**, gate 7/7 ·
+`sweep_health.py` **43 sweeps, OK**.
+
 ### D-092 — Module 18 begins: `run_regression` with a mandatory mechanism gate
 
 **Phase 5 is STARTED** (operator instruction: sequential, one step at a time).

@@ -224,7 +224,7 @@ def run_regression(
                 # against is an uncalibrated placeholder, and leaning on a
                 # placeholder must cost confidence rather than inherit its
                 # apparent precision (Section 22.8).
-                is_heuristic_not_calibrated=not _thresholds_calibrated(),
+                is_heuristic_not_calibrated=not _r_squared_floor_is_calibrated(),
                 # A single dataset supplies every input: y and each regressor
                 # come from the same sample, so there is no independent
                 # corroboration to credit (Module 13's family census).
@@ -319,6 +319,42 @@ def _prepare_observations(
 
     if X.shape[1] == 0:
         raise ValueError("X must have at least one regressor column; it has none.")
+
+    # Column NAMES are validated before anything reads a column, because both
+    # failure modes below are silent rather than loud — and one of them loses a
+    # coefficient without any error at all.
+    #
+    # (1) A duplicated name makes ``X[name]`` return a DataFrame rather than a
+    #     Series, so the dtype and finiteness checks raise an AttributeError from
+    #     inside pandas instead of a refusal that names the problem. Measured
+    #     2026-09-22: `pd.DataFrame(..., columns=['a','a'])` produced
+    #     "'DataFrame' object has no attribute 'dtype'".
+    # (2) A column literally named ``const`` collides with the intercept this
+    #     function prepends. Measured: the design matrix then carries TWO
+    #     ``const`` columns, statsmodels returns a params Series with a
+    #     duplicated index, and the ``{name: value}`` comprehension that builds
+    #     ``beta`` keeps only the last — so the fit reported **fewer coefficients
+    #     than the caller supplied, silently**. The VIF loop skips every
+    #     ``const``, so the caller's real regressor also lost its collinearity
+    #     report. That is the worst shape this project recognises: a wrong answer
+    #     that looks complete.
+    duplicated_names = sorted({str(name) for name in X.columns[X.columns.duplicated()]})
+    if duplicated_names:
+        raise ValueError(
+            f"X has duplicate column name(s) {duplicated_names}. A duplicated label "
+            f"makes `X[name]` return a DataFrame rather than a Series, and the "
+            f"coefficient map is keyed by name — so one regressor would overwrite "
+            f"another and the fit would report fewer coefficients than you supplied. "
+            f"Rename them distinctly."
+        )
+    if _INTERCEPT_NAME in {str(name) for name in X.columns}:
+        raise ValueError(
+            f"X contains a column named {_INTERCEPT_NAME!r}, which collides with the "
+            f"intercept this function prepends. The design matrix would hold two "
+            f"columns of that name and the coefficient map would silently keep only "
+            f"one of them. Rename the regressor."
+        )
+
     if len(y) != len(X):
         raise ValueError(
             f"y and X must have the same number of rows: y has {len(y)}, X has {len(X)}. "
@@ -493,12 +529,18 @@ def _limitations() -> list[str]:
     ]
 
 
-def _thresholds_calibrated() -> bool:
-    """Whether Module 18's acceptance thresholds are calibrated or placeholders.
+def _r_squared_floor_is_calibrated() -> bool:
+    """Whether the ONE threshold this function leans on is calibrated.
 
-    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated``. The R-squared
-    floor is the one this function genuinely leans on — it is what turns a
-    number into the judgement "weak" — so it is the one that is checked.
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated``.
+
+    Named for the single leaf it reads rather than for the config section it
+    lives in, because the name is load-bearing: an earlier version was called
+    ``_thresholds_calibrated`` (plural) while checking exactly one leaf, and a
+    future reader who added a second illustrative threshold would reasonably
+    assume the helper already covered it. The R-squared floor is the leaf that
+    matters here — it is what turns a number into the judgement "weak" — so it
+    is the one that costs confidence when it is a placeholder.
     """
     settings = get_settings()
     return settings.is_calibrated("econometrics.low_r_squared_threshold")

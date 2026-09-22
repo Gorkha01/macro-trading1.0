@@ -365,6 +365,51 @@ def test_empty_regressor_frame_is_refused() -> None:
         )
 
 
+def test_a_column_named_const_is_refused() -> None:
+    """The intercept's own name is reserved, because the collision is SILENT.
+
+    Found in review, not by a test: a caller column named ``const`` collides with
+    the intercept the function prepends, so the design matrix carries two columns
+    of that name, ``fit.params`` comes back with a duplicated index, and the
+    ``{name: value}`` comprehension building ``beta`` keeps only the last one. The
+    fit then reports FEWER coefficients than the caller supplied and raises
+    nothing at all — a wrong answer that looks complete.
+    """
+    rng = np.random.default_rng(31)
+    n = 40
+    x = pd.Series(rng.normal(size=n), name="x")
+    y = pd.Series(rng.normal(size=n), name="y")
+
+    with pytest.raises(ValueError, match="collides with the intercept"):
+        run_regression(
+            y,
+            pd.DataFrame({"x": list(x), "const": list(rng.normal(size=n))}),
+            _MECHANISM,
+        )
+
+
+def test_duplicate_regressor_names_are_refused() -> None:
+    """A duplicated label must be a refusal, not a pandas AttributeError.
+
+    Measured before the guard existed: ``X[name]`` returns a *DataFrame* when the
+    name is duplicated, so the dtype check raised
+    ``'DataFrame' object has no attribute 'dtype'`` from inside pandas — an
+    exception that named neither the problem nor the column.
+    """
+    rng = np.random.default_rng(32)
+    n = 40
+    values = rng.normal(size=n)
+    duplicated = pd.DataFrame({"a": values, "b": values})
+    duplicated.columns = ["a", "a"]  # pandas permits a duplicated label
+
+    with pytest.raises(ValueError, match="duplicate column name"):
+        run_regression(
+            pd.Series(rng.normal(size=n), name="y"),
+            duplicated,
+            _MECHANISM,
+        )
+
+
 def test_wrong_y_type_is_refused() -> None:
     with pytest.raises(TypeError, match="pandas Series"):
         run_regression([1.0, 2.0], _frame({"x": [1.0, 2.0]}), _MECHANISM)  # type: ignore[arg-type]

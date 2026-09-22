@@ -15678,3 +15678,132 @@ bring its own registry, its own reaction function and its own instruments; Modul
 why it comes first rather than a country module. **Sub-increment 2 will be
 `test_stationarity`**, because `test_cointegration` depends on both and this
 module's own limitation names it.
+
+---
+
+## D-093 — post-commit review of D-092: two silent-failure paths in the column NAMES
+
+**Scope:** `src/macro_engine/models/econometrics.py` (two new guards + one rename),
+`tests/models/test_econometrics.py` (+2 tests), `scripts/mutation_econometrics.py`
+(+2 mutations, one corrected anchor). **No behaviour change for a valid input** —
+proved below by the live check returning byte-identical numbers.
+
+### What triggered it
+
+The operator asked for a review of `run_regression` after the OpenBB service was
+restored, noting that the D-092 live check had run while the service was degraded.
+The re-run is part of this record; the review found **two defects the increment's
+own tests had not**, both of them in a place neither the spec nor the sweep had
+looked: the **names** of the regressor columns rather than their values.
+
+### Defect 1 — a column named `const` silently destroyed a coefficient
+
+`run_regression` prepends an intercept named `const`. Nothing stopped a *caller*
+from passing a regressor with that name. Measured:
+
+```
+X = {"x": ..., "const": ...}      # n_params = 3
+beta = {"const": ..., "x": ...}   # 2 entries
+```
+
+`sm.add_constant(..., has_constant="add")` produced a design matrix with **two
+`const` columns**; statsmodels returned a params Series with a duplicated index;
+and `{str(name): float(value) for name, value in fit.params.items()}` — a dict
+comprehension keyed by name — **kept only the last**. The fit therefore reported
+**fewer coefficients than the caller supplied, and raised nothing at all**. The
+VIF loop skips every `const`, so the caller's real regressor also lost its
+collinearity report.
+
+**This is the project's worst-recognised shape: a wrong answer that looks
+complete.** It is the same class as the D-092 finiteness bug (a guard that passes
+the case it exists to catch) and as O-96 (a bound no input could reach) — the
+failure is not in a number but in the *absence of a number*, with no signal.
+
+**Fix:** refuse a regressor named `const`, because the function owns that name.
+
+### Defect 2 — a duplicated label escaped as a pandas `AttributeError`
+
+`X[name]` returns a **DataFrame**, not a Series, when `name` is duplicated. The
+dtype check then raised `'DataFrame' object has no attribute 'dtype'` from inside
+pandas — an exception naming neither the problem nor the column. A caller would
+have to read a traceback to learn that their column labels were ambiguous.
+
+**Fix:** refuse duplicate column names, naming them. This also removes the same
+latent hazard from the finiteness and constant-column loops, which index by name
+in exactly the same way.
+
+**Both guards are swept** (M19, M20), because a guard added in response to a
+review is precisely the kind that is never exercised again — D-092's own M15
+lesson, applied to itself one turn later.
+
+### Also corrected: a helper named for more than it did
+
+`_thresholds_calibrated()` (plural) read exactly **one** leaf. A future reader
+adding a second illustrative threshold would reasonably assume the helper already
+covered it — which is how a confidence penalty silently fails to apply. Renamed
+`_r_squared_floor_is_calibrated()`, named for what it reads.
+
+### The rename broke the sweep's anchor — and `sweep_health` said "LEFTOVER"
+
+Renaming the helper made M2's anchor (`...not _thresholds_calibrated(),`) absent
+from the source, and `tools/sweep_health.py` reported:
+
+> `M2 ...: MUTATION STILL APPLIED in econometrics.py (anchor absent AND re-applying
+> the mutation changes nothing -- this is a LEFTOVER, not a drifted anchor)`
+
+**The tree was not mutated** — `grep -c MUTANT src/.../econometrics.py` = 0, and
+the anchor and its replacement were both absent. The classifier
+(`_sweep_gate._is_applied`) returns "applied" whenever `old` is absent and the
+re-apply is a no-op, which is **also** true when an anchor has been *renamed out
+of existence*. Its docstring's second branch — "the text is `P` (drifted anchor)
+→ the anchor is present" — is unreachable, because `old` being present already
+returns `False` earlier in the same function. So the predicate reduces to
+*"anchor absent ⟹ applied"* and cannot separate a rename from a leftover.
+
+**Recorded as an observation, not a defect, and deliberately not "fixed".** The
+false positive is in the **safe** direction — it makes you look, and looking
+revealed the genuinely stale anchor, which is the correct action. D-062's rule is
+that a detector manufacturing findings makes a gate ignorable; here it
+manufactured **one** finding on a real drift, which is the behaviour you want from
+a gate that cannot see intent. **The wording is what misleads**: "this is a
+LEFTOVER, not a drifted anchor" asserts a discrimination the predicate does not
+perform. If a fourth vocabulary of this failure appears, this is a candidate.
+
+**Action taken:** the anchor was updated to the renamed text; the sweep re-ran
+**21/21 killed** and `sweep_health` returned to **OK**.
+
+### The service was restored, and the re-run is the point
+
+`tools/openbb_reachability.py` → **OK, serving 278 paths, exit 0** (it had been
+exiting 1 in the O-111 bound-but-502 state). Two consequences, both measured:
+
+1. **The live check re-ran and PASSED with identical numbers** — Fisher slope
+   **+1.0972**, R² **0.5688**, 823 months; spurious level fit R² **0.9854**. That
+   is the evidence the two new guards changed nothing for a valid input, which is
+   what a fix of this kind must show.
+2. **The 3 conditional skips became 3 passes.** Chunk 2 went from
+   *354 passed, 3 skipped* to **357 passed, 0 skipped**. Those three assertions
+   had been silently absent from every run made while the service was down —
+   O-62's point exactly: a skip deletes assertions without failing anything, and
+   only restoring the dependency puts them back.
+
+### Gates (re-derived; D-035)
+
+| gate | result |
+|---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | **247** files already formatted |
+| `mypy --strict src tests tools scripts` | **247** source files, no issues |
+| pytest (chunked) | **2849 passed · 1 skipped · 17 deselected · 0 failed** |
+| `tools/reachability_audit.py` | Tier 1-4 baseline unchanged at **58**; gate **7 passed** |
+| `tools/sweep_health.py` (**LAST**) | **43** sweeps · 0 control-less · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · **OK** |
+| `scripts/mutation_econometrics.py` | **21/21 killed** (was 19/19; +M19, +M20) |
+| `scripts/live_econometrics_check.py` | **PASSED**, exit 0, numbers identical to D-092 |
+
+**D-035 parity: 247 = 247.** The suite moved 2844 → 2849 = **+2 tests** (the new
+guards) **+3 restored assertions** (the service being up).
+
+### Does this start or close a phase?
+
+**No.** It is a review of Phase 5's first sub-increment, not a new one. Module 18
+still has five functions outstanding and **`test_stationarity` is still next**.

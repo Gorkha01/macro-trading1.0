@@ -24,6 +24,14 @@ an empty dict where the contract says ``None``, M13 reports
 removes the causal-reading prohibition, and M18 makes ``value`` disagree with
 ``beta``.
 
+**M19 and M20 were added after a post-commit review** found two silent-failure
+paths in the column *names*: a caller column literally named ``const`` silently
+overwrote the intercept in ``beta`` (the fit reported fewer coefficients than were
+supplied, and raised nothing), and a duplicated label reached a pandas dtype check
+as an ``AttributeError`` rather than a refusal. Both are now guarded, and both
+guards are swept — a guard added in response to a review is exactly the kind that
+is never exercised again.
+
 A survivor is one of three things (D-031): a weak test, an **inert** mutation
 (the edit cannot change any asserted token), or a **broken** mutation (the
 fragment no longer matches the source, usually because ``ruff format`` moved a
@@ -63,7 +71,9 @@ PYTEST_TARGETS = [
 # matches, and the sweep would then silently not apply it.
 # ---------------------------------------------------------------------------
 
-_CONFIDENCE_PENALTY = "                is_heuristic_not_calibrated=not _thresholds_calibrated(),"
+_CONFIDENCE_PENALTY = (
+    "                is_heuristic_not_calibrated=not _r_squared_floor_is_calibrated(),"
+)
 
 _INTERCEPT_EXCLUSION = "        if str(name) == _INTERCEPT_NAME:\n            continue"
 
@@ -165,6 +175,17 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "M17 numeric guard removed from y",
         "    if is_bool_dtype(y.dtype) or not is_numeric_dtype(y.dtype):",
         "    if False:  # MUTANT M17",
+    ),
+    # ------------------------------------- the column-NAME guards (D-092 review)
+    (
+        "M19 const-name collision guard removed",
+        "    if _INTERCEPT_NAME in {str(name) for name in X.columns}:",
+        "    if False:  # MUTANT M19 -- a `const` column may silently overwrite the intercept",
+    ),
+    (
+        "M20 duplicate-name guard removed",
+        "    if duplicated_names:",
+        "    if False:  # MUTANT M20 -- a duplicated label may reach the pandas dtype check",
     ),
     # ------------------------------------------- reasoning-object fields
     (
