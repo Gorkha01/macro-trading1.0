@@ -164,8 +164,18 @@ def sidecar_for(path: Path) -> Path:
     return path.with_name(path.name + SIDECAR_SUFFIX)
 
 
-def _git_dirty_paths() -> set[Path] | None:
+def _git_dirty_paths(cwd: Path | None = None) -> set[Path] | None:
     """Every path git reports as modified/untracked, as resolved ``Path`` objects.
+
+    ``cwd`` selects **which repository is asked**, and passing it is not
+    optional in practice: without it git answers about the repository containing
+    the *process*'s working directory, so a sweep run from one tree while
+    targeting another would be told about the wrong one. Measured — the first
+    version of this helper had no ``cwd`` and returned ``[]`` for a file that
+    ``git status`` in its own repository reported as `` M t.py``, i.e. the
+    predicate was structurally incapable of firing for any target outside the
+    project root. Defaults to the process cwd, which is what a sweep wants,
+    because a sweep is run from the repository it mutates.
 
     ``None`` means **"could not ask"** — no git, no repository, a timeout, or a
     non-zero exit — and it is deliberately distinct from ``set()`` ("asked, and
@@ -177,17 +187,25 @@ def _git_dirty_paths() -> set[Path] | None:
     ``--porcelain`` is used rather than ``git status`` because it is stable
     across git versions and prints ``XY<space>PATH`` with no decoration; the
     ``-z`` variant is avoided because its NUL-separated stream with rename
-    records is more machinery than this needs. Paths are resolved so they can be
-    compared with the ``Path`` objects a sweep declares.
+    records is more machinery than this needs. Paths are resolved **relative to
+    the repository root git reports**, not to ``cwd``, because ``git status``
+    prints paths relative to the root and a nested invocation would otherwise
+    mis-resolve every entry.
     """
+    root = _git_root(cwd)
+    if root is None:
+        return None
+
     try:
         # `shutil.which` rather than the bare name so S607 ("partial executable
         # path") is answered honestly instead of suppressed, and `noqa: S603`
-        # because the argv here is four LITERALS plus a resolved interpreter path
-        # — nothing in it comes from the tree, the environment or a caller. Same
-        # suppression, same reason, as `mutation_api_layer.py`'s collect-only run.
+        # because the argv here is three LITERALS plus a resolved interpreter
+        # path — nothing in it comes from the tree, the environment or a caller.
+        # Same suppression, same reason, as `mutation_api_layer.py`'s
+        # collect-only run.
         proc = subprocess.run(  # noqa: S603
             [shutil.which("git") or "git", "status", "--porcelain"],
+            cwd=cwd,
             capture_output=True,
             text=True,
             timeout=10,
@@ -209,8 +227,33 @@ def _git_dirty_paths() -> set[Path] | None:
             raw = raw.split(" -> ", 1)[1]
         if raw.startswith('"') and raw.endswith('"') and len(raw) > 1:
             raw = raw[1:-1]  # git quotes paths containing spaces or non-ASCII
-        dirty.add(Path(raw).resolve())
+        dirty.add((root / raw).resolve())
     return dirty
+
+
+def _git_root(cwd: Path | None = None) -> Path | None:
+    """The repository root containing ``cwd``, or ``None`` if there is none.
+
+    Needed because ``git status --porcelain`` prints paths **relative to the
+    repository root**, while ``cwd`` may be any subdirectory. Resolving
+    porcelain entries against ``cwd`` would work only when the sweep happens to
+    be invoked from the root, which is why this is asked separately rather than
+    assumed.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [shutil.which("git") or "git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    top = proc.stdout.strip()
+    return Path(top).resolve() if top else None
 
 
 def describe_dirty_targets(paths: Iterable[Path]) -> list[str]:
@@ -229,25 +272,37 @@ def describe_dirty_targets(paths: Iterable[Path]) -> list[str]:
     sweeps while doing anything else* — is unchanged by any of this.
 
     O-112(b) phrased the same concern from the other end: *"an ``rc=124`` stop is
-    a detection not a prevention."* Removing the driver removed the `rc=124`, but
-    it did not remove the class — a sweep can still be killed by anything, and the
-    only thing that makes a kill recoverable is that the tree was knowably clean
-    when it began.
+    a detection not a prevention."* Removing the driver removed the ``rc=124``,
+    but it did not remove the class — a sweep can still be killed by anything,
+    and the only thing that makes a kill recoverable is that the tree was
+    knowably clean when it began.
 
     **Reports, never refuses.** A legitimate increment *is* a dirty tree: the
-    operator edits `src/` and then sweeps it, and every sweep in this project
+    operator edits ``src/`` and then sweeps it, and every sweep in this project
     targets a file the same increment touched. A hard failure here would make the
     guard unusable on the day it is needed, which is how a guard gets deleted.
     The caller prints the result loudly; the sidecar remains the actual defence.
+
+    The repository is chosen from the **first target's parent**, so a caller
+    testing against a sandbox tree gets the sandbox's answer rather than the
+    project's. A target that git has never heard of is not a *modification* and
+    is therefore never reported.
 
     Returns an empty list both when the targets are clean and when git could not
     be asked — this is a *report*, so an unanswered question is not a finding.
     Use :func:`_git_dirty_paths` directly if you need to distinguish the two.
     """
-    dirty = _git_dirty_paths()
+    candidates = list(paths)
+    if not candidates:
+        return []
+    # Ask the repository that actually contains the targets. Using the process
+    # cwd would be correct for a normal sweep and silently wrong for every other
+    # caller (measured: it reported `[]` for a genuinely modified sandbox file).
+    cwd = candidates[0].parent if candidates[0].is_absolute() else None
+    dirty = _git_dirty_paths(cwd)
     if dirty is None:
         return []
-    return sorted(str(p) for p in paths if p.resolve() in dirty)
+    return sorted(str(p) for p in candidates if p.resolve() in dirty)
 
 
 def record_pristine(paths: dict[Path, str]) -> list[Path]:
@@ -259,6 +314,22 @@ def record_pristine(paths: dict[Path, str]) -> list[Path]:
     :func:`restore_from_sidecar`, or ``tools/sweep_health.py``) can then restore
     the exact bytes without having to recognise *which* mutation was applied,
     which is what makes it strictly stronger than inverting a catalogue match.
+
+    **A sidecar is only as good as the text it was told was pristine, and that is
+    the whole failure mode this function sits at the centre of.** Measured on
+    2026-09-22: a sweep was killed while the tree already held two mutants
+    (``M5``/``M6``); the next run healed from the sidecar, which had faithfully
+    recorded that *already-mutated* text, and so reintroduced both mutants as the
+    new baseline. ``check_targets`` refused (exit 4) and the tree was recovered
+    from the index — the layered defence held — but the sidecar itself had become
+    a carrier of corruption rather than a defence against it.
+
+    The countermeasure lives at the call site, not here: ``sweep_lifecycle``
+    emits :func:`describe_dirty_targets` **before** this runs, so the operator is
+    told that the text about to be enshrined as "pristine" is not what ``HEAD``
+    says. This function deliberately does not refuse — it cannot tell a mutation
+    from a legitimate uncommitted edit, and D-048's lesson is that a gate which
+    cannot prove its claim must report rather than decide.
 
     Returns the sidecars written.
     """

@@ -146,13 +146,28 @@ def project_shelter_cpi(inputs: ShelterLagInputs) -> ModelResult:
     vintage_index_from_end = lag_months + 1
 
     if len(history) < required_points:
+        # The confidence below passes `data_quality_flags_present=True`, not
+        # `False`. This branch has NO usable observation, so the data-quality
+        # flag MUST be set: the docstring above states this, and
+        # `test_insufficient_history_confidence_is_computed_not_zero` asserts it.
+        # Shipped as `False` the two branches became identical
+        # (`compute_confidence()` returns 0.7 either way), so the confidence no
+        # longer distinguished "no result" from "a result" — which is the only
+        # reason this formula is called here rather than returning the
+        # specification's literal `0.0`.
+        #
+        # Kept OUTSIDE the call expression deliberately: M5's mutation anchor
+        # spans `value=None,` through the `ConfidenceInputs(...)` line, so a
+        # comment inserted between them silently disables that mutation
+        # (`check_targets` exits 4). Measured — the first version of this fix
+        # put the note inside and broke M5.
         return ModelResult(
             model_name="project_shelter_cpi",
             country="us",
             as_of=utc_now(),
             value=None,
             confidence=compute_confidence(
-                ConfidenceInputs(data_quality_flags_present=False),
+                ConfidenceInputs(data_quality_flags_present=True),
             ),
             interpretation=(
                 f"Insufficient market-rent history to project CPI shelter: "

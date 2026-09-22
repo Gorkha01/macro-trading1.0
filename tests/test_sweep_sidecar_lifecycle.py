@@ -147,6 +147,281 @@ def test_the_helper_is_exported(gate: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1b. The clean-tree precondition — O-61's still-open remedy, O-112(b)'s
+#     durable form
+# ---------------------------------------------------------------------------
+# O-61 (severity 3, incident) records the binding rule — *never run a sweep in
+# the background; never run a batch of sweeps while doing anything else* — and
+# notes its remedy is incomplete: *"nothing still refuses to START a sweep
+# against a dirty tree, and a swept tree mid-run is still invisible to git until
+# the process dies."*
+#
+# O-112(b) reached the same class from the other end: *"an `rc=124` stop is a
+# detection not a prevention."* Removing the sweep driver removed the `rc=124`
+# but not the class, because a sweep can still be killed by anything at all. The
+# only thing that makes a kill *recoverable as a fact* is that the tree was
+# knowably clean when the sweep began.
+#
+# The precondition therefore REPORTS and never REFUSES: an increment that edits
+# `src/` and then sweeps it is the normal case here, so a hard failure would make
+# the guard unusable on the day it is needed — which is how guards get deleted.
+
+
+def test_a_clean_target_is_not_reported_as_dirty(gate: Any, tmp_path: Path) -> None:
+    """The predicate must be silent on the ordinary case.
+
+    A guard that fires on a clean tree is the D-062 false-positive direction —
+    it manufactures findings, and findings are what make a gate ignorable.
+
+    Built in a sandbox repo rather than against this working tree, because this
+    tree is legitimately dirty while an increment is in flight — asserting
+    "clean" against it would make the test fail for the *right* reason at the
+    wrong time, which is how a test gets deleted instead of fixed.
+    """
+    import subprocess
+
+    sandbox = tmp_path / "repo"
+    sandbox.mkdir()
+    target = sandbox / "target.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+
+    for args in (
+        ("init", "-q"),
+        ("config", "user.email", "probe@example.invalid"),
+        ("config", "user.name", "probe"),
+        ("add", "target.py"),
+        ("commit", "-q", "-m", "baseline"),
+    ):
+        subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
+            cwd=sandbox,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert gate.describe_dirty_targets([target]) == [], (
+        "a committed, untouched file must not be reported as a dirty target"
+    )
+
+
+def test_a_nonexistent_target_is_not_reported_as_dirty(gate: Any) -> None:
+    """A path git has never heard of is not a *modification*.
+
+    ``sweep_lifecycle`` accepts paths that need not exist (api_layer's optional
+    routing files), so this predicate is called on them.
+    """
+    missing = _ROOT / "src" / "macro_engine" / "definitely_absent_9f3a.py"
+    assert gate.describe_dirty_targets([missing]) == []
+
+
+def test_a_modified_target_is_reported(gate: Any, tmp_path: Path) -> None:
+    """**The load-bearing direction.** A real uncommitted edit must be reported.
+
+    Measured rather than mocked: a THROWAWAY git repository is built in
+    ``tmp_path``, the target is committed, then modified, and the predicate is
+    asked about it.
+
+    **Why not use this repository's own working tree.** The first version of this
+    test appended a line to ``AGENTS.md`` and restored it afterwards. That was
+    wrong twice over, and both are worth recording because each is a hazard this
+    project has already been bitten by:
+
+    * ``read_text``/``write_text`` applies **universal-newline translation**, so
+      rewriting a CRLF file with LF leaves git reporting a whole-file
+      modification while ``git diff`` shows nothing (measured — the restore
+      looked clean to ``diff`` and dirty to ``git status``). That is the
+      documented CRLF-reader hazard, re-entered through a *test*.
+    * A test that dirties the tracked tree in order to test for dirty trees is
+      the defect it is testing for. The sandbox removes the possibility instead
+      of managing it.
+
+    ``tmp_path`` is outside the repository, and this predicate resolves paths but
+    does not require them to be inside it, so a sandbox repo exercises the same
+    code path — ``git status --porcelain`` parsing, status-column stripping, and
+    path resolution — while being unable to reach project source.
+    """
+    import subprocess
+
+    sandbox = tmp_path / "repo"
+    sandbox.mkdir()
+    target = sandbox / "target.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
+            cwd=sandbox,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "probe@example.invalid")
+    git("config", "user.name", "probe")
+    git("add", "target.py")
+    git("commit", "-q", "-m", "baseline")
+
+    assert gate.describe_dirty_targets([target]) == [], (
+        "precondition: the committed sandbox target must read as clean"
+    )
+
+    target.write_text("MODIFIED = 1\n", encoding="utf-8")
+    dirty = gate.describe_dirty_targets([target])
+
+    assert dirty, (
+        "an uncommitted modification was NOT reported as dirty — the "
+        "precondition cannot fire, so a sweep could start from an "
+        "unrecoverable baseline (O-61)"
+    )
+    assert str(target.resolve()) in dirty, f"the report named the wrong path: {dirty}"
+
+
+def test_the_precondition_covers_the_healed_paths_too(gate: Any, tmp_path: Path) -> None:
+    """A healed file is, by construction, one that differed from its sidecar.
+
+    If a previous run was killed, the target is almost certainly *also* dirty
+    relative to git — so the report must include healed paths rather than only
+    the paths that were dirty before ``restore_from_sidecar`` ran. Asserted here
+    because the two lists are computed at different points in ``sweep_lifecycle``
+    and it is easy to pass the wrong one.
+    """
+    source = _GATE.read_text(encoding="utf-8")
+    call = source.find("dirty = describe_dirty_targets(existing)")
+
+    assert call != -1, "the precondition call is gone from sweep_lifecycle"
+    # `existing` is the same list the heal operates on, so a healed path is by
+    # definition in scope for the report.
+    assert "existing = [p for p in paths if p.exists()]" in source, (
+        "the precondition must be asked about the same path set the heal uses, "
+        "or a healed (i.e. previously killed) target escapes the report"
+    )
+
+
+def test_the_precondition_reports_rather_than_refuses(gate: Any, tmp_path: Path) -> None:
+    """A dirty target must NOT abort the sweep — it must warn and continue.
+
+    This is the design decision, and it is asserted because the opposite choice
+    is a plausible-looking regression: "refuse to sweep a dirty tree" reads as
+    stricter, but it would forbid the normal increment workflow, so the guard
+    would be removed rather than obeyed.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+
+    # The block must complete normally even though `describe_dirty_targets`
+    # reports something for the target (here forced, since tmp_path is untracked).
+    with gate.sweep_lifecycle([target]) as originals:
+        assert originals[target] == "PRISTINE = 1\n", (
+            "a reported-dirty target must still be swept; the precondition is a report, not a veto"
+        )
+
+
+def test_the_precondition_is_checked_before_the_sidecar_is_written(
+    gate: Any, tmp_path: Path
+) -> None:
+    """The order matters: report the state the OPERATOR left, then protect.
+
+    If the report ran after ``record_pristine``, a sidecar created by this very
+    run would be indistinguishable from one left by a kill — and the operator
+    reading the warning could not tell whether the tree was already dirty.
+
+    Asserted structurally rather than behaviourally because the distinction is
+    only observable through stdout ordering, which is exactly the kind of claim
+    this project has learned to verify by reading the source (D-035's
+    re-derive-never-assume). The behavioural half is that the sidecar does not
+    exist until INSIDE the block, which the first test in this file pins.
+    """
+    source = _GATE.read_text(encoding="utf-8")
+    report_at = source.find("dirty = describe_dirty_targets(existing)")
+    protect_at = source.find("record_pristine(originals)")
+
+    assert report_at != -1, "the precondition call is gone from sweep_lifecycle"
+    assert protect_at != -1, "record_pristine is gone from sweep_lifecycle"
+    assert report_at < protect_at, (
+        "the dirty-target report must run BEFORE the sidecar is written, or the "
+        "warning describes this run's own sidecar instead of the operator's tree"
+    )
+
+
+def test_the_precondition_reports_cannot_ask_distinctly_from_clean(gate: Any) -> None:
+    """``None`` (could not ask git) must not be confused with ``set()`` (clean).
+
+    Collapsing them makes the guard **vacuously true** in exactly the environment
+    where nobody would notice — a stripped container, a source tarball, a CI image
+    without the repo history. That is D-062's "predicate trivially true" in its
+    silent direction, and it is the reason the internal helper distinguishes the
+    two while the public one does not.
+    """
+    assert hasattr(gate, "_git_dirty_paths"), (
+        "the could-not-ask sentinel helper is gone; without it the clean and "
+        "could-not-ask cases are indistinguishable (D-062)"
+    )
+    # In this repository git CAN be asked, so the sentinel must be a real set.
+    result = gate._git_dirty_paths()
+    assert result is not None, (
+        "git could not be asked INSIDE the project's own repository, so the "
+        "precondition is silently inert in the one place it is exercised"
+    )
+    assert isinstance(result, set)
+
+
+def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_path: Path) -> None:
+    """**The regression that mattered.** ``git status`` must run in the TARGET's repo.
+
+    Measured on 2026-09-22: the first version of the predicate called
+    ``subprocess.run(["git", "status", ...])`` with **no ``cwd``**, so it always
+    answered about the repository containing the process — and returned ``[]`` for
+    a sandbox file that ``git status`` in that sandbox reported as `` M t.py``.
+    The predicate was therefore **structurally incapable of firing for any target
+    outside the project root**, which is invisible from inside the project, where
+    it happens to be right.
+
+    This test builds two repositories: one clean, one dirty. The clean one is
+    asked about the dirty one's file, so the only way to get the right answer is
+    to resolve the repository from the target rather than from the process.
+    """
+    import subprocess
+
+    def make_repo(where: Path, *, dirty: bool) -> Path:
+        where.mkdir(parents=True)
+        target = where / "target.py"
+        target.write_text("PRISTINE = 1\n", encoding="utf-8")
+        for args in (
+            ("init", "-q"),
+            ("config", "user.email", "probe@example.invalid"),
+            ("config", "user.name", "probe"),
+            ("add", "target.py"),
+            ("commit", "-q", "-m", "baseline"),
+        ):
+            subprocess.run(  # noqa: S603
+                ["git", *args],  # noqa: S607
+                cwd=where,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        if dirty:
+            target.write_text("MODIFIED = 1\n", encoding="utf-8")
+        return target
+
+    clean = make_repo(tmp_path / "clean", dirty=False)
+    dirty = make_repo(tmp_path / "dirty", dirty=True)
+
+    # Both answers must be derived from each target's OWN repository. A helper
+    # using the process cwd returns [] for both.
+    assert gate.describe_dirty_targets([clean]) == [], (
+        "the clean repository's committed file was reported as dirty"
+    )
+    assert gate.describe_dirty_targets([dirty]) == [str(dirty.resolve())], (
+        "the dirty repository's modified file was NOT reported (or named the "
+        "wrong path) — the helper is asking the process's repository instead of "
+        "the target's (the 2026-09-22 no-cwd defect)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. The wiring — no sweep may lack the defence
 # ---------------------------------------------------------------------------
 
