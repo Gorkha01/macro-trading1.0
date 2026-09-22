@@ -41,12 +41,16 @@ No function may claim country-genericity it has not earned.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 21/21 routes verified |
-| 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — live-validated |
-| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **Tiers 1–4 complete (85/98)** — the outstanding 13 are all Tier 5, deferred by the US-only scope |
-| 3 | Thesis builder + API layer | **complete** — `build_us_macro_thesis` runs end to end; the §8 service exposes five surfaces |
-| 4 | Risk basics (VaR) + risk-budget hook | pending |
-| 5+ | Markov regime, Bayesian updating, FX/commodity/equity build-out, GARCH, multi-country | deferred |
+| 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 8/8; 21/21 routes verified |
+| 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — 9/9, live-validated |
+| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **85/98** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11); the 13 outstanding are **all Tier 5**, deferred by the US-only scope — **not a backlog** |
+| 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
+| 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
+| 5+ | Markov regime, Bayesian updating, FX/commodity/equity build-out, GARCH, multi-country | **not started** — by explicit operator instruction. Entry point is the 13 Tier-5 deferrals; each needs its *own* data registry, reaction function and instrument set |
+
+> Phase 5 is deliberately unstarted. The 13 Tier-5 items are the *entry point*, not a
+> backlog: each requires its own verified sources and its own central-bank logic
+> (ECB / BoJ / PBoC are not the Fed relabelled). See `docs/PROGRESS.md`.
 
 **Run the API:**
 ```bash
@@ -54,15 +58,24 @@ uv run uvicorn macro_engine.api_layer.app:app --host 127.0.0.1 --port 8000
 # /health · /thesis/us · /dashboard_data · /query · /thesis/us/stream (SSE)
 ```
 
-### Quality gates (measured)
+### Quality gates (measured 2026-09-22)
 
 ```bash
-uv run ruff check src/ tools/ tests/   # All checks passed!
-uv run ruff format --check             # 31 files already formatted
-uv run mypy                            # Success: 31 source files, no issues
-uv run pytest -m "not live"            # 42 passed
-uv run pytest -m live                  #  4 passed  (~7 min, makes real network calls)
+uv run ruff check .                          # All checks passed!
+uv run ruff format --check .                 # 243 files already formatted
+uv run mypy --strict src tests tools scripts # Success: no issues found in 243 source files
+uv run pytest -m "not live"                  # 2808 passed, 1 skipped, 17 deselected
+uv run pytest -m live                        # gated on tools/openbb_reachability.py; scheduled CI only
+uv run python tools/sweep_health.py          # run LAST: 42 sweeps, 0 leftovers, OK
 ```
+
+Two notes that are easy to get wrong:
+
+- **All four roots are required** in the `mypy` argument list (`src tests tools scripts`). It is
+  the only gate that sees a `src/` rename break a `scripts/` consumer.
+- **`sweep_health.py` runs LAST.** It is a photograph of the working tree: run it before a sweep
+  and it reports on a state that a later sweep can invalidate. It also gates the `quality` CI job
+  *before* the suite.
 
 ## Setup
 
@@ -70,22 +83,29 @@ This project uses **`uv` exclusively**. Do not use pip, poetry, or conda.
 
 ```bash
 uv sync --extra dev        # create .venv, install locked dependencies
-uv run pytest              # offline suite (fast, no network)
-uv run pytest -m live      # live suite (real OpenBB/FRED calls, ~7 min)
+uv run pytest              # offline suite (2808 passed; no network)
+uv run pytest -m live      # live suite (real OpenBB/FRED calls, scheduled CI)
 uv run ruff check .        # lint
 uv run ruff format --check .
-uv run mypy                # strict type check
+uv run mypy --strict src tests tools scripts
 ```
 
 ### Why two test suites
 
 Unit tests prove the **arithmetic**; live execution proves the **wiring** — the
 units, the nulls, the frequency, the sign conventions. They are not substitutes
-(Section 21.0 rule 1). Of the eleven defects found so far, **seven were invisible
-to synthetic tests**, and four of those returned a *plausible-looking* value
-rather than an error. The `live` marker is therefore excluded from the default
-run (a network dependency in the default suite is how a suite becomes something
-people ignore) and runs explicitly and on a CI schedule.
+(Section 21.0 rule 1). The recurring failure mode this project has actually
+suffered is a **plausible-looking wrong value**: a unit error, a wrong sign, a
+null read as zero — each of which passes a synthetic test written against the
+same misreading. In the first audit round, **the majority of defects found were
+invisible to synthetic tests**, and several returned a plausible number rather
+than an error.
+
+The `live` marker is therefore excluded from the default run (a network
+dependency in the default suite is how a suite becomes something people ignore)
+and runs explicitly, gated on `tools/openbb_reachability.py` and on a CI
+schedule. The running tally lives in `docs/OPEN_ISSUES.md` (the Loophole
+Ledger) — **not here**, where a count goes stale silently.
 
 ## Configuration
 
@@ -126,6 +146,8 @@ people ignore) and runs explicitly and on a CI schedule.
 
 | Document | Contents |
 |---|---|
+| [`AGENTS.md`](./AGENTS.md) | The single authoritative specification |
+| [`docs/PROGRESS.md`](./docs/PROGRESS.md) | The live tracker — **start here for current status** |
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the layers fit, the four contracts, where boundaries are enforced |
 | [`docs/BUILD_STATE.md`](./docs/BUILD_STATE.md) | Per-function completion and real-data validation records |
 | [`docs/DECISIONS.md`](./docs/DECISIONS.md) | Every deviation from the spec, with its evidence |
@@ -133,21 +155,31 @@ people ignore) and runs explicitly and on a CI schedule.
 | [`docs/SERIES_VERIFICATION.md`](./docs/SERIES_VERIFICATION.md) | Phase 0 evidence — all 21 verified routes and their values |
 | [`docs/CHANGELOG.md`](./docs/CHANGELOG.md) | What changed |
 
+`docs/PHASE4_HANDOFF.md` is **history**, not a live to-do list — it was
+purpose-built for Phase 4, which closed at D-073.
+
 ## Layout
 
 ```
 config/                 settings.yaml, series_registry.yaml, logging.yaml
 src/macro_engine/
   config.py             typed settings loader + registry enforcement
-  data_layer/           openbb_client, schemas, validation, snapshot_builder, persistence
+  settings_store.py     read/write access to persisted settings
+  audit.py              audit-event plumbing
+  deployment.py         deployment/runtime surface
+  data_layer/           openbb_client, alfred_client, schemas, validation,
+                        snapshot_builder, persistence
   models/               contracts (ModelResult, compute_confidence) + Modules 4-11, 17
   thesis_layer/         MacroThesis schema + build_us_macro_thesis()
   portfolio/            risk budgeting (Riskfolio-Lib hook)
   api_layer/            FastAPI service
   extensions/           Phase 5+ stubs, signatures only
-tests/                  mirrors src/
-tools/                  manual_series_check, probe_money_market, record_verification
-docs/                   architecture, build state, decisions, open issues, verification
+tests/                  mirrors src/ (api_layer, data_layer, models, portfolio, thesis_layer)
+tools/                  gates and probes — sweep_health, reachability_audit,
+                        openbb_reachability, integrity_audit, record_verification,
+                        manual_series_check, and the live_*_probe / diagnosis scripts
+scripts/                the mutation-sweep drivers and their shared gate module
+docs/                   architecture, progress, decisions, open issues, build state
 ```
 
 ## Contributing

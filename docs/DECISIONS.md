@@ -15453,3 +15453,78 @@ discrimination that was absent before the control existed. Restored byte-exact;
 ### Does not start a phase
 
 Phase 5 remains **not started**. This is a Phase 0-4 gate correction.
+
+---
+
+## D-091 — the reachability audit's O(functions × files) walk, indexed once
+
+**Scope:** `tools/reachability_audit.py` only. **No `src/` change, no behaviour change.**
+**Starts no phase** — Phase 5 remains not started by explicit operator instruction.
+
+### The measurement, before any edit
+
+`ast.walk` was being re-run over every parsed tree **once per function name**. Measured
+2026-09-22: **444,683** AST nodes in this repo, of which **27,944** are `ast.Call`, walked
+**79 times** = **35,129,957 node visits** to rediscover the same 27,944 call sites.
+`_references()` cost **~400 ms per name**, so the module-scoped fixture in
+`tests/test_reachability_gate.py` spent **35.39 s** of a 39.16 s chunk — 90 %.
+
+### Why two earlier fixes had not removed it
+
+Each closed **half of the same line** and read as a complete fix:
+
+| fix | what it cached | what it did not |
+|---|---|---|
+| candidate list | stopped re-running `ROOT.rglob` | the trees were still re-walked |
+| `_parsed` | stopped re-reading/re-parsing files | **`ast.walk` itself was never cached** |
+
+The `_parsed` docstring asserted *"This is the fix for the real bottleneck"* — accurate about
+what it measured (220 s → 33 s) and wrong about what it implied. Corrected in place.
+
+### The change
+
+`_call_sites()` — **one** pass over the trees, indexed by callee name, each entry carrying
+`(path, rel, lineno, enclosing_top_level_function)`. `_local_calls()` and `_references()` now
+read that dict. **The bucket rules are unchanged**; only their input changed.
+
+`ast.walk` is **not** the slow part. Replacing it with an `ast.NodeVisitor` measured
+**0.90× — i.e. slower**. Calling it 79 times was the cost.
+
+### Proof: byte-identical, under one harness
+
+Run both revisions through the same import path *inside* `tools/` so
+`ROOT = Path(__file__).resolve().parent.parent` resolves identically (importing the HEAD copy
+from outside the repo yields `funcs=0` — a harness artifact that mimics a real difference):
+
+| revision | fingerprint | wired/script/orph/unreach | classify() |
+|---|---|---|---|
+| `HEAD` (pre-fix) | `9862e4ea70f90ab21f0d0dc2671fd01a` | 21 / 34 / 24 / 58 | **35.77 s** |
+| fixed | `9862e4ea70f90ab21f0d0dc2671fd01a` | 21 / 34 / 24 / 58 | **2.84 s** |
+
+**Same verdict, 12.6× faster.** The tool's own printed summary agrees (58 / 34 / 24).
+
+*(A `8a7c29202c24437d7d453a3ea16a0924` figure circulating from an earlier session was computed
+over a **differently-serialized** body and was never comparable to this one. A fingerprint is
+meaningful only alongside the serialization that produced it.)*
+
+### Mutation proof — three mutants
+
+1. **Drop `Attribute` callees** → **SURVIVED**, then proved **INERT BY CONSTRUCTION**: the full
+   verdict, including line-level detail, is byte-identical, because every `obj.method()` site is
+   also reachable via a `Name` call. Not a gap — a mutation with no observable difference.
+2. **Drop owner tracking** → **KILLED** by two guards, reporting `['regime_tension']` — the exact
+   function from the 2026-09-19 reachability bug — and by
+   `test_the_defining_module_is_still_scanned_for_local_calls`.
+3. **Bucket `models/` as `pipeline`** → **KILLED** by `test_baseline_has_no_stale_entries`.
+
+### Gates (re-derived; D-035 — counts must match)
+
+ruff `check` clean · `ruff format --check` **243** = `mypy --strict` **243** across all four
+roots · pytest **2808 passed / 1 skipped / 17 deselected / 0 failed** (chunked) ·
+`tools/openbb_reachability.py` exit 0 · `tools/sweep_health.py` **run LAST**: **42 sweeps ·
+0 control-less · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK**.
+CI run `35718113050` on `560862d`: **every step success**.
+
+### Does not start a phase
+
+Phase 5 remains **not started**. This is a tooling-cost fix, not a scope change.

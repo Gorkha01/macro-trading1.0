@@ -1,4 +1,22 @@
-# PHASE 4 HANDOFF — read this first in the new session
+# PHASE 4 HANDOFF — **SUPERSEDED. HISTORY, NOT A TO-DO LIST.**
+
+> ## ⚠️ DO NOT READ THIS AS THE CURRENT HANDOFF
+>
+> **Phase 4 is COMPLETE (4/4) and closed at D-073.** Every instruction in this
+> document that sends you to "start Phase 4" is **spent**. The status table in §1
+> below is a *snapshot of 2026-09-20*, not the present state.
+>
+> **Current state, and where to start instead:**
+>
+> | | |
+> |---|---|
+> | Phases 0 / 1 / 2 / 3 | 8/8 · 9/9 · 85/98 · 2/2 ✅ |
+> | Phase 4 | **4/4 ✅ COMPLETE** — closed at D-073 |
+> | Phase 5+ | **NOT STARTED — by explicit operator instruction.** Entry point is the 13 Tier-5 deferrals, each needing its *own* registry, its *own* central-bank reaction function (ECB/BoJ/PBoC are not the Fed relabelled) and its *own* instruments. Natural first sub-increment: **Module 18** (unblocks O-94). |
+>
+> **Read [`docs/PROGRESS.md`](./PROGRESS.md) for live status.** This file is kept
+> because it records *how* Phase 4 was scoped and sequenced — a useful template —
+> not because any of its outstanding work remains.
 
 **Written:** 2026-09-20, at the end of the session that produced
 `docs/FINDINGS_value_provenance.md` and the §6 publication-date work.
@@ -8,15 +26,16 @@ the single authority; if this file and `AGENTS.md` disagree, `AGENTS.md` wins.
 
 ---
 
-## 1. Where we are
+## 1. Where we are — **AS OF 2026-09-20. SUPERSEDED; SEE THE BANNER ABOVE.**
 
-| Phase | Status |
-|---|---|
-| 0 | 8/8 ✅ |
-| 1 | 9/9 ✅ |
-| 2 | 85/98 — 13 outstanding, **all Tier 5 by §22.3 design** |
-| 3 | 2/2 ✅ (last increment **D-070**, the §8 API layer) |
-| **4** | **NOT STARTED ← the front of the runway** |
+| Phase | Status (2026-09-20) | Status now |
+|---|---|---|
+| 0 | 8/8 ✅ | 8/8 ✅ |
+| 1 | 9/9 ✅ | 9/9 ✅ |
+| 2 | 85/98 — 13 outstanding, **all Tier 5 by §22.3 design** | unchanged |
+| 3 | 2/2 ✅ (last increment **D-070**, the §8 API layer) | 2/2 ✅ |
+| **4** | **NOT STARTED ← the front of the runway** | **4/4 ✅ COMPLETE (D-073)** |
+| **5** | — | **NOT STARTED — the current front of the runway** |
 
 Tiers 1/2/3/4 = 23/23 · 29/29 · 15/15 · 11/11 — all complete.
 Tier 5 = 0/20 **by design** (not a gap).
