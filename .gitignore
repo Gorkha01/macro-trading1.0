@@ -30,8 +30,10 @@ build/
 # sandbox COPIES of real source — including copies of `scripts/mutation_*.py` —
 # so committing one puts a mutant-shaped file in the repo. Measured on
 # 2026-09-22: three of these (`.pytest_dur2`, `.pytest_iso`, `.pytest_g1`) were
-# swept into commits by an automated `git add -A`, and `ruff format --check .`
-# then reported a 251st file that is not source at all.
+# picked up by the operator's own `git add .` run from the repo root (commits
+# `43019ea` added them, `5951dae` removed them; neither ever reached origin/main
+# in a tree that still held them), and `ruff format --check .` then reported a
+# 251st file that is not source at all. `git add .` cannot re-add these now.
 .pytest_tmp/
 .pytest_*/
 !.pytest_cache/

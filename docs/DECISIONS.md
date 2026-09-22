@@ -14962,11 +14962,21 @@ target and re-resolving porcelain entries against it (git prints paths relative 
 ### Finding F2 — the `.sweepbackup` sidecar can itself be a CARRIER of corruption
 
 Three stray basetemp trees (`.pytest_dur2`, `.pytest_iso`, `.pytest_g1`) had been
-**committed** by the environment's automated `git add -A`. They contain sandbox *copies*
+**committed** by the operator's own `git add .` run from the repo root — *not* by any
+automated committer in this environment. This was misattributed at first writing
+("an automated committer runs `git add -A`") and corrected the same session after
+`git log --format` showed the author of every such commit to be the operator
+(`gorkha.bdcpa`): the identical commit message was a *copy-pasted* message, not a
+machine's. The correction matters because the wrong version would have had the next
+session hunting a non-existent tool, and would have let the real habit — `git add .`
+at the root, which stages **everything not ignored** — go unremarked. The trees
+contain sandbox *copies*
 of `scripts/mutation_*.py`, so the repo was carrying mutant-shaped files; and because
 `ruff format --check .` walks them, the parity count read **251** instead of 241. Untracked
 and deleted, and `.gitignore` now covers `.pytest_*/` (the existing `.pytest_tmp/` pattern
-is narrower than what `--basetemp=.pytest_<name>` actually creates).
+is narrower than what `--basetemp=.pytest_<name>` actually creates). **Neither commit
+ever left `origin/main` holding those files** — `git ls-tree -r origin/main` shows none,
+so the exposure was local history only.
 
 Worse, and measured directly: a stale sidecar recorded a text that **already contained
 M5/M6**. The next run healed from it and reintroduced both mutants as the new baseline —
