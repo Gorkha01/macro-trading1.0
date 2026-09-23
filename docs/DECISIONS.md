@@ -16024,3 +16024,289 @@ than silent. **No row was deleted and no Phase 0–4 work is touched.**
 list), the tier table's **20** (inherited, no derivation found), and Phase 2's
 **13** outstanding (a different universe — Phase 0-4's 98-function total). This entry
 fixes *which list governs*, not *how many there are*. Cite **"N/23 by §21.3"**.
+
+---
+
+## D-097 — Module 18 #3: `test_cointegration`, and a fourth silent failure in `coint_johansen`
+
+**Date:** 2026-09-23 · **Increment:** Phase 5, Module 18's third of six functions
+**Supersedes:** nothing — this is the first cointegration implementation in the tree.
+**Feeds:** the pair-trading and relative-value leg of the Tier-5 work list. A
+`ModelResult` carrying the statistic, the **spread series**, the **half-life** and a
+**regime-stability verdict** is what a later `statistical_arbitrage` /
+`pair_selection` consumer reads; nothing consumes it yet, which is stated rather
+than implied.
+
+### What was built
+
+`test_cointegration(y, x, method="engle_granger") -> ModelResult` at
+`src/macro_engine/models/econometrics.py:505`, with ~14 helpers. Signature is
+§15.20-F's verbatim. Two methods:
+
+* **Engle-Granger** — regress `y` on `x` with `add_trend(..., prepend=False)` and
+  `sm.OLS`, then ADF the residual with `regression="n"`. Rejects when the
+  statistic is **more negative** than the critical value for the requested size.
+* **Johansen** — `coint_johansen(det_order=0, k_ar_diff=1)`, trace statistic for
+  `r = 0`. Rejects when the statistic **exceeds** its critical value. **The two
+  directions are opposite**, which is why the comparison is an explicit indexed
+  lookup in both cases rather than a chain.
+
+### The half-life is DERIVED, not recalled
+
+Written out at `_estimate_half_life`. The residual `z` is the spread; its mean
+reversion is estimated from an AR(1) with the **difference** on the left,
+
+    dz_t = phi * z_{t-1} + eps_t,
+
+whose continuous analogue `dz/dt = -kappa * z` has `phi = -kappa`, hence
+
+    H = ln(2) / kappa = -ln(2) / phi.
+
+*Sign check:* mean reversion means `z` decays, so `dz_t` is negative when
+`z_{t-1}` is positive — `phi < 0` — so `H > 0`. *Limits:* `phi -> 0-` gives
+`H -> +inf` (no reversion); `phi -> -1+` gives `H -> ln(2) = 0.693`. *Hand-computed
+case:* `phi = -0.5` gives `H = 1.3863` and `rho = phi + 1 = 0.5`; both are asserted
+in the suite against the closed form, not against a recorded float.
+
+**Two refusals around the alias boundary** (`phi = rho - 1`):
+
+* `phi <= -1` — the spread alternates sign every period, and the naive `H` falls
+  **below** the `ln(2)` floor, i.e. a half-life shorter than one period. Refused,
+  with a message naming the aliasing.
+* `phi >= 0` — no reversion (or explosive accumulation); `H` would be negative.
+  Refused.
+
+**Two-tier disclosure** for a half-life that is *positive but unusable*:
+`H >= n_obs` ("cannot be distinguished from no reversion") and `H > n_obs / 4`
+("weakly identified"). **MEASURED:** the `H >= n_obs` tier is **not reachable
+through the public API** — searched across independent walks (n = 100–3200),
+AR(1) with `rho` to 0.99999 (n to 8000) and an exact mean-reverting `z` at
+`kappa` down to 0.0005. It is covered at the **unit** level on
+`_half_life_disclosure` instead of via a contrived fixture, and the negative
+result is the finding.
+
+### ☠ THE FOURTH SILENT FAILURE — `coint_johansen` leaks `ComplexWarning` on EVERY call
+
+The operator's standing instruction for this increment was *"assume a fourth"*.
+It exists.
+
+`statsmodels.tsa.vector_ar.vecm.coint_johansen` calls `np.linalg.eig` internally
+and **emits 4 `ComplexWarning`s on every single call**, because the eigenvector
+matrix is complex-valued and is cast to real. Left uncaptured, those warnings
+**escape `test_cointegration` entirely** — so:
+
+* a caller sees statsmodels' internals in their output for a function that did
+  nothing wrong;
+* under `python -W error` the call **raises** for every Johansen test, i.e. a
+  correct function becomes unusable in a strict environment;
+* and nothing in the published result hinted it had happened.
+
+**The failure mode is the operator's exact phrasing:** the number looked
+complete. `is_cointegrated`, the statistic and the thresholds were all correct;
+only the *environment* was polluted, which is invisible to a green suite.
+
+**Measured before fixing:** the warnings fire at every `n` tested (60 … 1600),
+and across 40 seeds **0** of them correlated with a non-finite statistic — so this
+is unconditional statsmodels behaviour, not a signal about the fit.
+
+**Fixed** by capturing with `warnings.catch_warnings(record=True)`,
+`simplefilter("always")`, counting the `ComplexWarning` entries, returning the
+count as a **5th element** of `_run_johansen`'s tuple, publishing it as
+`discarded_imaginary_warnings`, and appending a disclosure warning that says
+plainly this is unconditional library behaviour and **must not be read as a
+signal**. The Engle-Granger path reports `0` and is unchanged.
+
+**Proven:** no warning escapes; `-W error` no longer raises; the count is
+published; the EG path reports zero. Swept as **M49** (leak restored) and **M50**
+(disclosure dropped), both killed.
+
+### The three previously-known silent-failure paths, now guarded and swept
+
+1. **Near-collinear pair** → `coint` returns `coint_t = -inf, pvalue = 0.0` with
+   only a `CollinearityWarning`. An infinitely significant result from a
+   degenerate fit — the *strongest-looking* and *least* reliable number. Refused
+   on the collinearity flag **or** a non-finite statistic (**M33**).
+2. **`trend="n"`** → `critical_values = [nan, nan, nan]`, and **every comparison
+   against a NaN is False**, so the verdict would read *cannot reject* regardless
+   of the statistic. Refused (**M35**); `"n"` is also excluded from the permitted
+   set at config load, so the route is closed twice over.
+3. **The half-life alias region** (§ above).
+
+### The two MANDATORY warnings
+
+* **(a) Backward-looking.** First warning, every call. Cointegration is a
+  statement about the sample and breaks in regime change; **LTCM is named**.
+* **(b) Multiple testing — a COUNTING obligation.** Not a sentence: the
+  family-wise error rate is computed as `1 - (1 - alpha)**m` and the corrected
+  per-test size as `1 - (1 - alpha)**(1/m)`, from the **configured** size and
+  family. At `alpha = 0.05`, `m = 10`: **0.4013** and **0.00511620**. The family
+  size is an **ASSUMPTION this function cannot verify** (it tests one pair and
+  cannot see the others) and is published beside the counts as such. Swept as
+  **M44** (approximated by `m*alpha`), **M45** (`alpha/m`), **M46** (family frozen
+  at a literal).
+
+### The regime-stability check
+
+Two halves at `regime_stability_split_fraction`, each re-run, with four verdicts:
+`stable`, `unstable`, `absent_in_both_halves`, `not_tested`. A full-sample
+rejection neither half reproduces is a contradiction the function **warns about**
+rather than publishing quietly. Swept as **M42** (observation floor) and **M43**
+(support comparison inverted).
+
+### What the sweep found in my OWN tests — five guards silently absent from the run
+
+The first extended sweep returned **46/56**, and the survivors were not all
+pre-existing. Two classes of real defect:
+
+**(a) Five genuine test holes.** **M36** (no `phi >= 0` test), **M40** (no
+`H >= n` reachability test), **M52** (`is_cointegrated` was **never asserted to a
+specific value anywhere**), **M53** (the Johansen `n_obs` was never checked —
+a real defect I had fixed and never tested), **M47** (the mutation was **BROKEN**:
+its anchor deleted a *comment* rather than the warning string, so it changed
+nothing observable and "survived" — rewritten to delete the actual text, now
+killed). All five closed.
+
+**(b) The fifth defect, and the worst of them: FIVE TESTS WERE SHADOWED BY NAME.**
+Four new `test_cointegration` refusal tests reused names already taken by
+`test_stationarity`'s guards, and `test_confidence_is_derived_not_asserted`
+collided with `run_regression`'s. **Python keeps only the LAST definition of a
+duplicated function name**, so five earlier tests were **deleted from the run
+while pytest stayed green** — a suite that had quietly LOST five guards, which is
+precisely the "looks complete" failure this project's gates exist to catch. It
+was **ruff's F811** that surfaced it, not any test. The names now carry the
+`cointegration` qualifier, and the count moved **2872 -> 2923**, so the
+restoration is measurable rather than asserted.
+
+**This is the increment's most transferable lesson:** *test names are
+identifiers, and a duplicated identifier is a silent deletion — D-093's lesson
+(review the IDENTIFIERS, not just the arithmetic) recurs one level up, in the
+suite rather than the model.*
+
+### Sweep census: extended, not added to
+
+`scripts/mutation_econometrics.py` **33 -> 56 mutations** (M33–M55 + CANARY1).
+**The sweep count stays 43** — `sweep_health` reports **43 sweeps, 0 leftovers,
+0 failures**.
+
+**Final: 55/56 killed.** Part way through, an **`INERT_BY_ROUTE`** mechanism was
+added, because a survivor that is merely "expected" is indistinguishable from a
+dead gate. It requires a **stated reason** per entry and refuses to certify if an
+entry is **stale** (its mutation is now killed), **dangling** (not in the table)
+or **unexplained** (< 40 chars) — exit 5. Only *unexplained* survivors fail
+(exits 1).
+
+**M34 is the single entry:** probing `coint` across **93 (configuration x trend)
+combinations** (independent walks n = 30–1600 × 4 seeds; near-collinear at scales
+1e-9/1e-12/1e-15/0.0; constant y; constant x; y identical to x; each across
+`"c"/"ct"/"n"`) returned **31 with non-finite critical values and ZERO with a
+non-finite p-value**. `coint` trips the critical-value guard **first** on every
+input, so M34's branch is never evaluated. The guard is **kept as defence against
+a future statsmodels release** rather than deleted, and the NaN route **is**
+reached directly by `test_the_non_finite_guards_fire_when_the_route_is_reached`,
+which kills **M35** — so the family is proven live even though this member is not.
+
+**The three "pre-existing survivors" were NOT holes — my own rename killed them, and
+the mechanism is the increment's sharpest finding.** The first two sweeps reported
+**52/56** with M2, M30 and M32 surviving, and I provisionally filed them as
+`run_regression` / `test_stationarity` gaps (**O-117**). **The rename that closed
+defect (b) below moved the count to 55/56 with no mutation changed** — so the
+verdict was falsified and the record had to be rewritten.
+
+**Why they were "surviving": the shadowed names had corrupted the SWEEP, not just the
+test count.** Four of my new refusal tests reused `test_stationarity`'s names, and one
+collided with `run_regression`'s confidence test. **Python binds a module-level name to
+its LAST definition**, so from the moment those tests existed the run contained only the
+*cointegration* versions — and the sweep, which mutates `econometrics.py` and asks
+whether *any* test fails, was being answered by tests **that no longer covered the
+mutated code path**. `M30` (constant-series guard) and `M32` (non-finite guard) were
+saved by `test_cointegration`'s refusals, which assert on **different messages and a
+different function**; `M2` was saved by nothing at all, because its guard lives in
+`run_regression` and **its covering test had been deleted from the run**.
+
+**Proven by isolation, using the sweep's OWN anchors** (not hand-built ones): each swap
+**compiles OK**, the suite **fails**, `1 failed, 111 passed` — all three are **genuine
+kills**, not inert mutations and not weak tests. **A first attempt at this proof was
+itself wrong** — it hand-built a replacement missing the guard body and reported a
+spurious `IndentationError`, i.e. a harness that agreed with my assumption rather than
+the code; redone with anchors read from `MUTATIONS` verbatim, restored byte-exact.
+
+**The lesson, and it is the increment's most transferable one:** *a mutation sweep's
+verdict is only as trustworthy as its test **selection**, and a duplicated test name
+changes that selection silently.* The green suite and the surviving mutant were
+**artefacts of the same cause, pointing in opposite directions** — the suite looked
+green because it had *lost* tests, and the sweep looked red because it was *using the
+wrong ones*. **O-117 is therefore CLOSED, not open**, and the remedy is textual and
+cheap: **`ruff`'s F811 catches every duplicate module-level name.**
+
+**Two arity defects in my own new guard code**, both found by *running* it: I wrote
+`for name, _ in _iter_mutations()` (4-tuples) and `for name, _, _, _ in MUTATIONS`
+(3-tuples). Each raised `ValueError` **after the sweep had finished but before it
+certified** — i.e. a run that measured everything could not say what it found.
+Both fixed; the branches are now exercised directly by hand-built tables, and the
+harness that first "passed" was itself wrong (it used 4-tuples for both operands,
+reproducing my assumption rather than the code's data).
+
+### Gates (all run SEQUENTIALLY, sweep_health LAST)
+
+| gate | measured |
+|---|---|
+| `ruff check .` | **All checks passed** (7 errors found and fixed: 5×F811 + E501 + SIM102) |
+| `ruff format --check .` | **247 files already formatted** |
+| `mypy --strict src tests tools scripts` | **no issues in 247 source files** |
+| `pytest -q` (full) | **2923 passed / 1 skipped / 17 deselected / 0 failed** in 144.61s |
+| `mutation_econometrics.py` | **55/56 killed** (56 declared; the one survivor is M34, inert-by-route) |
+| `tools/sweep_health.py` | **43 sweeps, 0 leftovers, 0 failures — OK** |
+| `tools/reachability_audit.py --check-baseline` | **58 = 58, PASS**, no regressions |
+
+### Live check — run ALONE on a verified-clean tree
+
+The first attempt was **contaminated** and discarded: it was run *while the sweep
+was mutating the tree*, so it read a mid-mutation `econometrics.py` and reported
+verdicts that flipped on byte-identical p-values. **This violated the standing
+rule "run gates SEQUENTIALLY (never alongside a sweep)"** and is recorded here
+because the violation, not the result, was the error. Re-run against a tree
+verified free of `MUTANT` text and sidecars, with the service confirmed at
+**`:6900`, 200, 278 paths, 0.18 s** (`:6901` answers **502** — the known dead
+port).
+
+**Result: LIVE CHECK PASSED.** Measured 2026-09-23:
+
+| pair | n | stat | p | cointegrated | hedge | half-life | regime |
+|---|---|---|---|---|---|---|---|
+| **fed_funds_rate ~ fed_funds_daily** (positive control) | 866 | −5.3276 | 0.0000 | **True** | 0.948511 | **0.7324** | **stable** |
+| tips_5yr ~ tips_10yr | 285 | −2.8848 | 0.1402 | False | 1.074323 | 9.0578 | absent_in_both_halves |
+| tips_10yr ~ tips_30yr | 200 | −1.8957 | 0.5822 | False | 1.064499 | 12.1212 | absent_in_both_halves |
+| tips_10yr ~ nominal_10yr | 285 | −3.1757 | 0.0741 | **False** | 0.830724 | 7.2508 | **unstable** |
+
+**THE NARRATIVE LOST, AND THE LIVE CHECK REPORTS RATHER THAN ASSERTS.** The
+tempting story — that yields sharing a policy-rate trend must cointegrate — is
+**false on this data**: all three term-structure pairs fail to reject. The
+expectations hypothesis is a statement about *ex-ante* yields, and the realised
+spreads here are wide and persistent (2013's taper episode and the 2022-23
+inversion both sit inside the window), which is exactly what makes them fail a
+stationarity test. **Asserting cointegration would have been the D-094 failure
+repeated** — a live check that asserted the data into agreement — so nothing in
+section 7 is asserted.
+
+The **positive control** is what makes those non-rejections informative: with
+`FEDFUNDS ~ DFF` rejecting at **p = 0.0000** with a half-life of **0.73 periods**
+and regime **stable**, a rejection is demonstrably reachable on real data. And the
+**`unstable`** verdict on `tips_10yr ~ nominal_10yr` is the **LTCM shape found in
+real data** — two sub-periods that disagree — rather than a citation.
+
+The counting obligation reproduces on live settings: family-wise **0.4013**,
+corrected per-test size **0.00511620**.
+
+### What this does NOT establish
+
+* **Nothing consumes the output yet.** The integration is a *contract* (the
+  `ModelResult` shape a downstream consumer will read), not a live wiring.
+* **The half-life is a point estimate with no interval.** It is a confidence
+  statement in name only; the two disclosure tiers flag the unusable cases but
+  do not bound the usable ones.
+* **The `H >= n_obs` tier is unreachable through the public API** (measured), so
+  it is unit-covered rather than integration-covered.
+* **US-only** (§22.3). `cointegration_trend` is deliberately `"c"` or `"ct"`
+  only; `"n"` is refused at config load because it produces the NaN-critical
+  route.
+* **The `INERT_BY_ROUTE` register has exactly one entry (M34)**; M2/M30/M32 turned out to be **corrupted verdicts, not holes**, and are **O-117 CLOSED**.

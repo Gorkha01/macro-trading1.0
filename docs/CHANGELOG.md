@@ -10,6 +10,89 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-097 — Module 18 #3: `test_cointegration`; a fourth silent failure in `coint_johansen`; five tests shadowed by name
+
+**Added**
+
+- `test_cointegration(y, x, method="engle_granger") -> ModelResult` in
+  `src/macro_engine/models/econometrics.py` (§15.20-F's verbatim signature), with
+  **Engle-Granger** (regress then ADF the residual) and **Johansen**
+  (`coint_johansen`, trace statistic) paths. **The two rejection directions are
+  opposite** — Engle-Granger rejects on a *more negative* statistic, Johansen on a
+  statistic *exceeding* its critical value — so both are explicit indexed lookups.
+- The three mandated extras, on every call: the **spread series** (with its
+  published-series identity proven against the statistic), the **half-life of mean
+  reversion** and a **regime-stability verdict** (`stable` / `unstable` /
+  `absent_in_both_halves` / `not_tested`).
+- The **half-life is derived, not recalled**: `dz_t = phi * z_{t-1} + eps_t` with
+  continuous analogue `dz/dt = -kappa*z` gives `phi = -kappa` and
+  `H = -ln(2)/phi`. Sign check, both limits, and a hand-computed case
+  (`phi = -0.5 -> H = 1.3863`) are asserted against the closed form rather than
+  against recorded floats. **Two refusals** bracket the alias boundary
+  (`phi <= -1` gives a half-life below the `ln(2)` floor; `phi >= 0` gives a
+  negative one) and **two disclosure tiers** flag a positive-but-unusable half-life.
+- The two **mandatory warnings**, first and second on every call:
+  backward-looking estimation that breaks in regime change (**LTCM named**), and the
+  multiple-testing obligation computed as a **count** — family-wise
+  `1 - (1-alpha)**m` and corrected per-test `1 - (1-alpha)**(1/m)`, from config,
+  with the family size published as an **ASSUMPTION** the function cannot verify.
+- Config: `cointegration_min_observations`, `regime_stability_split_fraction`,
+  `assumed_test_family_size`, `cointegration_trend` (a plain `str` leaf, `{"c","ct"}`
+  only — `"n"` is refused at load because it produces statsmodels' NaN critical
+  values).
+
+**Fixed — the FOURTH silent failure**
+
+- **`coint_johansen` emitted 4 `ComplexWarning`s on every call and they escaped the
+  function.** `np.linalg.eig` returns complex eigenvectors that are cast to real;
+  uncaptured, statsmodels' internals reached the caller's output and **`-W error`
+  raised on every Johansen test**, i.e. a correct function became unusable in a
+  strict environment while every published field stayed correct. Measured on 40
+  seeds and n = 60…1600: the warnings are unconditional and **none** of them
+  correlated with a non-finite statistic. **Fixed** by capturing them, publishing
+  `discarded_imaginary_warnings`, and adding a disclosure stating this is library
+  behaviour and **must not be read as a signal**. The Engle-Granger path reports `0`.
+
+**Fixed — five tests were silently ABSENT from the run**
+
+- Four new `test_cointegration` refusal tests reused names already owned by
+  `test_stationarity`'s guards, and one collided with `run_regression`'s confidence
+  test. **Python keeps only the last definition of a duplicated name**, so five
+  earlier guards were **deleted from the run while pytest stayed green** — a suite
+  that had quietly lost five tests, which is the "looks complete" failure this
+  project's gates exist to catch. **Only `ruff`'s F811 surfaced it.** Names now
+  carry a qualifier and the suite moved **2872 -> 2923 passed**, so the restoration
+  is measurable.
+
+**Changed**
+
+- `scripts/mutation_econometrics.py` **33 -> 56 mutations** (M33–M55 + CANARY1) —
+  **extended, not added to**, so the sweep census stays **43**. Final **55/56
+  killed**.
+- New **`INERT_BY_ROUTE`** register for a survivor whose guard is correct but whose
+  route the public API cannot reach. It demands a **stated, measured** reason and
+  **refuses to certify** (exit 5) on a stale, dangling or unexplained entry, so an
+  exemption cannot outlive its reason. One entry: **M34**, measured across 93
+  (configuration × trend) combinations with **31 non-finite critical-value cases and
+  zero non-finite p-values** — `coint` always trips the critical-value guard first.
+- `scripts/live_econometrics_check.py` now runs the cointegration section: a
+  **positive control** (`FEDFUNDS ~ DFF`), the **counting obligation** recomputed
+  from live settings, and the real TIPS/nominal term-structure pairs **reported, not
+  asserted**. Measured 2026-09-23: the control rejects at **p = 0.0000**, half-life
+  **0.73**, regime **stable**; **all three term-structure pairs do NOT cointegrate**,
+  one of them `unstable` — the LTCM shape found in real data rather than cited.
+
+**Fixed — and it was worse than a wrong test count**
+
+- **The five shadowed tests had also CORRUPTED the mutation sweep.** Three mutations
+  (**M2, M30, M32**) reported as surviving were being killed by the **wrong tests** —
+  the sweep asked "does any test fail?" and the only tests left under those names no
+  longer covered the mutated code. Restating the names took the sweep from **52/56 to
+  55/56 with no mutation changed**, and each mutation was then re-applied in isolation
+  using the sweep's **own anchors** (compiles OK; suite fails; `1 failed, 111 passed`).
+  **O-117 is therefore CLOSED.** *A sweep's verdict is only as trustworthy as its test
+  selection.*
+
 ### D-096 — "Phase 5+" is an UPGRADE PASS; §21.3's tags supersede OPEN_ISSUES'
 
 **Changed (docs only — no code)**

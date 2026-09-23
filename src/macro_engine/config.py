@@ -4481,6 +4481,9 @@ class EconometricsSettings(BaseModel):
     vif_concern_threshold: CalibratedValue
     significance_level: CalibratedValue
     stationarity_min_observations: CalibratedValue
+    cointegration_min_observations: CalibratedValue
+    regime_stability_split_fraction: CalibratedValue
+    assumed_test_family_size: CalibratedValue
 
     # These four are CHOICES, not calibrated quantities, and they are plain
     # `str` rather than `CalibratedValue` on purpose. `tests/test_infrastructure.py`
@@ -4495,6 +4498,7 @@ class EconometricsSettings(BaseModel):
     adf_autolag: str
     kpss_regression: str
     kpss_nlags: str
+    cointegration_trend: str
 
     @model_validator(mode="after")
     def _validate_leaves(self) -> EconometricsSettings:
@@ -4520,6 +4524,9 @@ class EconometricsSettings(BaseModel):
             "vif_concern_threshold",
             "significance_level",
             "stationarity_min_observations",
+            "cointegration_min_observations",
+            "regime_stability_split_fraction",
+            "assumed_test_family_size",
         ):
             value = getattr(self, name).value
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -4540,11 +4547,66 @@ class EconometricsSettings(BaseModel):
                 f"unfalsifiable in one direction."
             )
 
+        # The split fraction has its own domain check rather than sharing the
+        # `> 0` loop above, because "positive" is not enough here. A fraction of
+        # 1.0 would put the entire sample in the first half and leave the second
+        # EMPTY, and an empty half cannot be tested — so the stability check
+        # would report `not_tested` on every call while appearing configured.
+        # That is the declared-but-unreachable shape: a threshold whose value
+        # silently makes the check it governs unreachable.
+        split_fraction = float(self.regime_stability_split_fraction.value)
+        if not 0.0 < split_fraction < 1.0:
+            raise ValueError(
+                f"econometrics.regime_stability_split_fraction must lie strictly "
+                f"inside (0, 1), got {split_fraction!r}. A fraction of 0 leaves the "
+                f"first half empty and 1.0 leaves the second half empty, so the "
+                f"regime-stability check would report `not_tested` on every call "
+                f"while looking configured."
+            )
+
+        # An integer floor, not merely positive: the family size is used as an
+        # EXPONENT (`(1-alpha)**m`), so a fractional value would produce a
+        # number that describes no family of tests at all.
+        family_size = self.assumed_test_family_size.value
+        if isinstance(family_size, bool) or not float(family_size).is_integer():
+            raise ValueError(
+                f"econometrics.assumed_test_family_size must be a whole number, got "
+                f"{family_size!r}. It is used as an exponent in the multiple-testing "
+                f"correction, so a fractional value would describe no family of tests."
+            )
+        if int(family_size) < 1:
+            raise ValueError(
+                f"econometrics.assumed_test_family_size must be at least 1, got "
+                f"{family_size!r}. A family of zero tests has no error rate to correct."
+            )
+
+        if float(self.cointegration_min_observations.value) < float(
+            self.stationarity_min_observations.value
+        ):
+            raise ValueError(
+                f"econometrics.cointegration_min_observations "
+                f"({self.cointegration_min_observations.value!r}) must be at least "
+                f"econometrics.stationarity_min_observations "
+                f"({self.stationarity_min_observations.value!r}). The Engle-Granger "
+                f"procedure spends the sample twice -- a first-step regression, then "
+                f"a residual ADF that augments with its own lags -- so a "
+                f"cointegration test cannot be supported by LESS data than a single "
+                f"stationarity test on a raw series."
+            )
+
         permitted: dict[str, set[str]] = {
             "adf_regression": {"c", "ct"},
             "kpss_regression": {"c", "ct"},
             "adf_autolag": {"AIC", "BIC", "t-stat"},
             "kpss_nlags": {"auto", "legacy"},
+            # NOTE the deliberate omission of "n". statsmodels accepts it, and
+            # with it returns critical_values = [nan, nan, nan] because the 2010
+            # MacKinnon table has no entry for that case. Every comparison
+            # against NaN is False, so the cointegration verdict would silently
+            # become "cannot reject" for ANY statistic. Permitting a value whose
+            # use destroys the decision is not a config choice; excluding it
+            # here means the failure cannot be reached.
+            "cointegration_trend": {"c", "ct"},
         }
         for name, allowed in permitted.items():
             value = getattr(self, name)

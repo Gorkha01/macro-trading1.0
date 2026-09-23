@@ -52,6 +52,7 @@ from macro_engine.models.contracts import ModelResult
 from macro_engine.models.econometrics import (
     RegressionResult,
     run_regression,
+    test_cointegration,
     test_stationarity,
 )
 
@@ -64,6 +65,26 @@ _SYMBOLS: dict[str, str] = {
     "fed_funds_rate": "FEDFUNDS",
     "retail_sales": "RSAFS",
 }
+
+# The cointegration pairs, added at D-097. These are NOT registry fields: the
+# registry carries the series the ENGINE consumes, and a live check that needs a
+# second tenor must not invent a registry entry to get one. They are FRED symbols
+# fetched through the same `economy.fred_series` route the registry uses, and the
+# route is asserted below rather than assumed.
+_COINT_SYMBOLS: dict[str, str] = {
+    "fed_funds_daily": "DFF",  # the DAILY effective fed funds rate
+    "tips_5yr": "DFII5",  # 5-year TIPS real yield
+    "tips_10yr": "DFII10",  # 10-year TIPS real yield
+    "tips_30yr": "DFII30",  # 30-year TIPS real yield
+    "nominal_10yr": "DGS10",  # 10-year nominal constant-maturity yield
+}
+
+_COINT_MECHANISM = (
+    "The expectations hypothesis of the term structure: yields at two maturities "
+    "of the SAME curve share a common stochastic trend — both move with the "
+    "expected path of the policy rate — so their difference should be stationary "
+    "even though neither level is."
+)
 
 _MECHANISM = (
     "The Fisher relation: the nominal policy rate compensates for realised core "
@@ -317,6 +338,227 @@ def _diagnose_the_spurious_pair(client: OpenBBClient) -> tuple[str, str, str]:
     return cpi_verdict, sales_verdict, change_verdict
 
 
+def _monthly_symbol(client: OpenBBClient, symbol: str) -> pd.Series:
+    """Fetch one FRED symbol and return it as a month-indexed Series.
+
+    The same ``economy.fred_series`` route the registry's ``tips_yields`` entry
+    uses, asserted rather than assumed: a cointegration check that fetched
+    through some other route would be exercising wiring the engine does not have.
+
+    Duplicate months are dropped keeping the FIRST observation. TIPS yields are
+    daily, so a month has many observations and the choice matters — but the
+    point of this check is the model on a real monthly series, not a particular
+    within-month aggregation rule, and the drop is stated rather than hidden.
+    """
+    frame = client.fetch_series(
+        provider="fred",
+        endpoint="economy.fred_series",
+        params={"symbol": symbol},
+        series_label=symbol,
+    )
+    clean = frame.loc[frame["value"].notna(), ["date", "value"]]
+    periods = pd.to_datetime(clean["date"], errors="raise").dt.to_period("M")
+    if not periods.is_monotonic_increasing:
+        raise AssertionError(f"{symbol}: dates are not in ascending order")
+    series = pd.Series([float(value) for value in clean["value"]], index=periods, name=symbol)
+    return series.sort_index()[~series.sort_index().index.duplicated(keep="first")]
+
+
+def _resolve(symbol_name: str) -> str:
+    """Resolve a transcribed name to a FRED symbol from EITHER table.
+
+    The two tables exist for a reason — `_SYMBOLS` mirrors the registry and
+    `_COINT_SYMBOLS` holds extra maturities the registry does not carry — but a
+    pair may legitimately draw one leg from each (the positive control pairs the
+    registry's ``fed_funds_rate`` with the extra ``DFF``). Resolving in one place
+    keeps the lookup honest: a name in neither table is a transcription error and
+    raises rather than silently fetching something else.
+    """
+    if symbol_name in _COINT_SYMBOLS:
+        return _COINT_SYMBOLS[symbol_name]
+    if symbol_name in _SYMBOLS:
+        return _SYMBOLS[symbol_name]
+    raise AssertionError(
+        f"{symbol_name!r} is in neither _SYMBOLS nor _COINT_SYMBOLS — a "
+        f"transcription error, not a fetch failure"
+    )
+
+
+def _live_pair(
+    client: OpenBBClient,
+    left: str,
+    right: str,
+    *,
+    method: str = "engle_granger",
+) -> tuple[ModelResult, int]:
+    """Run ``test_cointegration`` on a real pair and print every mandated field."""
+    a = _monthly_symbol(client, _resolve(left))
+    b = _monthly_symbol(client, _resolve(right))
+    joined = pd.DataFrame({"a": a, "b": b}).dropna()
+
+    result = test_cointegration(joined["a"], joined["b"], method=method)
+    value = result.value
+    assert isinstance(value, dict), f"expected a dict value, got {type(value).__name__}"
+
+    half_life = value["half_life_periods"]
+    print(
+        f"   {left} ~ {right:20s} n={value['n_obs']:4d}  "
+        f"stat={value['statistic']:+9.4f}  p={value['p_value']:.4f}  "
+        f"cointegrated={value['is_cointegrated']!s:5s}"
+    )
+    print(
+        f"     hedge ratio {value['hedge_ratio']}  "
+        f"half-life {half_life if half_life is not None else 'UNESTIMABLE'}  "
+        f"regime {value['regime_stability']}  "
+        f"window {joined.index[0]}..{joined.index[-1]}"
+    )
+    return result, len(joined)
+
+
+def _cointegration_positive_control(client: OpenBBClient) -> ModelResult:
+    """A real pair the test SHOULD reject, so a rejection is reachable live.
+
+    ``FEDFUNDS`` (the monthly effective federal funds rate) against ``DFF`` (the
+    DAILY effective rate) measures the same policy rate at two frequencies, so a
+    failure to find cointegration would be a wiring fault rather than a finding.
+    Measured 2026-09-23 over 1954-07 .. 2026-08 (n = 866): p = 0.0000,
+    ``is_cointegrated = True``, hedge ratio 0.949, half-life 0.73 periods, regime
+    stability ``stable``.
+
+    This is the **necessary** condition only. It is NOT asserted that a
+    MACRO-economic pair must cointegrate — the runs below show real term-structure
+    pairs that do NOT — but a test that could never reject on live data would make
+    every non-rejection meaningless, so one reachable rejection is required.
+    """
+    result, _ = _live_pair(client, "fed_funds_rate", "fed_funds_daily")
+    value = result.value
+    assert isinstance(value, dict)
+
+    assert value["is_cointegrated"] is True, (
+        f"the same policy rate at two frequencies did not cointegrate "
+        f"(p = {value['p_value']}); that points at a wiring fault, not at the "
+        f"economy"
+    )
+    assert value["regime_stability"] == "stable", (
+        f"the regime-stability check returned {value['regime_stability']!r} on the "
+        f"strongest pair available; both halves should support a relationship this "
+        f"mechanical"
+    )
+    # The hedge ratio must be near 1: these are the SAME quantity in the SAME
+    # units, so any other coefficient is a sign of misalignment. This is the one
+    # place a magnitude is legitimate to assert, because the mechanism pins it.
+    hedge = value["hedge_ratio"]
+    assert isinstance(hedge, float)
+    assert abs(hedge - 1.0) < 0.2, (
+        f"hedge ratio {hedge} is far from 1.0 for two measurements of the same "
+        f"rate — the series are probably not the ones intended"
+    )
+    return result
+
+
+def _cointegration_term_structure(client: OpenBBClient) -> list[tuple[str, bool, str]]:
+    """The real term-structure pairs, REPORTED rather than asserted.
+
+    This is the honest half, and it is the reason the check is worth running.
+    Three pairs on the SAME curve, all with the expectations-hypothesis mechanism
+    stated in advance, and their outcomes measured 2026-09-23:
+
+    * ``DFII5 ~ DFII10`` — p = 0.1402, NOT cointegrated, ``absent_in_both_halves``;
+    * ``DFII10 ~ DFII30`` — p = 0.5822, NOT cointegrated, ``absent_in_both_halves``;
+    * ``DFII10 ~ DGS10`` — p = 0.0741, NOT cointegrated, **``unstable``**.
+
+    **The narrative loses here, and the record says so.** The tempting story is
+    that yields on one curve cointegrate because they share a policy-rate trend.
+    Over these windows they do NOT: the spreads are wide and persistent (the
+    2013 taper episode and the 2022-23 inversion are visible in them), and a
+    two-half split finds the relationship either absent or actively contradictory.
+    Asserting cointegration here would have been a live check that asserted the
+    data into agreement — D-094's exact failure, three increments later.
+
+    The ``unstable`` pair is the most instructive: it is a term spread whose
+    halves disagree, which is the LTCM shape the first mandatory warning
+    describes, found in real data rather than quoted from a history book.
+
+    Every outcome is returned for the assessment below to read. Unlike the
+    spurious-regression section, NOTHING here is asserted about the verdicts —
+    only that the published fields are mutually consistent, which is a property of
+    the function and not of the economy.
+    """
+    outcomes: list[tuple[str, bool, str]] = []
+    for left, right in (
+        ("tips_5yr", "tips_10yr"),
+        ("tips_10yr", "tips_30yr"),
+        ("tips_10yr", "nominal_10yr"),
+    ):
+        result, _ = _live_pair(client, left, right)
+        value = result.value
+        assert isinstance(value, dict)
+        verdict = str(value["regime_stability"])
+        rejected = bool(value["is_cointegrated"])
+
+        # CONSISTENCY, not agreement with a prior. These are the properties the
+        # function promises, and they must hold on real data as well as synthetic:
+        assert verdict in {"stable", "unstable", "absent_in_both_halves", "not_tested"}
+        # A full-sample rejection neither half reproduces is a contradiction the
+        # function must warn about rather than publish quietly. Collapsed to one
+        # condition rather than an `if` around an `if`: the outer test is implied
+        # by the message the inner one asserts on.
+        if verdict == "absent_in_both_halves" and rejected:
+            assert any("NOT REPRODUCED BY EITHER HALF" in w for w in result.warnings)
+        if not rejected:
+            assert any("NO COINTEGRATION DETECTED" in w for w in result.warnings)
+        # The two mandatory warnings, on every live call.
+        assert "BACKWARD-LOOKING" in result.warnings[0]
+        assert "MULTIPLE" in result.warnings[1].upper()
+
+        outcomes.append((f"{left} ~ {right}", rejected, verdict))
+    return outcomes
+
+
+def _cointegration_multiple_testing_is_counted() -> tuple[int, float, float]:
+    """The counting obligation, checked against the arithmetic on live settings.
+
+    Section 15.18-F makes this a COUNT rather than a sentence, so a live check
+    that only confirmed the warning's presence would miss a hardcoded family size
+    or an arithmetic slip. The published counts are recomputed here from the
+    configured size and family and compared exactly.
+    """
+    settings = get_settings().econometrics
+    alpha = float(settings.significance_level.value)
+    family = int(settings.assumed_test_family_size.value)
+
+    result = test_cointegration(*_synthetic_pair())
+    value = result.value
+    assert isinstance(value, dict)
+
+    expected_family_wise = 1.0 - (1.0 - alpha) ** family
+    expected_corrected = 1.0 - (1.0 - alpha) ** (1.0 / family)
+    assert value["family_size_assumed"] == family
+    assert abs(float(value["family_wise_error_rate"]) - expected_family_wise) < 1e-8
+    assert abs(float(value["corrected_per_test_size"]) - expected_corrected) < 1e-8
+    print(
+        f"   at alpha = {alpha} and an assumed family of {family}: family-wise "
+        f"error rate {expected_family_wise:.4f}, corrected per-test size "
+        f"{expected_corrected:.8f}"
+    )
+    return family, expected_family_wise, expected_corrected
+
+
+def _synthetic_pair() -> tuple[pd.Series, pd.Series]:
+    """A small deterministic cointegrated pair, for the settings-arithmetic check.
+
+    Used only where the check is about the CONFIGURED numbers rather than about
+    the data — fetching a real series to verify ``1 - (1 - alpha)^m`` would add a
+    network call and a source of variation to an arithmetic assertion.
+    """
+    index = pd.RangeIndex(200)
+    steps = [((i * 37) % 11) - 5.0 for i in range(200)]
+    x = pd.Series(pd.Series(steps).cumsum().to_numpy(), index=index, name="x")
+    noise = [0.5 * (((i * 13) % 7) - 3.0) for i in range(200)]
+    y = pd.Series(x.to_numpy() + noise, index=index, name="y")
+    return y, x
+
+
 def main() -> int:
     print("=" * 78)
     print("LIVE CHECK: run_regression (Module 18) against real FRED data")
@@ -327,6 +569,12 @@ def main() -> int:
     print("0. REGISTRY AGREEMENT")
     print("   Every transcribed symbol still matches config/series_registry.yaml.")
     print(f"   {', '.join(f'{k}={v}' for k, v in _SYMBOLS.items())}")
+    print(
+        "   The cointegration symbols are NOT registry fields — they are extra\n"
+        "   maturities fetched through the same `economy.fred_series` route the\n"
+        "   registry uses, and the routes are asserted when they are fetched:"
+    )
+    print(f"   {', '.join(f'{k}={v}' for k, v in _COINT_SYMBOLS.items())}")
 
     client = OpenBBClient()
 
@@ -365,6 +613,36 @@ def main() -> int:
         "   stationary -- see the note at the assertion."
     )
     level_cpi, level_sales, change_cpi = _diagnose_the_spurious_pair(client)
+
+    print()
+    print("5. COINTEGRATION -- the counting obligation, on the configured numbers")
+    print(
+        "   Section 15.18-F makes the multiple-testing correction a COUNT rather\n"
+        "   than a sentence, so the published figures are recomputed here from the\n"
+        "   configured size and family and compared exactly."
+    )
+    family, family_wise, corrected = _cointegration_multiple_testing_is_counted()
+
+    print()
+    print("6. COINTEGRATION -- a POSITIVE CONTROL the test should reject")
+    print(
+        "   Mechanism (stated BEFORE fitting): the expectations hypothesis of the\n"
+        "   term structure. FEDFUNDS and DFF measure the SAME policy rate at two\n"
+        "   frequencies, so a non-rejection here would be a wiring fault rather\n"
+        "   than a finding."
+    )
+    positive = _cointegration_positive_control(client)
+
+    print()
+    print("7. COINTEGRATION -- the REAL term-structure pairs, reported not asserted")
+    print(
+        "   Three pairs on the same curve, all with the expectations-hypothesis\n"
+        "   mechanism stated in advance. The tempting story is that yields sharing\n"
+        "   a policy-rate trend must cointegrate. The outcomes below are reported\n"
+        "   as measured; NONE is asserted, because asserting one would be a live\n"
+        "   check that asserts the data into agreement."
+    )
+    term_outcomes = _cointegration_term_structure(client)
 
     print()
     print("=" * 78)
@@ -427,6 +705,53 @@ def main() -> int:
         "    ambiguity is also unresolved — ADF and KPSS cannot distinguish 'a\n"
         "    random walk' from 'stationary around a level that moved once', and\n"
         "    those imply opposite things for a relative-value trade."
+    )
+    print()
+    print(
+        "  * COINTEGRATION (new in D-097). The three mandated extras — the spread,\n"
+        "    the half-life, the regime-stability check — are all produced on real\n"
+        "    data, and the two mandatory warnings are attached to every live call."
+    )
+    positive_value = positive.value
+    assert isinstance(positive_value, dict)
+    print(
+        f"    The positive control (FEDFUNDS ~ DFF) rejects at p = "
+        f"{positive_value['p_value']:.4f} with hedge ratio "
+        f"{positive_value['hedge_ratio']} and regime "
+        f"'{positive_value['regime_stability']}' — so a rejection IS reachable on\n"
+        f"    live data, and every non-rejection below is therefore informative."
+    )
+    print(
+        "    THE TERM-STRUCTURE PAIRS DID NOT COINTEGRATE, and that is the finding\n"
+        "    rather than a failure of the check:"
+    )
+    for label, rejected, verdict in term_outcomes:
+        print(f"      {label:26s} cointegrated={rejected!s:5s} regime={verdict}")
+    print(
+        "    The expectations hypothesis is a statement about EX-ANTE yields; the\n"
+        "    realised spreads here are wide and persistent (the 2013 taper episode\n"
+        "    and the 2022-23 inversion both sit inside the window), which is exactly\n"
+        "    what makes them fail a stationarity test. The 'unstable' pair is the\n"
+        "    LTCM shape -- two sub-periods that disagree -- found in real data.\n"
+        "    Asserting cointegration would have been the D-094 failure repeated:\n"
+        "    a live check that asserted the data into agreement."
+    )
+    print()
+    print(
+        f"  * The multiple-testing obligation is COUNTED, not narrated: at "
+        f"alpha = {get_settings().econometrics.significance_level.value} and an\n"
+        f"    assumed family of {family} tests, the family-wise error rate is "
+        f"{family_wise:.4f}\n"
+        f"    and the corrected per-test size is {corrected:.8f}. The family size is\n"
+        f"    an ASSUMPTION this function cannot verify — it tests one pair and\n"
+        f"    cannot see the others — so it is published beside the counts."
+    )
+    print()
+    print(
+        "  * NOT established by the cointegration section: that any of these\n"
+        "    verdicts will hold going forward. The statistic describes the sample,\n"
+        "    which is the first mandatory warning; the LTCM shape appears here as\n"
+        "    the 'unstable' pair, not as a citation."
     )
     print()
     print("LIVE CHECK PASSED")

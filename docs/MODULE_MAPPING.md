@@ -1692,3 +1692,84 @@ D-087 also settles what to believe when checks disagree. The order is:
 > **When three checks disagree, believe `git diff HEAD` (O-102, 5ck) - unless
 > `git diff HEAD` is itself clean, in which case the defect is either absent or
 > committed, and only (2) distinguishes them.** (5cp)
+
+---
+
+## Module 18 — Quantitative Tools (`models/econometrics.py`), 3 of 6
+
+**These four rows were missing from the tier tables for three increments.** Module
+18 is **not** a §21.3 tier member in the way the rest of this file is: its functions
+are Tier 5, so they have no row above, and `run_regression` (D-092) and
+`test_stationarity` (D-094) shipped without ever being added here. A mapping whose
+stated purpose is *"spec → module → function → test, generated from the code"* was
+therefore silent about two implemented functions and their tests. Added at
+**D-097**, with the third function of the same file.
+
+| Spec | Module | Function | Source | Test | Decision |
+|---|---|---|---|---|---|
+| 15.20-A | 18 | `run_regression` | `models/econometrics.py:213` | `test_econometrics.py` | **D-092**, **D-093** |
+| 15.20-B | 18 | `test_stationarity` | `models/econometrics.py:364` | `test_econometrics.py` | **D-094** |
+| **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:505` | `test_econometrics.py` | **D-097** |
+| 15.20-D | 18 | `compute_pca` | *not implemented* | — | **← the binding Next** |
+| 15.20-E | 18 | `kalman_latent_state` | *not implemented* | — | — |
+| 6.6 | 18 | `yield_curve_pca` | *not implemented* (§6.6 stub) | — | depends on `compute_pca` |
+
+**The citation is §15.20 block F, not "§15.18-F".** §15.18 is Module 18's
+*narrative*; **§15.20 holds the signatures** (AGENTS.md:3137). Three decisions
+invented the wrong number and it was corrected in 30 places at **D-095**. Resolve a
+section number with `grep -n` before citing it — a citation is a claim like any
+other.
+
+### What `test_cointegration` supersedes and what it feeds
+
+**Supersedes: nothing.** There was no prior cointegration implementation in the
+tree, so this is an addition rather than a replacement — unlike the Tier-5 items
+D-096 identified as *upgrade-pass* work (`classify_regime_rule_based` ->
+`classify_regime_markov_switching`, `realized_vol_simple` -> GARCH,
+`historical_var`/`parametric_var`/`expected_shortfall` -> `monte_carlo_var`).
+
+**Feeds: the pair/relative-value leg, and nothing yet.** The `ModelResult` carries
+the statistic, the **spread series**, the **half-life** and a **regime-stability
+verdict** — that shape is the contract a later `statistical_arbitrage` /
+pair-selection consumer reads. **No module imports it today**, and that is stated
+rather than implied: the integration is a *contract*, not live wiring. This is why
+it does **not** appear in the `Gaps this mapping exposes` reachability set — that
+audit tracks §21.3's wiring obligations, and Module 18 is Tier 5 by design.
+
+### The eighth mapping rule, from D-097: a duplicate test NAME is a silent deletion
+
+The file's existing rules cover assertions (D-080), protections (D-082) and anchors
+(D-075). D-097 adds one at the level *above* them:
+
+> **A test's name is an identifier, and a duplicated identifier silently deletes the
+> earlier test.** Python binds a function name to the **last** definition; two
+> module-level `def test_x()` with the same name leave one test, and pytest reports
+> nothing. The suite stays green while losing coverage.
+
+**Measured at D-097:** four new `test_cointegration` refusal tests reused names
+already owned by `test_stationarity`'s guards, and a fifth collided with
+`run_regression`'s confidence test — so **five earlier guards were absent from the
+run** for the whole increment. **No test could see it; only `ruff`'s F811 did**, and
+that only at the `ruff check .` gate. The remedy is a naming convention (the
+`cointegration` qualifier) plus the count as evidence: **2872 -> 2923 passed**, so
+the restoration is measurable rather than asserted.
+
+**And the damage was NOT confined to the test count.** Restating those five names took
+the mutation sweep from **52/56 to 55/56 with no mutation changed at all**: **M2, M30
+and M32** had been reported as surviving because the sweep asks *"does any test fail?"*
+and the only tests remaining under those names no longer covered the mutated code
+(`M30`/`M32` were "saved" by `test_cointegration`'s refusals, which assert on different
+messages and a different function; `M2` by nothing at all, its covering test having been
+deleted from the run). Re-applying each mutation in isolation, with the sweep's **own
+anchors**, gives a swap that **compiles OK** and a suite that **fails** — so all three
+were always genuine kills. **A shadowed test name therefore corrupts the SWEEP's
+verdicts as well as the run's coverage**, and the two symptoms point in opposite
+directions: the suite looks green because it LOST tests, the sweep looks red because it
+is USING THE WRONG ONES.
+
+**This is D-093's lesson one level up.** D-093 came from two silent-failure paths in
+*parameter column names* — a `const`-named column overwriting a coefficient — and
+concluded *"review the IDENTIFIERS, not just the arithmetic."* D-097 shows the same
+defect class in the **test namespace**. Any module that grows sibling tests needs
+its new names checked against the existing set, and a rising pass count is the proof
+rather than the absence of failures.

@@ -3369,6 +3369,51 @@ econometrics:
       reported p-value is a small-sample approximation whose error is not
       disclosed by either function. 30 is a conventional rule of thumb, not a
       derived bound, and it is a floor rather than a guarantee of adequacy.
+  cointegration_min_observations:
+    value: 60
+    calibration_status: conventional
+    note: >
+      A floor for a cointegration test, deliberately DOUBLE
+      stationarity_min_observations (30). The reason is structural rather than
+      cautious: Engle-Granger spends the sample twice. The first step estimates
+      the hedge ratio on the whole window, and the second step ADFs the residual
+      -- which then augments with its own selected lags. So a cointegration test
+      on n rows runs its residual ADF on materially fewer than n, and the same
+      floor that is merely tight for a raw stationarity test is racy here.
+      It also binds a SECOND decision: regime_stability_split_fraction splits
+      the sample in two, and each half must clear this floor on its own or the
+      stability check reports `not_tested` instead of guessing.
+  regime_stability_split_fraction:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Where the regime-stability check splits the sample to re-test the
+      relationship on each half. Section 15.18-F requires a regime-stability
+      check alongside the statistic; it does not say where to split. 0.5 is the
+      obvious first choice and is explicitly a placeholder: the check is
+      insensitive to the exact fraction when the relationship is either solidly
+      present or solidly absent, and maximally sensitive exactly when it is
+      interesting (a break near the split point is invisible to a two-way
+      split at all -- see the limitations). A stronger check would sweep the
+      split or use a proper break test (Chow / Bai-Perron / Gregory-Hansen),
+      which is a later increment. Because this shapes a DERIVATION rather than
+      gating an input, it is priced into the confidence penalty rather than
+      being treated as a conventional constant.
+  assumed_test_family_size:
+    value: 10
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The DEFAULT family size used to compute the multiple-testing correction
+      that Section 15.18-F makes mandatory on every call. THIS IS AN ASSUMPTION
+      THIS BUILD CANNOT VERIFY: test_cointegration tests ONE pair and has no way
+      to know how many the caller has run or intends to run, so the value is
+      published as `family_size_assumed` on every result so a consumer cannot
+      mistake it for a count of tests actually performed. 10 is chosen to be a
+      small, realistic universe -- the number of pairwise tests among 5 series,
+      which is already enough to make the point: at alpha = 0.05 the family-wise
+      error rate is 1 - 0.95^10 = 0.4013, i.e. a 40% chance of at least one
+      spurious 'cointegrated' pair when NO pair is truly cointegrated. Override
+      it with the real count before using the corrected size.
   # The four leaves below are CHOICES, not calibrated quantities, so they are
   # plain scalars rather than `{value, calibration_status}` envelopes.
   # `tests/test_infrastructure.py` requires every envelope to be readable as a
@@ -3399,6 +3444,26 @@ econometrics:
   # the function reports that whenever it happens, because a clipped p-value is
   # a BOUND and reading it as a point estimate is the misreading it invites.
   kpss_nlags: "auto"
+  # `cointegration_trend` — the deterministic terms the cointegration test's
+  # first-step regression includes, and therefore the specification the SPREAD
+  # is built under. It is a SEPARATE leaf from `adf_regression` even though it
+  # currently holds the same value, because the two govern different
+  # regressions: `adf_regression` decides the deterministic terms of a
+  # stationarity test on a RAW series (where a constant is needed to centre it),
+  # while this one decides the terms of a regression on a RELATIONSHIP (where
+  # "c" means the spread may have a non-zero mean -- the usual case for a pair).
+  # They are not kept equal by a validator, because there is no reason they must
+  # be: a caller testing a raw series with a trend and a relationship with a
+  # constant is making two independent choices.
+  #
+  # A THIRD value statsmodels accepts -- "n", meaning no deterministic terms --
+  # is DELIBERATELY NOT PERMITTED. Probed 2026-09-23: `coint(..., trend="n")`
+  # returns critical_values = [nan, nan, nan], because the 2010 MacKinnon table
+  # is unavailable for that case -- and every comparison against NaN is False,
+  # so the verdict would read 'cannot reject' whatever the statistic was. It is
+  # excluded at the config layer rather than guarded in the function, so the
+  # failure cannot be reached at all.
+  cointegration_trend: "c"
 
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture

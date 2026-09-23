@@ -5409,3 +5409,87 @@ unnecessary. That decision belongs to its own increment.
 (never alongside a sweep — lesson **5bi**); run `tools/sweep_health.py` **LAST**
 (lesson **5bl**); quote the **measured** file count (D-035); stage by **explicit
 filename**; and check the **GitHub run** before claiming green.
+---
+
+## Next (2026-09-23, after D-097) — **PHASE 5, Tier 5 = 4/23 by §21.3** · Module 18 is 3 of 6
+
+**Where we are.** **Phase 0 = 8/8 · 1 = 9/9 · 2 = 85/98 (13 outstanding, all Tier 5) ·
+3 = 2/2 ✅ · 4 = 4/4 ✅.** Tiers 1/2/3/4 = **23/23 · 29/29 · 15/15 · 11/11**.
+**Tier 5 = 4/23** — D-092 `run_regression`, D-094 `test_stationarity`,
+**D-097 `test_cointegration`** (plus D-093/D-095/D-096 as review and reconciliation,
+which are not new functions).
+
+> **Cite `N/23 by §21.3`** — the named work list. The tier table's `20` and Phase 2's
+> `13` are different universes (D-096).
+
+**Phase 5 continues by explicit operator instruction** — *sequential, one step at a
+time, production-grade*. **One function per increment, then report and wait.**
+
+### Module 18 — 3 of 6 done
+
+| # | function | depends on | status |
+|---|---|---|---|
+| 1 | `run_regression` | — | ✅ **D-092** (reviewed + fixed at D-093) |
+| 2 | `test_stationarity` | — | ✅ **D-094** |
+| 3 | `test_cointegration` | `run_regression`, `test_stationarity` | ✅ **D-097** |
+| 4 | `compute_pca` | — (**needs a §4 `scikit-learn` decision**) | **← the binding Next** |
+| 5 | `kalman_latent_state` | — | not started |
+| 6 | `yield_curve_pca` | `compute_pca` | not started (§6.6 stub) |
+
+**Next: `compute_pca`.** It is NOT blocked on another function, but it IS blocked on
+a **§4 dependency decision**: `scikit-learn` is **not** in `pyproject.toml` and not
+installed, while §15.20-F says it is required. **`numpy.linalg.eigh` may make it
+unnecessary** — a PCA on a covariance matrix is an eigendecomposition, and if the
+numpy route satisfies the spec then adding a dependency is avoidable. **Settle that
+by measurement, record it as a decision, and do not assume it.** `kalman_latent_state`
+is independent and can be taken in either order.
+
+### What D-097 established that the next increment should reuse
+
+- **`result_object=True` on both `adfuller` and `kpss`.** statsmodels has announced
+  the plain tuple's layout changes in 0.16 / after July 2027, so `result[1]` would
+  work today and break on an upgrade with no test failing. **The field rename is the
+  trap**: the tuple's third element is `usedlag`, the object calls it `lags`.
+  D-097's `_spread_stationarity` follows D-094's shape.
+- **A library that warns on every call is a silent-failure surface.** `coint_johansen`
+  emits **4 `ComplexWarning`s per call**; uncaptured they escape the function and
+  raise under `-W error`. **The habit to carry forward: `catch_warnings(record=True)`
+  around any statsmodels call whose warnings have not been measured**, then publish
+  the count rather than swallowing it. D-097 swept both halves (M49/M50).
+- **Duplicate test names are silent deletions.** Four new refusal tests reused
+  names already taken by `test_stationarity`'s guards; **pytest keeps only the last
+  definition**, so five earlier tests vanished from the run while the suite stayed
+  green. **Only `ruff`'s F811 caught it.** Every new test in a module that already
+  has sibling tests must have a name no sibling owns — and a rising test count is the
+  evidence, not the absence of failures.
+
+### Carry-overs from D-097
+
+- **The sweep census stays 43.** D-097 **extended** `mutation_econometrics.py`
+  (33 → 56 mutations) rather than adding a sweep. The three pinned count locations
+  only move when a *new* sweep file appears.
+- **O-117 is CLOSED — the "three unexplained survivors" were CORRUPTED VERDICTS, not
+  holes.** M2/M30/M32 read as surviving only because duplicated test names meant the
+  sweep was killing them with the **wrong tests**. Restating the names took the sweep
+  from **52/56 to 55/56 with no mutation changed**. The one remaining survivor is M34,
+  **inert-by-route** and documented. **The lesson: a sweep's verdict is only as good as
+  its test SELECTION.**
+- **`test_cointegration` must be imported under a private alias in tests.** Its name
+  begins with `test_` because §15.20-F mandates it, so a bare import makes **pytest
+  collect the model function as a test case**. `tests/` uses `_cointegration`.
+- **`CalibratedValue` is for NUMBERS only** — `cointegration_trend` is a plain `str`
+  leaf with its reasoning as a YAML comment, and `"n"` is refused at config load.
+- **O-94** (Q12's exposure half) is still open and still the reason Module 18 came
+  first.
+
+**Standing obligations at every close:** run the full gate set **sequentially**
+(never alongside a sweep — lesson **5bi**, violated once at D-097 and recorded);
+run `tools/sweep_health.py` **LAST** (lesson **5bl**); quote the **measured** file
+count (D-035); stage by **explicit filename**; and check the **GitHub run** before
+claiming green.
+
+**Gate baseline after D-097 (measured 2026-09-23):** ruff clean ·
+**`ruff format --check` 247 files** · **`mypy --strict` no issues in 247 files**
+(roots `src tests tools scripts`) · **2923 passed / 1 skipped / 17 deselected /
+0 failed** · sweep **55/56** (56 declared; M34 inert-by-route) · **43 sweeps,
+0 leftovers** · reachability **58 = 58**.
