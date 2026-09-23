@@ -412,16 +412,46 @@ sufficient as long as no caller makes that mistake).
 
 ## Part 3 — Deferred to later phases
 
-| Item | Phase | Notes |
+**⚠️ READ THIS FIRST — what "Phase 5+" MEANS, and which table governs.**
+
+**Phase 5+ is an UPGRADE PASS, not a tier of new work.** Phases 0–4 built the
+*simple* version of each of these; Phase 5+ replaces it with the sophisticated
+version. **Nothing from Phases 0–4 is deleted** — the simple function keeps working
+and the advanced one supersedes it. That is why the phase is called *"Phase 5+"*
+rather than a tier: it is a **pass over existing components**, not a new layer.
+
+Measured 2026-09-23 — the simple versions already exist:
+
+| Phase 5+ upgrade | the Phase 0–4 function it supersedes |
+|---|---|
+| Markov-switching regime model | **`classify_regime_rule_based`** (`models/regime.py:609`) — its own docstring reads *"Rule-based only … NOT a [statistical model]"* |
+| GARCH-family volatility | **`realized_vol_simple`** (`models/risk.py:429`) |
+| Monte-Carlo VaR / full CVaR suite | **`historical_var`**, **`parametric_var`**, **`expected_shortfall`** (`risk.py:250/369/310`) — CVaR/ES already ships |
+| Riskfolio-Lib construction | `portfolio_volatility_n_asset`, `marginal_risk_contributions` |
+
+**THE PHASE TAGS IN THIS TABLE ARE NOT AUTHORITATIVE.** §22.1:
+
+> *"The authoritative phase-to-body assignment is Section 21.3's five tiers — **that
+> table, and only that table**, decides when a stub becomes IMPLEMENTED. Any other
+> phase language elsewhere in this document … is descriptive context, not a competing
+> source of truth."*
+
+So where this table and §21.3 disagree, **§21.3 wins**. The rows below were corrected
+at **D-096**; three of them previously carried a phase tag that contradicted §21.3
+(Markov-switching and GARCH as `3`, APScheduler as `4+`). **The authoritative work
+list is §21.3's 23 Tier-5 names** — cite that, not this table.
+
+| Item | Phase | Supersedes / Notes |
 |---|---|---|
-| `bayesian.likelihoods` table is empty | 5+ | `BayesianSettings.require_likelihoods()` raises rather than defaulting to 0.5/0.5 — an uninformed prior presented as an estimate is a fabrication. |
-| Markov-switching regime model | 3 | `statsmodels.tsa.regime_switching`. |
-| GARCH-family volatility | 3 | `arch` package. |
-| Multi-country theses (`de`, `jp`, `gb`) | 5+ | Each needs its own data sources, its own central-bank reaction function, and its own instrument set (Section 22.3). Not a label change. |
-| `vectorbt` backtesting | 4+ | Stub in `extensions/backtest_vbt.py`. |
-| `NautilusTrader` event-driven execution | 5+ | Stub in `extensions/nautilus_adapter.py`. Auto-execution is prohibited by design. |
-| `MLflow` tracking | 5+ | Only once multiple model variants exist. |
-| `APScheduler` automation | 4+ | Stub in `extensions/scheduler.py`. |
+| `bayesian.likelihoods` table is empty | 5+ | `BayesianSettings.require_likelihoods()` raises rather than defaulting to 0.5/0.5 — an uninformed prior presented as an estimate is a fabrication. Upgrades the current thesis-updating path. |
+| Markov-switching regime model | **5+** *(was `3`)* | `statsmodels.tsa.regime_switching`. Supersedes **`classify_regime_rule_based`**; lands as `classify_regime_markov_switching`, which is on §21.3's Tier-5 list. |
+| GARCH-family volatility | **5+** *(was `3`)* | `arch` package. Supersedes **`realized_vol_simple`**. |
+| Full VaR/CVaR suite (Monte Carlo) | 5+ | Extends `historical_var` / `parametric_var` / `expected_shortfall` with simulation; lands as `monte_carlo_var`. |
+| Multi-country theses (`de`, `jp`, `gb`) | 5+ | Each needs its own data sources, its own central-bank reaction function, and its own instrument set (Section 22.3). Not a label change. **Has no §21.3 function name** — it is a scope expansion, not a stub to implement. |
+| `MLflow` tracking | 5+ | *"Only once multiple model variants exist"* — i.e. once the upgrades above create them. Not a §21.3 Tier-5 name. |
+| `APScheduler` automation | **5+** *(was `4+`)* | Stub in `extensions/scheduler.py`. Automates a currently manual/scheduled run. Not a §21.3 Tier-5 name. |
+| `vectorbt` backtesting | **Phase 6** *(was `4+`)* | Stub in `extensions/backtest_vbt.py`. **Explicitly NOT Phase 5** — it is its own phase. |
+| `NautilusTrader` event-driven execution | **Phase 7** *(was `5+`)* | Stub in `extensions/nautilus_adapter.py`. Auto-execution is prohibited by design. **Explicitly NOT Phase 5** — its own phase, paper → semi-auto → full-auto gates. |
 | DuckDB store | 5+ | `extensions/duckdb_store.py` reuses the same parquet files. |
 | Second independent potential-output estimate | 3 | **D-027.** Section 21.1 says dispersion across independent estimates IS the uncertainty band, but `GDPPOT` (CBO) is currently the only one available on FRED. The Fed's own potential GDP is not, and a Cobb-Douglas figure calibrated on actual GDP is circular — it cannot supply the second estimate. Until a second source is wired, `potential_gdp_cobb_douglas` states the band in prose rather than computing it. This is the same shape of gap as the CBO-vs-Fed spread in Section 21.4 item 13. |
 | Real-time market-rent index (Zillow ZORI / Apartment List) | 3 | **D-028.** `project_shelter_cpi` (Module 5.1) is defined against *real-time asking rents*, which is the entire mechanism — the lead of market rents over CPI shelter. `ZORI` returns **EMPTY** on this OpenBB build and Apartment List is not on FRED. The live check substitutes `CUSR0000SEHA` (CPI rent of primary residence) and labels the result as a wiring check only. The substitution is not neutral: `SEHA` surveys *existing tenants*, so it already contains much of the lag the model exploits, which understates the projected magnitude. Requires a non-FRED source. |

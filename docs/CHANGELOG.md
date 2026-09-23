@@ -10,6 +10,47 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-096 — "Phase 5+" is an UPGRADE PASS; §21.3's tags supersede OPEN_ISSUES'
+
+**Changed (docs only — no code)**
+
+- `docs/OPEN_ISSUES.md` **Part 3** now opens with a preamble stating that **Phase 5+
+  is an upgrade pass, not a tier of new work**: Phases 0–4 built the *simple* version
+  of each item and Phase 5+ builds the sophisticated one. **Nothing from Phases 0–4 is
+  deleted** — the simple function keeps working and the advanced one supersedes it.
+  That is why the operator calls it *"Phase 5+"* rather than a tier.
+- **Five stale phase tags corrected**, because §22.1 says §21.3 *"and only that
+  table"* decides when a stub becomes IMPLEMENTED:
+
+  | row | was | now |
+  |---|---|---|
+  | Markov-switching regime model | `3` | **`5+`** (§21.3 lists it in Tier 5) |
+  | GARCH-family volatility | `3` | **`5+`** |
+  | `APScheduler` automation | `4+` | **`5+`** (Phase 4 is complete — `4+` was unsatisfiable) |
+  | `vectorbt` backtesting | `4+` | **Phase 6** |
+  | `NautilusTrader` execution | `5+` | **Phase 7** |
+
+  Corrected rows are marked `(was N)` so the change is **auditable, not silent**. No
+  row was deleted.
+
+**Added**
+
+- A **supersedes table** naming the Phase 0–4 function each Phase 5+ upgrade replaces
+  — measured: `classify_regime_rule_based` (`regime.py:609`) · `realized_vol_simple`
+  (`risk.py:429`) · `historical_var`/`parametric_var`/`expected_shortfall`
+  (`risk.py:250/369/310`). **CVaR/ES already ships.**
+- `D-096` in `docs/DECISIONS.md`, which also records **my own reasoning error**: I had
+  read §1.3's deferred list as separate capabilities, grepped §21.3 for the keyword
+  `garch`, and wrongly reported GARCH as *"orphaned"*. For anything whose Tier-5 name
+  is an *upgrade*, the name exists but does not contain the old keyword. **A keyword
+  grep of a work list is not the right instrument for a capability question** — ask
+  *"what does this supersede?"*.
+
+**Not resolved here**
+
+- The **three Tier-5 counts still disagree** — §21.3's **23**, the tier table's **20**,
+  Phase 2's **13**. This entry fixes *which list governs*, not *how many there are*.
+
 ### D-094 — Module 18 #2: `test_stationarity` (Phase 5, Tier 5 = 2/20)
 
 **Added**

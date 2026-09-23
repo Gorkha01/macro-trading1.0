@@ -15954,3 +15954,73 @@ sweep rather than adding a 44th, which is the documented preference.
 functions left (`test_cointegration`, `compute_pca`, `kalman_latent_state`,
 `yield_curve_pca`); `test_cointegration` is unblocked as of this increment, since
 it needs both `run_regression` and `test_stationarity`. **O-94 is still open.**
+
+---
+
+## D-096 — "Phase 5+" is an UPGRADE PASS, and §21.3's tags supersede OPEN_ISSUES'
+
+Raised by the operator while reconciling a "Phase 5+ items" list against §21.3's
+Tier-5 table. Two corrections, one of them to my own reasoning.
+
+### Correction 1 — Phase 5+ replaces the SIMPLE versions; it does not add a layer
+
+**Phases 0–4 built the simple version of each of these. Phase 5+ builds the
+sophisticated one. Nothing from Phases 0–4 is deleted** — the simple function keeps
+working and the advanced one supersedes it. That is why the operator calls it
+*"Phase 5+"* rather than a tier: **it is a pass over existing components.**
+
+Measured 2026-09-23 — the superseded versions exist:
+
+| Phase 5+ upgrade | the Phase 0–4 function it supersedes |
+|---|---|
+| Markov-switching regime model | **`classify_regime_rule_based`** (`models/regime.py:609`), whose docstring reads *"Rule-based only — a deterministic partition of two thresholds, NOT a [statistical model]"* |
+| GARCH-family volatility | **`realized_vol_simple`** (`models/risk.py:429`) |
+| Monte-Carlo VaR / full CVaR suite | **`historical_var`**, **`parametric_var`**, **`expected_shortfall`** (`risk.py:250/369/310`) — **ES/CVaR already ships** |
+| Riskfolio-Lib construction | `portfolio_volatility_n_asset`, `marginal_risk_contributions` |
+
+**§21.3's own names confirm the framing**: it is a list of **replacements**, not
+additions — `classify_regime_MARKOV_SWITCHING` against `classify_regime_RULE_BASED`;
+`MONTE_CARLO_var` against `historical_var`/`parametric_var`; `KALMAN_latent_state`
+against a static potential-GDP estimate.
+
+### The reasoning error this exposed — mine
+
+I read §1.3's deferred list as a set of **separate capabilities** and checked each
+against §21.3 looking for a **new** name, then reported GARCH as *"orphaned, no phase
+it belongs to"* and the VaR/CVaR suite as *"partial"*. **Both were wrong.** For
+anything whose Tier-5 name is an *upgrade*, the name exists but does not contain the
+old keyword — I was grepping the tier list for `garch` when the upgrade is named
+`realized_vol_*`.
+
+**Generalisable: a keyword grep of a work list is not the right instrument for a
+capability question.** The right question is *"what does this supersede?"*, not
+*"does this word appear?"* — the same shape as D-093's lesson that the *identifiers*
+matter as much as the values.
+
+### Correction 2 — §21.3 governs, so three OPEN_ISSUES phase tags were stale
+
+`docs/OPEN_ISSUES.md` **Part 3** carried phase tags that **contradicted §21.3**, and
+§22.1 is explicit about which wins:
+
+> *"The authoritative phase-to-body assignment is Section 21.3's five tiers — **that
+> table, and only that table**, decides when a stub becomes IMPLEMENTED."*
+
+| row | was | now | why |
+|---|---|---|---|
+| Markov-switching regime model | `3` | **`5+`** | §21.3 lists `classify_regime_markov_switching` in **Tier 5** |
+| GARCH-family volatility | `3` | **`5+`** | Phase 5+ upgrade of `realized_vol_simple` |
+| `APScheduler` automation | `4+` | **`5+`** | Phase 4 is **complete (4/4)** — a `4+` tag on unbuilt work is unsatisfiable |
+| `vectorbt` backtesting | `4+` | **Phase 6** | its own phase, not Phase 5 |
+| `NautilusTrader` execution | `5+` | **Phase 7** | its own phase; auto-execution prohibited by design |
+
+**Part 3 now opens with a preamble** stating (a) that Phase 5+ is an upgrade pass,
+(b) the supersedes table, and (c) that **its own tags are not authoritative** — §21.3
+is — with the three corrected rows marked `(was N)` so the change is auditable rather
+than silent. **No row was deleted and no Phase 0–4 work is touched.**
+
+### What this does NOT resolve
+
+**Three Tier-5 counts still disagree:** §21.3's **23** named functions (the work
+list), the tier table's **20** (inherited, no derivation found), and Phase 2's
+**13** outstanding (a different universe — Phase 0-4's 98-function total). This entry
+fixes *which list governs*, not *how many there are*. Cite **"N/23 by §21.3"**.
