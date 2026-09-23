@@ -165,6 +165,24 @@ files = ["src", "tests", "tools", "scripts"]
 module = ["openbb.*", "statsmodels.*", "scipy.*", "pyarrow.*"]
 ignore_missing_imports = true
 
+# D-101: `econometrics.py` subclasses `statsmodels.tsa.statespace.MLEModel` so
+# that the state-space matrices are written explicitly rather than inferred by a
+# convenience class. statsmodels ships without type information, so the base
+# resolves to `Any` and `--strict` refuses the subclass.
+#
+# The relaxation must name the module that DECLARES the subclass, not the
+# library: `disallow_subclassing_any` is reported where the `class` statement
+# is, so adding it to the statsmodels override above has NO EFFECT (measured --
+# the error is raised at econometrics.py's class line, and an override on
+# `statsmodels.*` never sees it). An option that reads as protection and does
+# nothing is worse than no option, which is why it is not left there.
+#
+# This permits only the untyped BASE. Every member the subclass defines is still
+# checked in full.
+[[tool.mypy.overrides]]
+module = ["macro_engine.models.econometrics"]
+disallow_subclassing_any = false
+
 # ---------------------------------------------------------------------------
 # pytest — Section 10.1 test strategy
 # ---------------------------------------------------------------------------

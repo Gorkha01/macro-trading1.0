@@ -16627,3 +16627,244 @@ PC2 **0.2080**, PC3 **0.0928**, cumulative **0.9767**; the positive control
 * **The narrow-panel small-sample disclosure does not cover a 5-tenor curve** at
   the configured floor — recorded, not fixed (see above).
 * **US-only** (§22.3).
+
+---
+
+## D-101 — Module 18 #5: `kalman_latent_state`, and four silent failures in a Kalman filter
+
+**Date:** 2026-09-23. **Spec:** §15.20 block F (AGENTS.md:3187). **Tier 5 = 5/23.**
+**Module 18 = 5 of 6.** The specification's contract: `statsmodels.tsa.statespace`
+(never `pykalman`), for estimating unobservable time-varying states (`r*`, potential
+GDP, a cointegrated pair's hedge ratio), and it "MUST return the filtered state WITH
+its uncertainty band — the filtered state is an estimate, never to be presented as
+observed truth".
+
+**Correction to the D-100 record.** Block F holds **FIVE** signatures, not four:
+`run_regression`, `test_stationarity`, `test_cointegration`, `compute_pca` **and
+`kalman_latent_state`** (AGENTS.md:3147/3157/3166/3178/3187). D-100 said four. The
+count was taken from the four that were implemented rather than from the block, which
+is the "citation is a claim" failure D-100 itself recorded — one increment after
+recording it.
+
+### The design: the specification IS the mechanism
+
+Section 15.18's ordering (mechanism first, statistics second) is unusually literal
+here, because for a Kalman filter the mechanism **is** the state-space model. So the
+matrices are written explicitly and published as `model_spec`, and the admissible
+input space is a **table** rather than an `if`/`elif` chain:
+
+| columns | `state_dim` | specification | state equation | §15.20-F use |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | `local_level` | `F = [[1]]` | `r*`, a latent level |
+| 1 | 2 | `local_linear_trend` | `F = [[1,1],[0,1]]` | potential GDP |
+| 2 | 1 | `time_varying_hedge_ratio` | `F = [[1]]`, `H_t = [x_t]` | hedge ratio |
+
+A fourth specification (a time-varying intercept) is **deliberately absent**: the
+specification does not name it, and a configuration nothing specifies is one nothing
+can be held to. Any other combination is **refused with the admissible set enumerated
+from the same table the constructor reads**, so the refusal cannot drift from it.
+
+### Four silent failures, each found by probing BEFORE the function was written
+
+Every one returned a complete-looking result describing a different model or a
+different uncertainty from the one the caller asked for.
+
+| # | The route | What it actually did |
+| --- | --- | --- |
+| 1 | `UnobservedComponents(y, level=True)` | `stochastic_level` defaults to **False**, so the "level" is a **deterministic constant**. It reported the sample mean `102.33 ± 0.18` on a random walk whose level moved several units. `level='rwalk'` is the other half of the trap: it drops the irregular component, so the state equals the observation and the band collapses to **exactly `0.0`**. |
+| 2 | `UnobservedComponents(..., mle_regression=False)` | Does **not** give a time-varying coefficient: the coefficient's process variance is not estimated, so its state covariance is `[[0.]]` and the filter returns a **recursive OLS** estimate converging to the full-sample constant. Measured on a genuinely drifting beta: reported `0.4793` against a true `0.4267`, and `0.4793` **is** the full-sample OLS coefficient — with a standard error of `0.0023` that makes the wrong answer look precise. |
+| 3 | A missing parameter transform | `MLEModel.transform_params`' base implementation is the **identity**, so the optimizer explores negative variances and does: measured `sigma2.slope = -3.24` and a standard-error array of `nan` from the second observation onward, with every published field `nan` and the fit reporting no error. |
+| 4 | `initialization='diffuse'` | **The headline.** Exact-diffuse REMOVES the diffuse component from `filtered_state_cov`, so a state the first observation does not identify reports a standard error of **exactly `0.0`**. On a local linear trend the slope — whose design is `[1, 0]`, so the first observation carries no slope information — came back as `0.0 ± 0.0` where the honest answer is the prior's scale. The filtered **states** were identical across all three initializations; only the published **uncertainty** differed. |
+
+**Failure #4 is the reason the function is built from explicit matrices.** The
+structural convenience class was probed first and rejected on measurement, twice, for
+two different defects; explicit matrices remove the class rather than one instance.
+The decision is pinned by `test_kalman_the_exact_diffuse_route_reports_a_zero_band`,
+which reproduces the measurement, so a future statsmodels release that changes the
+behaviour fails a test instead of silently invalidating the decision.
+
+### The scale-sensitivity finding, and its fix
+
+The model is invariant under rescaling in exact arithmetic; the **optimizer** is not,
+because `start_params` is `1.0` while the likelihood is evaluated at the series' own
+magnitude. Measured 2026-09-23 on ONE local level fitted at six scales, reporting
+`sigma2.level / scale**2`:
+
+| scale | 1 | 1e-3 | 1e3 | 1e6 | 1e9 |
+| --- | --- | --- | --- | --- | --- |
+| `sigma2.level/scale**2` | 0.3139 | 0.3238 | **46.16** | 2.663 | 0.02625 |
+
+A **147× spread between two fits of the same data**, and the consequence was not
+academic: the band, and every warning that reads it, depended on the caller's choice
+of **units**. One degenerate series reported a relative band of `2.05e-8` in its own
+units and `4.89e-2` scaled a hundred-fold — degenerate in one and healthy in the
+other.
+
+**Fix:** normalise each series by its own standard deviation before fitting and
+convert every published quantity back afterwards (the level and slope by `scale_y`,
+a coefficient by `scale_y / scale_x`). The scales are **published** as
+`series_scales` and `state_scales`, because this is the only unit-dependent step.
+Measured after the fix: **`0.313922` at every scale from 1e-9 to 1e9**, agreeing to
+`1.8e-7` relative — the optimizer's stopping rule, nine orders of magnitude tighter
+than the defect it replaces. The change is purely numerical: the arithmetic is
+untouched.
+
+### The optimizer, and why it is derivative-free
+
+The published band is only as good as the maximum-likelihood point. Measured over 20
+simulated pairs, counting fits whose optimizer failed its own convergence test:
+
+| optimizer | non-converged |
+| --- | --- |
+| `lbfgs` (statsmodels' default) | **4 / 20** |
+| `bfgs` | **12 / 20** |
+| `nm` (Nelder-Mead) | **0 / 20** |
+| `powell` | **0 / 20** |
+
+Raising the iteration cap did **not** help — the same four seeds failed at 200, 1000
+and 3000 iterations, which identifies the stopping **rule** rather than the budget as
+the cause. The gradient methods were **at the optimum and did not know it**:
+Nelder-Mead and `lbfgs` agreed to five significant figures on `sigma2.beta`
+(`0.00001459` against `0.00001452`) with Nelder-Mead's log-likelihood marginally
+higher. The optimizer is a config choice (`kalman_optimizer`, default `"nm"`) because
+the likelihood's flatness makes gradient information unreliable — a numerical
+property, not a preference.
+
+### A warning that was written, measured, and REMOVED
+
+When the model drives the observation-noise variance to (near) zero it asserts the
+data are noise-free, and the band collapses: a **converged** fit was observed
+publishing `102.8486 ± 0.0000377`. A relative "degenerate band" warning was written
+for it, with a config leaf, and then **removed after measurement**, because no
+threshold separates that case from a well-specified one:
+
+* `median(se) / median|state|` spanned **3.1e-8 to 1.8e-3** for noise-free samples
+  (10 seeds at each of seven noise levels) — overlapping the well-specified range.
+* `sigma2.irregular / var(y)` spanned **5.5e-12 to 2.7e-2** at zero noise, and is
+  **specification-dependent** besides, because a pair's `var(y)` is dominated by the
+  regressor.
+
+**An unreliable warning is worse than no warning**, because it teaches the reader to
+ignore it. So the behaviour is a **limitation** (with the measurement), the quantity a
+reader needs to judge it (`sigma2.irregular`) is published, and the dead config leaf
+was deleted rather than left as a value nothing reads (D-047's class).
+
+### Three harness findings
+
+* **Adding a function to `econometrics.py` made an EXISTING mutation's anchor
+  ambiguous.** `M69`'s anchor `if not bool(np.isfinite(values).all()):` became
+  two-site the moment `_prepare_kalman_observations` gained an identical check — the
+  **D-055 trap**, where `str.replace` rewrites a neighbour and reports a kill for a
+  change applied elsewhere. `tools/sweep_health.py` caught it on the first run.
+  Widened by its distinguishing neighbour (`panel` vs `observations`). **This is why
+  the rule is "re-run EVERY sweep whose path touches the file you added to".**
+* **A redirected sweep's log is BLOCK-BUFFERED, so a kill destroys the entire
+  record.** A sweep SIGTERM'd after ~36 mutations left an **empty log** while the
+  sidecar correctly preserved the tree. The tree was restored from the sidecar and
+  verified byte-identical; the four progress prints now carry `flush=True`, because a
+  harness whose evidence disappears on interruption cannot report what it found.
+* **A typo'd anchor and a leftover are indistinguishable to the leftover predicate**
+  (both are "old absent AND re-applying changes nothing"), so `M100`'s three-line
+  anchor for a single-line source reported as "MUTATION STILL APPLIED" rather than as
+  a miss. Read the source; do not re-derive the anchor from the memory that produced
+  it (D-057's lesson).
+
+### The live check FALSIFIED a design decision
+
+The live check is not decoration, and this increment is the evidence. Its
+section 13 control was written to require a **warning** on a constant series, and
+the live run **failed** — the control had been built on a rationale that the
+data disproved. The state variance collapses to `1e-12` on a constant series, but
+the **band collapses further** (`1.65e-09`), so the drift-to-band ratio came back
+as **6055** and the warning did not fire. The rationale — "a constant column is
+handleable because the `not time-varying` warning reports it" — was therefore
+**false**, and the design changed to a refusal.
+
+**Two things generalise.** First, **a control that can only pass is not a
+control**: the original version asserted a warning and would have kept passing
+had the warning fired for an unrelated reason, so matching the refusal's *message*
+is what makes it discriminating. Second, **the test fixture had chosen the case
+that worked**: the unit test used a constant *beta* (where the drift is exactly
+`0`, so the ratio fires) while the live check used a constant *level* (where both
+quantities collapse). A criterion verified on one degenerate case is verified on
+one degenerate case.
+
+### Rejected alternatives
+
+* **`scikit-learn`-style convenience:** no. The structural class was measured and
+  rejected; explicit matrices are testable directly (`np.array_equal(model["transition"], …)`).
+* **`initialization='diffuse'`:** rejected on measurement — see failure #4. Cost of
+  the alternative: log-likelihood `-347.31` against `-340.40` on the same fit, and it
+  buys a band that is honest for every state.
+* **Deriving `state_dim` from the panel:** rejected. `state_dim` selects the
+  *mechanism*, and inferring it would let the data choose the model the analyst is
+  supposed to state.
+* **Refusing a constant series: FIRST REJECTED, THEN ADOPTED — because a live
+  check falsified the rejection.** The first draft refused nothing, on the stated
+  ground that "a constant column is handleable here — it collapses a state, which
+  the `not time-varying` warning reports — so refusing would replace a diagnosed
+  result with an error." **The live check measured that the warning does NOT
+  report it.** On a constant series the state variance collapses to `1e-12` but
+  the **band collapses further** (`1.65e-09`), so the warning's drift-to-band
+  ratio came back as **6055** and did not fire: the branch compares the state's
+  movement with the uncertainty about it, and **both collapse together**, which
+  is precisely why it cannot see this case. A series with no variation is now
+  **refused**, as `compute_pca` refuses one, and the live control asserts the
+  refusal — a stronger control than a warning, because a hard stop cannot be
+  satisfied by a message that fires for the wrong reason.
+* **The constant-series tolerance is FULLY relative (`eps * scale * 100`), unlike
+  `compute_pca`'s `eps * maximum(scale, 1.0) * 100`.** The sibling's form is
+  effectively an **absolute** `2.22e-14` below scale 1, so it refuses a series
+  whose variation is small in absolute terms but large relative to its own scale:
+  measured 2026-09-23, a series at scale `1e-9` varying by `1e-6` of that scale
+  has a standard deviation of `2.9e-16` — **ten orders of magnitude above the
+  floating-point noise** — and the sibling's form refuses it while this one
+  accepts it. That divergence is the case the test drives, per D-100's rule that
+  a relative guard needs a case where a relative and an absolute rule disagree.
+  **Note the opposite direction does not exist for the residue itself:** numpy's
+  `std` returns exactly `0` for a constant array at every magnitude from `4.2` to
+  `1e12`, so the residue never grows with scale. The sibling's form is recorded
+  as its own issue (O-121) rather than changed here.
+* **A `scikit-learn`-style `sklearn` dependency:** not needed (D-099). **`scipy`** is
+  used, and it is already a declared dependency (`pyproject.toml:19`) with a mypy
+  override — the band's multiplier is derived from the coverage through
+  `norm.ppf`, not recalled as `1.96`.
+
+### Gates (measured, sequential, `sweep_health` LAST)
+
+| Gate | Result |
+| --- | --- |
+| `ruff check` | All checks passed |
+| `ruff format --check` | **247** files already formatted |
+| `mypy --strict` | no issues in **247** source files |
+| `pytest` | **3068 passed / 1 skipped / 17 deselected / 0 failed** |
+| `reachability_audit --check-baseline` | **58 = 58**, no regressions |
+| mutation sweep | **108/109 killed** (109 declared; **M34** inert-by-route) |
+| `sweep_health` | **43** sweeps, **0** failures, **0** leftovers, **0** mutant shapes |
+| live check | **PASSED** on real data |
+
+**The test count moved 182 → 257 in `test_econometrics.py`** (+75 Kalman tests) and
+the suite moved **2993 → 3068**. The mutation catalogue moved **77 → 109**.
+
+### Two more harness facts this increment measured
+
+* **The sandbox's per-turn bulk-delete counter can refuse a sweep's OWN sidecar
+  cleanup.** The final run printed
+  `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":167,"threshold":50,"scope":"turn","targets":["…econometrics.py.sweepbackup"]}`
+  and exited **1** — on a sweep that had in fact **completed successfully at
+  108/109**. The 109 pytest subprocesses had exhausted the 50-delete budget, so the
+  lifecycle's own unlink was refused and a **stale sidecar** was left behind. It was
+  verified **byte-identical to the live file** before removal, and `sweep_health.py`
+  returned to **0 leftovers**. **So `EXIT=1` is NOT by itself evidence of an
+  unexplained survivor** — the certification block must be read, and the tree checked
+  independently. (This is the same counter that makes test counts non-reproducible;
+  here it reached the sweep's *cleanup* rather than its tests.)
+* **`M108` — a mutation I wrote myself — SURVIVED its first run, and the reason was
+  that my divergent case was not divergent.** The test asserted that a tiny-scale
+  series is accepted, but the series I chose (`linspace(0, 1e-9)`) has a standard
+  deviation of `2.9e-10`, **above both tolerances**, so the mutant passed it too. The
+  fix puts the deviation **between** them (`2.22e-23 < 2.9e-16 <= 2.22e-14`) and the
+  test now asserts that inequality explicitly, so the magnitudes cannot drift out of
+  the gap silently. Verified by hand-applying the mutant and watching the test FAIL.
+  **D-100's rule needed a corollary: a divergent case must be checked to lie INSIDE
+  the divergence, not merely to exist.**

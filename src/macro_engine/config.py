@@ -4457,6 +4457,18 @@ class ApiSettings(BaseModel):
         return self.host in {"127.0.0.1", "localhost", "::1"}
 
 
+#: The largest number of variances ``kalman_latent_state`` estimates in any one
+#: of its specifications — ``local_linear_trend``'s ``sigma2.level``,
+#: ``sigma2.slope`` and ``sigma2.irregular``.
+#:
+#: Declared HERE rather than imported from the model module because the
+#: dependency runs one way: ``models`` imports ``config``, so ``config`` may not
+#: import ``models``. The duplication is real, so it is PINNED — a test recounts
+#: this from the model's own specification table and fails if the two disagree,
+#: which is the only thing that keeps a copied constant from rotting.
+_KALMAN_MAX_PARAMETERS = 3
+
+
 class EconometricsSettings(BaseModel):
     """Module 18's acceptance thresholds (Section 15.18, Phase 5+).
 
@@ -4486,6 +4498,12 @@ class EconometricsSettings(BaseModel):
     assumed_test_family_size: CalibratedValue
     pca_min_observations: CalibratedValue
     pca_near_zero_tolerance: CalibratedValue
+    kalman_min_observations: CalibratedValue
+    kalman_band_coverage: CalibratedValue
+    kalman_diffuse_scale: CalibratedValue
+    kalman_max_iterations: CalibratedValue
+    kalman_min_state_drift_ratio: CalibratedValue
+    kalman_max_revision_ratio: CalibratedValue
 
     # These five are CHOICES, not calibrated quantities, and they are plain
     # `str` rather than `CalibratedValue` on purpose. `tests/test_infrastructure.py`
@@ -4502,6 +4520,7 @@ class EconometricsSettings(BaseModel):
     kpss_nlags: str
     cointegration_trend: str
     pca_standardisation: str
+    kalman_optimizer: str
 
     @model_validator(mode="after")
     def _validate_leaves(self) -> EconometricsSettings:
@@ -4532,6 +4551,12 @@ class EconometricsSettings(BaseModel):
             "assumed_test_family_size",
             "pca_min_observations",
             "pca_near_zero_tolerance",
+            "kalman_min_observations",
+            "kalman_band_coverage",
+            "kalman_diffuse_scale",
+            "kalman_max_iterations",
+            "kalman_min_state_drift_ratio",
+            "kalman_max_revision_ratio",
         ):
             value = getattr(self, name).value
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -4550,6 +4575,37 @@ class EconometricsSettings(BaseModel):
                 f"got {self.significance_level.value!r}. A size of 0 rejects every "
                 f"null and a size of 1 rejects none, so either makes the test "
                 f"unfalsifiable in one direction."
+            )
+
+        # The band's coverage has the same open-interval domain for a different
+        # reason: it is a probability, and it is inverted through the normal
+        # quantile function. At 0.0 the multiplier is -inf and at 1.0 it is +inf,
+        # so the band bounds would be infinite rather than wide — a published
+        # `inf` in a numeric field, which renders as a gap rather than as an
+        # error and compares False against everything.
+        if not 0.0 < float(self.kalman_band_coverage.value) < 1.0:
+            raise ValueError(
+                f"econometrics.kalman_band_coverage must lie strictly inside (0, 1), "
+                f"got {self.kalman_band_coverage.value!r}. It is the probability the "
+                f"published band is meant to cover, and it is inverted through the "
+                f"normal quantile: 0 gives an infinite-width band, 1 a zero-width "
+                f"one, and neither is an interval."
+            )
+
+        # The Kalman filter's likelihood is evaluated on the state innovations,
+        # so its floor has to clear the parameter count rather than a fixed row
+        # count. Derived and checked here rather than configured twice, because
+        # a second leaf holding the same fact is a leaf that can disagree with
+        # the first — the shape D-047 recorded as a dead config value.
+        minimum_rows = float(self.kalman_min_observations.value)
+        parameter_floor = float(_KALMAN_MAX_PARAMETERS)
+        if minimum_rows <= parameter_floor:
+            raise ValueError(
+                f"econometrics.kalman_min_observations ({minimum_rows:.0f}) must "
+                f"exceed the largest Kalman parameter count ({parameter_floor:.0f}), "
+                f"because a likelihood with fewer observations than estimated "
+                f"variances is not identified and the optimizer will report a "
+                f"boundary hit as a maximum."
             )
 
         # The split fraction has its own domain check rather than sharing the
@@ -4623,6 +4679,20 @@ class EconometricsSettings(BaseModel):
             # typo would otherwise fall through to whichever branch the function
             # happens to write last.
             "pca_standardisation": {"covariance", "correlation"},
+            # The Kalman filter's likelihood optimizer. "nm" (Nelder-Mead, a
+            # derivative-free simplex) is the shipped default because the
+            # likelihood is FLAT in the variance parameters, so gradient
+            # information is unreliable: measured 2026-09-23 over 20 simulated
+            # pairs, the gradient methods failed their own convergence test on
+            # 4 (lbfgs) and 12 (bfgs) while Nelder-Mead and Powell failed on
+            # NONE -- and Nelder-Mead reached the SAME optimum (sigma2.beta
+            # 0.00001459 against lbfgs's 0.00001452, with a marginally higher
+            # log-likelihood). The gradient methods were at the optimum and did
+            # not know it. The others are permitted because the choice is a
+            # numerical one and a future series may favour them; an
+            # unrecognised string is refused here rather than reaching scipy,
+            # which would raise naming neither the setting nor this file.
+            "kalman_optimizer": {"nm", "powell", "lbfgs", "bfgs"},
         }
         for name, allowed in permitted.items():
             value = getattr(self, name)

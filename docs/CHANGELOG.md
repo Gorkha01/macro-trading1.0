@@ -10,6 +10,119 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-101 — Module 18 #5: `kalman_latent_state`; four silent failures in a Kalman filter; the fit was unit-dependent
+
+**Added**
+
+- `kalman_latent_state(observations: pd.DataFrame, state_dim: int = 1) -> ModelResult`
+  in `src/macro_engine/models/econometrics.py` (§15.20-F's verbatim signature), the
+  module's unobservable-state estimator. Three state-space specifications, selected
+  by `(n_columns, state_dim)` and **published** as `model_spec`: `local_level`
+  (`r*`), `local_linear_trend` (potential GDP) and `time_varying_hedge_ratio`. Any
+  other combination is refused with the admissible set enumerated from the same
+  table the constructor reads.
+- The **filtered path with its uncertainty band** on every result — the state, its
+  standard error, the band's bounds and coverage, and the latest estimate with its
+  band — plus the **smoothed** path's endpoint and the measured revision between
+  them, because the difference IS the look-ahead bias a real-time reader must not
+  import.
+- Seven config leaves under `econometrics:`: `kalman_min_observations`,
+  `kalman_band_coverage`, `kalman_diffuse_scale`, `kalman_max_iterations`,
+  `kalman_min_state_drift_ratio`, `kalman_max_revision_ratio`, and the choice leaf
+  `kalman_optimizer`. `config._KALMAN_MAX_PARAMETERS` pins the observation floor
+  against the parameter count, and a test recounts it from the model's own table.
+
+**Fixed**
+
+- **The fitted band depended on the caller's choice of UNITS.** The model is
+  scale-invariant and the optimizer is not: measured on ONE local level at six
+  scales, `sigma2.level / scale**2` ran **0.3139** at scale 1, **0.3238** at 1e-3,
+  **46.16** at 1e3, **2.663** at 1e6 and **0.02625** at 1e9 — a **147× spread on
+  identical data**, because `start_params` is `1.0` while the likelihood is
+  evaluated at the series' own magnitude. One degenerate series reported a relative
+  band of `2.05e-8` in its own units and `4.89e-2` scaled a hundred-fold. Fixed by
+  normalising each series before fitting and converting every published quantity
+  back, with `series_scales` / `state_scales` published. **Measured after the fix:
+  `0.313922` at every scale from 1e-9 to 1e9.**
+- **`sigma2.level` / `sigma2.slope` were weakly identified together** and the
+  optimizer was the wrong family for this likelihood: measured over 20 simulated
+  pairs, the gradient methods failed their own convergence test on **4/20** (`lbfgs`)
+  and **12/20** (`bfgs`) while Nelder-Mead and Powell failed on **none** — and
+  Nelder-Mead reached the **same** optimum (`sigma2.beta` 0.00001459 against
+  0.00001452). Raising the iteration cap did not help, which identifies the stopping
+  *rule* rather than the budget. `kalman_optimizer` defaults to `"nm"`.
+- **`config._KALMAN_MAX_PARAMETERS`** and the open-interval validator on
+  `kalman_band_coverage`: at 1.0 the normal quantile is infinite, so the band would
+  publish `inf`.
+
+**Changed**
+
+- `pyproject.toml` gains a scoped `[[tool.mypy.overrides]]` for
+  `macro_engine.models.econometrics` with `disallow_subclassing_any = false`, because
+  the model subclasses the untyped `statsmodels.tsa.statespace.MLEModel`. **The
+  relaxation must name the module that DECLARES the subclass, not the library** —
+  adding it to the `statsmodels.*` override has no effect, which was measured.
+- `scripts/mutation_econometrics.py` grew **77 → 109** mutations (M77–M108; **108/109
+  killed**, with M34 inert-by-route), and its
+  four progress prints now carry `flush=True`: a sweep redirected to a file was
+  SIGTERM'd and left an **empty log** while the sidecar correctly preserved the tree.
+- `M69`'s anchor was **widened** — adding `_prepare_kalman_observations` gave its
+  guard line a second occurrence, the D-055 trap where `str.replace` rewrites a
+  neighbour and reports a kill for a change applied elsewhere.
+- `scripts/live_econometrics_check.py` gained sections 10–13.
+
+**Findings**
+
+- **Four silent failures, each found by probing BEFORE the function was written**,
+  every one returning a complete-looking result describing a different model:
+  `UnobservedComponents(y, level=True)` fits a **deterministic constant** (it
+  reported `102.33 ± 0.18` on a random walk whose level moved several units);
+  `mle_regression=False` gives a **recursive OLS** coefficient, not a time-varying
+  one (reported `0.4793` against a true `0.4267`, and `0.4793` **is** the full-sample
+  OLS value, with a standard error of `0.0023` that makes the wrong answer look
+  precise); a missing `transform_params` yields **negative variances** and `nan`
+  bands; and **`initialization='diffuse'` reports a standard error of exactly `0.0`**
+  for a state the first observation does not identify.
+- **The last one decided the design.** Exact-diffuse removes the diffuse component
+  from `filtered_state_cov`, so a local linear trend's slope — design `[1, 0]` —
+  came back as `0.0 ± 0.0` where the honest answer is the prior's scale. The
+  filtered **states** were identical across all three initializations; only the
+  published **uncertainty** differed. Pinned by a test that reproduces the
+  measurement.
+- **A warning was written, measured, and REMOVED.** A relative "degenerate band"
+  warning for the collapsed-band case (`102.8486 ± 0.0000377` from a converged fit)
+  was deleted because **no threshold separates it from a well-specified one**:
+  `median(se)/median|state|` spanned `3.1e-8` to `1.8e-3` for noise-free samples and
+  `sigma2.irregular/var(y)` is specification-dependent. An unreliable warning is
+  worse than none, so the behaviour is a **limitation** and `sigma2.irregular` is
+  published for the reader to judge.
+- **D-100's own record was wrong about the block it cited**: §15.20 block F holds
+  **five** signatures, not four. The count was taken from the implemented functions
+  rather than from the block — the "a citation is a claim" failure D-100 had just
+  recorded, one increment later.
+
+**Disclosed**
+
+- The state is **unobservable**, so no data can confirm the filter's answer; the
+  band is model-dependent and understates model disagreement.
+- The earliest observations are **prior-dominated**, and a state the first
+  observation does not identify carries the prior's scale as its band for one step
+  (measured: `1000.0` at `kappa = 1e6`, then `1.42`).
+- The state innovation variance is **downward-biased** in small samples (median
+  `0.2128` against a true `0.25` at n=60), and the bias is toward **false
+  stability**.
+- A level-only model **absorbs a deterministic trend into its own variance**
+  (measured: `sigma2.level = 1.09` against a true `0.25`).
+- The band is a prediction interval for the **state**, not for the series, and the
+  filter is **not a forecast**.
+
+**Documented**
+
+- `docs/DECISIONS.md` **D-101**; `docs/OPEN_ISSUES.md` **O-119** (the leftover
+  predicate cannot distinguish a typo'd anchor from a leftover) and **O-120** (the
+  sweep set has outgrown the foreground window); `docs/MODULE_MAPPING.md` (the
+  Module 18 table gains its fifth row and the block-F count is corrected to five).
+
 ### D-100 — Module 18 #4: `compute_pca`; a fourth defect class in the constant-series guard; O-117 recurs
 
 **Added**

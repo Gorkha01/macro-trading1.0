@@ -5579,3 +5579,128 @@ deselected / 0 failed** · sweep **76/77** (77 declared; M34 inert-by-constructi
 `compute_pca` ✅ → **next is `kalman_latent_state`**, with **`yield_curve_pca`**
 (Module 8) the natural consumer of today's work. `compute_pca` needs no §4 decision
 now (D-099).
+
+---
+
+## D-101 — Module 18 #5: `kalman_latent_state` (2026-09-23)
+
+**Tier 5 = 5/23 by §21.3's list. Module 18 = 5 of 6.** Spec: **§15.20 block F**
+(AGENTS.md:3187). **Correction: block F holds FIVE signatures, not four** — D-100
+recorded four because it counted the implemented functions rather than the block,
+which is the "a citation is a claim" failure D-100 had just recorded.
+
+### What shipped
+
+`kalman_latent_state(observations, state_dim=1) -> ModelResult`, built from
+**explicit state-space matrices** rather than a convenience wrapper, with three
+specifications selected by `(n_columns, state_dim)` and **published** as
+`model_spec`: `local_level` (`r*`), `local_linear_trend` (potential GDP),
+`time_varying_hedge_ratio`. Anything else is **refused with the admissible set
+enumerated from the same table the constructor reads**. Every result carries the
+**filtered path with its uncertainty band**, the smoothed path's endpoint, and the
+measured revision between them. Seven config leaves; `scipy` (already declared)
+supplies the band's multiplier from the coverage via `norm.ppf`, not a recalled
+`1.96`. Confidence is priced with **`depends_on_unobservable=True`** — §21.4 item
+13's literal case, since `r*` and potential GDP are unobservable by nature.
+
+### The four silent failures, all found by probing BEFORE writing the function
+
+Each returned a complete-looking result describing a different model:
+
+1. `UnobservedComponents(y, level=True)` fits a **deterministic constant**
+   (`stochastic_level` defaults to `False`) — reported `102.33 ± 0.18` on a random
+   walk whose level moved several units. `level='rwalk'` drops the irregular, so
+   the band collapses to **exactly `0.0`**.
+2. `mle_regression=False` does **not** give a time-varying coefficient: state
+   covariance `[[0.]]`, a **recursive OLS** estimate converging to the full-sample
+   constant — `0.4793` against a true `0.4267`, and `0.4793` **is** the OLS value,
+   with a standard error of `0.0023` that makes the wrong answer look precise.
+3. A missing parameter transform → **negative variances** and `nan` bands
+   (`sigma2.slope = -3.24`).
+4. **`initialization='diffuse'` reports a standard error of exactly `0.0`** for a
+   state the first observation does not identify — the local linear trend's slope,
+   whose design is `[1, 0]`. The filtered **states** were identical across all
+   three initializations; only the published **uncertainty** differed.
+
+### The unit-dependence, and its fix
+
+The model is scale-invariant; the **optimizer** is not. On ONE local level at six
+scales, `sigma2.level / scale**2` ran **0.3139** (scale 1), **0.3238** (1e-3),
+**46.16** (1e3), **2.663** (1e6), **0.02625** (1e9) — a **147× spread on identical
+data**, so the band and every warning reading it depended on the caller's choice of
+**units**. Fixed by normalising each series before fitting and converting back,
+with `series_scales` / `state_scales` published. **After: `0.313922` at every scale
+from 1e-9 to 1e9.**
+
+### The optimizer
+
+Over 20 simulated pairs, non-converged fits: **`lbfgs` 4/20, `bfgs` 12/20,
+Nelder-Mead 0/20, Powell 0/20** — and Nelder-Mead reached the **same** optimum.
+Raising the iteration cap did not help, which identifies the stopping *rule*. The
+likelihood is flat in the variance parameters, so gradient information is
+unreliable; `kalman_optimizer` defaults to `"nm"`.
+
+### A warning written, measured, and REMOVED — and a design decision FALSIFIED by the live check
+
+A relative "degenerate band" warning was deleted because **no threshold separates
+the collapsed-band case from a well-specified one** (`median(se)/median|state|`
+spanned `3.1e-8`–`1.8e-3` for noise-free samples; `sigma2.irregular/var(y)` is
+specification-dependent). It is a **limitation** now, with `sigma2.irregular`
+published.
+
+**Then the live check failed its own control**, and the failure was informative:
+the control expected a *warning* on a constant series, but the state variance
+collapses to `1e-12` while the **band collapses further** (`1.65e-09`), so the
+drift-to-band ratio came back as **6055** and nothing fired. The stated rationale
+for NOT refusing a constant series — "the `not time-varying` warning reports it" —
+was **false**, so a series with no variation is now **refused**, as `compute_pca`
+refuses one, and the control asserts the refusal. Its tolerance is **fully
+relative** (`eps * scale * 100`), deliberately unlike the sibling's
+`maximum(scale, 1.0)` form, which is effectively absolute below scale 1 and would
+refuse a tiny-scale series that genuinely moves (**O-121**).
+
+### Harness findings
+
+* **Adding a function made a NEIGHBOUR's anchor ambiguous** — `M69`'s guard line
+  gained a second occurrence, the D-055 trap; `sweep_health.py` caught it, and the
+  anchor was widened by its distinguishing neighbour.
+* **A redirected sweep's log is BLOCK-BUFFERED** — a SIGTERM after ~36 mutations
+  left an **empty log** while the sidecar correctly preserved the tree. The tree
+  was restored and verified byte-identical; the progress prints now carry
+  `flush=True`. **O-120** records that a 109-mutation sweep no longer fits the
+  foreground window, so the standing "never background a sweep" rule is currently
+  obeyed by breaking it.
+* **A typo'd anchor and a leftover are indistinguishable** to the leftover
+  predicate (**O-119**): `M100`'s three-line anchor for a single-line source
+  reported as "STILL APPLIED" rather than as a miss.
+* The first full sweep found **two real gaps** — `M94` (the non-finite output guard
+  was unreachable by any test, though a `1e300`-scale series reaches it) and `M105`
+  (a partial-message mutation, where the asserted word sat on the second line of a
+  concatenated string). Both fixed; both now **KILLED**.
+
+### Next
+
+`kalman_latent_state` ✅ → **next is `yield_curve_pca`** (Module 8, the §6.6 stub)
+— the natural consumer of `compute_pca`, and the last of Module 18's six is
+`kalman_latent_state` itself, so Module 18 is now **5 of 6** with only the
+Module-8 consumer outstanding. Tier 5 = **5/23**.
+
+### Gate baseline after D-101 (measured 2026-09-24)
+
+ruff check clean · **`ruff format --check` 247 files** · **`mypy --strict` no issues in
+247 files** · **3068 passed / 1 skipped / 17 deselected / 0 failed** · sweep **108/109**
+(109 declared; **M34** inert-by-route) · **43 sweeps, 0 leftovers, 0 mutant shapes** ·
+reachability **58 = 58** · live check **PASSED** (319 real monthly CPIAUCSL
+observations; 680 common daily DGS10/DGS2 observations; scale invariance confirmed on
+real data at `0.816013` for both 1e-3 and 1e3).
+
+`test_econometrics.py` collects **257** tests (was 182); the mutation catalogue is
+**109** (was 77).
+
+**Next = `yield_curve_pca`** (Module 8, the §6.6 stub). It is a **wrapper over
+`compute_pca`** — §15.18's narrative calls it Module 18's *output* but §21.1 puts the
+function in Module 8 and it lives in `models/yield_curve.py`, which is **already swept
+by `mutation_yield_curve.py` (69 mutations)**. So it will hit the same anchor-ambiguity
+trap D-101 met in `econometrics.py`: **re-run that sweep and widen any anchor my new
+function makes two-site.** Its signature takes **no `n_components`** (unlike
+`compute_pca`), and D-099 already settled the dependency question it raises.

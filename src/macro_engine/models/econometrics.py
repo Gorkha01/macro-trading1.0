@@ -55,19 +55,21 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from pydantic import ConfigDict, Field
+from scipy.stats import norm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import (
     CollinearityWarning,
     InterpolationWarning,
     SingularMatrixWarning,
 )
+from statsmodels.tsa.statespace.mlemodel import MLEModel
 from statsmodels.tsa.stattools import adfuller, coint, kpss
 from statsmodels.tsa.tsatools import add_trend
 
@@ -82,6 +84,7 @@ from macro_engine.models.contracts import (
 __all__ = [
     "RegressionResult",
     "compute_pca",
+    "kalman_latent_state",
     "run_regression",
     "test_cointegration",
     "test_stationarity",
@@ -1667,6 +1670,1118 @@ def _pca_choices_calibrated() -> bool:
     ``False`` and the caller applies the penalty.
     """
     return get_settings().is_calibrated("econometrics.pca_near_zero_tolerance")
+
+
+# ---------------------------------------------------------------------------
+# Kalman filter (Section 15.20-F) — the module's unobservable-state estimator
+# ---------------------------------------------------------------------------
+
+#: The three observation equations the table below can build. The design matrix
+#: is the only part of a specification that is not fixed by the state dimension,
+#: so it is named here rather than inferred from the panel's width at the point
+#: of use.
+_KALMAN_DESIGN_UNIT = "unit"
+_KALMAN_DESIGN_LEVEL = "level"
+_KALMAN_DESIGN_REGRESSOR = "regressor"
+
+
+class _KalmanSpec(NamedTuple):
+    """One supported state-space specification, held as DATA rather than as branches.
+
+    ``transition`` and ``state_names`` fix the state equation; ``design_kind``
+    fixes the observation equation. Keeping the three specifications in ONE
+    table is what lets the refusal enumerate the admissible set from the same
+    object the constructor reads — a threshold whose attainable values are never
+    enumerated is how a dead branch survives (the D-047 lesson).
+
+    A ``NamedTuple`` rather than a Pydantic model because this never crosses an
+    I/O boundary and never needs validating; the strict-typing value is that a
+    reader cannot pass a ``str`` where a matrix belongs without mypy saying so.
+    """
+
+    name: str
+    state_names: tuple[str, ...]
+    transition: tuple[tuple[float, ...], ...]
+    variance_names: tuple[str, ...]
+    design_kind: str
+
+
+#: The admissible ``(n_columns, state_dim)`` space, and ONLY this space. Each
+#: entry is one of Section 15.20-F's three named uses of this function:
+#:
+#: * ``local_level`` — a latent LEVEL: r*, or any slow-moving unobservable read
+#:   through a noisy proxy. ``y_t = mu_t + eps_t``, ``mu_t = mu_{t-1} + eta_t``.
+#: * ``local_linear_trend`` — a latent level that is ALLOWED to drift:
+#:   potential GDP, whose level has a trend the level-only model must otherwise
+#:   absorb into its own variance (measured: a deterministic trend drove
+#:   ``sigma2.level`` to 1.09 on a series whose true level variance was 0.25).
+#:   ``F = [[1, 1], [0, 1]]`` — the slope feeds the level.
+#: * ``time_varying_hedge_ratio`` — a latent regression COEFFICIENT, which is
+#:   the formal machinery for a cointegrated pair's time-varying hedge ratio.
+#:   ``y_t = beta_t * x_t + eps_t``, ``beta_t = beta_{t-1} + eta_t``.
+#:
+#: Deliberately ABSENT: a time-varying intercept (``alpha_t`` beside ``beta_t``).
+#: Section 15.20-F does not name it, and a configuration nothing specifies is a
+#: configuration nothing can be held to. A caller who needs one is asking for a
+#: fourth specification, which is a decision rather than a parameter.
+_KALMAN_SPECS: dict[tuple[int, int], _KalmanSpec] = {
+    (1, 1): _KalmanSpec(
+        name="local_level",
+        state_names=("level",),
+        transition=((1.0,),),
+        variance_names=("level",),
+        design_kind=_KALMAN_DESIGN_UNIT,
+    ),
+    (1, 2): _KalmanSpec(
+        name="local_linear_trend",
+        state_names=("level", "slope"),
+        transition=((1.0, 1.0), (0.0, 1.0)),
+        variance_names=("level", "slope"),
+        design_kind=_KALMAN_DESIGN_LEVEL,
+    ),
+    (2, 1): _KalmanSpec(
+        name="time_varying_hedge_ratio",
+        state_names=("beta",),
+        transition=((1.0,),),
+        variance_names=("beta",),
+        design_kind=_KALMAN_DESIGN_REGRESSOR,
+    ),
+}
+
+
+class _KalmanStateModel(MLEModel):
+    """A linear Gaussian state-space model with EXPLICIT matrices.
+
+    Section 15.18 gives this module one ordering that governs everything in it —
+    mechanism first, statistics second — and for a Kalman filter the mechanism
+    *is* the state-space specification. So the matrices are written down here
+    and published on every result, rather than inferred by a convenience class:
+    a reader can check the model against the economics, and a test can assert
+    the matrix that was actually filtered.
+
+    **Why not ``UnobservedComponents``.** The structural convenience class was
+    probed first and REJECTED on measurement, twice, for two different silent
+    failures — see :func:`kalman_latent_state`'s docstring for the numbers. Both
+    returned a complete-looking result that described a different model from the
+    one the caller asked for. Explicit matrices remove the class of defect
+    rather than one instance of it.
+
+    **Why ``approximate_diffuse`` and not ``diffuse``.** Measured 2026-09-23:
+    the exact-diffuse route REMOVES the diffuse component from
+    ``filtered_state_cov``, so a state the first observation does not identify
+    reports a standard error of exactly ``0.0``. On a local linear trend the
+    slope came back as ``0.0 +- 0.0`` — the observation reads ``[1, 0]`` and
+    carries no slope information — where the honest answer is the declared
+    prior's scale. The same fit under ``approximate_diffuse`` reported
+    ``1000.0``, which is ``sqrt(kappa)``. The filtered states were identical
+    between the two routes; only the published uncertainty differed, which is
+    exactly the shape of failure this project treats as its signature.
+    """
+
+    def __init__(
+        self,
+        endog: np.ndarray,
+        *,
+        spec: _KalmanSpec,
+        design: np.ndarray,
+        diffuse_scale: float,
+    ) -> None:
+        k_states = len(spec.state_names)
+        super().__init__(endog, k_states=k_states, k_posdef=k_states)
+        self["design"] = design
+        self["transition"] = np.array(spec.transition, dtype=float)
+        self["selection"] = np.eye(k_states)
+        self.ssm.initialize_approximate_diffuse(diffuse_scale)
+        self._variance_names = spec.variance_names
+
+    @property
+    def param_names(self) -> list[str]:
+        return [f"sigma2.{name}" for name in self._variance_names] + ["sigma2.irregular"]
+
+    @property
+    def start_params(self) -> list[float]:
+        """All ones, because the optimizer works in the square-root space.
+
+        A start of ``1.0`` is therefore a standard deviation of ``1.0`` for
+        every variance, which is the only neutral choice available without
+        reading the data — and reading the data here would make the fit depend
+        on a quantity the caller never sees.
+        """
+        return [1.0] * (len(self._variance_names) + 1)
+
+    def transform_params(self, unconstrained: np.ndarray) -> np.ndarray:
+        """Square the optimizer's parameters so every variance stays positive.
+
+        NOT optional. ``MLEModel``'s base implementation is the IDENTITY, so
+        without this the optimizer is free to explore negative variances and
+        does: measured 2026-09-23, a local linear trend fitted with the base
+        ``untransform_params`` returned ``sigma2.slope = -3.24`` and a
+        standard-error array of ``nan`` from the second observation onward.
+        Every published field was then ``nan`` while the fit itself reported no
+        error. This is the "declared but not enforced" shape in the one place
+        where the library cannot supply the constraint for you.
+        """
+        return np.asarray(unconstrained) ** 2
+
+    def untransform_params(self, constrained: np.ndarray) -> np.ndarray:
+        """The inverse of :meth:`transform_params`, used to place ``start_params``."""
+        return np.asarray(constrained) ** 0.5
+
+    def update(self, params: Any, **kwargs: Any) -> np.ndarray:
+        """Write the estimated variances into the state and observation covariances.
+
+        ``fit`` calls this with params that are ALREADY transformed (the base
+        signature's ``transformed=True`` default), so no transform is applied
+        here — ``super().update`` is called for its fixed-parameter handling and
+        to keep one definition of what "the current params" means.
+        """
+        constrained = np.asarray(super().update(params, **kwargs))
+        for index in range(len(self._variance_names)):
+            self["state_cov", index, index] = constrained[index]
+        self["obs_cov", 0, 0] = constrained[-1]
+        return constrained
+
+
+def kalman_latent_state(observations: pd.DataFrame, state_dim: int = 1) -> ModelResult:
+    """Filter an unobservable state out of a noisy series, with its uncertainty band.
+
+    Section 15.20-F's signature. The specification names three uses — ``r*``,
+    potential GDP, and a cointegrated pair's time-varying hedge ratio — and all
+    three are latent states of a linear Gaussian state-space model, so all three
+    are one mechanism with three specifications:
+
+    ==================  ==========  =========================  =====================
+    ``observations``    ``state``   specification              Section 15.20-F use
+    ==================  ==========  =========================  =====================
+    1 column            1           ``local_level``            r*, a latent level
+    1 column            2           ``local_linear_trend``     potential GDP
+    2 columns           1           ``time_varying_hedge_ratio`` hedge ratio
+    ==================  ==========  =========================  =====================
+
+    The state-space matrices are written out in :class:`_KalmanStateModel` and
+    published as ``model_spec``, because the specification IS the mechanism and
+    Section 15.18 requires the mechanism to be stated rather than implied. Any
+    other combination is REFUSED with the admissible set named, so a caller
+    cannot silently get a different model from the one they asked for.
+
+    **1. The state is an ESTIMATE and its band is part of the answer, not
+    decoration.** The specification is emphatic ("the filtered state is an
+    estimate, never to be presented as observed truth"), and the band is what
+    makes that operational: every published state carries a standard error and
+    an interval derived from it, at a configured coverage. A state without its
+    band would be a point estimate of a quantity nobody can observe.
+
+    **2. FILTERED, not smoothed — and the difference is published.** The
+    filtered state at ``t`` uses observations ``1..t``, which is what a real-time
+    estimate may use. The smoothed state uses the whole sample and is therefore
+    LOOK-AHEAD-BIASED for any decision taken at ``t``. The result publishes both
+    and the measured revision between them, because a reader who does not know
+    how much the estimate will be revised cannot judge whether to act on it.
+    Measured 2026-09-23 on a 200-observation local level: the largest revision
+    was 1.5x-3.0x the state's own median standard error, and for a local linear
+    trend's SLOPE it ran 3.2x-27.1x. A slope estimated in real time is
+    materially less trustworthy than its band alone suggests, and that is a
+    measurement rather than a caveat.
+
+    **3. Three silent-failure paths were found by probing ``statsmodels`` BEFORE
+    this function was written, and every one of them returns a plausible,
+    complete-looking result.** They are why the model is built from explicit
+    matrices rather than from the structural convenience class:
+
+    * **``UnobservedComponents(y, level=True)`` fits a DETERMINISTIC level, not
+      a random walk.** ``stochastic_level`` defaults to ``False``, so the "level"
+      is a constant and the function reports the sample mean with a band
+      narrower than any observation — ``102.33 +- 0.18`` on a random walk whose
+      level moved over several units. ``level='rwalk'`` is the other half of the
+      trap: it drops the irregular component, so the state equals the
+      observation and the band collapses to exactly ``0.0``. Measured both.
+    * **``UnobservedComponents(..., mle_regression=False)`` does NOT give a
+      time-varying coefficient.** The coefficient's process variance is not
+      estimated, so its state covariance is ``[[0.]]`` and the filter returns a
+      RECURSIVE OLS estimate that converges to the full-sample constant.
+      Measured on a series with a genuinely drifting beta: the reported beta at
+      the final observation was ``0.4793`` against a true ``0.4267`` — and
+      ``0.4793`` is exactly the full-sample OLS coefficient, with a standard
+      error of ``0.0023`` that makes the wrong answer look precise.
+    * **A missing parameter transform yields NEGATIVE variances.** See
+      :meth:`_KalmanStateModel.transform_params`: the base implementation is the
+      identity, so an unconstrained fit returned ``sigma2.slope = -3.24`` and
+      ``nan`` bands without raising.
+
+    **4. A collapsed band is DISCLOSED, not warned about — and that was a
+    measurement.** When the model estimates the observation-noise variance at
+    (near) zero it is asserting that the data are noise-free, and the band then
+    measures only the state's own innovation uncertainty and collapses: measured
+    2026-09-23 on a random walk observed with ``sigma = 0.01``, a CONVERGED fit
+    published ``102.8486 +- 0.0000377``. A warning was written for it and then
+    REMOVED, because no threshold separates that case from a well-specified one.
+    Measured over 10 seeds at each noise level, ``median(se)/median|state|``
+    spanned ``3.1e-8`` to ``1.8e-3`` for noise-free samples — overlapping the
+    well-specified range — and ``sigma2.irregular/var(y)`` spanned ``5.5e-12``
+    to ``2.7e-2`` at zero noise and is specification-dependent besides, since a
+    pair's ``var(y)`` is dominated by the regressor. **An unreliable warning is
+    worse than a disclosed limitation**, because it teaches the reader to ignore
+    it; so the behaviour is a ``limitation`` and ``sigma2.irregular`` is
+    published for the reader to judge.
+
+    **5. The series is NORMALISED before fitting, and the scale factors are
+    published.** The state-space model is invariant under rescaling in exact
+    arithmetic; the OPTIMIZER is not, because ``start_params`` is ``1.0`` while
+    the likelihood is evaluated at the series' own magnitude. Measured
+    2026-09-23, ONE local level fitted at six scales and reported as
+    ``sigma2.level / scale**2``: ``0.3139`` at scale 1, ``0.3238`` at ``1e-3``,
+    ``46.16`` at ``1e3``, ``2.663`` at ``1e6`` and ``0.02625`` at ``1e9`` — a
+    **147x spread** between two fits of the same data. So the band, and every
+    warning that reads it, depended on the caller's choice of UNITS: one
+    degenerate series reported a relative band of ``2.05e-8`` in its own units
+    and ``4.89e-2`` a hundred-fold scaled. Normalising first removes it
+    entirely (measured after the fix: ``0.313922`` at every scale from ``1e-9``
+    to ``1e9``), and ``series_scales`` / ``state_scales`` are published so a
+    reader can convert between a normalised fit and their own units.
+
+    Returns a ``ModelResult`` whose ``value`` carries the filtered path, its
+    standard error, the band's bounds and coverage, the latest estimate with its
+    band, the smoothed path's endpoint and the measured revision, the estimated
+    variances, the fit's likelihood and information criteria, and the
+    initialization used. ``direction`` is ``None``: a level is not a directional
+    signal. ``confidence`` is priced with ``depends_on_unobservable=True`` —
+    Section 21.4 item 13's exact case, since ``r*`` and potential GDP are
+    unobservable by nature — and with the heuristic penalty when the disclosure
+    thresholds are uncalibrated.
+    """
+    settings = get_settings()
+    econometrics = settings.econometrics
+
+    panel, column_names = _prepare_kalman_observations(observations)
+    n_obs, n_columns = panel.shape
+    spec = _select_kalman_model(n_columns, state_dim)
+
+    # The series is normalised before fitting and converted back afterwards. The
+    # model is scale-invariant and the OPTIMIZER is not, so without this the
+    # published band depends on the caller's choice of units -- see
+    # `_kalman_series_scales` for the measured 147x spread on one series.
+    scale_y, scale_x = _kalman_series_scales(panel)
+    normalised = panel.copy()
+    normalised[:, 0] = panel[:, 0] / scale_y
+    if n_columns > 1:
+        normalised[:, 1] = panel[:, 1] / scale_x
+    design = _kalman_design(spec, normalised)
+
+    diffuse_scale = float(econometrics.kalman_diffuse_scale.value)
+    model = _KalmanStateModel(
+        normalised[:, 0],
+        spec=spec,
+        design=design,
+        diffuse_scale=diffuse_scale,
+    )
+
+    # statsmodels emits its own `ConvergenceWarning` from inside `fit`. Captured
+    # rather than allowed to escape, for the reason D-097 recorded about
+    # `coint_johansen`: a library warning that escapes a function becomes an
+    # EXCEPTION under `-W error`, so a correct call would raise while every
+    # published field stayed correct. It is not swallowed — the message is
+    # republished as this function's own warning below.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        results = model.fit(
+            disp=False,
+            maxiter=int(econometrics.kalman_max_iterations.value),
+            # A DERIVATIVE-FREE optimizer by default: the likelihood is flat in
+            # the variance parameters, so gradient information is unreliable.
+            # Measured 2026-09-23 over 20 simulated pairs, counting fits whose
+            # optimizer failed its own convergence test: lbfgs 4/20, bfgs 12/20,
+            # Nelder-Mead 0/20. The gradient methods sat at the optimum without
+            # knowing it -- see `kalman_optimizer` in settings.yaml.
+            method=str(econometrics.kalman_optimizer),
+        )
+    convergence_messages = [
+        str(entry.message) for entry in caught if "converge" in str(entry.message).lower()
+    ]
+
+    retvals = getattr(results, "mle_retvals", None) or {}
+    converged = bool(retvals.get("converged", False))
+
+    # The fitted quantities are in NORMALISED units; every published one is
+    # converted back here, once, from the same factor array.
+    state_scales = _kalman_state_scales(spec, scale_y, scale_x)
+
+    # `errstate` around the rescaling because an OVERFLOWED fit emits numpy's
+    # per-operation warnings for each of these multiplies, and the guard
+    # immediately below then raises with a message naming the cause. Those
+    # warnings are redundant noise on a path that errors anyway -- and under
+    # `-W error` they would PRE-EMPT that message (D-097's lesson about a library
+    # warning escaping a function). The guard is not silenced; only the
+    # arithmetic that feeds it.
+    with np.errstate(invalid="ignore", over="ignore"):
+        filtered = np.asarray(results.filtered_state, dtype=float) * state_scales[:, None]
+        smoothed = np.asarray(results.smoothed_state, dtype=float) * state_scales[:, None]
+        standard_error = (
+            _state_standard_errors(np.asarray(results.filtered_state_cov)) * state_scales[:, None]
+        )
+
+    # NO SILENT PATH: a non-finite state or band is refused rather than
+    # published. A `nan` in a band renders as a gap in a chart and as a
+    # comparison that is always False, so it would look like missing data
+    # rather than like a failure.
+    for label, array in (
+        ("filtered_state", filtered),
+        ("smoothed_state", smoothed),
+        ("filtered_state_std_error", standard_error),
+    ):
+        if not bool(np.isfinite(array).all()):
+            raise ValueError(
+                f"The Kalman filter produced non-finite values in {label} for the "
+                f"{spec.name!r} specification on {n_obs} observations. A non-finite "
+                f"state or band is not a result: it renders as a gap rather than as "
+                f"an error, and every comparison against it is False. This usually "
+                f"means the input series has a scale that overflows the filter's "
+                f"arithmetic; check the series' units before retrying."
+            )
+
+    coverage = float(econometrics.kalman_band_coverage.value)
+    z_multiplier = float(norm.ppf(0.5 + coverage / 2.0))
+    lower = filtered - z_multiplier * standard_error
+    upper = filtered + z_multiplier * standard_error
+
+    fitted = np.asarray(results.params, dtype=float)
+    variances = {
+        f"sigma2.{name}": float(fitted[index] * state_scales[index] ** 2)
+        for index, name in enumerate(spec.variance_names)
+    }
+    # The irregular variance is the observation noise on the dependent series, so
+    # it carries `scale_y**2` and NOT a state scale -- the distinction matters
+    # for the pair specification, where the two differ.
+    variances["sigma2.irregular"] = float(fitted[-1] * scale_y**2)
+
+    published = _kalman_value(
+        spec=spec,
+        column_names=column_names,
+        filtered=filtered,
+        smoothed=smoothed,
+        standard_error=standard_error,
+        lower=lower,
+        upper=upper,
+        coverage=coverage,
+        z_multiplier=z_multiplier,
+        variances=variances,
+        n_obs=n_obs,
+        converged=converged,
+        diffuse_scale=diffuse_scale,
+        series_scales=(scale_y, scale_x),
+        state_scales=state_scales,
+        log_likelihood=float(results.llf),
+        aic=float(results.aic),
+        bic=float(results.bic),
+    )
+
+    warnings_ = _kalman_warnings(
+        spec=spec,
+        filtered=filtered,
+        standard_error=standard_error,
+        smoothed=smoothed,
+        variances=variances,
+        n_obs=n_obs,
+        converged=converged,
+        convergence_messages=convergence_messages,
+    )
+
+    latest = published["latest"]
+    assert isinstance(latest, dict)  # narrowed for mypy; the shape is built above
+    latest_level = latest[spec.state_names[0]]
+    assert isinstance(latest_level, dict)
+    revision_units = published["revision_in_band_units"]
+    assert isinstance(revision_units, dict)
+
+    return ModelResult(
+        model_name="kalman_latent_state",
+        country="us",
+        as_of=utc_now(),
+        value=published,
+        unit=(
+            "state units: a level is in the dependent series' units, a slope in "
+            "those units per observation, and a beta in dependent-per-regressor "
+            "units; standard errors and band bounds share the state's units"
+        ),
+        direction=None,
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                is_heuristic_not_calibrated=not _kalman_thresholds_calibrated(),
+                source_independence_count=0,
+                # Section 21.4 item 13's exact case, and the ONLY setting of this
+                # flag in the module that is not a judgement call: `r*` and
+                # potential GDP are unobservable by nature, so the quantity this
+                # function estimates is not merely estimated imperfectly -- it
+                # cannot be observed at all.
+                depends_on_unobservable=True,
+            )
+        ),
+        interpretation=(
+            f"Kalman filter ({spec.name!r}) on {n_obs} observations of "
+            f"{', '.join(column_names)}. The latest FILTERED estimate of "
+            f"{spec.state_names[0]!r} is "
+            f"{float(latest_level['state']):.6g} with a {coverage:.0%} band of "
+            f"[{float(latest_level['lower']):.6g}, "
+            f"{float(latest_level['upper']):.6g}]. This is an estimate of an "
+            f"unobservable state, not an observation: the band is the model's "
+            f"own uncertainty and is only as good as the model."
+        ),
+        context=(
+            f"Specification {spec.name!r}; state = {list(spec.state_names)}; "
+            f"initialization = approximate_diffuse (scale {diffuse_scale:g}); "
+            f"estimated variances = "
+            + ", ".join(f"{name}={value:.6g}" for name, value in variances.items())
+            + f"; log-likelihood {float(results.llf):.4f}, AIC "
+            f"{float(results.aic):.4f}, BIC {float(results.bic):.4f} over "
+            f"{len(variances)} parameters; converged = {converged}. Largest "
+            f"filtered-vs-smoothed revision: "
+            + ", ".join(
+                f"{name} = {float(revision_units[name]):.3f}x its median band"
+                for name in spec.state_names
+            )
+            + ". The smoothed state uses the whole sample and is look-ahead-"
+            "biased for any decision taken in real time."
+        ),
+        inputs_used=_kalman_inputs_used(spec, column_names),
+        warnings=warnings_,
+        assumptions=_kalman_assumptions(spec, column_names),
+        limitations=_kalman_limitations(),
+        decision_prohibition=[
+            "MUST NOT present the filtered state as observed truth, and MUST NOT "
+            "drop the band when reporting it. `r*`, potential GDP and a "
+            "time-varying hedge ratio are unobservable by nature; the filter "
+            "estimates them and the band states how well. A point estimate "
+            "quoted without its band converts a model output into a fact "
+            "(Section 15.20-F).",
+            "MUST NOT use the SMOOTHED state for a real-time decision. The "
+            "smoothed state at `t` is computed from observations after `t`, so "
+            "using it in a backtest or a live signal imports look-ahead bias "
+            "directly. The result publishes both; the filtered one is the only "
+            "one a real-time decision may read.",
+            "MUST NOT compare a state across two fits as though it were the same "
+            "quantity. The state is defined by the specification and the "
+            "estimated variances, and both move with the sample and with the "
+            "chosen `state_dim`. A level from a local-level fit and a level from "
+            "a local-linear-trend fit are different estimates of different "
+            "models, and neither is comparable with the other's band.",
+        ],
+    )
+
+
+def _prepare_kalman_observations(
+    observations: pd.DataFrame,
+) -> tuple[np.ndarray, list[str]]:
+    """Validate the observation panel, or raise. Every check a refusal.
+
+    Mirrors ``_prepare_panel``'s discipline for the same reason: silently
+    dropping a row changes ``n_obs``, and the fit's variances are estimated from
+    it, so the result would then be a claim about a sample the caller never
+    supplied.
+
+    The column-count bound is a REFUSAL rather than a generalisation because the
+    three specifications are the specification's three named uses. A panel of
+    five tenors is not an unobservable state — it is a factor decomposition, and
+    ``compute_pca`` is the function for it.
+    """
+    if not isinstance(observations, pd.DataFrame):
+        raise TypeError(
+            f"observations must be a pandas DataFrame, got {type(observations).__name__}."
+        )
+
+    n_columns = observations.shape[1]
+    if n_columns == 0:
+        raise ValueError(
+            "observations must have at least one column; it has none. A state-space "
+            "model needs something to observe."
+        )
+    if n_columns > 2:
+        raise ValueError(
+            f"observations has {n_columns} columns, but this function estimates a "
+            f"latent LEVEL from one series or a latent RELATIONSHIP between two "
+            f"(dependent first, regressor second). A wider panel is a factor "
+            f"decomposition, which is `compute_pca`'s job, not a single latent state."
+        )
+
+    duplicated = sorted(
+        {str(name) for name in observations.columns[observations.columns.duplicated()]}
+    )
+    if duplicated:
+        raise ValueError(
+            f"observations has duplicate column name(s) {duplicated}. The states are "
+            f"reported by name, so a duplicated label would describe the same state "
+            f"twice. Rename them."
+        )
+
+    for name in observations.columns:
+        if is_bool_dtype(observations[name].dtype) or not is_numeric_dtype(
+            observations[name].dtype
+        ):
+            raise ValueError(
+                f"Column {name!r} must be numeric, got dtype "
+                f"{observations[name].dtype}. Encode or drop categorical columns "
+                f"explicitly so the panel you filter is the panel you intend."
+            )
+
+    values = observations.astype("float64").to_numpy()
+
+    if not bool(np.isfinite(values).all()):
+        offending = [
+            str(name)
+            for name, column in zip(observations.columns, values.T, strict=True)
+            if not bool(np.isfinite(column).all())
+        ]
+        raise ValueError(
+            f"observations contains non-finite values (NaN or inf) in {offending}. A "
+            f"single NaN propagates through the Kalman recursion into every later "
+            f"state and every band bound, so the result would be non-finite from that "
+            f"row onward while the fit itself reported no error. Clean or impute "
+            f"explicitly."
+        )
+
+    minimum_observations = float(get_settings().econometrics.kalman_min_observations.value)
+    if len(values) < minimum_observations:
+        raise ValueError(
+            f"{len(values)} observations is below the configured floor of "
+            f"{minimum_observations:.0f} (econometrics.kalman_min_observations). The "
+            f"variances that set the band are ESTIMATED, and they are downward-biased "
+            f"on short samples: measured 2026-09-23 on a local level whose true "
+            f"sigma2.level was 0.25, the median estimate was 0.15 at n=30 and 0.21 at "
+            f"n=60. An underestimated state variance understates the state's "
+            f"movement, so a short sample reports a confident state that is too "
+            f"smooth."
+        )
+
+    _refuse_constant_kalman_series(values, [str(name) for name in observations.columns])
+
+    return values, [str(name) for name in observations.columns]
+
+
+def _refuse_constant_kalman_series(panel: np.ndarray, column_names: list[str]) -> None:
+    """Refuse any series with no variation, on a tolerance RELATIVE to its scale.
+
+    **Why a refusal and not a warning.** A constant series has no latent state to
+    estimate: the level model's state IS the constant, and a pair's coefficient
+    is identified only up to the scale of a regressor that never moves. This was
+    first left to the ``not time-varying`` warning, and **a live check falsified
+    that rationale** (D-101): on a constant series the state variance collapses
+    to ``1e-12`` but the BAND collapses further (``1.65e-09``), so the warning's
+    drift-to-band ratio came back as ``6055`` and did not fire. The warning
+    compares the state's movement with the uncertainty about it, and both
+    collapse together — which is exactly why the check cannot see this case.
+
+    **``std() == 0.0`` does not fire.** Summing a constant column's squared
+    deviations in floating point leaves a tiny non-zero residue — measured
+    ``8.9e-16`` for a column of ``4.2`` repeated 200 times (D-100) — so a bare
+    zero test passes a constant series straight through.
+
+    **The tolerance is FULLY relative, which differs from ``compute_pca``'s
+    guard on purpose.** That one reads ``eps * maximum(scale, 1.0) * 100``, so
+    below scale 1 it is effectively ABSOLUTE at ``2.22e-14`` and refuses a series
+    whose variation is small in absolute terms but large relative to its own
+    scale — measured 2026-09-23, a series at scale ``1e-9`` varying by ``1e-6`` of
+    that scale has a standard deviation of ``2.9e-16``, which is **ten orders of
+    magnitude above the floating-point noise** yet is refused by the sibling's
+    form while this one accepts it. The sibling's form is recorded as its own
+    issue rather than changed here.
+
+    **The divergent case for THIS form is therefore a tiny-scale series that
+    genuinely moves**, and it is what the test drives: a guard whose tolerance is
+    relative can only be shown to be relative by a case where a relative and an
+    absolute rule DISAGREE (D-100's rule). Note that the opposite direction does
+    NOT exist for the residue itself — numpy's ``std`` returns exactly ``0`` for
+    a constant array at every magnitude measured from ``4.2`` to ``1e12``, so the
+    residue never grows with the series' scale.
+    """
+    scale = np.abs(panel).max(axis=0)
+    deviations = panel.std(axis=0, ddof=1)
+    tolerance = np.finfo(float).eps * scale * 100.0
+    constant = [
+        name for index, name in enumerate(column_names) if deviations[index] <= tolerance[index]
+    ]
+    if constant:
+        raise ValueError(
+            f"Series {constant} have no variation, so there is no latent state to "
+            f"estimate from them. A constant level series IS its own level, and a "
+            f"coefficient estimated against a regressor that never moves is "
+            f"identified only up to that regressor's scale — the fit would return a "
+            f"confident number describing nothing. A bare `std() == 0` test does not "
+            f"catch this (a constant column leaves a floating-point residue of about "
+            f"8.9e-16), which is why the tolerance here is relative to each series' "
+            f"own scale. Supply a series that moves."
+        )
+
+
+def _select_kalman_model(n_columns: int, state_dim: int) -> _KalmanSpec:
+    """Pick the specification for ``(n_columns, state_dim)``, or refuse.
+
+    The refusal enumerates the admissible set from ``_KALMAN_SPECS`` rather than
+    restating it, so the message cannot drift from the table that governs it —
+    the same "one spelling" discipline the series registry applies to routes.
+    """
+    if isinstance(state_dim, bool) or not isinstance(state_dim, int):
+        raise TypeError(
+            f"state_dim must be an int, got {type(state_dim).__name__}. The state "
+            f"dimension selects the specification from a table keyed by exact "
+            f"integers, so a non-integer (and a bool, which is an int subclass and "
+            f"would otherwise reach the table as 0 or 1) silently selects no "
+            f"specification at all."
+        )
+
+    spec = _KALMAN_SPECS.get((n_columns, state_dim))
+    if spec is None:
+        supported = "; ".join(
+            f"{columns} column(s) x state_dim={dim} -> {entry.name}"
+            for (columns, dim), entry in sorted(_KALMAN_SPECS.items())
+        )
+        raise ValueError(
+            f"No specification for {n_columns} column(s) with state_dim={state_dim}. "
+            f"The admissible combinations are: {supported}. Each is one of Section "
+            f"15.20-F's named uses of this function; anything else is a different "
+            f"state-space model, and inventing one here would publish a state whose "
+            f"meaning nothing specifies."
+        )
+    return spec
+
+
+def _kalman_design(spec: _KalmanSpec, panel: np.ndarray) -> np.ndarray:
+    """Build the observation matrix ``H_t``, shaped ``(1, k_states, n_obs)``.
+
+    Time-varying for the regression specification, because the regressor enters
+    the DESIGN rather than the data: ``y_t = beta_t * x_t + eps_t`` is linear in
+    the STATE ``beta_t`` for every ``t``, which is what lets the Kalman filter
+    estimate a drifting coefficient at all.
+    """
+    n_obs = panel.shape[0]
+    design = np.zeros((1, len(spec.state_names), n_obs), dtype=float)
+
+    if spec.design_kind == _KALMAN_DESIGN_UNIT:
+        design[0, 0, :] = 1.0
+    elif spec.design_kind == _KALMAN_DESIGN_LEVEL:
+        # `y_t = level_t + eps_t`: the observation reads the level and NOT the
+        # slope. That is why the slope is the state an unidentified-at-t=0 prior
+        # leaves wide, and why the level is not.
+        design[0, 0, :] = 1.0
+    else:
+        design[0, 0, :] = panel[:, 1]
+
+    return design
+
+
+def _state_standard_errors(covariance: np.ndarray) -> np.ndarray:
+    """Diagonal standard errors of a ``(k, k, n)`` covariance array, as ``(k, n)``.
+
+    ``np.diagonal`` on a 3-D array does not return the shape a reader expects —
+    it moves the diagonal to the LAST axis, giving ``(n, k)`` — which silently
+    transposes the array. Measured while probing: a "standard error" line printed
+    180 numbers where two were intended, and every one of them was plausible.
+    Indexing the diagonal explicitly is the one spelling that cannot be misread.
+    """
+    index = np.arange(covariance.shape[0])
+    return np.sqrt(covariance[index, index, :])
+
+
+def _kalman_series_scales(panel: np.ndarray) -> tuple[float, float]:
+    """Per-column standard deviations, with a ``1.0`` fallback for a flat column.
+
+    **WHY THE SERIES IS NORMALISED BEFORE FITTING.** The state-space model is
+    invariant under rescaling in exact arithmetic — multiply ``y`` by ``c`` and
+    every state and standard error multiplies by ``c`` while every variance
+    multiplies by ``c**2``. The OPTIMIZER is not. Measured 2026-09-23 on ONE
+    local level fitted at six scales, reporting ``sigma2.level / scale**2``:
+    ``0.3139`` at scale 1, ``0.3238`` at ``1e-3``, ``46.16`` at ``1e3``,
+    ``2.663`` at ``1e6`` and ``0.02625`` at ``1e9`` — a **147x spread** between
+    the ``1e-3`` and ``1e3`` fits of the same series. The cause is that the
+    likelihood is evaluated at the series' own magnitude while ``start_params``
+    is ``1.0``, so at scale ``1e6`` the optimizer begins eleven orders of
+    magnitude from the optimum and stops wherever its step control gives up.
+
+    The consequence is not academic: the band, and therefore the warnings that
+    read it, depended on the caller's choice of UNITS. Measured on one
+    degenerate series: the relative band ratio was ``2.05e-8`` at scale 1 and
+    ``4.89e-2`` at ``1e4``, so the same data reported a degenerate band in
+    billions and a healthy one in units of a hundred.
+
+    Normalising first makes the numerical problem identical at every scale, and
+    the published quantities are converted back in
+    :func:`_kalman_state_scales`. So the fix changes the arithmetic not at all
+    and the numerics entirely — which is why the returned scale is a NUMBER the
+    result publishes rather than a hidden constant.
+    """
+    scales: list[float] = []
+    for column in panel.T:
+        spread = float(np.std(column))
+        # A flat column has no scale to normalise by. 1.0 leaves it flat, and
+        # the degenerate-variance warnings are what report the consequence --
+        # refusing here instead would replace a diagnosed result with an error.
+        scales.append(spread if spread > 0.0 else 1.0)
+    return scales[0], scales[1] if len(scales) > 1 else 1.0
+
+
+def _kalman_state_scales(spec: _KalmanSpec, scale_y: float, scale_x: float) -> np.ndarray:
+    """The factor converting each NORMALISED state back into the caller's units.
+
+    A level and a slope both carry the dependent series' units — a slope is a
+    level per observation, and the observation index does not scale — so both
+    are multiplied by ``scale_y``.
+
+    A coefficient does NOT. ``y = beta * x`` gives ``beta`` dependent-per-
+    regressor units, so normalising both series moves it by ``scale_y /
+    scale_x``. Getting this wrong would be invisible for a pair whose two legs
+    happen to share a scale, which is exactly the case a test must not use.
+    """
+    if spec.design_kind == _KALMAN_DESIGN_REGRESSOR:
+        return np.array([scale_y / scale_x])
+    return np.full(len(spec.state_names), scale_y)
+
+
+def _kalman_inputs_used(spec: _KalmanSpec, column_names: list[str]) -> list[str]:
+    """Name each column by the ROLE it played, not merely by its label.
+
+    The pair specification's column order is a convention ("dependent first,
+    regressor second"), and a convention recorded only in prose is one a caller
+    can violate without anything objecting. Naming the role in ``inputs_used``
+    puts the convention in the result, where it can be checked.
+    """
+    if spec.design_kind == _KALMAN_DESIGN_REGRESSOR:
+        return [
+            f"dependent:{column_names[0]}",
+            f"regressor:{column_names[1]}",
+        ]
+    return [f"observed:{column_names[0]}"]
+
+
+def _kalman_assumptions(spec: _KalmanSpec, column_names: list[str]) -> list[str]:
+    """What the model takes as given, on every call."""
+    shared = [
+        "The innovations are Gaussian and the state equation is LINEAR. The "
+        "band is a normal-theory interval, so a series with jumps, structural "
+        "breaks or heavy tails gets a band that is too narrow precisely when it "
+        "matters. The filter reports the interval the model implies, not a "
+        "distribution-free one.",
+        "The estimated variances are treated as KNOWN when the band is computed. "
+        "They are themselves maximum-likelihood estimates, so the published band "
+        "understates the total uncertainty: it conditions on the point estimates "
+        "rather than integrating over their sampling error.",
+    ]
+    if spec.design_kind == _KALMAN_DESIGN_REGRESSOR:
+        return [
+            f"{column_names[0]!r} is the DEPENDENT series and {column_names[1]!r} "
+            f"is the REGRESSOR, in that column order. The roles are not "
+            f"interchangeable: swapping them estimates the reciprocal "
+            f"relationship, which is a different quantity.",
+            "The relationship is PROPORTIONAL through the origin — there is no "
+            "intercept, so a pair with a persistent level offset will attribute "
+            "it to the coefficient. A time-varying intercept is not a supported "
+            "specification here (see `_KALMAN_SPECS`).",
+            *shared,
+        ]
+    return [
+        "The series is a LEVEL, not a change. This is the same discipline "
+        "`compute_pca` enforces in the opposite direction: a stationary "
+        "difference passed here is filtered as though it were a level, and the "
+        "resulting state is the level of a difference series, which means "
+        "nothing.",
+        *shared,
+    ]
+
+
+def _kalman_limitations() -> list[str]:
+    """What a Kalman filter cannot tell you, on every call.
+
+    Standing caveats, distinct from ``warnings`` (a condition of this run).
+    """
+    return [
+        "THE STATE IS UNOBSERVABLE AND THE BAND IS MODEL-DEPENDENT. `r*`, "
+        "potential GDP and a time-varying hedge ratio cannot be measured, so no "
+        "data can confirm the filter's answer directly. A different "
+        "specification, a different sample or a different variance estimate "
+        "gives a different state — the band reflects the model's own "
+        "uncertainty and not the disagreement between models, which is larger.",
+        "THE EARLIEST OBSERVATIONS ARE DOMINATED BY THE PRIOR. The state is "
+        "initialized approximately diffuse at the configured scale, so the first "
+        "observations' bands reflect the initial uncertainty rather than the "
+        "data, and a state the first observation does not identify (a local "
+        "linear trend's slope, whose observation design is [1, 0]) carries that "
+        "prior's scale as its band for the first step. Measured 2026-09-23: a "
+        "slope band of 1000.0 at the first observation, 1.42 at the second and "
+        "0.0958 at its median. Read the path's head as a burn-in.",
+        "THE STATE INNOVATION VARIANCE IS DOWNWARD-BIASED IN SMALL SAMPLES, AND "
+        "AN UNDERESTIMATED VARIANCE MAKES THE STATE TOO SMOOTH. Measured "
+        "2026-09-23 over 40 draws of a local level whose true `sigma2.level` was "
+        "0.25: the median estimate was 0.15 at n=30, 0.21 at n=60 and 0.24 at "
+        "n=100. The bias is toward a state that moves LESS than the truth, so "
+        "the failure direction is false stability rather than false volatility.",
+        "A LEVEL-ONLY MODEL ABSORBS A TREND INTO ITS OWN VARIANCE. With no trend "
+        "term the random-walk level must track any deterministic drift, so "
+        "`sigma2.level` measures the trend as well as the level's own movement. "
+        "Measured 2026-09-23: a series with a deterministic slope drove "
+        "`sigma2.level` to 1.09 against a true level variance of 0.25. Use the "
+        "local linear trend specification when a trend is plausible, and read a "
+        "large level variance as a possible missing trend term.",
+        "`sigma2.level` AND `sigma2.slope` ARE WEAKLY IDENTIFIED TOGETHER. A "
+        "local linear trend must attribute the observed movement between the "
+        "level's own innovations and the slope's, and the data often cannot "
+        "separate them: measured 2026-09-23, a slope whose true variance was "
+        "0.0025 was estimated at 0.00043 on one fit and 0.00058 on another. "
+        "Read the two variances jointly, and prefer the level-only "
+        "specification when the slope's variance is estimated at the boundary.",
+        "THE BAND IS A PREDICTION INTERVAL FOR THE STATE, NOT FOR THE SERIES. "
+        "It describes where the unobservable state lies, not where the next "
+        "observation will fall: a forecast interval must add the observation "
+        "noise. A consumer that reads the state band as a forecast band "
+        "understates the spread by the irregular variance.",
+        "THE FILTER IS NOT A FORECAST. A random-walk state's best prediction "
+        "next period is its current value, so the filtered state at the end of "
+        "the sample carries no information about where the state will go; it "
+        "says where it is estimated to BE. Any forward-looking use needs a model "
+        "of the state's own drift, which this function does not fit.",
+        "WHEN THE OBSERVATION-NOISE VARIANCE IS ESTIMATED NEAR ZERO THE BAND "
+        "COLLAPSES, AND IT IS THEN NOT AN UNCERTAINTY ABOUT THE REAL QUANTITY. "
+        "The model has assumed the data are observed without error, so the band "
+        "measures only the state's own innovation uncertainty. Measured "
+        "2026-09-23: a CONVERGED fit of a random walk observed with sigma=0.01 "
+        "published `102.8486 +- 0.0000377`. That is not precision; it is a model "
+        "that has stopped allowing for measurement error. `sigma2.irregular` is "
+        "published on every result so a reader can see which regime the fit is "
+        "in -- and no WARNING accompanies it, because no threshold separates the "
+        "case: measured over 10 seeds per noise level, `median(se)/median|state|` "
+        "spanned 3.1e-8 to 1.8e-3 for noise-free samples, overlapping the "
+        "well-specified range, and `sigma2.irregular/var(y)` is "
+        "specification-dependent because a pair's var(y) is dominated by the "
+        "regressor. An unreliable warning is worse than a disclosed limitation.",
+        "THE FIT IS NUMERICALLY SCALE-SENSITIVE, WHICH IS WHY THE SERIES IS "
+        "NORMALISED BEFORE FITTING. The model is invariant under rescaling in "
+        "exact arithmetic but the optimizer is not, and before the normalisation "
+        "the same series fitted at scale 1e-3 and at 1e3 returned "
+        "`sigma2.level/scale**2` of 0.3238 and 46.16 -- a 147x spread driven "
+        "purely by the caller's choice of units. The normalisation removes it "
+        "(measured: 0.313922 at every scale from 1e-9 to 1e9), and the scale "
+        "factors are published as `series_scales` and `state_scales` so two fits "
+        "can be compared knowingly. A reader who rescales the input themselves "
+        "should expect the same answer, not a different one.",
+    ]
+
+
+def _kalman_thresholds_calibrated() -> bool:
+    """Whether the thresholds shaping ``kalman_latent_state``'s DISCLOSURE are calibrated.
+
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
+    caller).
+
+    Both are judgements rather than facts: the drift ratio at which a state stops
+    counting as time-varying, and the revision multiple above which a real-time
+    estimate is called materially revised. Each was PLACED by measurement (the
+    drift ratio separates 0.025 from 7.02; the revision multiple sits above the
+    level model's measured maximum) but a placement is not a calibration, so
+    each is ``uncalibrated_illustrative`` today and the caller applies the
+    penalty.
+
+    A third leaf — a relative floor for a "degenerate band" — was removed
+    because its measurement showed it could not separate the cases it existed
+    for. See the note beside branch 2 of :func:`_kalman_warnings`; a dead
+    threshold left here would be the D-047 class of config value that nothing
+    reads.
+    """
+    settings = get_settings()
+    return settings.is_calibrated(
+        "econometrics.kalman_min_state_drift_ratio"
+    ) and settings.is_calibrated("econometrics.kalman_max_revision_ratio")
+
+
+def _kalman_value(
+    *,
+    spec: _KalmanSpec,
+    column_names: list[str],
+    filtered: np.ndarray,
+    smoothed: np.ndarray,
+    standard_error: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    coverage: float,
+    z_multiplier: float,
+    variances: dict[str, float],
+    n_obs: int,
+    converged: bool,
+    diffuse_scale: float,
+    series_scales: tuple[float, float],
+    state_scales: np.ndarray,
+    log_likelihood: float,
+    aic: float,
+    bic: float,
+) -> dict[str, object]:
+    """Assemble the published ``value``, with every band derived from one source.
+
+    ``lower`` and ``upper`` are computed once, in the caller, from the same
+    ``standard_error`` array the result publishes. Recomputing them here would
+    give a second derivation of the same quantity, which is how two published
+    numbers start disagreeing.
+    """
+    state_paths: dict[str, list[float]] = {}
+    error_paths: dict[str, list[float]] = {}
+    lower_paths: dict[str, list[float]] = {}
+    upper_paths: dict[str, list[float]] = {}
+    latest: dict[str, dict[str, float]] = {}
+    smoothed_latest: dict[str, float] = {}
+    revisions: dict[str, float] = {}
+    per_state_scale: dict[str, float] = {}
+    prior_error: dict[str, float] = {}
+
+    for index, name in enumerate(spec.state_names):
+        state = filtered[index, :]
+        error = standard_error[index, :]
+        state_paths[name] = [float(value) for value in state]
+        error_paths[name] = [float(value) for value in error]
+        lower_paths[name] = [float(value) for value in lower[index, :]]
+        upper_paths[name] = [float(value) for value in upper[index, :]]
+        latest[name] = {
+            "state": float(state[-1]),
+            "std_error": float(error[-1]),
+            "lower": float(lower[index, -1]),
+            "upper": float(upper[index, -1]),
+        }
+        smoothed_latest[name] = float(smoothed[index, -1])
+        per_state_scale[name] = float(state_scales[index])
+        # The initial prior's scale in the CALLER's units, which is what a
+        # reader needs to recognise a prior-dominated head in the path: the
+        # first observation's band equals this whenever the observation does
+        # not identify the state.
+        prior_error[name] = float(np.sqrt(diffuse_scale) * state_scales[index])
+        # The revision expressed in the state's OWN band units, because a raw
+        # difference in the state's units cannot be judged without knowing the
+        # band -- and the band is what the reader is about to trust.
+        median_error = float(np.median(error))
+        revisions[name] = (
+            float(np.max(np.abs(state - smoothed[index, :])) / median_error)
+            if median_error > 0.0
+            else float("inf")
+        )
+
+    return {
+        "model_spec": spec.name,
+        "state_names": list(spec.state_names),
+        "series": list(column_names),
+        "n_obs": int(n_obs),
+        "n_columns": len(column_names),
+        "state_dim": len(spec.state_names),
+        "filtered_state": state_paths,
+        "filtered_state_std_error": error_paths,
+        "band_lower": lower_paths,
+        "band_upper": upper_paths,
+        "band_coverage": float(coverage),
+        "band_z": float(z_multiplier),
+        "latest": latest,
+        "smoothed_latest": smoothed_latest,
+        "revision_in_band_units": revisions,
+        "estimated_variances": dict(variances),
+        "log_likelihood": float(log_likelihood),
+        "aic": float(aic),
+        "bic": float(bic),
+        "n_parameters": len(variances),
+        "converged": bool(converged),
+        "initialization": "approximate_diffuse",
+        "diffuse_scale": float(diffuse_scale),
+        "prior_standard_error": prior_error,
+        # The normalisation is PUBLISHED rather than hidden, because it is the
+        # only part of the computation that depends on the series' units -- and
+        # a reader comparing two fits needs it to know they are comparable.
+        "series_scales": {
+            name: float(scale) for name, scale in zip(column_names, series_scales, strict=False)
+        },
+        "state_scales": per_state_scale,
+    }
+
+
+def _kalman_warnings(
+    *,
+    spec: _KalmanSpec,
+    filtered: np.ndarray,
+    standard_error: np.ndarray,
+    smoothed: np.ndarray,
+    variances: dict[str, float],
+    n_obs: int,
+    converged: bool,
+    convergence_messages: list[str],
+) -> list[str]:
+    """Every condition of THIS run that a reader must know before using the state.
+
+    Three branches, each measured before it was written, each with a test that
+    drives it. A branch that fires on every call would be noise and is therefore
+    a ``limitation`` instead — the standing caveats live in
+    :func:`_kalman_limitations`. A branch that fires UNRELIABLY is worse than
+    either, which is why the degenerate-band warning was measured and removed;
+    see the note beside branch 2.
+    """
+    econometrics = get_settings().econometrics
+    emitted: list[str] = []
+
+    if not converged:
+        detail = f" ({convergence_messages[0]})" if convergence_messages else ""
+        emitted.append(
+            f"MAXIMUM LIKELIHOOD DID NOT CONVERGE{detail}. The variances and "
+            f"therefore the entire band are the optimizer's last iterate rather "
+            f"than a maximum of the likelihood, so the band is not an estimate of "
+            f"anything. Treat the state as indicative only, and check whether the "
+            f"series is degenerate (constant, or observed without noise)."
+        )
+
+    for index, name in enumerate(spec.state_names):
+        variance = float(variances.get(f"sigma2.{name}", 0.0))
+        error = standard_error[index, :]
+        median_error = float(np.median(error))
+
+        # Branch 1: the state does not actually vary. The random walk's typical
+        # excursion over the sample is sqrt(n * sigma2); comparing it with the
+        # filter's own band asks whether the estimated movement is larger than
+        # the uncertainty about it. Measured separation 2026-09-23: 0.025 for a
+        # genuinely constant coefficient against 7.02 at the minimum for one
+        # that moves, so the configured 1.0 sits in a wide empty gap.
+        drift = math.sqrt(max(n_obs * variance, 0.0))
+        if median_error > 0.0:
+            ratio = drift / median_error
+            if ratio <= float(econometrics.kalman_min_state_drift_ratio.value):
+                emitted.append(
+                    f"{name!r} IS NOT TIME-VARYING on this sample: its estimated "
+                    f"innovation variance is {variance:.3g}, so the state's whole "
+                    f"excursion over {n_obs} observations is {drift:.6g} against a "
+                    f"median band of {median_error:.6g} ({ratio:.3f}x). The fit has "
+                    f"collapsed the state to a constant, so 'time-varying' "
+                    f"describes the specification and not the estimate -- read "
+                    f"`latest` as a fixed coefficient and do not interpret its "
+                    f"path as movement."
+                )
+
+        # Branch 2: the real-time estimate is materially revised with hindsight.
+        # Measured 2026-09-23 across 25 draws: a level model's largest revision
+        # ran 1.54x-2.96x its median band and a trend model's SLOPE ran
+        # 3.19x-27.05x, so the configured multiple sits above the stable case.
+        #
+        # NOTE the branch that is NOT here. A "degenerate band" warning was
+        # written, MEASURED and REMOVED: when the model drives the observation
+        # variance to (near) zero the band collapses, and a converged fit was
+        # observed publishing `102.8486 +- 0.0000377`. But no threshold
+        # separates that case from a well-specified one. Measured 2026-09-23
+        # over 10 seeds at each noise level, `median(se) / median|state|` spanned
+        # 3.1e-8 to 1.8e-3 for noise-free-to-noisy samples and 5.0e-3 to 6.7e-3
+        # only at the largest noise; the alternative `sigma2.irregular /
+        # var(y)` spanned 5.5e-12 to 2.7e-2 at zero noise -- overlapping the
+        # noisy samples -- and is specification-dependent, because a pair's
+        # var(y) is dominated by the regressor. A warning that fires unreliably
+        # is worse than none: it teaches the reader to ignore it. The behaviour
+        # is DISCLOSED instead (see `_kalman_limitations`), and the quantity a
+        # reader needs to judge it -- `sigma2.irregular` -- is published.
+        if median_error > 0.0:
+            revision = float(np.max(np.abs(filtered[index, :] - smoothed[index, :])) / median_error)
+            if revision > float(econometrics.kalman_max_revision_ratio.value):
+                emitted.append(
+                    f"THE REAL-TIME ESTIMATE OF {name!r} IS MATERIALLY REVISED: the "
+                    f"filtered path differs from the smoothed path by up to "
+                    f"{revision:.1f}x its median band, so later observations move "
+                    f"this state by more than its own stated uncertainty. The "
+                    f"filtered value is still the only one a real-time decision may "
+                    f"use -- the smoothed one sees the future -- but a state this "
+                    f"unstable should not be treated as a settled reading."
+                )
+
+    return emitted
 
 
 def _run_adf(

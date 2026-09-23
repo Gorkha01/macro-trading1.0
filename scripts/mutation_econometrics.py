@@ -105,6 +105,20 @@ _CAUSAL_PROHIBITION = (
     '            "Do not read a fitted coefficient as a causal effect. OLS on "'
 )
 
+# Three Kalman anchors that are NOT unique as bare lines, each extended by its
+# distinguishing neighbour. `transition=((1.0,),)` appears once per random-walk
+# state and `design[0, 0, :] = 1.0` once per design branch, so a bare anchor
+# would take `str.replace`'s FIRST match -- mutating a different specification
+# while reporting a kill for this one (D-048's mis-target, which looks like
+# health). The distinguishing line is the one that names the state.
+_KALMAN_LOCAL_LEVEL_TRANSITION = '        state_names=("level",),\n        transition=((1.0,),),'
+
+_KALMAN_HEDGE_TRANSITION = '        state_names=("beta",),\n        transition=((1.0,),),'
+
+_KALMAN_TREND_DESIGN = (
+    "        # leaves wide, and why the level is not.\n        design[0, 0, :] = 1.0"
+)
+
 # ---------------------------------------------------------------------------
 # The catalogue. ``(name, old, new)``.
 # ---------------------------------------------------------------------------
@@ -577,7 +591,17 @@ MUTATIONS: list[tuple[str, str, str]] = [
     # Silent failure #3.
     (
         "M69 non-finite panel guard removed",
+        # WIDENED at D-101. The bare guard line became AMBIGUOUS the moment
+        # `_prepare_kalman_observations` gained an identical check -- the D-055
+        # trap, where adding a function to a file silently makes a NEIGHBOUR's
+        # anchor ambiguous and `str.replace` then rewrites the wrong function
+        # while reporting a kill. The distinguishing line is the local variable
+        # the guard reads: `panel` here, `observations` there.
+        '    values = panel.astype("float64").to_numpy()\n'
+        "\n"
         "    if not bool(np.isfinite(values).all()):",
+        '    values = panel.astype("float64").to_numpy()\n'
+        "\n"
         "    if False:  # MUTANT M69 -- a NaN propagates into every eigenvalue",
     ),
     # The disclosures. Each is a warning a caller relies on and none is
@@ -622,6 +646,191 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "M76 published sign rule renamed to the wrong convention",
         '        "sign_rule": "largest_absolute_loading_positive (sklearn svd_flip convention)",',
         '        "sign_rule": "loadings_as_returned_by_lapack",  # MUTANT M76',
+    ),
+    # ---------------------------------------------------------------- Kalman
+    # `kalman_latent_state` (Section 15.20-F, Module 18 #5). Three anchors below
+    # are NOT unique as bare lines -- `design[0, 0, :] = 1.0` occurs once per
+    # design branch, and `transition=((1.0,),)` once per random-walk state -- so
+    # each is extended by its distinguishing neighbour. A first-match replace on
+    # the bare form would mutate a DIFFERENT specification and report a kill for
+    # a change applied elsewhere, which is D-048's mis-target and looks like
+    # health.
+    (
+        "M77 trend transition decoupled from its slope",
+        "        transition=((1.0, 1.0), (0.0, 1.0)),",
+        "        transition=((1.0, 0.0), (0.0, 1.0)),  # MUTANT M77",
+    ),
+    (
+        "M78 local level transition is not a random walk",
+        _KALMAN_LOCAL_LEVEL_TRANSITION,
+        '        state_names=("level",),\n        transition=((2.0,),),  # MUTANT M78',
+    ),
+    (
+        "M79 hedge ratio transition made mean-reverting",
+        _KALMAN_HEDGE_TRANSITION,
+        '        state_names=("beta",),\n        transition=((0.9,),),  # MUTANT M79',
+    ),
+    (
+        "M80 regressor design reads the DEPENDENT series",
+        "        design[0, 0, :] = panel[:, 1]",
+        "        design[0, 0, :] = panel[:, 0]  # MUTANT M80",
+    ),
+    (
+        "M81 trend design reads the slope instead of the level",
+        _KALMAN_TREND_DESIGN,
+        "        # leaves wide, and why the level is not.\n"
+        "        design[0, 1, :] = 1.0  # MUTANT M81",
+    ),
+    (
+        "M82 variance positivity transform removed",
+        "        return np.asarray(unconstrained) ** 2",
+        "        return np.asarray(unconstrained)  # MUTANT M82 -- negatives reach state_cov",
+    ),
+    (
+        "M83 initialization switched to exact diffuse (zero band)",
+        "        self.ssm.initialize_approximate_diffuse(diffuse_scale)",
+        "        self.ssm.initialize_diffuse()  # MUTANT M83",
+    ),
+    (
+        "M84 series normalisation removed",
+        "    return scales[0], scales[1] if len(scales) > 1 else 1.0",
+        "    return 1.0, 1.0  # MUTANT M84 -- no normalisation",
+    ),
+    (
+        "M85 beta state scale drops the regressor's scale",
+        "        return np.array([scale_y / scale_x])",
+        "        return np.array([scale_y])  # MUTANT M85",
+    ),
+    (
+        "M86 band multiplier hardcoded instead of derived",
+        "    z_multiplier = float(norm.ppf(0.5 + coverage / 2.0))",
+        "    z_multiplier = 1.96  # MUTANT M86",
+    ),
+    (
+        "M87 lower band bound inverted",
+        "    lower = filtered - z_multiplier * standard_error",
+        "    lower = filtered + z_multiplier * standard_error  # MUTANT M87",
+    ),
+    (
+        "M88 non-convergence warning disabled",
+        "    if not converged:",
+        "    if False:  # MUTANT M88 -- a non-converged fit reports clean",
+    ),
+    (
+        "M89 not-time-varying comparison inverted",
+        "            if ratio <= float(econometrics.kalman_min_state_drift_ratio.value):",
+        "            if ratio > float(econometrics.kalman_min_state_drift_ratio.value):  # MUTANT M89",
+    ),
+    (
+        "M90 revision warning disabled",
+        "            if revision > float(econometrics.kalman_max_revision_ratio.value):",
+        "            if False:  # MUTANT M90",
+    ),
+    (
+        "M91 model_name renamed",
+        '        model_name="kalman_latent_state",',
+        '        model_name="kalman",  # MUTANT M91',
+    ),
+    (
+        "M92 unobservable dependence dropped from confidence",
+        "                depends_on_unobservable=True,",
+        "                depends_on_unobservable=False,  # MUTANT M92",
+    ),
+    (
+        "M93 heuristic penalty dropped from confidence",
+        "                is_heuristic_not_calibrated=not _kalman_thresholds_calibrated(),",
+        "                is_heuristic_not_calibrated=False,  # MUTANT M93",
+    ),
+    (
+        "M94 non-finite output guard disabled",
+        "        if not bool(np.isfinite(array).all()):",
+        "        if False:  # MUTANT M94",
+    ),
+    (
+        "M95 wide-panel refusal widened to admit a panel",
+        "    if n_columns > 2:",
+        "    if n_columns > 5:  # MUTANT M95",
+    ),
+    (
+        "M96 variance published in place of its standard error",
+        "    return np.sqrt(covariance[index, index, :])",
+        "    return covariance[index, index, :]  # MUTANT M96",
+    ),
+    (
+        "M97 regressor column left un-normalised",
+        "        normalised[:, 1] = panel[:, 1] / scale_x",
+        "        normalised[:, 1] = panel[:, 1]  # MUTANT M97",
+    ),
+    (
+        "M98 irregular variance rescaled by the wrong power",
+        '    variances["sigma2.irregular"] = float(fitted[-1] * scale_y**2)',
+        '    variances["sigma2.irregular"] = float(fitted[-1] * scale_y)  # MUTANT M98',
+    ),
+    (
+        "M99 state variance rescaled by the wrong power",
+        '        f"sigma2.{name}": float(fitted[index] * state_scales[index] ** 2)',
+        '        f"sigma2.{name}": float(fitted[index] * state_scales[index])  # MUTANT M99',
+    ),
+    (
+        "M100 observation floor removed",
+        # Single-line because the SOURCE is single-line. The first draft assumed
+        # `ruff format` had reflowed it across three lines and wrote a three-line
+        # anchor that matched nothing -- and a typo'd anchor and a leftover look
+        # IDENTICAL to the leftover predicate, so the tool reported it as "STILL
+        # APPLIED" rather than as a miss. Read the source, do not re-derive the
+        # anchor from the same memory that produced it (D-057's lesson).
+        "    minimum_observations = float(get_settings().econometrics.kalman_min_observations.value)",
+        "    minimum_observations = 1.0  # MUTANT M100",
+    ),
+    (
+        "M101 specification lookup ignores the request",
+        "    spec = _KALMAN_SPECS.get((n_columns, state_dim))",
+        "    spec = _KALMAN_SPECS[(1, 1)]  # MUTANT M101",
+    ),
+    (
+        "M102 pair input roles swapped",
+        '            f"dependent:{column_names[0]}",',
+        '            f"regressor:{column_names[0]}",  # MUTANT M102',
+    ),
+    (
+        "M103 observed input role renamed",
+        '    return [f"observed:{column_names[0]}"]',
+        '    return [f"series:{column_names[0]}"]  # MUTANT M103',
+    ),
+    (
+        "M104 unobservable limitation removed",
+        '        "THE STATE IS UNOBSERVABLE AND THE BAND IS MODEL-DEPENDENT. `r*`, "',
+        '        "The state is estimated. "  # MUTANT M104',
+    ),
+    (
+        "M105 collapsed-band limitation removed",
+        # Spans BOTH lines of the concatenated message. Anchoring on the first
+        # line alone left the word the test asserts ("COLLAPSES") on the second,
+        # so the mutation changed nothing the test could see and survived as a
+        # phantom gap -- lesson 5ai, "a mutant that changes only PART of a
+        # message has not changed the message".
+        '        "WHEN THE OBSERVATION-NOISE VARIANCE IS ESTIMATED NEAR ZERO THE BAND "\n'
+        '        "COLLAPSES, AND IT IS THEN NOT AN UNCERTAINTY ABOUT THE REAL QUANTITY. "',
+        '        "A band is reported. "  # MUTANT M105',
+    ),
+    (
+        "M106 scale-sensitivity limitation removed",
+        '        "THE FIT IS NUMERICALLY SCALE-SENSITIVE, WHICH IS WHY THE SERIES IS "',
+        '        "The fit is stable. "  # MUTANT M106',
+    ),
+    (
+        "M108 constant-series tolerance made ABSOLUTE below scale 1",
+        # The sibling form: `compute_pca`'s guard reads `maximum(scale, 1.0)`,
+        # which is effectively an ABSOLUTE 2.22e-14 below scale 1. The
+        # divergent-case test kills this by requiring a tiny-scale series that
+        # genuinely MOVES to be ACCEPTED -- a case the absolute form refuses.
+        "    tolerance = np.finfo(float).eps * scale * 100.0",
+        "    tolerance = np.finfo(float).eps * np.maximum(scale, 1.0) * 100.0  # MUTANT M108",
+    ),
+    (
+        "M107 observed-truth prohibition removed",
+        '            "MUST NOT present the filtered state as observed truth, and MUST NOT "',
+        '            "Consider the filtered state. "  # MUTANT M107',
     ),
 ]
 
@@ -706,7 +915,13 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     # two need opposite responses.
     table = _iter_mutations()
     problems = check_targets(originals, table)
-    print(f"check_targets: {len(table)} mutations, {len(problems)} problem(s)")
+    # `flush=True` on every line the sweep prints. Measured 2026-09-23: a
+    # sweep run with its stdout REDIRECTED to a file was SIGTERM'd after ~36
+    # mutations, and Python's block buffering meant the log was EMPTY -- the
+    # entire record of what it had measured was lost, while the sidecar
+    # correctly preserved the tree. A harness whose evidence disappears on
+    # interruption cannot report what it found, so each line is flushed.
+    print(f"check_targets: {len(table)} mutations, {len(problems)} problem(s)", flush=True)
     if problems:
         print(format_problems(problems))
         print()
@@ -720,13 +935,13 @@ def _run_sweep(originals: dict[Path, str]) -> int:
         for name, target, old, new in _iter_mutations():
             pristine = originals[target]
             if old not in pristine:
-                print(f"PATTERN MISSING   {name}  [{target.name}]")
+                print(f"PATTERN MISSING   {name}  [{target.name}]", flush=True)
                 survivors.append((name, "pattern-not-found"))
                 continue
             target.write_text(pristine.replace(old, new, 1), encoding="utf-8", newline="")
             caught = not run_tests()
             target.write_text(pristine, encoding="utf-8", newline="")
-            print(f"{'KILLED' if caught else 'SURVIVED':17} {name}")
+            print(f"{'KILLED' if caught else 'SURVIVED':17} {name}", flush=True)
             if not caught:
                 survivors.append((name, "survived"))
     finally:
@@ -738,7 +953,7 @@ def _run_sweep(originals: dict[Path, str]) -> int:
 
     print()
     total = len(MUTATIONS)
-    print(f"{total - len(survivors)}/{total} killed")
+    print(f"{total - len(survivors)}/{total} killed", flush=True)
     for name, why in survivors:
         marker = "  SURVIVOR (inert-by-route)" if name in INERT_BY_ROUTE else f"  SURVIVOR ({why})"
         print(f"{marker}: {name}")

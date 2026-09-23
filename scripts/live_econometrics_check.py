@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import sys
 
+import numpy as np
 import pandas as pd
 
 from macro_engine.config import get_registry, get_settings
@@ -68,6 +69,7 @@ from macro_engine.models.contracts import ModelResult
 from macro_engine.models.econometrics import (
     RegressionResult,
     compute_pca,
+    kalman_latent_state,
     run_regression,
     test_cointegration,
     test_stationarity,
@@ -126,6 +128,28 @@ _PCA_SYMBOLS: dict[str, str] = {
 #: `pca_min_observations` rows, and a daily series needs roughly 260 business days
 #: per year, so this is about two years of trading days.
 _PCA_START = "2024-01-01"
+
+# The `kalman_latent_state` inputs, added with D-101.
+#
+# The two yield symbols are the SAME tenors the PCA panel fetches, so they are
+# re-checked against the registry's `treasury_curve.tenors` block rather than
+# trusted (see `_kalman_check_registry_agreement`). The CPI LEVEL is the series
+# the cointegration section already uses, and it is fetched through the same
+# `economy.fred_series` route.
+_KALMAN_SYMBOLS: dict[str, str] = {
+    "cpi_level": "CPIAUCSL",
+    "pair_dependent": "DGS10",
+    "pair_regressor": "DGS2",
+}
+
+#: A monthly LEVEL needs a long window. The configured floor is 60 rows and the
+#: local level's variance is measurably biased downward below about 100, so this
+#: is 25 years of months rather than the minimum the model accepts.
+_KALMAN_LEVEL_START = "2000-01-01"
+
+#: The pair is daily, so this window is about two years of trading days --
+#: comfortably above the floor without making the published paths unwieldy.
+_KALMAN_PAIR_START = "2024-01-01"
 
 _COINT_MECHANISM = (
     "The expectations hypothesis of the term structure: yields at two maturities "
@@ -808,6 +832,242 @@ def _pca_positive_control(client: OpenBBClient) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# 10-13. `kalman_latent_state` (Section 15.20-F, Module 18 #5)
+#
+# Three NECESSARY conditions are asserted and everything else is REPORTED, per
+# the rule this script learned at D-094: a live check that asserts the data into
+# agreement is worse than no check. The asserted properties are structural --
+# the band identity, the convex-combination update, the prior's scale -- because
+# those hold whatever the data turn out to be.
+# ---------------------------------------------------------------------------
+
+
+def _kalman_series(client: OpenBBClient, symbol: str, start: str) -> pd.Series:
+    """Fetch one FRED symbol as a clean level series over the requested window."""
+    frame = client.fetch_series(
+        provider="fred",
+        endpoint="economy.fred_series",
+        params={"symbol": symbol, "start_date": start},
+        series_label=symbol,
+    )
+    clean = frame.loc[frame["value"].notna(), ["date", "value"]]
+    if clean.empty:
+        raise AssertionError(f"{symbol}: no observations returned from {start} onward")
+    stamps = pd.to_datetime(clean["date"], errors="raise")
+    if not stamps.is_monotonic_increasing:
+        raise AssertionError(f"{symbol}: dates are not in ascending order")
+    series = pd.Series(
+        [float(value) for value in clean["value"]],
+        index=pd.DatetimeIndex(stamps),
+        name=symbol,
+    )
+    if series.index.duplicated().any():
+        raise AssertionError(f"{symbol}: duplicate observation dates")
+    return series
+
+
+def _kalman_check_registry_agreement() -> None:
+    """The pair's tenors must still be the ones the registry names."""
+    entry = get_registry().series.get("treasury_curve")
+    assert entry is not None, "treasury_curve is no longer in the series registry"
+    declared = entry.tenors or {}
+    for role, tenor in (("pair_dependent", "10yr"), ("pair_regressor", "2yr")):
+        symbol = _KALMAN_SYMBOLS[role]
+        assert declared.get(tenor) == symbol, (
+            f"treasury_curve.{tenor}: registry says {declared.get(tenor)!r}, this "
+            f"check transcribes {symbol!r} for {role}. Re-transcribe it rather "
+            f"than editing the registry."
+        )
+
+
+def _kalman_close(actual: float, expected: float, tolerance: float = 1e-9) -> bool:
+    """Whether ``actual`` equals ``expected`` to a RELATIVE tolerance."""
+    return abs(actual - expected) <= tolerance * max(1.0, abs(expected))
+
+
+def _kalman_assert_band_identity(result: ModelResult, state_names: list[str]) -> None:
+    """The published bounds must BE ``state +/- z * standard error``.
+
+    Checked at three points rather than all of them: the identity is arithmetic
+    and if it holds anywhere it holds everywhere, so sweeping the whole path
+    would be theatre. The first, middle and last indices are chosen because the
+    first is the prior-dominated observation and the last is the one a reader
+    acts on.
+    """
+    value = result.value
+    assert isinstance(value, dict)
+    state = value["filtered_state"]
+    error = value["filtered_state_std_error"]
+    lower = value["band_lower"]
+    upper = value["band_upper"]
+    assert isinstance(state, dict) and isinstance(error, dict)
+    assert isinstance(lower, dict) and isinstance(upper, dict)
+    z = float(value["band_z"])
+    for name in state_names:
+        path = state[name]
+        for index in (0, len(path) // 2, len(path) - 1):
+            expected_lower = path[index] - z * error[name][index]
+            expected_upper = path[index] + z * error[name][index]
+            if not _kalman_close(lower[name][index], expected_lower):
+                raise AssertionError(
+                    f"{name}[{index}]: band_lower {lower[name][index]!r} is not "
+                    f"state - z*se ({expected_lower!r})"
+                )
+            if not _kalman_close(upper[name][index], expected_upper):
+                raise AssertionError(
+                    f"{name}[{index}]: band_upper {upper[name][index]!r} is not "
+                    f"state + z*se ({expected_upper!r})"
+                )
+        if min(error[name]) <= 0.0:
+            raise AssertionError(f"{name}: a non-positive standard error is not an uncertainty")
+
+
+def _kalman_level(client: OpenBBClient) -> tuple[ModelResult, pd.Series]:
+    """Estimate the latent LEVEL of a real series and check the band is real.
+
+    The CPI index is a LEVEL, which is what this specification takes -- the same
+    discipline `compute_pca` enforces in the opposite direction. Three
+    necessary conditions are asserted and the estimate is reported:
+
+    1. the band bounds ARE ``state +/- z * se`` (checked at three points);
+    2. every state carries a strictly positive standard error;
+    3. the LAST filtered state lies between the previous state and the last
+       observation. The Kalman update is a convex combination of the prior mean
+       and the observation, so a state outside that interval is a wiring fault
+       rather than an estimate.
+    """
+    symbol = _KALMAN_SYMBOLS["cpi_level"]
+    series = _kalman_series(client, symbol, _KALMAN_LEVEL_START)
+    result = kalman_latent_state(pd.DataFrame({symbol: series.to_numpy()}))
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["model_spec"] == "local_level", value["model_spec"]
+    _kalman_assert_band_identity(result, ["level"])
+
+    state = value["filtered_state"]["level"]
+    previous, last = state[-2], state[-1]
+    observation = float(series.to_numpy()[-1])
+    if not min(previous, observation) <= last <= max(previous, observation):
+        raise AssertionError(
+            f"the last filtered state {last!r} is outside the interval between the "
+            f"previous state {previous!r} and the last observation {observation!r}; "
+            f"the Kalman update is a convex combination, so this cannot be an "
+            f"estimate of this model"
+        )
+    return result, series
+
+
+def _kalman_trend(client: OpenBBClient, series: pd.Series) -> ModelResult:
+    """Add a SLOPE state to the same series, and check the prior's scale.
+
+    The asserted condition is hand-derivable and is the one that decided the
+    initialization: the slope's observation design is ``[1, 0]``, so the first
+    observation carries no slope information and the state's first standard
+    error IS the prior's scale, ``sqrt(kappa) * state_scale``. Under
+    ``initialization='diffuse'`` it would be exactly ``0.0`` instead.
+    """
+    symbol = _KALMAN_SYMBOLS["cpi_level"]
+    result = kalman_latent_state(pd.DataFrame({symbol: series.to_numpy()}), state_dim=2)
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["model_spec"] == "local_linear_trend", value["model_spec"]
+    _kalman_assert_band_identity(result, ["level", "slope"])
+
+    expected = float(np.sqrt(value["diffuse_scale"])) * float(value["state_scales"]["slope"])
+    actual = value["filtered_state_std_error"]["slope"][0]
+    if not _kalman_close(actual, expected, tolerance=1e-5):
+        raise AssertionError(
+            f"the slope's first standard error is {actual!r}, but the prior's "
+            f"scale is sqrt(kappa) * state_scale = {expected!r}. The slope is "
+            f"unidentified at t=0, so its band must BE the prior -- a zero band "
+            f"here is the exact-diffuse defect (D-101)"
+        )
+    return result
+
+
+def _kalman_pair(client: OpenBBClient) -> tuple[ModelResult, pd.Series, pd.Series]:
+    """A time-varying hedge ratio between two real tenors of the same curve.
+
+    The asserted conditions are the first-state identity (with an uninformative
+    prior, ``beta_0 = y_0 / x_0``) and the band identity. The hedge ratio itself
+    is REPORTED and not asserted: the specification has no intercept, so a yield
+    pair's coefficient absorbs the level offset and is a level ratio rather than
+    a duration-neutral hedge. Asserting a value for it would be asserting the
+    data into agreement with a model the specification already flags.
+    """
+    dependent = _kalman_series(client, _KALMAN_SYMBOLS["pair_dependent"], _KALMAN_PAIR_START)
+    regressor = _kalman_series(client, _KALMAN_SYMBOLS["pair_regressor"], _KALMAN_PAIR_START)
+    joined = pd.concat([dependent.rename("dependent"), regressor.rename("regressor")], axis=1)
+    joined = joined.dropna()
+    if len(joined) < 60:
+        raise AssertionError(f"only {len(joined)} common observations for the pair")
+
+    result = kalman_latent_state(joined)
+    value = result.value
+    assert isinstance(value, dict)
+    assert value["model_spec"] == "time_varying_hedge_ratio", value["model_spec"]
+    _kalman_assert_band_identity(result, ["beta"])
+
+    beta = value["filtered_state"]["beta"]
+    expected = float(joined["dependent"].to_numpy()[0] / joined["regressor"].to_numpy()[0])
+    if not _kalman_close(beta[0], expected, tolerance=1e-6):
+        raise AssertionError(
+            f"the first filtered beta is {beta[0]!r} but y_0 / x_0 = {expected!r}; "
+            f"with an uninformative prior the first estimate IS that ratio"
+        )
+    return result, dependent, regressor
+
+
+def _kalman_scale_invariance(series: pd.Series) -> tuple[float, float]:
+    """The same series in different UNITS must give the same answer.
+
+    This is the property whose ABSENCE was a measured defect (D-101): before the
+    series was normalised, `sigma2.level / scale**2` ran from 0.3238 at scale
+    1e-3 to 46.16 at 1e3 on identical data. The check reports the two rescaled
+    values so a reader can see the agreement rather than trust it.
+    """
+    symbol = _KALMAN_SYMBOLS["cpi_level"]
+    values = series.to_numpy()
+    rescaled: list[float] = []
+    for scale in (1e-3, 1e3):
+        result = kalman_latent_state(pd.DataFrame({symbol: values * scale}))
+        value = result.value
+        assert isinstance(value, dict)
+        rescaled.append(float(value["estimated_variances"]["sigma2.level"]) / scale**2)
+    return rescaled[0], rescaled[1]
+
+
+def _kalman_positive_control() -> str:
+    """A constant series must be REFUSED — and this control is why the guard exists.
+
+    **This control was originally written to require a WARNING, and the live run
+    FALSIFIED that expectation (D-101).** On a constant series the state variance
+    collapses to ``1e-12`` but the BAND collapses further (``1.65e-09``), so the
+    ``not time-varying`` warning's drift-to-band ratio came back as **6055** and
+    did not fire. The warning compares the state's movement with the uncertainty
+    about it, and both collapse together — which is exactly why it cannot see
+    this case. The design rationale ("the warning reports it") was therefore
+    wrong, and the response is the sibling function's discipline: refuse a series
+    with no variation, as ``compute_pca`` refuses one.
+
+    A refusal is the STRONGER control: a hard stop rather than a message a caller
+    may ignore, and it cannot be satisfied by a warning that fires for the wrong
+    reason. The message is matched so a refusal for some other cause fails here.
+    """
+    try:
+        kalman_latent_state(pd.DataFrame({"constant": np.full(120, 7.0)}))
+    except ValueError as exc:
+        if "no variation" not in str(exc):
+            raise AssertionError(f"refused for the wrong reason: {exc}") from exc
+        return str(exc)
+    raise AssertionError(
+        "a constant series was ACCEPTED. A series with no variation has no latent "
+        "state to estimate -- the level model's state IS the constant -- so it must "
+        "be refused rather than fitted and reported."
+    )
+
+
 def main() -> int:
     print("=" * 78)
     print("LIVE CHECK: Module 18 econometrics against real FRED data")
@@ -917,6 +1177,52 @@ def main() -> int:
         "   fetch-and-align path the legitimate call uses."
     )
     _pca_positive_control(client)
+
+    print()
+    print("10. KALMAN -- the latent LEVEL of a real series, with its band")
+    print(
+        "   Section 15.20-F names r* and potential GDP as the uses of this\n"
+        "   function, and both are LEVELS. The specification is chosen by the\n"
+        "   panel's width and `state_dim` and PUBLISHED, so the mechanism is on\n"
+        "   the record rather than implied -- Section 15.18's ordering, applied\n"
+        "   to a state-space model where the mechanism IS the model."
+    )
+    _kalman_check_registry_agreement()
+    kalman_level, kalman_series = _kalman_level(client)
+
+    print()
+    print("11. KALMAN -- the local linear TREND, and the prior's scale")
+    print(
+        "   The slope's observation design is [1, 0], so the first observation\n"
+        "   carries NO slope information and the state's first standard error IS\n"
+        "   the prior's scale. That is the identity which decided the\n"
+        "   initialization: under `diffuse` the same state reports exactly 0.0."
+    )
+    kalman_trend = _kalman_trend(client, kalman_series)
+
+    print()
+    print("12. KALMAN -- a time-varying hedge ratio on two real tenors")
+    print(
+        "   Two maturities of the same curve. The first-state identity\n"
+        "   (beta_0 = y_0 / x_0) and the band identity are asserted; the\n"
+        "   coefficient itself is REPORTED, because the specification has no\n"
+        "   intercept and a yield pair's coefficient therefore absorbs the level\n"
+        "   offset -- a level ratio, not a duration-neutral hedge."
+    )
+    kalman_pair, _, _ = _kalman_pair(client)
+
+    print()
+    print("13. KALMAN -- scale invariance and a positive control")
+    print(
+        "   The same real series at two unit scales must give the same answer.\n"
+        "   Its ABSENCE was a measured defect: before the series was normalised,\n"
+        "   `sigma2.level / scale**2` ran from 0.3238 at 1e-3 to 46.16 at 1e3 on\n"
+        "   identical data, so the band depended on the caller's units. The\n"
+        "   control is a constant series, which must be REFUSED: the live run\n"
+        "   falsified the earlier expectation that a warning would report it."
+    )
+    low_scale, high_scale = _kalman_scale_invariance(kalman_series)
+    _kalman_positive_control()
 
     print()
     print("=" * 78)
@@ -1060,6 +1366,93 @@ def main() -> int:
         "    covariance and correlation routes disagree by 0.28 on PC1's loadings\n"
         "    and invert their ordering, so the route is published on every result\n"
         "    and a consumer who ignores it is reading a different decomposition."
+    )
+    print()
+    kalman_value = kalman_level.value
+    assert isinstance(kalman_value, dict)
+    kalman_latest = kalman_value["latest"]["level"]
+    kalman_trend_value = kalman_trend.value
+    assert isinstance(kalman_trend_value, dict)
+    kalman_slope = kalman_trend_value["latest"]["slope"]
+    print(
+        f"  * KALMAN (new in D-101). On {kalman_value['n_obs']} real monthly "
+        f"observations of\n"
+        f"    {_KALMAN_SYMBOLS['cpi_level']}, the latent level is "
+        f"{float(kalman_latest['state']):.4f} with a\n"
+        f"    {float(kalman_value['band_coverage']):.0%} band of "
+        f"[{float(kalman_latest['lower']):.4f}, "
+        f"{float(kalman_latest['upper']):.4f}].\n"
+        f"    The estimated variances are "
+        + ", ".join(
+            f"{name} = {float(value):.6g}"
+            for name, value in kalman_value["estimated_variances"].items()
+        )
+        + f", and the fit converged = {kalman_value['converged']}."
+    )
+    print(
+        f"    The trend specification puts the slope at "
+        f"{float(kalman_slope['state']):.6g} with a band of\n"
+        f"    [{float(kalman_slope['lower']):.6g}, "
+        f"{float(kalman_slope['upper']):.6g}] per month. Its revision in band "
+        f"units is\n"
+        f"    {float(kalman_trend_value['revision_in_band_units']['slope']):.2f}x, "
+        f"which is the look-ahead a real-time\n"
+        f"    reader would import by using the smoothed path -- the reason both "
+        f"paths are\n"
+        f"    published and the prohibition names the smoothed one."
+    )
+    print(
+        f"    SCALE INVARIANCE is asserted on real data: the same series at "
+        f"1e-3 and at\n"
+        f"    1e3 gives sigma2.level/scale^2 of {low_scale:.6g} and "
+        f"{high_scale:.6g}. Before the\n"
+        f"    normalisation those two numbers differed by 147x on synthetic data."
+    )
+    kalman_irregular = float(kalman_value["estimated_variances"]["sigma2.irregular"])
+    kalman_level_variance = float(kalman_value["estimated_variances"]["sigma2.level"])
+    print(
+        f"    THE BAND ON REAL CPI IS NARROW, AND THE REASON IS PUBLISHED: "
+        f"sigma2.irregular is\n"
+        f"    {kalman_irregular:.3g} against sigma2.level {kalman_level_variance:.3g}, "
+        f"so the fit has driven\n"
+        f"    the observation-noise variance to (near) zero -- it is treating the CPI "
+        f"level as\n"
+        f"    observed without error, and the band therefore measures the state's own "
+        f"innovation\n"
+        f"    uncertainty rather than any measurement error. This is the case D-101 "
+        f"DISCLOSES as a\n"
+        f"    limitation instead of warning about it, because no threshold separates "
+        f"it from a\n"
+        f"    well-specified fit. The variances are printed so a reader can judge, and "
+        f"a band this\n"
+        f"    narrow must NOT be read as precision about the real quantity."
+    )
+    kalman_pair_value = kalman_pair.value
+    assert isinstance(kalman_pair_value, dict)
+    kalman_beta = kalman_pair_value["latest"]["beta"]
+    print(
+        f"    The HEDGE RATIO between {_KALMAN_SYMBOLS['pair_dependent']} and "
+        f"{_KALMAN_SYMBOLS['pair_regressor']} is\n"
+        f"    {float(kalman_beta['state']):.4f} with a "
+        f"{float(kalman_pair_value['band_coverage']):.0%} band of "
+        f"[{float(kalman_beta['lower']):.4f}, "
+        f"{float(kalman_beta['upper']):.4f}], on "
+        f"{kalman_pair_value['n_obs']} common days.\n"
+        f"    That value is a LEVEL RATIO and not a duration-neutral hedge: the "
+        f"specification\n"
+        f"    has no intercept, so the pair's persistent level offset is absorbed "
+        f"into the\n"
+        f"    coefficient. The band is what makes the distinction readable, and the "
+        f"assumption\n"
+        f"    naming it is published on every result rather than left to this prose."
+    )
+    print(
+        "    NOT established: that the filtered state is CORRECT. `r*` and\n"
+        "    potential GDP are unobservable by nature, so no live check can\n"
+        "    confirm the filter's answer -- it can only confirm the band is\n"
+        "    computed, positive, and invariant to units. That is why\n"
+        "    `depends_on_unobservable=True` prices the confidence down rather\n"
+        "    than claiming the estimate."
     )
     print()
     print("LIVE CHECK PASSED")

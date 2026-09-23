@@ -2747,3 +2747,890 @@ def test_pca_context_names_the_standardisation_and_sign_rule() -> None:
     result = _pca_result()
     assert "Standardisation:" in result.context
     assert "Sign convention:" in result.context
+
+
+# ---------------------------------------------------------------------------
+# Kalman filter (Section 15.20-F) — Module 18 #5
+#
+# Three disciplines this section exists to protect:
+#
+# * **The state-space specification IS the mechanism.** Section 15.18 requires
+#   the mechanism to be stated before the statistics, so the matrices are
+#   asserted directly rather than inferred from the output.
+# * **The band is part of the answer.** Every state carries a standard error,
+#   and the two hand-derived identities below (an identified state's first
+#   standard error is sqrt(sigma2.irregular); an unidentified one's is
+#   sqrt(kappa)) are what prove the band is computed rather than decorated.
+# * **A warning that fires unreliably is worse than none.** The negative
+#   controls below are as load-bearing as the positive ones: without them a
+#   branch could be satisfied by always firing, which is the D-051 trap.
+# ---------------------------------------------------------------------------
+
+_kalman = _econ.kalman_latent_state
+
+_KALMAN_N = 200
+
+
+def _kalman_level_series() -> np.ndarray:
+    """A random walk observed with noise — the r* / potential-GDP shape."""
+    rng = np.random.default_rng(0)
+    return np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 100.0 + rng.normal(0.0, 1.0, _KALMAN_N)
+
+
+def _kalman_trend_series() -> np.ndarray:
+    """A level that drifts, so the slope state is genuinely non-zero."""
+    rng = np.random.default_rng(1)
+    slope = np.cumsum(rng.normal(0.0, 0.05, _KALMAN_N)) + 0.3
+    return np.cumsum(slope) + 100.0 + rng.normal(0.0, 1.0, _KALMAN_N)
+
+
+def _kalman_pair() -> tuple[np.ndarray, np.ndarray]:
+    """``(dependent, regressor)`` with a genuinely drifting hedge ratio."""
+    rng = np.random.default_rng(2)
+    x = np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 50.0
+    beta = 0.5 + np.cumsum(rng.normal(0.0, 0.05, _KALMAN_N))
+    return beta * x + rng.normal(0.0, 1.0, _KALMAN_N), x
+
+
+def _kalman_level_result() -> ModelResult:
+    return _kalman(pd.DataFrame({"level_series": _kalman_level_series()}))
+
+
+def _kalman_trend_result() -> ModelResult:
+    return _kalman(pd.DataFrame({"gdp": _kalman_trend_series()}), state_dim=2)
+
+
+def _kalman_pair_result() -> ModelResult:
+    dependent, regressor = _kalman_pair()
+    return _kalman(pd.DataFrame({"y_leg": dependent, "x_leg": regressor}))
+
+
+def _kalman_paths(result: ModelResult, key: str) -> dict[str, list[float]]:
+    """Narrow one of the published path mappings, asserting not casting."""
+    published = _value(result)[key]
+    assert isinstance(published, dict)
+    return published
+
+
+# --- the specification table and the matrices ------------------------------
+
+
+def test_kalman_local_level_is_the_declared_specification() -> None:
+    published = _value(_kalman_level_result())
+    assert published["model_spec"] == "local_level"
+    assert published["state_names"] == ["level"]
+    assert published["state_dim"] == 1
+
+
+def test_kalman_trend_is_the_level_slope_specification() -> None:
+    published = _value(_kalman_trend_result())
+    assert published["model_spec"] == "local_linear_trend"
+    assert published["state_names"] == ["level", "slope"]
+
+
+def test_kalman_hedge_ratio_is_the_regression_specification() -> None:
+    published = _value(_kalman_pair_result())
+    assert published["model_spec"] == "time_varying_hedge_ratio"
+    assert published["state_names"] == ["beta"]
+
+
+def test_kalman_trend_transition_matrix_is_the_level_slope_coupling() -> None:
+    """``F = [[1, 1], [0, 1]]``: the slope feeds the level, not the reverse.
+
+    Asserted on the MATRIX rather than on the output, because a transposed
+    transition is still a well-formed filter producing a plausible path — the
+    defect would be a level that ignores its own slope, which no output check
+    would name.
+    """
+    spec = _econ._KALMAN_SPECS[(1, 2)]
+    model = _econ._KalmanStateModel(
+        np.array([1.0, 2.0, 3.0]),
+        spec=spec,
+        design=np.zeros((1, 2, 3)),
+        diffuse_scale=1.0e6,
+    )
+    assert np.array_equal(np.asarray(model["transition"]), np.array([[1.0, 1.0], [0.0, 1.0]]))
+
+
+def test_kalman_local_level_transition_is_a_random_walk() -> None:
+    spec = _econ._KALMAN_SPECS[(1, 1)]
+    model = _econ._KalmanStateModel(
+        np.array([1.0, 2.0, 3.0]),
+        spec=spec,
+        design=np.zeros((1, 1, 3)),
+        diffuse_scale=1.0e6,
+    )
+    assert np.array_equal(np.asarray(model["transition"]), np.array([[1.0]]))
+
+
+def test_kalman_hedge_ratio_design_is_the_regressor_path() -> None:
+    """The regressor enters the DESIGN, which is what makes beta a state at all."""
+    spec = _econ._KALMAN_SPECS[(2, 1)]
+    panel = np.column_stack([np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0])])
+    design = _econ._kalman_design(spec, panel)
+    assert design.shape == (1, 1, 3)
+    assert np.array_equal(design[0, 0, :], np.array([4.0, 5.0, 6.0]))
+
+
+def test_kalman_trend_design_reads_the_level_and_not_the_slope() -> None:
+    """``[1, 0]`` — which is exactly why the slope is unidentified at t = 0."""
+    spec = _econ._KALMAN_SPECS[(1, 2)]
+    panel = np.array([[1.0], [2.0], [3.0]])
+    design = _econ._kalman_design(spec, panel)
+    assert np.array_equal(design[0, 0, :], np.ones(3))
+    assert np.array_equal(design[0, 1, :], np.zeros(3))
+
+
+def test_kalman_first_filtered_state_is_the_ratio_at_the_first_observation() -> None:
+    """A hand-derivable identity: with an uninformative prior, beta_0 = y_0 / x_0.
+
+    Nothing about the filter is needed to predict this, so it is a genuine check
+    on the design matrix and the initialization together rather than a
+    restatement of the output.
+    """
+    dependent, regressor = _kalman_pair()
+    result = _kalman_pair_result()
+    beta_path = _kalman_paths(result, "filtered_state")["beta"]
+    assert beta_path[0] == pytest.approx(float(dependent[0] / regressor[0]), rel=1e-9)
+
+
+# --- the band --------------------------------------------------------------
+
+
+def test_kalman_band_bounds_are_the_state_plus_minus_z_times_the_error() -> None:
+    """The published bounds must BE the identity, not merely near it."""
+    published = _value(_kalman_trend_result())
+    z = published["band_z"]
+    state = _kalman_paths(_kalman_trend_result(), "filtered_state")
+    error = _kalman_paths(_kalman_trend_result(), "filtered_state_std_error")
+    lower = _kalman_paths(_kalman_trend_result(), "band_lower")
+    upper = _kalman_paths(_kalman_trend_result(), "band_upper")
+    for name in ("level", "slope"):
+        for index in (0, 5, 99, _KALMAN_N - 1):
+            expected_lower = state[name][index] - z * error[name][index]
+            assert lower[name][index] == pytest.approx(expected_lower, rel=1e-12)
+            assert upper[name][index] == pytest.approx(
+                state[name][index] + z * error[name][index], rel=1e-12
+            )
+
+
+def test_kalman_band_z_is_the_normal_quantile_of_the_configured_coverage() -> None:
+    """The multiplier is DERIVED from the coverage, not a recalled 1.96."""
+    from scipy.stats import norm
+
+    published = _value(_kalman_level_result())
+    coverage = published["band_coverage"]
+    assert published["band_z"] == pytest.approx(float(norm.ppf(0.5 + coverage / 2.0)), rel=1e-12)
+    assert coverage == get_settings().econometrics.kalman_band_coverage.value
+
+
+def test_kalman_band_coverage_is_read_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the coverage and require the published multiplier AND band to follow.
+
+    A test asserting ``band_z == 1.96`` passes whether the multiplier is derived
+    from the coverage or hardcoded, so the setting is moved to a value no literal
+    can produce (0.80 -> z = 1.281552).
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings.econometrics.kalman_band_coverage, "value", 0.80, raising=False)
+    published = _value(_kalman_level_result())
+    assert published["band_coverage"] == 0.80
+    assert published["band_z"] == pytest.approx(1.2815515655446004, rel=1e-12)
+    error = _kalman_paths(_kalman_level_result(), "filtered_state_std_error")["level"]
+    lower = _kalman_paths(_kalman_level_result(), "band_lower")["level"]
+    state = _kalman_paths(_kalman_level_result(), "filtered_state")["level"]
+    assert lower[-1] == pytest.approx(state[-1] - published["band_z"] * error[-1])
+
+
+def test_kalman_every_state_carries_a_positive_band() -> None:
+    """The specification forbids presenting the state as observed truth."""
+    for result in (_kalman_level_result(), _kalman_trend_result(), _kalman_pair_result()):
+        for name, path in _kalman_paths(result, "filtered_state_std_error").items():
+            assert min(path) > 0.0, f"{name} has a non-positive standard error"
+
+
+# --- the initialization, and why exact-diffuse was rejected ----------------
+
+
+def test_kalman_initialization_is_approximate_diffuse() -> None:
+    published = _value(_kalman_level_result())
+    assert published["initialization"] == "approximate_diffuse"
+    assert published["diffuse_scale"] == pytest.approx(1.0e6)
+
+
+def test_kalman_an_unidentified_state_carries_the_prior_scale() -> None:
+    """The trend's slope at t=0 has NO information, so its band IS the prior.
+
+    Hand-derived: the observation design is ``[1, 0]``, so the first update
+    leaves the slope's covariance at its prior value ``kappa``. Its standard
+    error is therefore ``sqrt(kappa) * state_scale``, and this is the assertion
+    that the published band reflects the prior instead of collapsing to zero.
+    """
+    result = _kalman_trend_result()
+    published = _value(result)
+    slope_error = _kalman_paths(result, "filtered_state_std_error")["slope"][0]
+    expected = float(np.sqrt(published["diffuse_scale"])) * published["state_scales"]["slope"]
+    assert slope_error == pytest.approx(expected, rel=1e-6)
+    assert slope_error > 1.0
+
+
+def test_kalman_an_identified_state_carries_the_observation_noise() -> None:
+    """The LEVEL at t=0 IS identified, so its band is sqrt(sigma2.irregular).
+
+    The complement of the test above, and the reason the two are separate: the
+    initialization's effect is STATE-DEPENDENT, so a single assertion cannot
+    distinguish "the prior is handled correctly" from "every band is inflated".
+    """
+    result = _kalman_trend_result()
+    published = _value(result)
+    level_error = _kalman_paths(result, "filtered_state_std_error")["level"][0]
+    # The published `sigma2.irregular` is ALREADY in the caller's units -- the
+    # normalisation is undone before publication -- so the identity needs no
+    # further rescaling. Multiplying by the state's scale again is the error
+    # this comment exists to prevent: it failed by a factor of the series'
+    # standard deviation when first written.
+    expected = float(np.sqrt(published["estimated_variances"]["sigma2.irregular"]))
+    assert level_error == pytest.approx(expected, rel=1e-5)
+
+
+def test_kalman_the_exact_diffuse_route_reports_a_zero_band() -> None:
+    """The measurement that decided the initialization, reproduced as a test.
+
+    ``initialize_diffuse`` REMOVES the diffuse component from
+    ``filtered_state_cov``, so the slope — which the first observation does not
+    identify — reports a standard error of exactly ``0.0`` while the filtered
+    STATES are unchanged. That is a zero-width band on an unobservable state,
+    which is the precise opposite of Section 15.20-F's requirement. If a future
+    statsmodels release changes this, the test fails and the decision is
+    revisited rather than silently invalidated.
+    """
+    spec = _econ._KALMAN_SPECS[(1, 2)]
+    series = _kalman_trend_series()
+    panel = series.reshape(-1, 1)
+    design = _econ._kalman_design(spec, panel)
+
+    approximate = _econ._KalmanStateModel(series, spec=spec, design=design, diffuse_scale=1.0e6)
+    exact = _econ._KalmanStateModel(series, spec=spec, design=design, diffuse_scale=1.0e6)
+    exact.ssm.initialize_diffuse()
+
+    approximate_fit = approximate.fit(disp=False, maxiter=200)
+    exact_fit = exact.fit(disp=False, maxiter=200)
+
+    index = np.arange(2)
+    approximate_error = np.sqrt(np.asarray(approximate_fit.filtered_state_cov)[index, index, :])
+    exact_error = np.sqrt(np.asarray(exact_fit.filtered_state_cov)[index, index, :])
+
+    # The slope is unidentified at t = 0: the honest band is the prior's scale,
+    # the exact-diffuse band is zero.
+    assert approximate_error[1, 0] > 1.0
+    assert exact_error[1, 0] == pytest.approx(0.0, abs=1e-12)
+
+
+# --- the normalisation ------------------------------------------------------
+
+
+def test_kalman_the_fit_is_scale_invariant() -> None:
+    """The same series in different UNITS must give the same answer.
+
+    Before the series was normalised this test's subject failed badly: measured
+    2026-09-23, ``sigma2.level / scale**2`` was 0.3238 at scale 1e-3 and 46.16
+    at 1e3 — a **147x** spread on identical data, because ``start_params`` is
+    1.0 while the likelihood is evaluated at the series' own magnitude.
+
+    The tolerance is 1e-6 rather than exact because the normalised problem is
+    the SAME up to the optimizer's stopping rule, not bit-for-bit: measured
+    across these five scales the worst disagreement is 1.8e-7 relative, which is
+    nine orders of magnitude tighter than the defect it replaces.
+    """
+    series = _kalman_level_series()
+    base = _value(_kalman_level_result())["estimated_variances"]
+    for scale in (1e-6, 1e-3, 1e3, 1e6, 1e9):
+        moved = _value(_kalman(pd.DataFrame({"s": series * scale})))["estimated_variances"]
+        assert moved["sigma2.level"] / scale**2 == pytest.approx(base["sigma2.level"], rel=1e-6), (
+            f"sigma2.level is not scale-invariant at scale {scale}"
+        )
+        assert moved["sigma2.irregular"] / scale**2 == pytest.approx(
+            base["sigma2.irregular"], rel=1e-6
+        )
+
+
+def test_kalman_the_series_and_state_scales_are_published() -> None:
+    """The normalisation is the only unit-dependent step, so it must be visible."""
+    result = _kalman_pair_result()
+    published = _value(result)
+    dependent, regressor = _kalman_pair()
+    assert published["series_scales"]["y_leg"] == pytest.approx(float(np.std(dependent)), rel=1e-12)
+    assert published["series_scales"]["x_leg"] == pytest.approx(float(np.std(regressor)), rel=1e-12)
+    # A coefficient carries dependent-per-regressor units, so its factor is the
+    # RATIO of the two series' scales -- not either one alone.
+    assert published["state_scales"]["beta"] == pytest.approx(
+        float(np.std(dependent)) / float(np.std(regressor)), rel=1e-12
+    )
+
+
+def test_kalman_a_level_and_a_slope_share_the_dependent_series_scale() -> None:
+    """Both carry the dependent series' units; a slope is a level per observation."""
+    published = _value(_kalman_trend_result())
+    assert published["state_scales"]["level"] == pytest.approx(
+        published["state_scales"]["slope"], rel=1e-12
+    )
+
+
+# --- the warning branches ---------------------------------------------------
+
+
+def test_kalman_a_non_converged_fit_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive the optimizer to a stop, and require BOTH the flag and the warning.
+
+    The construction is a config perturbation rather than a pathological series,
+    for a measured reason: with the derivative-free optimizer the constant
+    series that used to fail now CONVERGES, so a data-driven fixture would be a
+    claim about scipy's simplex rather than about this function. Starving the
+    iteration budget is deterministic and also proves the leaf is read.
+
+    The variance assertion is the point of the warning: at ``maxiter=1`` the fit
+    reports ``sigma2.level = 6.13`` against the converged ``0.3139``, so a
+    non-converged fit is not a slightly-off answer.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(settings.econometrics.kalman_max_iterations, "value", 1, raising=False)
+    result = _kalman_level_result()
+    assert _value(result)["converged"] is False
+    assert "DID NOT CONVERGE" in " ".join(result.warnings)
+    assert _value(result)["estimated_variances"]["sigma2.level"] > 1.0
+
+
+def test_kalman_a_collapsed_state_warns_it_is_not_time_varying() -> None:
+    """A constant coefficient: 'time-varying' describes the spec, not the estimate."""
+    rng = np.random.default_rng(5)
+    x = np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 50.0
+    y = 0.5 * x + rng.normal(0.0, 1.0, _KALMAN_N)
+    result = _kalman(pd.DataFrame({"y_leg": y, "x_leg": x}))
+    joined = " ".join(result.warnings)
+    assert "IS NOT TIME-VARYING" in joined
+    assert _value(result)["estimated_variances"]["sigma2.beta"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_kalman_a_materially_revised_state_warns() -> None:
+    """A trend's slope is the state whose real-time estimate moves most."""
+    result = _kalman_trend_result()
+    joined = " ".join(result.warnings)
+    assert "MATERIALLY REVISED" in joined
+    revision = _value(result)["revision_in_band_units"]
+    assert revision["slope"] > get_settings().econometrics.kalman_max_revision_ratio.value
+
+
+def test_kalman_a_well_specified_fit_emits_no_warning() -> None:
+    """The NEGATIVE CONTROL: without it, a branch could pass by always firing."""
+    assert _kalman_level_result().warnings == []
+    assert _kalman_pair_result().warnings == []
+
+
+def test_kalman_the_drift_ratio_is_read_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the ratio to a value no healthy fit can clear, and require the warning.
+
+    The discriminating half: at the shipped 1.0 a healthy level does NOT warn
+    (asserted above), so a function comparing against a literal would fail here
+    rather than pass everywhere.
+    """
+    settings = get_settings()
+    monkeypatch.setattr(
+        settings.econometrics.kalman_min_state_drift_ratio, "value", 1.0e9, raising=False
+    )
+    result = _kalman_level_result()
+    assert "IS NOT TIME-VARYING" in " ".join(result.warnings)
+
+
+def test_kalman_the_revision_ratio_is_read_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(
+        settings.econometrics.kalman_max_revision_ratio, "value", 0.0, raising=False
+    )
+    result = _kalman_level_result()
+    assert "MATERIALLY REVISED" in " ".join(result.warnings)
+
+
+def test_kalman_the_not_time_varying_test_is_scale_invariant() -> None:
+    """The DIVERGENT CASE for a relative guard, per D-100's rule.
+
+    A tolerance expressed as ``drift / median_error`` can only be shown to be
+    relative by a case where a relative and an absolute rule DISAGREE. Scaling
+    the series moves ``drift`` and ``median_error`` together, so the relative
+    ratio is unchanged and the verdict must be unchanged too — while an absolute
+    ``drift <= constant`` rule would flip, because ``drift`` scales with the
+    series. Both directions are exercised: a tiny scale (where an absolute rule
+    would fire) and a huge one (where it would not).
+    """
+    rng = np.random.default_rng(5)
+    x = np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 50.0
+    y = 0.5 * x + rng.normal(0.0, 1.0, _KALMAN_N)
+
+    verdicts = []
+    for scale in (1e-6, 1.0, 1e6):
+        result = _kalman(pd.DataFrame({"y_leg": y * scale, "x_leg": x * scale}))
+        verdicts.append("IS NOT TIME-VARYING" in " ".join(result.warnings))
+
+    assert verdicts == [True, True, True], (
+        f"the collapsed-state verdict changed with the series' units: {verdicts}"
+    )
+
+
+def test_every_kalman_warning_branch_is_triggered_by_some_test() -> None:
+    """A branch with no test is deletable, so the branches are enumerated here.
+
+    A PARTITION rather than a hit: each marker is distinct, and each is asserted
+    to be reached. Adding a fourth branch without a test fails this.
+
+    The convergence branch is driven through the builder directly rather than
+    through a fit, and that is deliberate: with the derivative-free optimizer the
+    constant series that used to fail now converges, so no data fixture reliably
+    produces it. Passing ``converged=False`` is the branch's actual precondition,
+    which is what a partition guard should assert.
+    """
+    markers = {
+        "converged": "DID NOT CONVERGE",
+        "not_time_varying": "IS NOT TIME-VARYING",
+        "materially_revised": "MATERIALLY REVISED",
+    }
+    triggered: set[str] = set()
+
+    synthetic = _econ._kalman_warnings(
+        spec=_econ._KALMAN_SPECS[(1, 1)],
+        filtered=np.array([[1.0, 2.0]]),
+        standard_error=np.array([[0.1, 0.1]]),
+        smoothed=np.array([[1.0, 2.0]]),
+        variances={"sigma2.level": 0.01, "sigma2.irregular": 1.0},
+        n_obs=2,
+        converged=False,
+        convergence_messages=[],
+    )
+
+    rng = np.random.default_rng(5)
+    x = np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 50.0
+    collapsed = _kalman(
+        pd.DataFrame({"y_leg": 0.5 * x + rng.normal(0.0, 1.0, _KALMAN_N), "x_leg": x})
+    )
+
+    for emitted in (synthetic, collapsed.warnings, _kalman_trend_result().warnings):
+        for warning in emitted:
+            for label, marker in markers.items():
+                if marker in warning:
+                    triggered.add(label)
+
+    assert triggered == set(markers), f"untested warning branches: {set(markers) - triggered}"
+
+
+# --- refusals ---------------------------------------------------------------
+
+
+def test_kalman_refuses_a_non_dataframe() -> None:
+    with pytest.raises(TypeError, match="must be a pandas DataFrame"):
+        _kalman([1.0, 2.0, 3.0])  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("state_dim", [1.5, "1", None])
+def test_kalman_refuses_a_non_integer_state_dimension(state_dim: Any) -> None:
+    with pytest.raises(TypeError, match="state_dim must be an int"):
+        _kalman(pd.DataFrame({"s": _kalman_level_series()}), state_dim=state_dim)
+
+
+def test_kalman_refuses_a_boolean_state_dimension() -> None:
+    """``bool`` is an ``int`` subclass, so it would reach the table as 0 or 1."""
+    with pytest.raises(TypeError, match="state_dim must be an int"):
+        _kalman(pd.DataFrame({"s": _kalman_level_series()}), state_dim=True)
+
+
+def test_kalman_refuses_a_columnless_frame() -> None:
+    with pytest.raises(ValueError, match="at least one column"):
+        _kalman(pd.DataFrame(index=range(100)))
+
+
+def test_kalman_refuses_a_wide_panel_and_names_the_sibling_function() -> None:
+    """A panel of tenors is a factor decomposition, which is `compute_pca`'s job."""
+    frame = pd.DataFrame(
+        {"a": _kalman_level_series(), "b": _kalman_level_series(), "c": _kalman_level_series()}
+    )
+    with pytest.raises(ValueError, match="compute_pca"):
+        _kalman(frame)
+
+
+@pytest.mark.parametrize(("columns", "state_dim"), [(1, 3), (2, 2), (1, 0), (2, 3)])
+def test_kalman_refuses_an_unspecified_combination(columns: int, state_dim: int) -> None:
+    """The refusal enumerates the admissible set rather than restating it."""
+    series = _kalman_level_series()
+    frame = pd.DataFrame({f"c{index}": series for index in range(columns)})
+    with pytest.raises(ValueError, match="admissible combinations are"):
+        _kalman(frame, state_dim=state_dim)
+
+
+def test_kalman_refuses_duplicate_column_names() -> None:
+    series = _kalman_level_series()
+    frame = pd.DataFrame(np.column_stack([series, series]), columns=["s", "s"])
+    with pytest.raises(ValueError, match="duplicate column name"):
+        _kalman(frame)
+
+
+@pytest.mark.parametrize("column", [list("abcdefghij" * 20), [True] * _KALMAN_N])
+def test_kalman_refuses_a_non_numeric_column(column: list[Any]) -> None:
+    with pytest.raises(ValueError, match="must be numeric"):
+        _kalman(pd.DataFrame({"s": column}))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_kalman_refuses_a_non_finite_value(bad: float) -> None:
+    series = _kalman_level_series()
+    series[5] = bad
+    with pytest.raises(ValueError, match="non-finite values"):
+        _kalman(pd.DataFrame({"s": series}))
+
+
+def test_kalman_refuses_a_sample_below_the_configured_floor() -> None:
+    floor = get_settings().econometrics.kalman_min_observations.value
+    with pytest.raises(ValueError, match="below the configured floor"):
+        _kalman(pd.DataFrame({"s": _kalman_level_series()[: int(floor) - 1]}))
+
+
+# --- the ModelResult contract ----------------------------------------------
+
+
+def test_kalman_model_name_is_stable() -> None:
+    assert _kalman_level_result().model_name == "kalman_latent_state"
+
+
+def test_kalman_confidence_comes_from_the_shared_rule() -> None:
+    """The computed value is pinned against ``compute_confidence``, not a literal."""
+    result = _kalman_level_result()
+    expected = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=True,
+            source_independence_count=0,
+            depends_on_unobservable=True,
+        )
+    )
+    assert result.confidence == expected
+
+
+def test_kalman_confidence_prices_the_unobservable_dependence() -> None:
+    """The flag is not decoration: the field exists for exactly this quantity.
+
+    Asserted by its DISCRIMINATING property — the result is strictly lower than
+    the same computation without the flag — because the computed value could
+    otherwise coincide with a literal.
+    """
+    result = _kalman_level_result()
+    without = compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=True))
+    assert result.confidence < without
+
+
+def test_kalman_the_heuristic_penalty_follows_the_thresholds_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calibrate the two judgement thresholds and require the confidence to rise."""
+    settings = get_settings()
+    before = _kalman_level_result().confidence
+    for leaf in ("kalman_min_state_drift_ratio", "kalman_max_revision_ratio"):
+        monkeypatch.setattr(
+            getattr(settings.econometrics, leaf),
+            "calibration_status",
+            "conventional",
+            raising=False,
+        )
+    assert _kalman_level_result().confidence > before
+
+
+def test_kalman_names_its_inputs_by_role_for_a_pair() -> None:
+    """The column ORDER is a convention, so it is published rather than assumed."""
+    result = _kalman_pair_result()
+    assert result.inputs_used == ["dependent:y_leg", "regressor:x_leg"]
+
+
+def test_kalman_names_its_input_by_role_for_a_single_series() -> None:
+    assert _kalman_level_result().inputs_used == ["observed:level_series"]
+
+
+def test_kalman_direction_is_none_because_a_level_is_not_a_signal() -> None:
+    assert _kalman_level_result().direction is None
+
+
+def test_kalman_unit_names_the_state_units() -> None:
+    """`unit` is optional on `ModelResult`, so its PRESENCE is part of the check.
+
+    A state without a declared unit is a number whose meaning a reader must
+    guess: the level, the slope and the beta each carry a different one.
+    """
+    unit = _kalman_level_result().unit
+    assert unit is not None
+    assert "state units" in unit
+    assert "per observation" in unit
+
+
+def test_kalman_discloses_that_the_state_is_unobservable() -> None:
+    joined = " ".join(_kalman_level_result().limitations)
+    assert "UNOBSERVABLE" in joined
+
+
+def test_kalman_discloses_the_collapsed_band_with_its_measurement() -> None:
+    """The warning that was removed must still reach the reader as a limitation."""
+    joined = " ".join(_kalman_level_result().limitations)
+    assert "COLLAPSES" in joined
+    assert "no threshold separates" in joined
+
+
+def test_kalman_discloses_the_normalisation() -> None:
+    joined = " ".join(_kalman_level_result().limitations)
+    assert "SCALE-SENSITIVE" in joined
+    assert "147x" in joined
+
+
+def test_kalman_discloses_the_prior_dominated_head() -> None:
+    joined = " ".join(_kalman_level_result().limitations)
+    assert "DOMINATED BY THE PRIOR" in joined
+
+
+def test_kalman_forbids_presenting_the_state_as_observed_truth() -> None:
+    joined = " ".join(_kalman_level_result().decision_prohibition)
+    assert "observed truth" in joined
+
+
+def test_kalman_forbids_the_smoothed_state_in_real_time() -> None:
+    joined = " ".join(_kalman_level_result().decision_prohibition)
+    assert "SMOOTHED state" in joined
+    assert "look-ahead" in joined
+
+
+def test_kalman_publishes_the_smoothed_path_for_the_revision() -> None:
+    """The look-ahead disclosure needs both sides, so the smoothed value travels."""
+    published = _value(_kalman_trend_result())
+    smoothed = published["smoothed_latest"]
+    assert isinstance(smoothed, dict)
+    assert set(smoothed) == {"level", "slope"}
+    assert all(np.isfinite(value) for value in smoothed.values())
+
+
+def test_kalman_assumes_a_level_not_a_change_for_a_single_series() -> None:
+    joined = " ".join(_kalman_level_result().assumptions)
+    assert "LEVEL, not a change" in joined
+
+
+def test_kalman_states_the_pair_column_order_convention() -> None:
+    joined = " ".join(_kalman_pair_result().assumptions)
+    assert "DEPENDENT" in joined and "REGRESSOR" in joined
+
+
+def test_kalman_publishes_no_non_finite_value() -> None:
+    """A `nan` renders as a gap, so it is refused rather than published."""
+    for result in (_kalman_level_result(), _kalman_trend_result(), _kalman_pair_result()):
+        for key in (
+            "filtered_state",
+            "filtered_state_std_error",
+            "band_lower",
+            "band_upper",
+        ):
+            for name, path in _kalman_paths(result, key).items():
+                assert all(np.isfinite(value) for value in path), f"{key}[{name}]"
+
+
+def test_kalman_interpretation_names_the_specification_and_the_band() -> None:
+    result = _kalman_level_result()
+    assert "local_level" in result.interpretation
+    assert "band of" in result.interpretation
+    assert "%" in result.interpretation
+
+
+def test_kalman_context_names_the_specification_and_convergence() -> None:
+    context = _kalman_level_result().context
+    assert "Specification 'local_level'" in context
+    assert "converged = True" in context
+    assert "approximate_diffuse" in context
+
+
+# --- the config, and its cross-checks --------------------------------------
+
+
+def test_the_kalman_parameter_constant_matches_the_specification_table() -> None:
+    """``config._KALMAN_MAX_PARAMETERS`` is a COPY, so it is pinned to its source.
+
+    ``config`` may not import ``models`` — the dependency runs the other way — so
+    the constant is duplicated there. A duplicated constant with no pin is one
+    that rots silently (the D-047 class), so this recounts it from the model's
+    own table and fails if the two disagree.
+    """
+    from macro_engine.config import _KALMAN_MAX_PARAMETERS
+
+    largest = max(
+        len(spec.variance_names) + 1  # + sigma2.irregular
+        for spec in _econ._KALMAN_SPECS.values()
+    )
+    assert largest == _KALMAN_MAX_PARAMETERS
+
+
+def test_the_kalman_observation_floor_exceeds_the_parameter_count() -> None:
+    """A likelihood with fewer rows than estimated variances is not identified."""
+    import pydantic
+
+    from macro_engine.config import _KALMAN_MAX_PARAMETERS
+
+    settings = get_settings().econometrics
+    assert float(settings.kalman_min_observations.value) > _KALMAN_MAX_PARAMETERS
+    with pytest.raises((ValueError, pydantic.ValidationError), match="must exceed"):
+        type(settings).model_validate(
+            {
+                **{name: getattr(settings, name) for name in type(settings).model_fields},
+                "kalman_min_observations": settings.kalman_min_observations.model_copy(
+                    update={"value": 3}
+                ),
+            }
+        )
+
+
+def test_the_kalman_band_coverage_must_be_an_open_interval() -> None:
+    """At 1.0 the normal quantile is infinite, so the band would be `inf`."""
+    import pydantic
+
+    settings = get_settings().econometrics
+    assert 0.0 < float(settings.kalman_band_coverage.value) < 1.0
+    with pytest.raises((ValueError, pydantic.ValidationError), match="strictly inside"):
+        type(settings).model_validate(
+            {
+                **{name: getattr(settings, name) for name in type(settings).model_fields},
+                "kalman_band_coverage": settings.kalman_band_coverage.model_copy(
+                    update={"value": 1.0}
+                ),
+            }
+        )
+
+
+def test_the_kalman_optimizer_is_in_the_permitted_set() -> None:
+    settings = get_settings().econometrics
+    assert settings.kalman_optimizer in {"nm", "powell", "lbfgs", "bfgs"}
+
+
+def test_the_kalman_optimizer_is_refused_when_unrecognised() -> None:
+    """An unrecognised method would reach scipy, naming neither the setting nor the file."""
+    import pydantic
+
+    settings = get_settings().econometrics
+    with pytest.raises((ValueError, pydantic.ValidationError), match="must be one of"):
+        type(settings).model_validate(
+            {
+                **{name: getattr(settings, name) for name in type(settings).model_fields},
+                "kalman_optimizer": "gradient-descent",
+            }
+        )
+
+
+def test_the_kalman_optimizer_is_read_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the optimizer to a gradient method and require the fit to change.
+
+    The measurement behind the default: gradient methods sit at the optimum
+    without satisfying their own stopping rule on this flat likelihood, so the
+    published variances move slightly. A hardcoded ``"nm"`` would not follow.
+    """
+    settings = get_settings()
+    before = _value(_kalman_level_result())["estimated_variances"]["sigma2.level"]
+    monkeypatch.setattr(settings.econometrics, "kalman_optimizer", "lbfgs", raising=False)
+    after = _value(_kalman_level_result())["estimated_variances"]["sigma2.level"]
+    assert after == pytest.approx(before, rel=1e-3)
+    assert after != before
+
+
+def test_kalman_refuses_a_non_finite_filter_output() -> None:
+    """The OUTPUT guard, reached by an overflow rather than by a bad input.
+
+    A series at scale ``1e300`` is a legal float and passes every INPUT check,
+    and the filter's own arithmetic then overflows, so the state comes back
+    ``inf``. That is the case the guard exists for: a non-finite band renders as
+    a gap in a chart and compares ``False`` against everything, so it would look
+    like missing data rather than like a failure.
+
+    The boundary is measured rather than assumed: ``1e150`` is finite and returns
+    ``sigma2.level = 2.39e299``, while ``1e300`` overflows. The message is matched
+    on "produced non-finite" to distinguish this guard from the INPUT check, which
+    raises "observations contains non-finite values" when the series itself has
+    already overflowed (at ``1e308``).
+    """
+    series = _kalman_level_series() * 1e300
+    assert bool(np.isfinite(series).all()), "the input must be finite for this test"
+    with pytest.raises(ValueError, match="produced non-finite values"):
+        _kalman(pd.DataFrame({"s": series}))
+
+
+def test_kalman_refuses_a_series_with_no_variation() -> None:
+    """A constant series has no latent state to estimate, so it is REFUSED.
+
+    This was originally left to the ``not time-varying`` WARNING, and a live run
+    falsified that rationale (D-101): on a constant series the state variance
+    collapses to ``1e-12`` but the BAND collapses further (``1.65e-09``), so the
+    warning's drift-to-band ratio came back as **6055** and did not fire. The
+    warning compares the state's movement with the uncertainty about it, and both
+    collapse together — which is exactly why it cannot see this case.
+    """
+    with pytest.raises(ValueError, match="no variation"):
+        _kalman(pd.DataFrame({"s": np.full(120, 7.0)}))
+
+
+def test_kalman_refuses_a_constant_regressor() -> None:
+    """The refusal covers every column, not only the dependent series.
+
+    A coefficient estimated against a regressor that never moves is identified
+    only up to that regressor's scale, so the fit returns a confident number
+    describing nothing.
+    """
+    rng = np.random.default_rng(4)
+    dependent = np.cumsum(rng.normal(0.0, 0.5, _KALMAN_N)) + 100.0
+    with pytest.raises(ValueError, match="no variation"):
+        _kalman(pd.DataFrame({"y_leg": dependent, "x_leg": np.full(_KALMAN_N, 5.0)}))
+
+
+def test_kalman_the_constant_refusal_is_scale_relative_not_absolute() -> None:
+    """The DIVERGENT CASE for the relative tolerance, per D-100's rule.
+
+    A relative tolerance can only be shown to be relative by a case where a
+    relative and an absolute rule DISAGREE. Both directions are exercised here:
+
+    * a constant series is refused at **every** magnitude, including ``1e6``,
+      where an absolute tolerance would have to be huge to fire; and
+    * a series at scale ``1e-9`` that genuinely MOVES by ``1e-6`` of its own
+      scale — a standard deviation of ``2.9e-16``, ten orders of magnitude above
+      the floating-point noise — is **accepted**. An absolute tolerance of
+      ``2.22e-14`` (which is what ``compute_pca``'s ``maximum(scale, 1.0)`` form
+      reduces to below scale 1) would refuse it.
+
+    Measured 2026-09-23. The opposite direction does NOT exist for the residue
+    itself: numpy's ``std`` returns exactly ``0`` for a constant array at every
+    magnitude from ``4.2`` to ``1e12``, so the residue never grows with scale.
+    """
+    for magnitude in (0.0, 7.0, 1e6):
+        with pytest.raises(ValueError, match="no variation"):
+            _kalman(pd.DataFrame({"s": np.full(120, magnitude)}))
+
+    # A tiny scale with a variation that is LARGE relative to it but small in
+    # absolute terms -- the divergent case, and the magnitudes are MEASURED
+    # rather than chosen. The two tolerances are:
+    #
+    #   relative  eps * scale * 100      = 2.22e-23  for scale 1e-9
+    #   absolute  eps * maximum(scale,1) * 100 = 2.22e-14  (the sibling's form)
+    #
+    # so the standard deviation must lie BETWEEN them. `linspace(0, 1e-9)` does
+    # NOT: its standard deviation is 2.9e-10, far above both, which is why the
+    # first version of this test let M108 SURVIVE. A base of 1e-9 with a 1e-15
+    # ramp gives 2.9e-16 -- ten orders of magnitude above the floating-point
+    # noise, and inside the gap.
+    varying = np.full(_KALMAN_N, 1e-9) + np.linspace(0.0, 1e-15, _KALMAN_N)
+    deviation = float(np.std(varying, ddof=1))
+    relative_tolerance = float(np.finfo(float).eps * np.abs(varying).max() * 100.0)
+    absolute_tolerance = float(np.finfo(float).eps * 1.0 * 100.0)
+    assert relative_tolerance < deviation <= absolute_tolerance, (
+        f"the divergent case needs relative_tol < std <= absolute_tol, got "
+        f"{relative_tolerance!r} < {deviation!r} <= {absolute_tolerance!r}"
+    )
+    result = _kalman(pd.DataFrame({"s": varying}))
+    assert _value(result)["n_obs"] == _KALMAN_N

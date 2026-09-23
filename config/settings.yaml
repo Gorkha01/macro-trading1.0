@@ -3441,6 +3441,122 @@ econometrics:
       The rank check refuses the fully degenerate case -- a negative eigenvalue
       is incoherent and cannot be published -- so this threshold governs the
       merely-tiny case that the rank check cannot see.
+  kalman_min_observations:
+    value: 60
+    calibration_status: conventional
+    note: >
+      A floor for the Kalman filter, set at the same 60 as the cointegration and
+      PCA floors for a related structural reason rather than by copying. The
+      variances that set the band are ESTIMATED, and they are downward-biased on
+      short samples -- measured 2026-09-23 over 40 draws of a local level whose
+      true sigma2.level was 0.25: the median estimate was 0.1224 at n=10, 0.1536
+      at n=30, 0.2128 at n=60, 0.2397 at n=100 and 0.2482 at n=200. So 60 holds
+      the bias to about 15% while the estimator remains defined, and it is a
+      floor rather than a guarantee: the bias is still measurable above it, and
+      the model discloses it. The bias direction matters more than its size --
+      an UNDERestimated state variance makes the state move less than the truth,
+      so the failure mode is false stability rather than false volatility.
+      Also validated against the largest parameter count (3, for the local
+      linear trend): a likelihood with fewer rows than estimated variances is
+      not identified.
+  kalman_band_coverage:
+    value: 0.95
+    calibration_status: conventional
+    note: >
+      The probability the published band is meant to cover, inverted through the
+      normal quantile to give the multiplier (norm.ppf(0.975) = 1.959964). 0.95
+      is the textbook two-sided level, and it is the same convention
+      significance_level uses, so a reader comparing a state's band with a
+      test's size is comparing like with like. It is a CONVENTION and not a
+      claim about this data: the band is a normal-theory interval, so the true
+      coverage is 0.95 only if the innovations are Gaussian, which for a
+      financial or macro level series they usually are not.
+  kalman_diffuse_scale:
+    value: 1.0e+6
+    calibration_status: conventional
+    note: >
+      The scale kappa of the approximate-diffuse prior on the initial state --
+      the prior variance is kappa times the identity, so the initial standard
+      error is 1000.0. It is statsmodels' own default and it is a NUMERICAL
+      convention rather than a belief about r*: the point is that the prior is
+      uninformative relative to the data, not that the initial state is believed
+      to lie within 1000 units of zero.
+      THIS LEAF EXISTS BECAUSE THE EXACT-DIFFUSE ROUTE IS WRONG FOR THIS
+      FUNCTION. Measured 2026-09-23: initialization='diffuse' REMOVES the
+      diffuse component from filtered_state_cov, so a state the first
+      observation does not identify reports a standard error of exactly 0.0. On
+      a local linear trend the slope -- whose observation design is [1, 0] and
+      which therefore carries no information at the first step -- came back as
+      "0.0 +- 0.0", where approximate_diffuse and an explicit known prior of
+      1e6 both reported 1000.0. The filtered STATES were identical across all
+      three routes; only the published uncertainty differed. A zero-width band
+      on an unobservable state is the precise opposite of what Section 15.20-F
+      requires ("the filtered state is an estimate, never to be presented as
+      observed truth"), and it is silent. The chosen route costs a small amount
+      of likelihood accuracy -- measured log-likelihood -347.31 against the
+      exact-diffuse -340.40 on the same fit -- and buys a band that is honest
+      for every state.
+  kalman_max_iterations:
+    value: 200
+    calibration_status: conventional
+    note: >
+      The iteration cap handed to the maximum-likelihood optimizer, well above
+      statsmodels' own default of 50 because this model's likelihood is
+      flat-topped in the variance parameters and a stop at the default is
+      common. It is a CONVENTION, not a convergence criterion: the cap does not
+      decide whether the fit converged, and reaching it is reported as
+      non-convergence in the result's own warnings. A cap that is too low turns
+      a fittable series into a non-converged one; a cap that is too high costs
+      only wall-clock.
+  kalman_min_state_drift_ratio:
+    value: 1.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Below this, a state is reported as NOT TIME-VARYING. The test compares the
+      random walk's typical excursion over the sample, sqrt(n * sigma2_state),
+      with the filter's own median standard error for that state -- asking
+      whether the estimated movement is larger than the uncertainty about it.
+      Measured 2026-09-23 to place it: a genuinely constant coefficient scored
+      0.0247, while a coefficient that really moves scored 7.02 at its MINIMUM
+      across 25 draws (median 11.83). So the value sits inside a wide empty gap
+      rather than on a boundary, which is what makes it robust to the sample.
+      It is a judgement about what "time-varying" should mean rather than a
+      calibrated quantity, so it is priced into the confidence penalty. The
+      branch it governs matters because a collapsed state makes "time-varying"
+      a property of the SPECIFICATION and not of the estimate: measured on a
+      constant coefficient, the maximum-likelihood estimate of sigma2.beta was
+      exactly 0.0 and the filter returned a flat path.
+  # `kalman_band_relative_floor` is DELIBERATELY ABSENT. A relative floor below
+  # which a state's band would be reported as "degenerate" was written,
+  # measured, and removed: when the model drives the observation-noise variance
+  # to (near) zero the band collapses (a converged fit was observed publishing
+  # `102.8486 +- 0.0000377`), but NO threshold separates that case from a
+  # well-specified one. Measured 2026-09-23 over 10 seeds at each noise level,
+  # `median(se)/median|state|` spanned 3.1e-8 to 1.8e-3 for noise-free samples
+  # and 5.0e-3 to 6.7e-3 only at the largest noise, while the alternative
+  # `sigma2.irregular/var(y)` spanned 5.5e-12 to 2.7e-2 at zero noise --
+  # overlapping the noisy samples -- and is specification-dependent, because a
+  # pair's var(y) is dominated by the regressor. A warning that fires
+  # unreliably teaches the reader to ignore it, so the behaviour is disclosed as
+  # a LIMITATION instead and `sigma2.irregular` is published for a reader to
+  # judge. A leaf left here would be a config value nothing reads (D-047).
+  kalman_max_revision_ratio:
+    value: 5.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Above this, the real-time estimate is reported as MATERIALLY REVISED: the
+      filtered path's largest departure from the smoothed path, expressed in the
+      state's own median band units. Measured 2026-09-23 across 25 draws at
+      n=200: a local level's largest revision ran 1.54x-2.96x its median band
+      (median 1.91) and a local linear trend's level ran 1.72x-5.28x (median
+      2.58), while its SLOPE ran 3.19x-27.05x (median 13.35). So 5.0 sits above
+      every observed level-state case and inside the slope's range, which is the
+      intended behaviour: a level estimated in real time is reasonably stable
+      and a slope is not, and the warning is meant to fire for the second. The
+      smoothed path is published alongside the filtered one because the
+      revision IS the look-ahead bias a real-time reader must not import. A
+      judgement rather than a calibrated quantity, so it is priced into the
+      confidence penalty.
   # The two leaves below are CHOICES, not calibrated quantities, so they are
   # plain scalars rather than `{value, calibration_status}` envelopes -- see the
   # block comment above `adf_regression` for why.
@@ -3512,6 +3628,21 @@ econometrics:
   # excluded at the config layer rather than guarded in the function, so the
   # failure cannot be reached at all.
   cointegration_trend: "c"
+  # `kalman_optimizer` — which scipy optimizer maximises the Kalman filter's
+  # likelihood. "nm" is Nelder-Mead, a DERIVATIVE-FREE simplex, and it is the
+  # default for a measured reason: the likelihood is flat in the variance
+  # parameters, so gradient information is unreliable. Measured 2026-09-23 over
+  # 20 simulated cointegrated pairs at n=200, counting fits whose optimizer
+  # failed its own convergence test: lbfgs 4/20, bfgs 12/20, Nelder-Mead 0/20,
+  # Powell 0/20. The gradient methods were AT the optimum and did not know it --
+  # Nelder-Mead and lbfgs agreed to five significant figures on sigma2.beta
+  # (0.00001459 against 0.00001452) with Nelder-Mead's log-likelihood
+  # marginally higher. Raising the iteration cap did not help (the same four
+  # seeds failed at 200, 1000 and 3000 iterations), which is what identifies the
+  # stopping RULE rather than the budget as the cause. The other three are
+  # permitted because the choice is numerical and a future series may favour
+  # one; an unrecognised value is refused at config load.
+  kalman_optimizer: "nm"
 
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture

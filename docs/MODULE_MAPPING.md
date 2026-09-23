@@ -1695,7 +1695,7 @@ D-087 also settles what to believe when checks disagree. The order is:
 
 ---
 
-## Module 18 — Quantitative Tools (`models/econometrics.py`), 4 of 6
+## Module 18 — Quantitative Tools (`models/econometrics.py`), 5 of 6
 
 **These four rows were missing from the tier tables for three increments.** Module
 18 is **not** a §21.3 tier member in the way the rest of this file is: its functions
@@ -1707,19 +1707,28 @@ therefore silent about two implemented functions and their tests. Added at
 
 | Spec | Module | Function | Source | Test | Decision |
 |---|---|---|---|---|---|
-| **15.20-F** | 18 | `run_regression` | `models/econometrics.py:219` | `test_econometrics.py` | **D-092**, **D-093** |
-| **15.20-F** | 18 | `test_stationarity` | `models/econometrics.py:370` | `test_econometrics.py` | **D-094** |
-| **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:511` | `test_econometrics.py` | **D-097** |
-| **15.20-F** | 18 | `compute_pca` | `models/econometrics.py:813` | `test_econometrics.py` | **D-099**, **D-100** |
-| **15.20-F** | 18 | `kalman_latent_state` | *not implemented* | — | **← the binding Next** |
-| 6.6 | 18 | `yield_curve_pca` | *not implemented* (§6.6 stub) | — | depends on `compute_pca` |
+| **15.20-F** | 18 | `run_regression` | `models/econometrics.py:222` | `test_econometrics.py` | **D-092**, **D-093** |
+| **15.20-F** | 18 | `test_stationarity` | `models/econometrics.py:373` | `test_econometrics.py` | **D-094** |
+| **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:514` | `test_econometrics.py` | **D-097** |
+| **15.20-F** | 18 | `compute_pca` | `models/econometrics.py:816` | `test_econometrics.py` | **D-099**, **D-100** |
+| **15.20-F** | 18 | `kalman_latent_state` | `models/econometrics.py:1845` | `test_econometrics.py` | **D-101** |
+| **6.6** | **8** | `yield_curve_pca` | *not implemented* (§6.6 stub) | — | **← the binding Next**; consumes `compute_pca` |
 
-**The line numbers above were RE-MEASURED at D-100 and the three older ones were
-stale** (they read `213`/`364`/`505`; `grep -n '^def '` gives `219`/`370`/`511`).
-Every prior addition to this file inserted text *above* the rows it was extending, so
-each row's line number drifted by the size of the previous increment while continuing
-to look authoritative. **A line number is a claim, and this one was checked with
-`grep -n` rather than carried forward.**
+**The line numbers above were RE-MEASURED at D-101, and ALL FOUR older ones had
+drifted AGAIN** — by exactly `+3`, the size of the Kalman block inserted above them
+(`219`/`370`/`511`/`813` → `222`/`373`/`514`/`816`). This is the **second**
+consecutive increment in which the same rows went stale, and the mechanism is
+structural rather than careless: **every addition to `econometrics.py` inserts text
+above the rows below it**, so a line number in this table has a half-life of one
+increment. The D-100 note predicted exactly this and it happened anyway. **A line
+number is a claim, and it must be re-derived with `grep -n` at every close** — or the
+column should be replaced by something that does not rot.
+
+**One row was also WRONG about its module.** `yield_curve_pca` was recorded against
+Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in
+`models/yield_curve.py`, not `models/econometrics.py`. Corrected here. It is Module
+18's *output* in §15.18's narrative (which is where the error came from) but Module
+8's *function*, and those are different claims.
 
 **The citation is §15.20 block F, not "§15.18-F".** §15.18 is Module 18's
 *narrative*; **§15.20 holds the signatures** (AGENTS.md:3137). Three decisions
@@ -1736,10 +1745,36 @@ sub-lettering in §15.20 is **A–F for six different modules**, not six parts o
 18. **Both the section number and the block letter are claims to resolve with
 `grep -n`, never to carry forward from the row above.**
 
-> **Both `test_cointegration` and `compute_pca` cite §15.20-F.** That is not a
-> transcription slip: §15.20's block **F** is the block that carries *both*
-> signatures, which is exactly why the "§15.18-F" error was made in the first place.
-> Resolved by `grep -n` at D-100 rather than by pattern-matching the previous row.
+> **`run_regression`, `test_stationarity`, `test_cointegration`, `compute_pca` AND
+> `kalman_latent_state` all cite §15.20-F.** That is not a transcription slip: §15.20's
+> block **F** is the block that carries *all five* signatures, which is exactly why the
+> "§15.18-F" error was made in the first place. Resolved by `grep -n` at D-100 and
+> **re-counted at D-101**: D-100 recorded "FOUR of them under ONE heading" while
+> implementing the fourth, and the fifth (`kalman_latent_state`, AGENTS.md:3187) was
+> already in the block. The count was taken from the functions that were implemented
+> rather than from the block — the same "a citation is a claim" failure D-100 had just
+> recorded, one increment earlier.
+
+### What `kalman_latent_state` supersedes and what it feeds
+
+**Supersedes: nothing.** There was no prior Kalman implementation in the tree, and
+`pykalman` is prohibited (§1) as unmaintained.
+
+**Feeds: `r_star` and potential GDP — a stated path, not live wiring.** §21.1's input
+table records `policy.r_star` as **CONFIG** (`settings.yaml`, default 0.5) and marks it
+**NOT OBSERVABLE**, with *"Phase 5+ replaces with Kalman estimate"* as the upgrade
+path. That is the `confidence` upgrade §15.18's Module 18 narrative describes:
+`policy_view` and `growth_view` gain a measured latent state in place of a static
+constant. **No module imports `kalman_latent_state` today**, so as with its siblings
+the integration is a *contract* rather than live wiring, and it does **not** appear in
+the reachability audit's set for the same reason (that audit tracks §21.3's wiring
+obligations, and Module 18 is Tier 5 by design).
+
+**The static `r_star` is a real consequence, and it is recorded rather than implied.**
+Until a caller wires this function into the thesis layer, `policy.r_star` remains a
+configured constant, and §21.1 already names its uncertainty as *"the single largest
+driver of policy-rule dispersion"*. The function makes the replacement possible; it
+does not perform it.
 
 ### What `compute_pca` supersedes and what it feeds
 

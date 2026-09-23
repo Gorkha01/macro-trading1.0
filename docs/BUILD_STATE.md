@@ -8566,3 +8566,93 @@ files** · `mypy --strict` no issues in **247 files** · **2993 passed / 1 skipp
 deselected / 0 failed** · sweep **76/77** (77 declared) · **43 sweeps, 0 leftovers,
 0 mutant shapes** · reachability **58 = 58** · live check **PASSED** (680 real
 Treasury observations).
+
+---
+
+## D-101 — Module 18 #5: `kalman_latent_state` (2026-09-23)
+
+**Tier 5 = 5/23. Module 18 = 5 of 6.** Spec §15.20 block F (AGENTS.md:3187).
+**Block F holds FIVE signatures, not four** — D-100's count was taken from the
+implemented functions rather than from the block.
+
+`kalman_latent_state(observations, state_dim=1) -> ModelResult` estimates an
+**unobservable** state from a noisy series, built from **explicit state-space
+matrices** with three specifications selected by `(n_columns, state_dim)` and
+published as `model_spec`. Every result carries the **filtered path with its
+uncertainty band**, the smoothed path's endpoint, and the measured revision between
+them. `direction` is `None` (a level is not a directional signal) and confidence is
+priced with `depends_on_unobservable=True` — §21.4 item 13's literal case.
+
+### The four silent failures, each found by probing BEFORE the function existed
+
+| Route | What it actually did |
+| --- | --- |
+| `UnobservedComponents(y, level=True)` | A **deterministic constant** (`stochastic_level` defaults to `False`): reported `102.33 ± 0.18` on a random walk whose level moved several units. `level='rwalk'` drops the irregular, collapsing the band to **exactly `0.0`**. |
+| `mle_regression=False` | State covariance `[[0.]]` → a **recursive OLS** estimate converging to the full-sample constant: `0.4793` against a true `0.4267`, and `0.4793` **is** the OLS value, with a standard error of `0.0023` that makes the wrong answer look precise. |
+| A missing parameter transform | **Negative variances** and `nan` bands (`sigma2.slope = -3.24`) with every published field `nan`. |
+| **`initialization='diffuse'`** | **A standard error of exactly `0.0`** for a state the first observation does not identify (a trend's slope, design `[1, 0]`). The filtered **states** were identical across all three initializations; only the published **uncertainty** differed. This decided the design. |
+
+### Two measured defects in the fit itself
+
+**Unit-dependence.** The model is scale-invariant; the **optimizer** is not. One
+local level at six scales gave `sigma2.level / scale**2` of **0.3139** (scale 1),
+**0.3238** (1e-3), **46.16** (1e3), **2.663** (1e6), **0.02625** (1e9) — a **147×
+spread on identical data**, so the band and every warning reading it depended on the
+caller's **units**. Fixed by normalising each series before fitting and converting
+back, with the scales published. **After: `0.313922` at every scale from 1e-9 to
+1e9.**
+
+**The wrong optimizer family.** Over 20 simulated pairs, non-converged fits:
+**`lbfgs` 4/20, `bfgs` 12/20, Nelder-Mead 0/20, Powell 0/20** — with Nelder-Mead at
+the **same** optimum. The iteration cap did not matter, which identifies the stopping
+*rule*; the likelihood is flat in the variance parameters, so gradient information is
+unreliable. `kalman_optimizer` defaults to `"nm"`.
+
+### A warning REMOVED, and a design decision FALSIFIED by the live check
+
+A relative "degenerate band" warning was deleted because **no threshold separates the
+collapsed-band case from a well-specified one** — `median(se)/median|state|` spanned
+`3.1e-8`–`1.8e-3` for noise-free samples. It is a **limitation** now, with
+`sigma2.irregular` published so a reader can judge.
+
+**Then the live check FAILED its own control**, and that failure was the increment's
+most useful event: the control expected a *warning* on a constant series, but the
+state variance collapses to `1e-12` while the **band collapses further**
+(`1.65e-09`), so the drift-to-band ratio came back as **6055** and nothing fired. The
+stated rationale for NOT refusing a constant series was **false**, so a series with
+no variation is now **refused**, as `compute_pca` refuses one, and the control asserts
+the refusal. **A control that can only pass is not a control**, and **the unit test had
+chosen the case that worked** (a constant *beta*, where the drift is exactly `0`).
+
+### Harness findings
+
+* **Adding a function made a NEIGHBOUR's anchor ambiguous** — `M69`'s guard line
+  gained a second occurrence (the D-055 trap). `tools/sweep_health.py` caught it; the
+  anchor was widened by its distinguishing neighbour. **This is why the rule is
+  "re-run every sweep whose path touches the file you added to".**
+* **A redirected sweep's log is BLOCK-BUFFERED.** A sweep SIGTERM'd after ~36
+  mutations left a **zero-byte log** while the sidecar correctly preserved the tree.
+  The tree was restored from the sidecar and verified byte-identical (0 mutants), and
+  the progress prints now carry `flush=True`. **O-120** records that a 109-mutation
+  sweep no longer fits the foreground window.
+* **The first full sweep found two REAL gaps** — `M94` (the non-finite output guard
+  was reached by no test, though a `1e300`-scale series reaches it) and `M105` (a
+  partial-message mutation whose asserted word sat on the second line of a
+  concatenated string). Both fixed and both now **KILLED**.
+* **A typo'd anchor and a leftover are indistinguishable** to the leftover predicate
+  (**O-119**).
+
+**Gate baseline after D-101 (measured 2026-09-24):** ruff clean · `ruff format --check`
+**247 files** · `mypy --strict` no issues in **247 files** · **3068 passed / 1 skipped /
+17 deselected / 0 failed** · sweep **108/109** (109 declared; M34 inert-by-route) ·
+**43 sweeps, 0 leftovers, 0 mutant shapes** · reachability **58 = 58** · live check
+**PASSED** (319 real monthly CPIAUCSL observations, 680 common daily DGS10/DGS2
+observations).
+
+**⚠️ `EXIT=1` FROM A SWEEP IS NOT EVIDENCE OF A SURVIVOR.** The final run exited 1 on a
+sweep that had **completed at 108/109**, because the sandbox's per-turn bulk-delete
+counter (`count: 167` against a threshold of 50) **refused the sweep's own sidecar
+cleanup**. The certification block must be read and the tree checked independently; a
+stale sidecar was left behind, verified **byte-identical to the live file**, and
+removed. Same counter that makes test counts non-reproducible — here it reached the
+sweep's *cleanup* rather than its tests.
