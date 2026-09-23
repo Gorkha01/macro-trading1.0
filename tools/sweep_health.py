@@ -751,6 +751,14 @@ def main() -> int:
     if not sweeps:
         print("!! no sweeps found; the glob is wrong")
         return 1
+    # The SWEEP CENSUS, printed rather than remembered. Every hand-written record
+    # in this repo quotes this number ("43 sweeps, 0 leftovers"), and it is
+    # derived from a glob -- so it drifts the moment a sweep is added and **no
+    # gate can catch a record that quotes yesterday's census**. Printing it here
+    # makes the figure copyable from the tool's own output instead of from a
+    # note (D-035: quote the measured count). `_BUDGET_*` is deliberately not
+    # included in this count: it is the driver's cap table, not a sweep.
+    print(f"sweep files discovered:    {len(sweeps)}")
 
     # O-112(c): a driver's budget typed by hand drifts from the work it guards.
     # `--budgets` prints the DERIVED budget for every sweep, so a driver (or a
@@ -911,7 +919,7 @@ def main() -> int:
 
     print()
     print("=" * 78)
-    print(f"sweeps checked:            {len(sweeps)}")
+    print(f"sweeps checked:            {len(sweeps)}  (the census -- quote THIS number)")
     print(f"sweeps with NO sweep-owned gate: {len(ungated)}  ({', '.join(ungated) or 'none'})")
     print("  (all of them are still covered by this tool's own target check)")
     print(f"sweeps with NO honesty control (O-72): {len(no_control)}")

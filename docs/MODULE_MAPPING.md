@@ -1695,7 +1695,7 @@ D-087 also settles what to believe when checks disagree. The order is:
 
 ---
 
-## Module 18 — Quantitative Tools (`models/econometrics.py`), 3 of 6
+## Module 18 — Quantitative Tools (`models/econometrics.py`), 4 of 6
 
 **These four rows were missing from the tier tables for three increments.** Module
 18 is **not** a §21.3 tier member in the way the rest of this file is: its functions
@@ -1707,18 +1707,67 @@ therefore silent about two implemented functions and their tests. Added at
 
 | Spec | Module | Function | Source | Test | Decision |
 |---|---|---|---|---|---|
-| 15.20-A | 18 | `run_regression` | `models/econometrics.py:213` | `test_econometrics.py` | **D-092**, **D-093** |
-| 15.20-B | 18 | `test_stationarity` | `models/econometrics.py:364` | `test_econometrics.py` | **D-094** |
-| **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:505` | `test_econometrics.py` | **D-097** |
-| 15.20-D | 18 | `compute_pca` | *not implemented* | — | **← the binding Next** |
-| 15.20-E | 18 | `kalman_latent_state` | *not implemented* | — | — |
+| **15.20-F** | 18 | `run_regression` | `models/econometrics.py:219` | `test_econometrics.py` | **D-092**, **D-093** |
+| **15.20-F** | 18 | `test_stationarity` | `models/econometrics.py:370` | `test_econometrics.py` | **D-094** |
+| **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:511` | `test_econometrics.py` | **D-097** |
+| **15.20-F** | 18 | `compute_pca` | `models/econometrics.py:813` | `test_econometrics.py` | **D-099**, **D-100** |
+| **15.20-F** | 18 | `kalman_latent_state` | *not implemented* | — | **← the binding Next** |
 | 6.6 | 18 | `yield_curve_pca` | *not implemented* (§6.6 stub) | — | depends on `compute_pca` |
+
+**The line numbers above were RE-MEASURED at D-100 and the three older ones were
+stale** (they read `213`/`364`/`505`; `grep -n '^def '` gives `219`/`370`/`511`).
+Every prior addition to this file inserted text *above* the rows it was extending, so
+each row's line number drifted by the size of the previous increment while continuing
+to look authoritative. **A line number is a claim, and this one was checked with
+`grep -n` rather than carried forward.**
 
 **The citation is §15.20 block F, not "§15.18-F".** §15.18 is Module 18's
 *narrative*; **§15.20 holds the signatures** (AGENTS.md:3137). Three decisions
 invented the wrong number and it was corrected in 30 places at **D-095**. Resolve a
 section number with `grep -n` before citing it — a citation is a claim like any
 other.
+
+**The Spec column reads `15.20-F` on every row, and that is correct rather than lazy.**
+§15.20's block **F** (*"Module 18 — Regression / Stationarity / Cointegration Stubs"*)
+is a **single** block carrying **four** signatures under one heading — verified with
+`grep -n` at D-100 against AGENTS.md:3137. There is no `15.20-A`, `-B`, `-D` or `-E`;
+those letters were invented by the earlier rows and have been corrected. The only real
+sub-lettering in §15.20 is **A–F for six different modules**, not six parts of Module
+18. **Both the section number and the block letter are claims to resolve with
+`grep -n`, never to carry forward from the row above.**
+
+> **Both `test_cointegration` and `compute_pca` cite §15.20-F.** That is not a
+> transcription slip: §15.20's block **F** is the block that carries *both*
+> signatures, which is exactly why the "§15.18-F" error was made in the first place.
+> Resolved by `grep -n` at D-100 rather than by pattern-matching the previous row.
+
+### What `compute_pca` supersedes and what it feeds
+
+**Supersedes: nothing.** There was no prior PCA implementation in the tree.
+
+**Feeds: `yield_curve_pca` (Module 8, the §6.6 stub) — and that is a stated
+dependency rather than a live wiring.** `yield_curve_pca` is the natural consumer of
+this decomposition, but **no module imports `compute_pca` today**, so as with
+`test_cointegration` the integration is a *contract*, not live wiring. It does **not**
+appear in the reachability audit's set for the same reason: that audit tracks §21.3's
+wiring obligations and Module 18 is Tier 5 by design.
+
+### The ninth mapping rule, from D-100: a RELATIVE guard needs a DIVERGENT case
+
+The eighth rule (below) says a duplicate test name is a silent deletion. D-100 adds
+one about **what it takes to prove a tolerance**:
+
+> **A guard whose tolerance is relative can only be proven relative by a case where
+> the relative and absolute answers DIVERGE.** `compute_pca`'s constant-series guard
+> uses a tolerance scaled to each series' own magnitude. Mutation **M66** reverted it
+> to a fixed `eps * 100` and **SURVIVED**, because every constant the tests then used
+> (`4.2`, `0.0`, `-3.0`) leaves a floating-point residue that a fixed epsilon *also*
+> catches — so the two guards were indistinguishable and the tests agreed with both.
+> **Measured: the residue is not monotone in magnitude** (`4.2` → `7.1e-14`,
+> `271.83` → `1.1e-13`, `314.16` → `4.3e-14`, `1e6` → exactly `0.0`), so the
+> magnitudes that *do* diverge had to be found by measurement rather than chosen as
+> "large". The generalisable form: **for any guard, mutating it to the plausible
+> weaker version is the only way to learn whether the tests actually constrain it.**
 
 ### What `test_cointegration` supersedes and what it feeds
 

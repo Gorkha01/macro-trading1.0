@@ -3414,6 +3414,54 @@ econometrics:
       error rate is 1 - 0.95^10 = 0.4013, i.e. a 40% chance of at least one
       spurious 'cointegrated' pair when NO pair is truly cointegrated. Override
       it with the real count before using the corrected size.
+  pca_min_observations:
+    value: 60
+    calibration_status: conventional
+    note: >
+      A floor for a PCA, set at the same 60 as `cointegration_min_observations`
+      for a related structural reason rather than by copying. A covariance is an
+      ESTIMATE, and its leading eigenvalue is biased UPWARD when the number of
+      rows is not large relative to the number of columns (the Marchenko-Pastur
+      effect) -- a pure-noise matrix of the same shape reports a confident-looking
+      PC1. Sixty rows for a handful of tenors keeps the rows-per-column ratio far
+      from the regime where that bias dominates, and it is a floor rather than a
+      guarantee: a separate warning fires when the ratio is thin even above it.
+  pca_near_zero_tolerance:
+    value: 1.0e-8
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The explained-variance ratio at or below which a component is reported as
+      a NUMERICAL RESIDUAL rather than as a weak factor. This is an explicit
+      placeholder: there is no settled value, and the honest statement is that a
+      component carrying variance this small is either a redundant series or an
+      artefact of the sample, and saying so is more useful than printing
+      0.00000004% beside the others and letting a reader treat it as a factor.
+      Because it shapes a DISCLOSURE rather than gating an input, it is priced
+      into the confidence penalty rather than treated as a conventional constant.
+      The rank check refuses the fully degenerate case -- a negative eigenvalue
+      is incoherent and cannot be published -- so this threshold governs the
+      merely-tiny case that the rank check cannot see.
+  # The two leaves below are CHOICES, not calibrated quantities, so they are
+  # plain scalars rather than `{value, calibration_status}` envelopes -- see the
+  # block comment above `adf_regression` for why.
+  #
+  # `pca_standardisation` -- which matrix the components are extracted from.
+  # THIS CHOICE CHANGES THE ANSWER MATERIALLY and is the most consequential
+  # parameter for this function. "covariance" decomposes the raw second moments,
+  # so each series contributes in proportion to its own variance; "correlation"
+  # standardises every series to unit variance first, so each contributes
+  # equally. Measured 2026-09-23 on a five-tenor panel with the normal
+  # front-end-heavy shape (per-day sigma from 0.074% at 3mo to 0.060% at 30yr):
+  # the two routes disagree by 0.28 on PC1's loadings and INVERT their ordering
+  # -- covariance puts the 3mo first (-0.589 against the 30yr's -0.200), while
+  # correlation puts the 5yr first. Neither is wrong; they answer different
+  # questions, which is why the route is published on every result rather than
+  # left for a reader to assume. "correlation" is the conventional default for a
+  # panel whose members have different scales, and it is the honest default for
+  # a yield panel specifically: the front end is genuinely more volatile, so the
+  # covariance route loads PC1 on "which tenor moves most" rather than on the
+  # common factor a curve analyst is usually looking for.
+  pca_standardisation: "correlation"
   # The four leaves below are CHOICES, not calibrated quantities, so they are
   # plain scalars rather than `{value, calibration_status}` envelopes.
   # `tests/test_infrastructure.py` requires every envelope to be readable as a

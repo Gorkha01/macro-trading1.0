@@ -462,6 +462,167 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "    return statistic, math.nan, thresholds, is_rejected, discarded_imaginary",
         "    return statistic, 0.0, thresholds, is_rejected, discarded_imaginary  # MUTANT M55",
     ),
+    # ----------------------------------------------------------------------
+    # compute_pca (Section 15.20-F's fourth function). The guards below are the
+    # three silent-failure paths found by probing `eigh` before the function was
+    # written, plus the sign rule and the normalisation — the two behaviours
+    # measured against a real scikit-learn install (D-099) and reproduced here.
+    # ----------------------------------------------------------------------
+    # The rank guard is silent failure #1's defence: a rank-deficient panel makes
+    # `eigh` return a NEGATIVE eigenvalue, and the ratios still sum to 1.0, so the
+    # output looks complete while carrying an incoherent number.
+    (
+        "M56 PCA rank guard removed (a negative variance becomes publishable)",
+        "    if rank < n_variables:",
+        "    if False:  # MUTANT M56 -- a rank-deficient panel decomposes anyway",
+    ),
+    # The signal rule: eigenvector signs are LAPACK-arbitrary, so dropping the
+    # convention makes the published loadings non-reproducible across builds.
+    (
+        "M57 PCA sign rule not applied",
+        "    loadings = _apply_sign_rule(loadings)",
+        "    loadings = loadings  # MUTANT M57 -- signs left LAPACK-arbitrary",
+    ),
+    # The sign rule's own comparison. Inverting it flips every component whose
+    # largest loading was already positive, which is the OPPOSITE convention and
+    # still produces a unit-norm, orthogonal, plausible-looking matrix.
+    (
+        "M58 sign-rule comparison inverted",
+        "    if component[pivot] < 0.0:",
+        "    if component[pivot] > 0.0:  # MUTANT M58 -- the opposite convention",
+    ),
+    # The normalisation divisor. `total_variance` is the denominator of every
+    # published ratio; using the biased 1/n sum instead changes all of them by
+    # (n-1)/n while leaving them summing to 1.0.
+    (
+        "M59 ratios divided by the biased 1/n variance total",
+        "    total_variance = float(eigenvalues.sum())",
+        "    total_variance = float(eigenvalues.sum()) * (n_obs - 1) / n_obs  # MUTANT M59",
+    ),
+    # The ordering of the eigendecomposition. LAPACK returns ASCENDING
+    # eigenvalues, so dropping the reverse pairs the largest variance with the
+    # LAST component — every published number stays well-formed.
+    (
+        "M60 eigenvalue ordering not reversed (smallest variance reported first)",
+        "    order = np.argsort(eigenvalues)[::-1]",
+        "    order = np.argsort(eigenvalues)  # MUTANT M60 -- ascending, not descending",
+    ),
+    # The loadings columns must be permuted by the SAME index as the eigenvalues.
+    # Reordering one without the other silently pairs each variance with the
+    # wrong factor, which is the exact defect the cointegration work recorded.
+    (
+        "M61 loadings columns not reordered with the eigenvalues",
+        "    return eigenvalues[order], eigenvectors[:, order]",
+        "    return eigenvalues[order], eigenvectors  # MUTANT M61 -- mispaired spectra",
+    ),
+    # Silent failure #2: the component-count bounds.
+    (
+        "M62 component-count validation removed",
+        "    components = _validate_component_count(n_components, n_variables)",
+        "    components = n_components  # MUTANT M62 -- an out-of-range count reaches the slice",
+    ),
+    (
+        "M63 component upper bound comparison flipped",
+        "    if n_components > n_variables:",
+        "    if n_components < n_variables:  # MUTANT M63",
+    ),
+    (
+        "M64 component-count type check removed (a float is truncated)",
+        "    if isinstance(n_components, bool) or not isinstance(n_components, int):",
+        "    if False:  # MUTANT M64 -- a float count is silently truncated",
+    ),
+    # The constant-series refusal, and its RELATIVE tolerance. Two distinct
+    # defects, and the distinction matters -- they have different killers.
+    #
+    # M65 removes the refusal entirely: any test that feeds a constant column
+    # kills it.
+    #
+    # M66 replaces the relative tolerance with a FIXED one. This mutant
+    # SURVIVED the first run of this suite (2026-09-23), because every constant
+    # the tests used at that time (4.2, 0.0, -3.0) leaves a residue small
+    # enough that a fixed epsilon also catches it -- so no test could tell the
+    # two guards apart. The residue is NOT monotone in magnitude (it depends on
+    # how `c - mean` rounds at that scale): measured residues are 7.1e-14 for
+    # 4.2, 1.1e-13 for 271.83, 4.3e-14 for 314.16, but exactly 0.0 for 1e6.
+    # `test_the_constant_refusal_is_scale_relative_not_absolute` now carries
+    # 271.83 and 314.16 -- the magnitudes PROVEN to kill this mutant.
+    #
+    # NOTE this mutant is deliberately NOT `== 0.0` but `eps * 100`: a fixed
+    # `std == 0` test fails on 4.2 and so would have been killed all along,
+    # which would have hidden the finding. The surviving hole was the
+    # *plausible-looking* fixed threshold, not the naive one.
+    (
+        "M65 constant-series refusal removed entirely",
+        "    _refuse_constant_series(panel, column_names)",
+        "    pass  # MUTANT M65 -- a constant series is decomposed as an independent direction",
+    ),
+    (
+        "M66 constant-series tolerance made ABSOLUTE instead of scale-relative",
+        "    tolerance = np.finfo(float).eps * np.maximum(scale, 1.0) * 100.0",
+        "    tolerance = np.full_like(scale, np.finfo(float).eps * 100.0)  # MUTANT M66",
+    ),
+    # The levels-instead-of-changes heuristic: the boundary and its comparison.
+    # The boundary is length-aware because a fixed 0.95 missed 88.6% of level
+    # series at n = 60 (measured); M67 restores that failure.
+    (
+        "M67 level-detection boundary made length-independent (the 0.95 failure)",
+        "    cutoff = 1.0 - 2.5 / math.sqrt(n_obs)",
+        "    cutoff = 0.95  # MUTANT M67 -- misses 88.6% of level series at n = 60",
+    ),
+    (
+        "M68 level-detection comparison inverted",
+        "        if lag_one > cutoff:",
+        "        if lag_one < cutoff:  # MUTANT M68 -- flags CHANGES as levels",
+    ),
+    # Silent failure #3.
+    (
+        "M69 non-finite panel guard removed",
+        "    if not bool(np.isfinite(values).all()):",
+        "    if False:  # MUTANT M69 -- a NaN propagates into every eigenvalue",
+    ),
+    # The disclosures. Each is a warning a caller relies on and none is
+    # decoration: dropping one leaves a result that reads as complete.
+    (
+        "M70 near-zero component disclosure dropped",
+        "    if float(ratio) <= near_zero_threshold",
+        "    if False:  # MUTANT M70 -- a numerical residual reported as a weak factor",
+    ),
+    (
+        "M71 thin-panel inflation disclosure dropped",
+        "    if n_obs < _THIN_PANEL_ROWS_PER_SERIES * n_variables:",
+        "    if False:  # MUTANT M71 -- PC1's small-sample inflation is not disclosed",
+    ),
+    (
+        "M72 dominant-PC1 levels check dropped",
+        "    if float(ratios[0]) > 0.95:",
+        "    if False:  # MUTANT M72",
+    ),
+    # The standardisation route. Returning the raw panel for the correlation
+    # branch is the classic silent substitution: the loadings stay plausible and
+    # describe a different panel.
+    (
+        "M73 correlation standardisation returns the raw panel",
+        "        return (panel - means) / deviations",
+        "        return panel  # MUTANT M73 -- the route named in our own output is a lie",
+    ),
+    # The duplicate-name and type guards.
+    (
+        "M74 duplicate series names no longer refused",
+        "    duplicated = sorted({str(name) for name in panel.columns[panel.columns.duplicated()]})",
+        "    duplicated = []  # MUTANT M74 -- one series silently overwrites another",
+    ),
+    (
+        "M75 non-DataFrame input accepted",
+        "    if not isinstance(panel, pd.DataFrame):",
+        "    if False:  # MUTANT M75",
+    ),
+    # The published convention string. A consumer reads it to interpret a sign,
+    # so making it claim a rule the code does not apply is a lie in the payload.
+    (
+        "M76 published sign rule renamed to the wrong convention",
+        '        "sign_rule": "largest_absolute_loading_positive (sklearn svd_flip convention)",',
+        '        "sign_rule": "loadings_as_returned_by_lapack",  # MUTANT M76',
+    ),
 ]
 
 

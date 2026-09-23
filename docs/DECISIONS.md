@@ -16310,3 +16310,320 @@ corrected per-test size **0.00511620**.
   only; `"n"` is refused at config load because it produces the NaN-critical
   route.
 * **The `INERT_BY_ROUTE` register has exactly one entry (M34)**; M2/M30/M32 turned out to be **corrupted verdicts, not holes**, and are **O-117 CLOSED**.
+
+---
+
+## D-098 — the `.git` object store was wiped mid-increment; recovered from the reflog and the remote
+
+**Status:** CLOSED, recovered same session. Recorded because the *method* of
+recovery is the durable part, and because one commit was genuinely lost.
+
+### What happened
+
+`git status` began returning `fatal: not a git repository (or any of the parent
+directories): .git` from inside the project root, where `.git/` was present and
+`HEAD`, `config`, `index`, `COMMIT_EDITMSG` and `logs/` all read normally.
+
+**Measured damage:** `.git/refs/` was **absent entirely** (not empty — absent, so
+nothing resolved `HEAD`); `.git/objects/pack/` held only `pack-…baac.idx` and
+`multi-pack-index` with **the `.pack` itself gone**; loose objects: **0**;
+`.git/packed-refs`: did not exist.
+
+**The working tree was completely intact.** No source file was affected, which is
+why no engineering work was lost.
+
+### What was lost
+
+Commit **`2027b6c`** — `tools(sweep_health): print the sweep census …` — the local
+`main` tip, which had **never been pushed**. `git ls-remote origin main` returned
+`6d5f253`, so it was absent from the only surviving copy. Its *content* survived in
+the working tree; only the commit object is gone, and it was re-made as part of
+this increment's commit.
+
+### Why the recovery worked
+
+**`.git/logs/` survived with every reflog entry**, so each ref's last value was
+recoverable as text. `logs/refs/heads/main` ended at `2027b6c` (lost);
+`logs/refs/remotes/origin/main` ended at `6d5f253` (present on the remote).
+
+Three things had to be done in the right order, and two of them are
+counter-intuitive:
+
+1. **Reconstructing `refs/heads/main` from the reflog was NOT sufficient.** A
+   local ref naming a missing object **blocks the fetch that would repair it**:
+   `git fetch origin` failed with *"did not send all necessary objects …
+   refs/heads/main does not point to a valid object."* **Removing the bad local
+   ref first** is what let the fetch proceed.
+2. **The stale `.idx` and `multi-pack-index` had to go.** They referenced the
+   departed pack, so `git fsck` reported *"failed to load pack in position 0/1"*
+   for **every** object — a misleading error that reads like total corruption
+   when the real state was "one pack missing, one index stale."
+3. **Delete `.git/index` and re-`reset`** to rebuild the index's cache-tree, which
+   held SHA references into the pre-wipe tree.
+
+`git fetch origin` then restored a **13.4 MB** pack; `git reflog expire
+--expire=now --all` + `git gc --prune=now` cleared the stale entries.
+
+### Final verified state
+
+`git fsck --no-progress` returns **completely clean** (no output). `HEAD` =
+`6d5f253` = `origin/main`. `git status` reports *"up to date with origin/main"*.
+
+### The durable lessons
+
+* **`git fsck` — not `git log` — is what tells you an object store is sound.** A
+  repo can resolve `HEAD` from the reflog while every object is missing, so a
+  working `git log` proves nothing about integrity.
+* **An unpushed commit is a single point of failure.** Push should follow a commit
+  immediately rather than being batched to the end of an increment. Had more than
+  one commit been unpushed, more would have been lost.
+* **The cause was NOT determined.** No `git gc`, `prune`, or destructive command
+  was run by this session. `refs/` plus a 13 MB pack vanishing together is
+  consistent with an external process (a cleanup tool, an editor integration, or a
+  crash during a pack write). **Stated as unknown rather than guessed** — and
+  registered as **O-118**.
+
+---
+
+## D-099 — `compute_pca` uses `numpy.linalg.eigh`, NOT scikit-learn; and the two sklearn behaviours it must reproduce
+
+**Status:** ACCEPTED. **This decision was measured in a prior session but never
+committed to the record; it is written here to close that gap.**
+
+### The §4 dependency question
+
+AGENTS.md §15.20-F specifies *"scikit-learn PCA on DAILY CHANGES"*, and §4's
+dependency list governs what may be added. The question was whether `compute_pca`
+requires a new `scikit-learn` dependency, a `pyproject.toml` change, and possibly a
+`mypy` override.
+
+**Measured 2026-09-23: it does not.** `numpy.linalg.eigh` on the covariance of the
+daily changes reproduces sklearn's PCA to machine precision for this specification:
+
+| Quantity | Agreement |
+| --- | --- |
+| explained-variance ratios | `1.5e-16` |
+| loadings | `6.2e-17` |
+| eigenvalues | `2.6e-18` |
+
+So: **no new dependency, no `pyproject.toml` change, no `mypy` override.** The
+route is `eigh` on the covariance, and the specification's *intent* — a PCA on
+daily changes with those three published quantities — is met exactly.
+
+### The two sklearn behaviours that must be reproduced explicitly
+
+Agreement to machine precision is necessary but not sufficient: `eigh` is not
+sklearn, so the two places where sklearn's *convention* (not its arithmetic)
+supplies the answer have to be built deliberately. Both are now individually
+mutation-tested, because **a convention reproduced by accident is a convention
+that will be lost by accident.**
+
+**1. The sign rule.** sklearn applies `svd_flip`, which makes the
+**largest-|loading| element of each component POSITIVE**. `eigh`'s signs are
+LAPACK-arbitrary. The rule is therefore a **convention, not mathematics** — `v`
+and `-v` describe the same factor — and it is published on every result as
+`sign_rule`, because a reader who does not know the convention cannot tell a level
+factor from its negation. Killed by **M57** (rule not applied) and **M58**
+(comparison inverted), and pinned by a test that negates the panel and asserts
+byte-identical loadings.
+
+**2. The normalisation.** sklearn's `explained_variance_ratio_` divides by the
+**unbiased** `1/(n-1)` total — what `np.cov` produces — **not** the biased `1/n`
+its own source suggests. Measured ratio agreement `0.9999999999999994`. Killed by
+**M59** (biased divisor).
+
+### What this does NOT establish
+
+* Reproducing sklearn's convention is not the same as being sklearn. If a future
+  phase needs a sklearn-specific feature (sparse input, `RandomizedPCA`,
+  `incremental PCA`), this decision does not cover it and the dependency question
+  reopens.
+* The agreement was measured for the shapes in use (5–20 columns, 60–680 rows).
+  It is not a claim about all shapes.
+
+---
+
+## D-100 — Module 18 #4: `compute_pca`, and the FOURTH defect class found by probing my own guard
+
+**Status:** ACCEPTED. Tier 5 is now **4 of 23** by §21.3's list.
+
+### What was built
+
+`compute_pca(daily_changes: pd.DataFrame, n_components: int = 3) -> ModelResult` in
+`src/macro_engine/models/econometrics.py`, implementing §15.20-F's contract: PCA on
+**daily changes**, publishing **eigenvalues**, **explained-variance ratios**, the
+**cumulative** series, and **loadings** — with the prohibition that components must
+never be auto-labelled level/slope/curvature.
+
+Per **D-099**, the decomposition is `numpy.linalg.eigh` on the covariance, with the
+sign rule and the `1/(n-1)` normalisation reproduced explicitly.
+
+### Three silent failures found by PROBING `eigh` before writing any guard
+
+Each is this project's signature shape — **a number that LOOKS COMPLETE** — and each
+is now refused or disclosed:
+
+1. **A rank-deficient panel produces a NEGATIVE eigenvalue.** Measured 2026-09-23:
+   the most negative was `-1.69e-15` on a perfectly-collinear panel (`b = 2a`), and
+   the *published ratio itself* printed `-0.000000000000` while the ratios still
+   summed to exactly `1.0`. Incoherent (a variance cannot be negative) and
+   complete-looking. **Guarded** by `np.linalg.matrix_rank` on the matrix actually
+   decomposed — so the refusal names the same object the eigenvalues come from, and
+   the published variance cannot be negative *by construction* rather than by a
+   finiteness test on the output. Killed by **M56**.
+2. **`n_components` out of range fails silently or cryptically** — more components
+   than columns, or zero/negative, yields a shorter-or-empty slice inside a
+   well-formed `ModelResult`. Killed by **M62/M63/M64**.
+3. **A non-finite panel propagates NaN into every eigenvalue and loading** rather
+   than raising — a blank chart, not an error. Killed by **M69**.
+
+### The FOURTH defect class, and this is the increment's most important finding
+
+**`std() == 0.0` does not fire on a constant column.** Summing a constant column's
+squared deviations leaves a floating-point residue — measured `8.9e-16` for `4.2`
+repeated 200 times. Two separate guards were then defeated by the same residue: on
+the **correlation** route, dividing by it scales the column to `~1e16`, swamping
+`matrix_rank`'s *relative* tolerance; on the **covariance** route the column is
+invisible beside the others for the same relative-tolerance reason. Both let the
+panel decompose as though it had an extra independent direction.
+
+**Fixed** by a tolerance *relative to each series' own scale*, refused **before**
+standardisation so it governs **both** routes.
+
+**And then the mutation sweep found the hole INSIDE the fix.** M66 replaced the
+relative tolerance with a fixed `eps * 100 = 2.22e-14`, and it **SURVIVED** the
+first run: every constant in the tests at that time (`4.2`, `0.0`, `-3.0`) leaves a
+residue small enough that a fixed epsilon also catches it, so **no test could tell
+the two guards apart**.
+
+**Measured 2026-09-23: the residue is NOT monotone in magnitude** — it depends on
+how `c - mean` rounds at that scale:
+
+| constant | residue | defeats a fixed `2.22e-14`? |
+| --- | --- | --- |
+| `4.2` | `7.1e-14` | yes (near-miss: 3.2×) |
+| `271.83` | `1.1e-13` | **yes** |
+| `314.16` | `4.3e-14` | **yes** |
+| `1e6` | exactly `0.0` | no |
+
+So the magnitudes that defeat a fixed epsilon are **specific ones and had to be
+found by measurement**, not by choosing "large" values. The new
+`test_the_constant_refusal_is_scale_relative_not_absolute` carries `271.83` and
+`314.16` — **verified to kill M66 by applying the mutant by hand and watching the
+test fail** — after which **M66 is KILLED** and the sweep moved `74/77 → 76/77`.
+
+**The generalisable lesson:** a guard whose tolerance is *relative* can only be
+proven relative by a case where the relative and absolute answers **diverge**.
+Agreeing on the easy magnitudes proves nothing.
+
+### Two thresholds I first set by intuition and then had to re-derive from data
+
+* **Levels detection.** A fixed `0.95` on lag-1 autocorrelation misses **88.6%** of
+  genuine level series at `n = 60` and **63.6%** at `n = 100` (measured over 500
+  walks each). Replaced with the **length-aware** boundary `1 - 2.5/sqrt(n)`,
+  measured to give **0.00% false positives on changes at every length** and
+  **0.00–1.25% false negatives on levels** (worst case `n = 60`). Rationale: a
+  random walk's sample lag-1 has a downward bias of order `1/sqrt(n)`. Verified
+  live on real Treasury levels: lag-1 **0.9975** against the boundary **0.9041**.
+  Killed by **M67/M68**.
+* **The thin-panel boundary.** First `5 * n_variables` (missed a 16-rows-per-series
+  panel), then `10 * n_variables`. Measured pure-noise PC1 share for 5 columns (500
+  draws per length): `0.3958` @10 rows, `0.3543` @15, `0.3349` @20, `0.3199` @25,
+  `0.3083` @30, `0.2815` @50, `0.2750` @60, `0.2564` @100, `0.2346` @260, against
+  the `1/k = 0.200` asymptote.
+
+  **Two candidate noise-floor numbers were REJECTED for being wrong, not merely
+  inconvenient.** The **Marchenko-Pastur** estimator `(1+sqrt(k/n))**2/k` is the
+  asymptotic *upper edge*, not the median — it predicts `0.450` where the measured
+  median is `0.335`, **overstating the bias by 0.11**. A **least-squares fit**
+  `1/k + a*(k/n)` under-predicts every measured point by ~`0.03`. So the
+  **measured table itself** is published with linear interpolation, and the model
+  does not claim a fitted law it has not earned.
+
+### The documented unreachability (operator decision, 2026-09-23)
+
+At `pca_min_observations = 60`, a 5-column panel has 12 rows per series, so
+`60 < 10 * 5` is **false** and the thin-panel warning **cannot fire on a
+yield-curve panel**. Asked to choose, the operator selected **"warn on ratio, keep
+the floor at 60"**. The gap is therefore recorded honestly in `_pca_limitations`
+("THE SMALL-SAMPLE DISCLOSURE DOES NOT COVER A NARROW PANEL") rather than papered
+over, and the panel it *does* cover is exercised by a 20-series fixture.
+
+### A dead branch was DELETED, not kept
+
+An `if components > n_variables:` warning was unreachable, because
+`_validate_component_count` already refuses that case. Per this project's rule that
+**an untestable guard is a defect class, not defence in depth**, it was deleted
+along with its now-unused parameter.
+
+### The standardisation route is consequential and therefore published
+
+Measured 2026-09-23 on a five-tenor heteroskedastic panel (front end moving most):
+the **covariance** and **correlation** routes disagree by **0.28** on PC1's loadings
+and **invert their ordering** (`cov` → 3mo first at `-0.589` vs 30yr at `-0.200`;
+`cor` → 5yr first). Both are legitimate answers to different questions, so neither
+is excluded — but the route is a **published config leaf**, `pca_standardisation`,
+defaulting to `"correlation"`, and a third value is refused at config load. Killed
+by **M73**. A test asserts the measurement still holds, so the claim cannot rot
+silently.
+
+### O-117 RECURRED — and this time the count is the evidence
+
+Writing this function's refusal tests, `test_a_constant_series_is_refused` and
+`test_a_non_numeric_series_is_refused` were added with names **already owned by
+`test_stationarity`** — the identical collision O-117 had diagnosed **one increment
+earlier**. Python binds a module-level name to its **last** definition, so the two
+`test_stationarity` guards were **dead**: the stationarity constant-series and
+non-numeric guards had **no coverage at all** while appearing present.
+
+**Measured:** `pytest` collected **176** tests where **178** existed.
+`ruff check tests/models/test_econometrics.py` reported **F811 twice** — exactly the
+standing guard O-117 names. Fixed by suffixing the `compute_pca` copies `_by_pca`
+(matching the file's existing `_by_cointegration` convention); the collected count
+rose **176 → 182** (the two un-shadowed tests, plus this increment's four new ones)
+and `ruff` is clean. **The count movement IS the evidence** that two tests had been
+silently absent. O-117's row now carries this recurrence.
+
+### Sweep
+
+`mutation_econometrics.py` **56 → 77 mutations**, **76/77 killed**. The single
+survivor is **M34** (`non-finite p-value refusal`), **INERT-BY-CONSTRUCTION** and
+registered with a re-measurement across **93** (configuration × trend) combinations
+returning **31** with non-finite critical values and **ZERO** with a non-finite
+p-value — `coint` raises on the NaN critical values first, so M34's branch is never
+evaluated. The NaN-critical-value route **is** reached directly by
+`test_the_non_finite_guards_fire_when_the_route_is_reached` (which kills M35), so
+the family is proven live even though this member is not.
+
+**The `74/77 → 76/77` movement with no change to any mutation's target is the O-117
+signature:** the earlier verdict was corrupted by shadowed test names, not by a real
+hole. M30 and M32 were **corrupted verdicts**, now correctly killed.
+
+### Gates (measured, sequential, `sweep_health` LAST)
+
+| Gate | Result |
+| --- | --- |
+| `ruff check` | All checks passed |
+| `ruff format --check` | **247** files already formatted |
+| `mypy --strict` | no issues in **247** source files |
+| `pytest` | **2993 passed / 1 skipped / 17 deselected / 0 failed** |
+| `reachability_audit --check-baseline` | **58 = 58**, no regressions |
+| `sweep_health` | **43** sweeps, **0** failures, **0** leftovers, **0** mutant shapes |
+| live check | **PASSED** on **680** real common daily Treasury observations |
+
+Live-check readings: Treasury levels lag-1 **0.9975** against the **0.9041**
+boundary (the §15.20-F trap, detected on real data); on changes PC1 **0.6759**,
+PC2 **0.2080**, PC3 **0.0928**, cumulative **0.9767**; the positive control
+(a duplicated real 10yr tenor) **refused at "6 columns but rank 5"**.
+
+### What this does NOT establish
+
+* **Nothing consumes the output yet.** The integration is a *contract*, not live
+  wiring. `yield_curve_pca` (Module 8) is the natural consumer and is the next
+  Tier-5 item.
+* **PCA components are not economic factors**, are sample-specific, assume
+  linearity and a single regime, and are estimated rather than observed. All six
+  limitations are published on every result.
+* **The narrow-panel small-sample disclosure does not cover a 5-tenor curve** at
+  the configured floor — recorded, not fixed (see above).
+* **US-only** (§22.3).

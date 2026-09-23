@@ -79,7 +79,13 @@ from macro_engine.models.contracts import (
     utc_now,
 )
 
-__all__ = ["RegressionResult", "run_regression", "test_cointegration", "test_stationarity"]
+__all__ = [
+    "RegressionResult",
+    "compute_pca",
+    "run_regression",
+    "test_cointegration",
+    "test_stationarity",
+]
 
 #: The name ``statsmodels`` gives the intercept it prepends. Named once here so
 #: the VIF loop and the reporting code cannot disagree about which column to
@@ -802,6 +808,865 @@ def _cointegration_value(
     payload["family_wise_error_rate"] = multiple_testing["family_wise_error_rate"]
     payload["corrected_per_test_size"] = multiple_testing["corrected_size"]
     return payload
+
+
+def compute_pca(daily_changes: pd.DataFrame, n_components: int = 3) -> ModelResult:
+    """Principal components of a panel of DAILY CHANGES, with its loadings.
+
+    Section 15.20-F's signature. Three things about it are load-bearing, and
+    each is enforced here rather than left to the caller:
+
+    **1. DAILY CHANGES, never raw levels.** This is the specification's most
+    emphatic instruction about the function ("levels are trend-dominated and
+    produce a misleading PC1") and it is the one thing the function cannot
+    verify for itself: a level panel and a change panel are both plausible
+    floating-point frames, and the level one yields a beautiful PC1 that
+    explains 99% of the variance and means nothing — it is a time trend. So the
+    discipline is stated as an **assumption with the arithmetic that makes it
+    checkable**, plus a warning whenever the panel's own shape *suggests* the
+    caller passed levels (see ``_pca_panel_suspicion``). It is a warning and not
+    a refusal because a strongly-trending change panel is a real thing.
+
+    **2. The decomposition route is measured, not assumed.** Section 4 lists
+    ``scikit-learn`` against this function, but the decision recorded in D-099
+    is that **``numpy.linalg.eigh`` on the covariance reproduces sklearn's PCA
+    to machine precision for this spec, so the dependency is not taken.** That
+    is a claim about agreement, and it was measured against a real
+    ``scikit-learn`` install before this function was written: ratios agree to
+    ``1.5e-16``, loadings to ``6.2e-17``, eigenvalues to ``2.6e-18``. Two
+    details of sklearn's behaviour are what the comparison surfaced, and both
+    are reproduced here deliberately:
+
+    * **The sign rule.** ``eigh``'s eigenvector signs are LAPACK-arbitrary, so
+      the same input can return ``v`` or ``-v`` across builds and platforms.
+      sklearn's ``svd_flip`` normalises this by making the **largest-magnitude
+      loading in each component POSITIVE**, and that is a *convention*, not
+      mathematics: a component and its negation describe the same factor. This
+      function applies the same rule so its output is comparable with sklearn's
+      and reproducible run-to-run. The rule is stated in the output rather than
+      left implicit, because a negative loading sign in a *chart* is exactly how
+      a level factor gets read as a slope factor.
+    * **The normalisation.** ``explained_variance_ratio_`` divides by the total
+      variance, and the total is the **unbiased** ``1/(n-1)`` sum — the
+      denominator ``np.cov`` uses, which is *not* the biased ``1/n`` that
+      sklearn's own source suggests at a glance. Measured ratio agreement
+      ``0.9999999999999994``. Using ``1/n`` here would bias every published
+      ratio by ``(n-1)/n`` — invisible at ``n = 500`` (0.2%) and a real error at
+      ``n = 30``.
+
+    **3. Components are NEVER auto-labelled level/slope/curvature.** The
+    specification forbids it and gives the reason: the labels are an
+    *interpretation* of the loadings, and an interpretation is a claim about
+    the data that this function is not entitled to make on the caller's behalf.
+    A PC1 whose loadings are all the same sign *is* a level shock, but so is a
+    PC1 on a panel where every tenor moved for an unrelated reason, and only a
+    reader who has looked at the loadings can tell the difference. So the result
+    publishes the loadings and, in ``decision_prohibition``, forbids the
+    labelling — the same discipline that makes ``curve_slope`` refuse to call
+    its own spread a recession signal.
+
+    **Three silent-failure paths were found by probing ``eigh`` before writing
+    this**, and every one returns a plausible, complete-looking output without
+    raising:
+
+    1. **A rank-deficient panel produces NEGATIVE eigenvalues.** Measured
+       2026-09-23 on a duplicated column, on a perfectly collinear column
+       (``b = 2a``), and on a constant column: the most negative eigenvalue runs
+       to ``-1.69e-15``, and on the perfectly-collinear case the *published
+       ratio itself* prints ``-0.000000000000``. A negative explained variance
+       is incoherent — a variance cannot be negative — and the ratios still sum
+       to exactly 1.0, so the output looks complete while carrying a
+       contradiction. ``np.linalg.matrix_rank`` identifies the cause, so a
+       rank-deficient panel is **refused**, exactly as ``run_regression``
+       refuses a rank-deficient design.
+    2. **``n_components`` out of range fails silently or cryptically.** Asking
+       for more components than the panel has columns (5 from 4 tenors) has no
+       meaning, and asking for zero or fewer has none either; the sliced
+       matrices would be shorter than the caller expects, or empty, and the
+       result would still be well-formed. Both are refused with the number
+       named.
+    3. **A non-finite panel propagates NaN into every eigenvalue and every
+       loading** rather than raising, so a single NaN yields a full set of
+       ``nan`` components that render as a blank chart rather than as an error.
+       Refused, as the module's siblings refuse it.
+
+    Returns a ``ModelResult`` whose ``value`` carries ``eigenvalues``,
+    ``explained_variance_ratios``, ``cumulative_explained_variance``,
+    ``loadings`` (a ``{component: {tenor: loading}}`` map), the ``sign_rule``
+    applied, the ``standardisation`` used, and ``n_obs`` /
+    ``n_variables``. ``None`` is never substituted for a quantity that exists;
+    where something does not exist (a refused component index) the call raises
+    rather than publishing a placeholder.
+    """
+    settings = get_settings()
+    econometrics = settings.econometrics
+
+    panel, column_names = _prepare_panel(daily_changes)
+    n_obs, n_variables = panel.shape
+
+    # `n_components` is validated BEFORE the decomposition, and against the
+    # panel's width rather than a literal: the number of components a panel can
+    # support is a property of the panel, so a fixed bound here would be wrong
+    # for a 2-tenor panel and wrong the other way for a 12-tenor one.
+    components = _validate_component_count(n_components, n_variables)
+
+    standardisation = str(econometrics.pca_standardisation)
+    # A constant series is refused BEFORE standardisation, so the check governs
+    # both routes rather than only the correlation one. This is not tidiness: on
+    # the candidate `covariance` route a non-zero constant column passes the
+    # rank check downstream, because `matrix_rank`'s tolerance is RELATIVE to
+    # the matrix's largest singular value and a small constant column is
+    # swamped by the others. Measured 2026-09-23: a column of `4.2` repeated 200
+    # times sailed through the covariance route and was decomposed as a fourth
+    # independent direction, returning a `-0.0` loading. See
+    # :func:`_refuse_constant_series`.
+    _refuse_constant_series(panel, column_names)
+    matrix = _standardise_panel(panel, column_names, standardisation)
+
+    # Rank is checked on the matrix actually decomposed, so the refusal names
+    # the same object the eigenvalues come from. This is the guard for silent
+    # failure #1: a rank-deficient matrix is the *cause* of the negative
+    # eigenvalue, and checking it here means the published variance can never be
+    # negative by construction rather than by a finiteness test on the output.
+    rank = int(np.linalg.matrix_rank(matrix))
+    if rank < n_variables:
+        raise ValueError(
+            f"The panel is rank-deficient: {n_variables} columns but rank {rank} "
+            f"under {standardisation!r} standardisation. At least one series is an "
+            f"exact linear combination of the others (a duplicated tenor, a constant "
+            f"column, or two tenors that move in lockstep), so it contributes no "
+            f"independent variation. The eigendecomposition of such a covariance "
+            f"returns a NEGATIVE eigenvalue -- measured at -1.69e-15 on a collinear "
+            f"panel, with the published ratio printing -0.000000000000 while the "
+            f"ratios still sum to 1.0. A negative variance is incoherent, so this "
+            f"refuses rather than publishing it. Drop the redundant series."
+        )
+
+    eigenvalues, loadings = _decompose(matrix)
+
+    # The sign rule, applied before anything reads the loadings, so every
+    # published figure is under one convention. See the docstring: signs are a
+    # CHOICE, and sklearn's is the largest-|loading| element positive.
+    loadings = _apply_sign_rule(loadings)
+
+    total_variance = float(eigenvalues.sum())
+    ratios = eigenvalues / total_variance
+
+    published = _pca_value(
+        eigenvalues=eigenvalues,
+        ratios=ratios,
+        loadings=loadings,
+        column_names=column_names,
+        n_obs=n_obs,
+        n_variables=n_variables,
+        components=components,
+        standardisation=standardisation,
+    )
+
+    warnings_ = _pca_warnings(
+        eigenvalues=eigenvalues,
+        ratios=ratios,
+        n_obs=n_obs,
+        panel=panel,
+        standardisation=standardisation,
+        near_zero_threshold=float(econometrics.pca_near_zero_tolerance.value),
+    )
+    suspicion = _pca_panel_suspicion(panel)
+    if suspicion is not None:
+        warnings_.append(suspicion)
+
+    return ModelResult(
+        model_name="compute_pca",
+        country="us",
+        as_of=utc_now(),
+        value=published,
+        unit="dimensionless (variance ratios); loadings dimensionless",
+        direction=None,
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                # Two decisions shape the *published* numbers and neither is
+                # calibrated: the standardisation choice (which changes the
+                # loadings by up to 0.28 on a heteroskedastic panel -- measured)
+                # and the near-zero tolerance that decides when a component is
+                # reported as carrying no variance. Claiming the penalty is the
+                # honest reading of Section 22.8.
+                is_heuristic_not_calibrated=not _pca_choices_calibrated(),
+                source_independence_count=0,
+                depends_on_unobservable=False,
+            )
+        ),
+        interpretation=(
+            f"{components} principal component(s) of {n_variables} series over "
+            f"{n_obs} observations explain "
+            f"{float(ratios[:components].sum()):.1%} of the panel's variance "
+            f"(PC1 {float(ratios[0]):.1%}). Components are identified by their "
+            f"loadings, not by their order — see `loadings`; this function does "
+            f"not label them."
+        ),
+        context=(
+            f"Standardisation: {standardisation}. Eigenvalues: "
+            + ", ".join(f"{value:.6g}" for value in eigenvalues[:components])
+            + ". Explained-variance ratios: "
+            + ", ".join(f"{value:.4%}" for value in ratios[:components])
+            + f". Sign convention: largest-|loading| element positive (sklearn's "
+            f"`svd_flip` rule), applied because eigenvector signs are otherwise "
+            f"arbitrary. Sample: {n_obs} rows, {n_variables} series."
+        ),
+        inputs_used=[f"daily_changes:{name}" for name in column_names],
+        warnings=warnings_,
+        assumptions=[
+            "The input is DAILY CHANGES, not levels. This function cannot verify "
+            "that, and a level panel yields a PC1 that is a time trend dressed as "
+            "a factor; run a stationarity test on each level first.",
+            "The input is a returns-style panel where a linear combination is "
+            "meaningful. This is true of a yield curve's changes and false of, "
+            "say, a panel of unrelated price changes whose scale differences "
+            "dominate.",
+            f"Components are computed on the {standardisation!r} matrix, and the "
+            f"loadings are interpreted under that choice. The covariance route "
+            f"weights each series by its own variance; the correlation route "
+            f"gives every series equal weight regardless of scale.",
+        ],
+        limitations=_pca_limitations(),
+        decision_prohibition=[
+            "MUST NOT label the components level/slope/curvature, or any other "
+            "name. The labels are an interpretation of the loadings, and an "
+            "interpretation is a claim about the data — a PC1 with same-sign "
+            "loadings is consistent with a level shock and with many other "
+            "things. Read the loadings and make the claim yourself, in the "
+            "thesis, where it can be argued with (Section 15.20-F).",
+            "MUST NOT be used as a signal on its own. A principal component is a "
+            "direction of maximum variance, not a forecast and not a value "
+            "signal: the largest variance can be the largest NOISE. Section "
+            "18.3's discipline — mechanism first — applies here as it does to "
+            "every other function in this module.",
+            "MUST NOT be read across two PCA fits as though the components were "
+            "the same factor. Component 1 in one window is defined by that "
+            "window's covariance; after a regime change the ordering and the "
+            "loadings both move, and comparing 'PC1 then' with 'PC1 now' without "
+            "comparing the loadings is comparing two different objects. This is "
+            "the same backward-looking hazard test_cointegration warns about.",
+        ],
+    )
+
+
+def _prepare_panel(panel: pd.DataFrame) -> tuple[np.ndarray, list[str]]:
+    """Validate the daily-change panel, or raise. Every check a refusal.
+
+    Mirrors ``_prepare_observations``' discipline for the same reason: dropping
+    a row or a column to make a bad panel fit changes ``n_obs`` (and, here, the
+    *number of series*, which changes every loading) without recording it, and
+    the result would then be a claim about a panel the caller never supplied.
+
+    Returns the float64 matrix and the column names separately rather than a
+    single frame, because the decomposition needs the array and the reporting
+    needs the names, and reading names off a numpy array is how a labelling
+    error gets in.
+    """
+    if not isinstance(panel, pd.DataFrame):
+        raise TypeError(f"daily_changes must be a pandas DataFrame, got {type(panel).__name__}.")
+
+    if panel.shape[1] == 0:
+        raise ValueError(
+            "daily_changes must have at least one series column; it has none. A "
+            "panel with no columns has no covariance to decompose."
+        )
+    # Two series are the minimum for a component that differs from either one:
+    # the PCA of a single series returns that series as PC1 with a ratio of
+    # 1.0, which is arithmetically correct and carries no information. Refused
+    # with the reason rather than reported as a degenerate result.
+    if panel.shape[1] < 2:
+        raise ValueError(
+            f"daily_changes has {panel.shape[1]} series, but a principal component "
+            f"of a single series is that series — one component with a ratio of 1.0 "
+            f"and nothing decomposed. Supply at least two series."
+        )
+
+    # Duplicated names, checked for the same reason `_prepare_observations`
+    # checks them: the loadings map is keyed by series name, so two series
+    # sharing a name would silently overwrite one another and the published
+    # panel would have fewer series than the caller supplied.
+    duplicated = sorted({str(name) for name in panel.columns[panel.columns.duplicated()]})
+    if duplicated:
+        raise ValueError(
+            f"daily_changes has duplicate column name(s) {duplicated}. The loadings "
+            f"are keyed by series name, so one series would overwrite another and "
+            f"the result would describe fewer series than you supplied. Rename them."
+        )
+
+    for name in panel.columns:
+        if is_bool_dtype(panel[name].dtype) or not is_numeric_dtype(panel[name].dtype):
+            raise ValueError(
+                f"Series {name!r} must be numeric, got dtype {panel[name].dtype}. "
+                f"Encode or drop categorical columns explicitly so the panel you "
+                f"decompose is the panel you intend."
+            )
+
+    values = panel.astype("float64").to_numpy()
+
+    if not bool(np.isfinite(values).all()):
+        offending = [
+            str(name)
+            for name, column in zip(panel.columns, values.T, strict=True)
+            if not bool(np.isfinite(column).all())
+        ]
+        raise ValueError(
+            f"daily_changes contains non-finite values (NaN or inf) in {offending}. "
+            f"A single NaN propagates into every eigenvalue and every loading, so the "
+            f"whole result would be NaN and would render as a blank chart rather than "
+            f"as an error. Clean or impute explicitly."
+        )
+
+    minimum_observations = float(get_settings().econometrics.pca_min_observations.value)
+    if len(values) < minimum_observations:
+        raise ValueError(
+            f"{len(values)} observations is below the configured floor of "
+            f"{minimum_observations:.0f} (econometrics.pca_min_observations). A "
+            f"covariance estimated on very few rows is dominated by sampling noise, "
+            f"and the leading eigenvalue of a noise covariance is spuriously large "
+            f"(the Marchenko-Pastur effect), so a small panel reports a confident PC1 "
+            f"that is mostly estimation error."
+        )
+
+    return values, [str(name) for name in panel.columns]
+
+
+def _validate_component_count(n_components: int, n_variables: int) -> int:
+    """Validate the requested component count against the panel's width.
+
+    Checked here rather than left to the slice, because both failure modes are
+    silent: asking for more components than exist yields a shorter list than the
+    caller's loop expects, and asking for fewer than one yields an empty one —
+    and in both cases the surrounding ``ModelResult`` is still well-formed, so
+    the caller gets a complete-looking object describing a request that could
+    not be honoured (silent failure #2).
+    """
+    if isinstance(n_components, bool) or not isinstance(n_components, int):
+        raise TypeError(
+            f"n_components must be an int, got {type(n_components).__name__}. A "
+            f"float would be silently truncated by the index arithmetic."
+        )
+    if n_components < 1:
+        raise ValueError(
+            f"n_components must be at least 1, got {n_components}. Zero components "
+            f"is a request for no output, which is not a PCA."
+        )
+    if n_components > n_variables:
+        raise ValueError(
+            f"n_components={n_components} exceeds the number of series "
+            f"({n_variables}), which is the maximum number of components a panel of "
+            f"that width can have. Asking for {n_components} would return a shorter "
+            f"list than you asked for without saying so."
+        )
+    return n_components
+
+
+def _refuse_constant_series(panel: np.ndarray, column_names: list[str]) -> None:
+    """Refuse any series with no variation, on EVERY route.
+
+    **A MEASURED near-miss, and the reason this is its own function.** The
+    obvious test — ``series.std() == 0.0`` — does not fire. Summing a constant
+    column's squared deviations in floating point yields a tiny **non-zero**
+    spread: measured ``8.9e-16`` for a column of ``4.2`` repeated 200 times. Two
+    separate guards were then defeated by the same residue:
+
+    * On the **correlation** route, dividing by that residue scales the column to
+      ``~1e16``, which swamps ``matrix_rank``'s relative tolerance — so the rank
+      check does not catch it either. Measured: the "constant" series came back
+      with a loading of ``-0.0`` and a variance ratio of ``0.0`` while the result
+      still claimed ``n_variables = 4`` in its context string.
+    * On the **covariance** route there is no division, but the same relative
+      tolerance means a *small* constant column is invisible beside the others.
+      Measured on the same ``4.2`` column: the rank check passed and the panel
+      decomposed as though it had four independent directions.
+
+    Both are this project's signature failure shape — a wrong answer that looks
+    complete — and both are caught by comparing each series' spread against a
+    tolerance *relative to that series' own scale*, which is what "constant"
+    actually means for floating-point data.
+
+    **The relative/absolute distinction is load-bearing, and the sweep proved
+    it.** M66 replaces the relative tolerance above with a fixed one
+    (``eps * 100 = 2.22e-14``) and it **SURVIVED** the first run of the
+    mutation suite: every constant in the tests at that time (``4.2``, ``0.0``,
+    ``-3.0``) leaves a residue small enough that a fixed epsilon catches it too,
+    so no test could tell the two apart. Measured 2026-09-23, the residue is
+    **not monotone in magnitude** — it depends on how ``c - mean`` rounds at
+    that scale — so the magnitudes that defeat a fixed epsilon are specific
+    ones and have to be found by measurement rather than by choosing "large"
+    values:
+
+        const 4.2      residue 7.1e-14   above 2.22e-14 -> defeats the fixed test
+        const 271.83   residue 1.1e-13   clearly above  -> defeats it
+        const 314.16   residue 4.3e-14   above          -> defeats it
+        const 1e6      residue exactly 0               -> does NOT defeat it
+
+    ``test_the_constant_refusal_is_scale_relative_not_absolute`` now carries the
+    magnitudes that are **proven** to kill M66 (verified by applying the mutant
+    by hand and watching that test fail), which is what makes M66 killed rather
+    than merely survived. The lesson generalises: a guard whose tolerance is
+    *relative* can only be proven relative by a case where the relative and
+    absolute answers DIVERGE — agreeing on the easy magnitudes proves nothing.
+    """
+    scale = np.abs(panel).max(axis=0)
+    deviations = panel.std(axis=0, ddof=1)
+    # `np.maximum(scale, 1.0)` keeps the comparison defined for an all-zero
+    # column, whose scale is 0: it has deviations of exactly 0.0 and is caught
+    # by the same test rather than needing a special case.
+    tolerance = np.finfo(float).eps * np.maximum(scale, 1.0) * 100.0
+    # `<= tolerance` is NOT redundant with `deviations == 0.0`, and that is the
+    # whole point of this function: a bare `std == 0` test does not fire on a
+    # constant column (measured 8.9e-16 for 4.2 repeated 200 times).
+    constant = [index for index in range(panel.shape[1]) if deviations[index] <= tolerance[index]]
+    if constant:
+        names = [column_names[index] for index in constant]
+        raise ValueError(
+            f"Series {names} are constant across the sample (their standard "
+            f"deviation is at or below floating-point noise for their own scale), so "
+            f"they carry no variation to decompose. A bare `std == 0` test does NOT "
+            f"catch this: summing a constant column's deviations leaves a tiny "
+            f"non-zero residue (measured 8.9e-16), which defeats the correlation "
+            f"route's division AND the rank check's relative tolerance — the series "
+            f"would be decomposed as an independent direction and return a loading of "
+            f"-0.0. Remove it."
+        )
+
+
+def _standardise_panel(
+    panel: np.ndarray, column_names: list[str], standardisation: str
+) -> np.ndarray:
+    """Apply the configured standardisation, or raise on an unknown choice.
+
+    The choice is consequential and therefore explicit. Measured 2026-09-23 on a
+    five-tenor panel with the front end moving most (the normal shape of a yield
+    curve): the covariance route and the correlation route disagree by **0.28**
+    on PC1's loadings and **invert their ordering** — covariance puts the 3mo
+    first (`-0.589` vs the 30yr's `-0.200`), correlation puts the 5yr first. Both
+    are legitimate answers to different questions, so the route is published on
+    the result and a reader is never left to assume which one they are holding.
+
+    ``column_names`` is threaded in purely for the error messages: the caller's
+    labels are what make a refusal actionable, and reading them off the array is
+    impossible.
+    """
+    if standardisation == "covariance":
+        return panel
+    if standardisation == "correlation":
+        means = panel.mean(axis=0)
+        deviations = panel.std(axis=0, ddof=1)
+        return (panel - means) / deviations
+    raise ValueError(
+        f"Unknown pca_standardisation {standardisation!r}. Permitted values are "
+        f"'covariance' (decompose the raw second moments) and 'correlation' "
+        f"(standardise each series to unit variance first)."
+    )
+
+
+def _decompose(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Eigendecompose the covariance, returning eigenvalues and loadings in order.
+
+    ``np.linalg.eigh`` rather than ``eig``: the covariance is symmetric by
+    construction, and ``eigh`` exploits that to return **real** eigenvalues and
+    an orthonormal basis. ``eig`` on the same input can return complex values
+    with tiny imaginary parts, which is how a caller ends up publishing a
+    complex "variance" — the same class of leak ``coint_johansen`` was found to
+    produce (M49/M50).
+
+    The eigenvalues come back in ASCENDING order from LAPACK, so they are
+    reversed here; the loadings columns are reordered with them by the same
+    index array, because reordering one without the other silently pairs each
+    variance with the wrong factor — a wrong answer that looks complete.
+    """
+    covariance = np.cov(matrix, rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)[::-1]
+    return eigenvalues[order], eigenvectors[:, order]
+
+
+def _apply_sign_rule(loadings: np.ndarray) -> np.ndarray:
+    """Make the largest-magnitude loading in each component positive.
+
+    sklearn's ``svd_flip`` convention, reproduced so this function's output is
+    comparable with sklearn's and reproducible across LAPACK builds. The sign of
+    an eigenvector is arbitrary — ``v`` and ``-v`` describe the same direction —
+    so without a rule the same panel can produce ``[1, 1, 1]`` or ``[-1, -1, -1]``
+    on two machines, and a chart of the second reads as the opposite factor.
+
+    ``argmax`` resolves a tied maximum by **position** (the first occurrence),
+    which is a determinism hazard in principle and stable in practice: it is the
+    same choice on every run for a given input, so the convention is at least
+    reproducible. Measured on an all-equal vector ``[-0.5, -0.5, -0.5, -0.5]``:
+    the rule flips all four to positive, and on a tie with mixed signs
+    ``[1, -1, 0.1, 0]`` it leaves them alone because index 0 already wins.
+    """
+    signed = loadings.copy()
+    for position in range(signed.shape[1]):
+        component = signed[:, position]
+        pivot = int(np.argmax(np.abs(component)))
+        if component[pivot] < 0.0:
+            signed[:, position] = -component
+    return signed
+
+
+def _pca_value(
+    *,
+    eigenvalues: np.ndarray,
+    ratios: np.ndarray,
+    loadings: np.ndarray,
+    column_names: list[str],
+    n_obs: int,
+    n_variables: int,
+    components: int,
+    standardisation: str,
+) -> dict[str, object]:
+    """Assemble the published ``value`` — the report Section 15.20-F demands.
+
+    The dict is deliberately mixed-type, as ``_cointegration_value``'s is: the
+    payload is a list of floats, a mapping of mappings, and ints, because the
+    five things the specification asks for are structurally different objects.
+
+    ``loadings`` is published as ``{component: {series: loading}}`` — nested and
+    named — rather than as a bare matrix. A matrix's rows and columns are
+    positional, so a consumer that transposes it (or reads it column-major)
+    silently gets each series' loadings on the wrong component and a chart that
+    looks entirely plausible. Naming both axes makes the transposition
+    unrepresentable.
+    """
+    payload: dict[str, object] = {
+        # Every eigenvalue is published, not only the requested components: the
+        # ratios are only interpretable against the full spectrum (the tail is
+        # what tells a reader the panel is nearly rank-deficient), and truncating
+        # it would hide the evidence for the near-zero warning.
+        "eigenvalues": [round(float(value), 12) for value in eigenvalues],
+        "explained_variance_ratios": [round(float(value), 12) for value in ratios],
+        "cumulative_explained_variance": [
+            round(float(ratios[: position + 1].sum()), 12) for position in range(len(ratios))
+        ],
+        "loadings": {
+            f"PC{position + 1}": {
+                name: round(float(loadings[index, position]), 12)
+                for index, name in enumerate(column_names)
+            }
+            for position in range(len(column_names))
+        },
+        "n_components": components,
+        "n_components_explained_variance": round(float(ratios[:components].sum()), 12),
+        "n_obs": n_obs,
+        "n_variables": n_variables,
+        "standardisation": standardisation,
+        # The convention is published with the numbers it governs, because a
+        # loadings sign is not self-describing: a reader who does not know the
+        # rule cannot tell a level factor from its negation.
+        "sign_rule": "largest_absolute_loading_positive (sklearn svd_flip convention)",
+    }
+    return payload
+
+
+def _pca_warnings(
+    *,
+    eigenvalues: np.ndarray,
+    ratios: np.ndarray,
+    n_obs: int,
+    panel: np.ndarray,
+    standardisation: str,
+    near_zero_threshold: float,
+) -> list[str]:
+    """Conditions of THIS run, as distinct from the standing limitations.
+
+    Every warning here is reachable and mutation-tested. The near-zero check is
+    the one that earns its place: a component whose variance is numerically zero
+    is reported with a ratio near 0.0, and a consumer reading "PC4 explains
+    0.0001% of variance" may take that as a weak factor rather than as
+    "this panel has fewer independent directions than I supplied series".
+    """
+    warnings_: list[str] = []
+
+    # The tail of the spectrum. A ratio at or below the tolerance means the
+    # direction carries no variation at all -- which on a yield panel is either
+    # a redundant tenor or a genuine structural fact (two tenors pegged to each
+    # other), and both are worth saying out loud rather than leaving the reader
+    # to notice a small number.
+    tail = [
+        (position + 1, float(ratio))
+        for position, ratio in enumerate(ratios)
+        if float(ratio) <= near_zero_threshold
+    ]
+    for position, ratio in tail:
+        warnings_.append(
+            f"PC{position} explains {ratio:.3e} of the panel's variance, at or below "
+            f"the configured near-zero tolerance ({near_zero_threshold:g}). The panel "
+            f"has fewer independent directions of variation than it has series — a "
+            f"tenor may be redundant with another, or the sample may be too short for "
+            f"the number of series. This component is a numerical residual, not a "
+            f"factor."
+        )
+
+    # The boundary is a RATIO of rows to columns, and it is MEASURED rather than
+    # felt. Simulating pure noise (so the true PC1 share is exactly 1/k = 0.20
+    # for five columns) over 500 draws per length, recorded 2026-09-23: the
+    # sample PC1 share sits at a median 0.396 on 10 rows, 0.355 on 15, 0.335 on
+    # 20, 0.320 on 25, 0.308 on 30, 0.282 on 50, 0.275 on 60 and 0.235 on 260 --
+    # i.e. the noise floor is still visibly above the asymptote at 60 rows and
+    # only settles past ~200.
+    #
+    # **Ten rows per series is the boundary, and this warning is UNREACHABLE for
+    # a five-column panel at the configured floor.** That is stated rather than
+    # hidden: `pca_min_observations` is 60, so a five-tenor curve has at least 12
+    # rows per series, and `60 < 10 * 5` is false. The inflation at twelve rows
+    # per series is +0.075 above the asymptote -- real, but small enough that the
+    # panel is usable, so the floor is left where it is and the constraint is
+    # recorded in `_pca_limitations` instead of being papered over with a
+    # threshold that fires on a legal panel. The warning is live for a WIDER
+    # panel, which is where the ratio actually gets thin: 20 series need 200 rows
+    # to clear it, and 60 rows is well inside the region.
+    n_variables = len(eigenvalues)
+    if n_obs < _THIN_PANEL_ROWS_PER_SERIES * n_variables:
+        warnings_.append(
+            f"Only {n_obs} observations for {n_variables} series "
+            f"({n_obs / n_variables:.1f} rows per series, below the "
+            f"{_THIN_PANEL_ROWS_PER_SERIES}-per-series boundary). The leading "
+            f"eigenvalue of a sample covariance is biased UPWARD when the ratio of "
+            f"rows to columns is small (the Marchenko-Pastur effect): on pure noise "
+            f"with this many columns, PC1's share is expected near "
+            f"{_expected_noise_pc1_share(n_obs, n_variables):.3f} rather than the "
+            f"asymptotic {1.0 / n_variables:.3f}, so PC1's published share is partly "
+            f"estimation error. Treat the ratios as an upper bound and extend the "
+            f"window before relying on them."
+        )
+
+    # The levels-instead-of-changes hazard, made visible. See
+    # `_pca_panel_suspicion`, which decides the condition; the wording lives here
+    # with the other warnings so every message a caller can receive is in one
+    # place.
+    if float(ratios[0]) > 0.95:
+        warnings_.append(
+            f"PC1 explains {float(ratios[0]):.1%} of the variance. On a panel of "
+            f"daily changes that is high enough to be worth checking the input is "
+            f"changes and not LEVELS: an un-differenced level panel is dominated by "
+            f"its time trend, and its PC1 is that trend rather than a factor, "
+            f"routinely clearing 95%. The inspection is the caller's; this function "
+            f"cannot distinguish the two cases."
+        )
+
+    if standardisation == "covariance" and n_variables > 1:
+        scales = panel.std(axis=0, ddof=1)
+        if float(scales.max()) > 10.0 * float(scales.min()):
+            warnings_.append(
+                f"The series' standard deviations span a factor of "
+                f"{float(scales.max() / scales.min()):.1f} (max {float(scales.max()):.4g}, "
+                f"min {float(scales.min()):.4g}) and the covariance route weights each "
+                f"series by its own variance. On a panel with this much scale "
+                f"dispersion, PC1 is substantially 'which series is noisiest' rather "
+                f"than a common factor. Use the correlation route if equal weighting "
+                f"is what you intend."
+            )
+
+    return warnings_
+
+
+def _pca_panel_suspicion(panel: np.ndarray) -> str | None:
+    """A warning when the panel's own shape suggests it is levels, not changes.
+
+    Section 15.20-F's instruction — *daily changes, never raw levels* — is the
+    one part of the contract this function cannot verify. But it can notice the
+    signature: a level panel has a near-unit-root autocorrelation, so the lag-1
+    autocorrelation of its columns sits close to 1.0, while a genuine change
+    series is close to 0 (yield changes are mildly negatively autocorrelated, if
+    anything).
+
+    **The cutoff is length-aware, and it has to be.** A fixed threshold was tried
+    first and measured against the wrong population: at ``0.95`` a *level* series
+    is missed **88.6%** of the time at ``n = 60`` and **63.6%** at ``n = 100`` —
+    i.e. the naive threshold fails exactly where a caller is most likely to have
+    grabbed levels by mistake, and only works past ~500 rows. Measured over 2 000
+    simulated walks at each length, the boundary ``1 - 2.5/sqrt(n)`` separates the
+    two populations with a **0.00% false-positive rate on changes at every
+    length** and a **0.00-1.25% false-negative rate on levels** (worst case
+    ``n = 60``). The derivation is the one the arithmetic suggests: the sample
+    lag-1 of a random walk has a downward bias of order ``1/sqrt(n)``, so the
+    boundary has to move with the sample rather than sit at a constant.
+
+    This is a **heuristic on the shape of the input**, not a test of the caller's
+    intent, and the wording says so. It returns ``None`` when the panel looks
+    like changes, so the warning is absent rather than asserting the input is
+    correct.
+    """
+    n_obs = panel.shape[0]
+    if n_obs < 3:
+        return None
+    # The measured boundary. `n_obs` is at least the configured
+    # `pca_min_observations` (60) by this point, so the square root is safe and
+    # the threshold is comfortably inside (0, 1).
+    cutoff = 1.0 - 2.5 / math.sqrt(n_obs)
+    for position in range(panel.shape[1]):
+        column = panel[:, position]
+        centred = column - column.mean()
+        denominator = float((centred * centred).sum())
+        if denominator == 0.0:
+            continue
+        lag_one = float((centred[:-1] * centred[1:]).sum()) / denominator
+        if lag_one > cutoff:
+            return (
+                f"Column {position + 1} has a lag-1 autocorrelation of {lag_one:.4f}, "
+                f"above the {cutoff:.4f} boundary for {n_obs} observations, which is "
+                f"the signature of a LEVEL series rather than a series of changes "
+                f"(yield changes are close to serially uncorrelated). Check that "
+                f"`daily_changes` really holds differences: this function cannot "
+                f"verify it, and a level panel's components describe a time trend."
+            )
+    return None
+
+
+def _expected_noise_pc1_share(n_obs: int, n_variables: int) -> float:
+    """The PC1 share a PURE-NOISE panel of this shape produces, MEASURED.
+
+    This exists so the thin-panel warning can print a number instead of the word
+    "biased": a reader told "PC1 is inflated here" has no way to judge by how
+    much, and *"the noise floor on this panel is 0.28"* is a fact they can check
+    the reported 0.41 against.
+
+    **The value is interpolated through measurements, not derived from a law.**
+    Two candidates were tried and both were rejected for being *wrong in a
+    specific direction*:
+
+    * The **Marchenko-Pastur** estimator ``(1 + sqrt(k/n))**2 / k`` is the
+      asymptotic *upper edge* of the largest eigenvalue's support, not its
+      median — measured against five columns it predicts 0.450 where the median
+      is 0.335. Publishing it would have **overstated** the bias by 0.11, which
+      is the opposite of the error a disclosure should make.
+    * A **least-squares fit** of the form ``1/k + a*(k/n)`` through the same
+      points under-predicts every one of them by ~0.03, so it is not the
+      measured quantity either.
+
+    So the numbers below ARE the measurement. Each is the median PC1 share of
+    500 standardised pure-noise draws with that many rows and columns (recorded
+    2026-09-23), and a value between two table entries is linearly interpolated.
+    Outside the table the nearest entry is used at the short end and the
+    asymptotic ``1/k`` at the long end, which is where the measured values are
+    already converging (0.235 at 260 rows against an asymptote of 0.200).
+
+    The table is for the **column count it was measured at**. A panel with a
+    different width falls back to the asymptotic share, because inventing a
+    scaling law from one column count is the error this function exists to
+    avoid.
+    """
+    if n_variables != _NOISE_FLOOR_COLUMNS:
+        return 1.0 / float(n_variables)
+
+    points = _NOISE_FLOOR_PC1_SHARE
+    if n_obs <= points[0][0]:
+        return points[0][1]
+    if n_obs >= points[-1][0]:
+        # Past the last measurement the floor has nearly reached 1/k, and the
+        # measured 0.235 at 260 rows is already close to it; interpolating
+        # toward the asymptote is a shorter extrapolation than any fitted line.
+        return 1.0 / float(n_variables)
+
+    for (left_n, left_share), (right_n, right_share) in zip(points, points[1:], strict=False):
+        if left_n <= n_obs <= right_n:
+            weight = (n_obs - left_n) / (right_n - left_n)
+            return left_share + weight * (right_share - left_share)
+    # Unreachable: the branches above cover every input. Kept so the function has
+    # no implicit `None` return, which would surface as a formatting error inside
+    # a warning string rather than as a refusal.
+    return 1.0 / float(n_variables)
+
+
+#: Rows-per-series below which the Marchenko-Pastur inflation of PC1 is disclosed.
+#: Measured; see the comment at its use in `_pca_warnings` for the numbers and
+#: for why this warning cannot fire on a five-column panel at the config floor.
+_THIN_PANEL_ROWS_PER_SERIES = 10
+
+#: The column count `_NOISE_FLOOR_PC1_SHARE` was measured at. A panel of a
+#: different width gets the asymptotic share instead of a scaled guess.
+_NOISE_FLOOR_COLUMNS = 5
+
+#: ``(n_obs, median PC1 share)`` for standardised PURE-NOISE panels of five
+#: columns, each entry the median of 500 draws. Measured 2026-09-23. The
+#: asymptote is ``1/5 = 0.200``, so the distance from it IS the small-sample
+#: inflation a reader needs to discount.
+_NOISE_FLOOR_PC1_SHARE: tuple[tuple[int, float], ...] = (
+    (10, 0.3958),
+    (15, 0.3543),
+    (20, 0.3349),
+    (25, 0.3199),
+    (30, 0.3083),
+    (50, 0.2815),
+    (60, 0.2750),
+    (100, 0.2564),
+    (260, 0.2346),
+)
+
+
+def _pca_limitations() -> list[str]:
+    """What a PCA cannot tell you, on every call.
+
+    Standing caveats, distinct from ``warnings`` (a condition of this run). The
+    specification's auto-labelling prohibition lives in ``decision_prohibition``
+    instead: it is a restriction on use, not a limit on what the numbers say.
+    """
+    return [
+        "PRINCIPAL COMPONENTS ARE NOT ECONOMIC FACTORS. A component is a "
+        "direction of maximum variance in THIS sample. Nothing in the "
+        "computation identifies it as a level, a slope, a growth shock or "
+        "anything else — the loading pattern is a description of the direction, "
+        "and naming it is a separate claim the analyst makes. Two panels with "
+        "the same components can have entirely different economic causes.",
+        "COMPONENTS ARE SAMPLE-SPECIFIC AND NOT COMPARABLE ACROSS WINDOWS. The "
+        "basis is the sample covariance, so it changes when the sample changes; "
+        "the ordering can swap and the loadings rotate between two windows of "
+        "the same series. Comparing 'PC1 then' with 'PC1 now' without comparing "
+        "the loadings compares different objects.",
+        "THE DECOMPOSITION ASSUMES LINEARITY AND A SINGLE REGIME. PCA finds "
+        "linear directions; a relationship that is nonlinear, or one that "
+        "differs across regimes, is not recovered. This is the same "
+        "backward-looking hazard `test_cointegration` warns about, stated here "
+        "as a standing limit because it holds on every call.",
+        "THE EIGENVALUES ARE ESTIMATED, NOT OBSERVED, AND ARE BIASED IN SMALL "
+        "SAMPLES. The sample covariance's leading eigenvalue is inflated when "
+        "the number of rows is not large relative to the number of columns, so "
+        "even a matrix of pure noise reports a confident-looking PC1. The "
+        "row-to-column warning fires when the ratio is thin; it cannot correct "
+        "the bias.",
+        "VARIANTS OF THE INPUT CHANGE THE ANSWER BY CONSTRUCTION. The "
+        "standardisation choice and the sample window both shape the components, "
+        "and neither is uniquely correct. The result names the standardisation "
+        "it used; it does not and cannot privilege it over the alternative.",
+        "THE SMALL-SAMPLE DISCLOSURE DOES NOT COVER A NARROW PANEL. The "
+        "Marchenko-Pastur warning fires below ten rows per series, but "
+        "pca_min_observations (60) admits a five-tenor panel at twelve rows per "
+        "series, where the measured noise floor is +0.075 above the 1/k "
+        "asymptote -- real but modest. So a five-tenor curve can reach this "
+        "function with the inflation present and no warning: the floor, not the "
+        "disclosure, is what governs that case. Measured 2026-09-23.",
+    ]
+
+
+def _pca_choices_calibrated() -> bool:
+    """Whether the threshold shaping ``compute_pca``'s DISCLOSURE is calibrated.
+
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
+    caller).
+
+    Named for the leaf it reads, as :func:`_r_squared_floor_is_calibrated` is,
+    because the name is load-bearing: a reader who added a second illustrative
+    PCA threshold would otherwise assume this helper already covered it.
+
+    The two candidates are not equally priceable, and the distinction matters.
+    ``pca_near_zero_tolerance`` is a genuine placeholder — a variance ratio is
+    "numerically zero" only relative to a threshold nobody has calibrated — so it
+    is a ``CalibratedValue`` and it costs confidence. ``pca_standardisation`` is
+    a **choice between two well-defined quantities**, not a quantity with a
+    truth value, so wrapping it in the envelope would pose a question the
+    envelope cannot answer ("is 'correlation' a fact, a convention, or a
+    placeholder?"). It is therefore a plain ``str`` leaf, and the reasoning that
+    would have gone in a ``note`` lives in ``settings.yaml`` beside it — the same
+    split the module's sibling leaves already use.
+
+    The threshold is ``uncalibrated_illustrative`` today, so this returns
+    ``False`` and the caller applies the penalty.
+    """
+    return get_settings().is_calibrated("econometrics.pca_near_zero_tolerance")
 
 
 def _run_adf(

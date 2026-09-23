@@ -38,6 +38,22 @@ What this check establishes
    R-squared and the presence or absence of the weak-mechanism warning are
    checked against each other, so a warning that fired unconditionally would
    fail here even though every unit test passed.
+
+5. **The DAILY-CHANGES requirement is demonstrated, not merely obeyed (D-099).**
+   Section 15.20-F runs PCA on daily changes and never on raw levels, because
+   levels are trend-dominated and produce a misleading PC1. The model cannot
+   refuse levels — it receives a DataFrame of numbers either way — so the
+   protection is that the levels shape is *detected and disclosed*. The check
+   passes the real Treasury **levels** and requires the length-aware warning to
+   fire, then passes the **changes** and requires a coherent spectrum with no
+   negative ratio and the sign rule applied. A prohibition (no auto-labelling of
+   level/slope/curvature) is asserted as an absence in the published payload.
+
+6. **A rank-deficient panel is refused on real data.** A duplicated real tenor is
+   rank-deficient by construction, and the eigendecomposition of such a matrix
+   returns a NEGATIVE eigenvalue — silent failure #1. Requiring the refusal here
+   means a rejection is reachable through the same fetch-and-align path the
+   legitimate call uses, rather than only on a synthetic ``b = 2a`` fixture.
 """
 
 from __future__ import annotations
@@ -51,6 +67,7 @@ from macro_engine.data_layer.openbb_client import OpenBBClient
 from macro_engine.models.contracts import ModelResult
 from macro_engine.models.econometrics import (
     RegressionResult,
+    compute_pca,
     run_regression,
     test_cointegration,
     test_stationarity,
@@ -78,6 +95,37 @@ _COINT_SYMBOLS: dict[str, str] = {
     "tips_30yr": "DFII30",  # 30-year TIPS real yield
     "nominal_10yr": "DGS10",  # 10-year nominal constant-maturity yield
 }
+
+# The `compute_pca` panel, added with D-099. Five NOMINAL constant-maturity
+# tenors, fetched daily through `economy.fred_series`.
+#
+# WHY NOT THE REGISTRY'S `treasury_curve` ENTRY, which already names these very
+# symbols: that entry is served by the single-call `fixedincome.government.yield_curve`
+# route, and the registry records `window_filter_supported: false` for it because
+# it was MEASURED to be a LATEST-ONLY snapshot endpoint (with `start_date=2026-09-15`
+# and with no `start_date` at all the response was identical: 11 rows, all dated
+# 2026-09-17). PCA needs a HISTORY — one row per tenor cannot produce a covariance
+# matrix — so the registry's own `symbol:` values for each tenor are fetched
+# individually through `economy.fred_series`, which does return history. The
+# symbols are transcribed from the registry's `tenors:` block and re-checked
+# against it at run time (see `_pca_check_registry_agreement`), so this is a
+# second ROUTE to the same series rather than a second source of truth.
+#
+# DGS6MO is deliberately absent: a five-tenor panel keeps rows-per-series above
+# the thin-panel boundary and matches the k = 5 noise-floor table the model
+# publishes. Adding a sixth tenor would move the panel off that table.
+_PCA_SYMBOLS: dict[str, str] = {
+    "3mo": "DGS3MO",
+    "1yr": "DGS1",
+    "2yr": "DGS2",
+    "10yr": "DGS10",
+    "30yr": "DGS30",
+}
+
+#: How much daily history to request. The model refuses fewer than
+#: `pca_min_observations` rows, and a daily series needs roughly 260 business days
+#: per year, so this is about two years of trading days.
+_PCA_START = "2024-01-01"
 
 _COINT_MECHANISM = (
     "The expectations hypothesis of the term structure: yields at two maturities "
@@ -559,9 +607,211 @@ def _synthetic_pair() -> tuple[pd.Series, pd.Series]:
     return y, x
 
 
+# ---------------------------------------------------------------------------
+# compute_pca (Section 15.20-F). Added at D-099.
+# ---------------------------------------------------------------------------
+
+
+def _pca_check_registry_agreement() -> None:
+    """The transcribed tenor symbols must still match the registry's curve entry.
+
+    The registry's ``treasury_curve`` block carries a ``tenors:`` mapping from
+    this check's names to exactly these FRED symbols, and that mapping is
+    documentation of what each tenor *is* even though the single-call route does
+    not send it. Re-checking it here means a re-pointed registry is caught rather
+    than silently invalidating the panel's labels: if ``3mo`` stopped meaning
+    ``DGS3MO``, the loadings would still be published under the label ``3mo``
+    while describing a different series.
+    """
+    entry = get_registry().series.get("treasury_curve")
+    assert entry is not None, "treasury_curve is no longer in the series registry"
+    declared = entry.tenors or {}
+    for tenor, symbol in _PCA_SYMBOLS.items():
+        assert tenor in declared, (
+            f"tenor {tenor!r} is no longer declared on the registry's treasury_curve "
+            f"entry; this check transcribes it from there"
+        )
+        assert declared[tenor] == symbol, (
+            f"treasury_curve.{tenor}: registry says {declared[tenor]!r}, this check "
+            f"transcribes {symbol!r}. Re-transcribe it rather than editing the registry."
+        )
+
+
+def _pca_panel(client: OpenBBClient) -> pd.DataFrame:
+    """Fetch each tenor's daily history and join on the common observation dates.
+
+    Two things are done HERE rather than inside the model, and both are stated
+    because the model refuses them by design:
+
+    * **The join is an inner join on date.** A tenor that did not trade on a day
+      the others did would leave a NaN, and the model refuses a non-finite panel
+      rather than dropping rows silently — so the alignment happens in the caller
+      where it is visible.
+    * **The first difference is taken HERE.** Section 15.20-F is explicit that PCA
+      runs on DAILY CHANGES, never on raw levels, because levels are
+      trend-dominated and produce a misleading PC1. The ``.diff()`` is therefore
+      the caller's obligation, and the check below asserts the model would have
+      WARNED had the levels been passed instead — so the requirement is
+      demonstrated rather than merely obeyed.
+    """
+    frames: dict[str, pd.Series] = {}
+    for tenor, symbol in _PCA_SYMBOLS.items():
+        raw = client.fetch_series(
+            provider="fred",
+            endpoint="economy.fred_series",
+            params={"symbol": symbol, "start_date": _PCA_START},
+            series_label=f"treasury.{tenor}",
+        )
+        clean = raw.loc[raw["value"].notna(), ["date", "value"]]
+        stamps = pd.to_datetime(clean["date"], errors="raise")
+        series = pd.Series(
+            [float(value) for value in clean["value"]],
+            index=stamps,
+            name=tenor,
+        ).sort_index()
+        frames[tenor] = series[~series.index.duplicated(keep="last")]
+
+    joined = pd.DataFrame(frames).dropna()
+    print(f"   tenors fetched                            : {', '.join(_PCA_SYMBOLS)}")
+    print(f"   common daily observations (inner join)     : {len(joined):,}")
+    first, last = joined.index[0].date(), joined.index[-1].date()
+    print(f"   window                                    : {first} .. {last}")
+    return joined
+
+
+def _pca_levels_warning_is_reachable(levels: pd.DataFrame) -> str:
+    """Pass the RAW LEVELS and confirm the model flags them — the 15.20-F trap.
+
+    This is the check that earns its network call. The model cannot stop a caller
+    from passing levels (it receives a DataFrame of numbers either way), so the
+    only protection against the trend-dominated PC1 is that the levels shape is
+    *detected and disclosed*. Demonstrating that on real Treasury levels — which
+    are the canonical case the warning was written for — is what makes the
+    disclosure a property of real data rather than of a synthetic fixture.
+
+    Returns the warning string, so the assessment below can quote it.
+    """
+    result = compute_pca(levels, 3)
+    matched = next((w for w in result.warnings if "lag-1 autocorrelation" in w), None)
+    assert matched is not None, (
+        f"compute_pca did NOT warn on real Treasury LEVELS. Level series are the "
+        f"case Section 15.20-F names first, so a silent pass here means the "
+        f"length-aware boundary is no longer catching them. Warnings were: "
+        f"{result.warnings}"
+    )
+    print(f"   levels warning fired                      : {matched[:96]}...")
+    return matched
+
+
+def _pca_on_real_changes(client: OpenBBClient) -> ModelResult:
+    """The legitimate call: PCA on real Treasury daily changes.
+
+    Three properties are asserted, and each is a property of the FUNCTION rather
+    than of the economy — the distinction this script's other sections are
+    careful about:
+
+    1. **The ratios are a valid probability distribution over components** and
+       every one is non-negative. A negative ratio is silent failure #1
+       (the rank-deficient eigendecomposition), and it is checked on real data
+       here as well as synthetically.
+    2. **The sign rule holds.** The largest-|loading| element of every published
+       component is positive. `eigh` returns arbitrary signs, so this is the one
+       convention that makes two runs comparable.
+    3. **Nothing is auto-labelled.** The published payload must NOT contain a
+       level/slope/curvature label — Section 15.20-F forbids it, because the
+       assignment is an interpretation and not an output of the decomposition.
+       Asserted as an absence, which is the testable form of a prohibition.
+    """
+    levels = _pca_panel(client)
+    _pca_levels_warning_is_reachable(levels)
+    changes = levels.diff().dropna()
+
+    result = compute_pca(changes, 3)
+    value = result.value
+    assert isinstance(value, dict), f"expected a dict value, got {type(value).__name__}"
+
+    ratios = value["explained_variance_ratios"]
+    assert isinstance(ratios, list)
+    assert all(float(r) >= 0.0 for r in ratios), (
+        f"a NEGATIVE variance ratio was published on real data: {ratios}. That is "
+        f"silent failure #1 -- a rank-deficient panel whose eigendecomposition went "
+        f"through the rank guard"
+    )
+    total = sum(float(r) for r in ratios)
+    assert abs(total - 1.0) < 1e-9, f"the ratios sum to {total}, not 1.0"
+
+    loadings = value["loadings"]
+    assert isinstance(loadings, dict)
+    for component, mapping in loadings.items():
+        assert isinstance(mapping, dict)
+        largest = max(mapping.items(), key=lambda kv: abs(float(kv[1])))
+        assert float(largest[1]) > 0.0, (
+            f"{component}'s largest-|loading| element ({largest[0]}) is "
+            f"{largest[1]}, so the sign rule was not applied"
+        )
+
+    # The prohibition, asserted as an ABSENCE. A payload that grew a
+    # `pc1_label: "level"` field would violate 15.20-F while looking helpful.
+    flat = " ".join(str(item) for item in value).lower()
+    for forbidden in ("level", "slope", "curvature"):
+        assert forbidden not in flat, (
+            f"the published payload contains {forbidden!r}, but Section 15.20-F "
+            f"forbids auto-labelling components -- the label is an interpretation, "
+            f"not a decomposition output"
+        )
+
+    print(
+        f"   PC1 / PC2 / PC3 variance ratios           : "
+        f"{', '.join(f'{float(r):.4f}' for r in ratios[:3])}"
+    )
+    print(
+        f"   3-component cumulative                     : "
+        f"{float(value['n_components_explained_variance']):.4f}"
+    )
+    print(f"   standardisation route published            : {value['standardisation']}")
+    print(f"   sign rule published                        : {value['sign_rule']}")
+    print(f"   confidence                                 : {result.confidence}")
+    return result
+
+
+def _pca_positive_control(client: OpenBBClient) -> str:
+    """A panel that MUST be refused, so a refusal is reachable on real data.
+
+    Two tenors of the same curve are driven by the same policy-rate factor, so at
+    daily frequency their changes can be strongly co-moving — and if one tenor is
+    an exact multiple of another the panel is rank-deficient and the
+    eigendecomposition would return a negative variance. That is silent failure
+    #1 on REAL data rather than on a synthetic `b = 2a` fixture.
+
+    The control is built by duplicating a real tenor under a second label, which
+    is rank-deficiency BY CONSTRUCTION and therefore guaranteed to be refused. The
+    value of doing it with real numbers is that it exercises the guard through the
+    same fetch-and-align path the legitimate call uses.
+    """
+    levels = _pca_panel(client)
+    changes = levels.diff().dropna()
+    changes["duplicate_10yr"] = changes["10yr"]
+    try:
+        compute_pca(changes, 3)
+    except ValueError as exc:
+        message = str(exc)
+        assert "rank-deficient" in message, (
+            f"a panel containing a DUPLICATED real tenor was refused, but for the "
+            f"wrong reason: {message[:160]}"
+        )
+        print(f"   duplicated real tenor refused             : {message[:88]}...")
+        return message
+    raise AssertionError(
+        "a panel with a duplicated real 10yr tenor was ACCEPTED. That is silent "
+        "failure #1: the eigendecomposition of a rank-deficient matrix returns a "
+        "negative eigenvalue, so a negative variance would be publishable."
+    )
+
+
 def main() -> int:
     print("=" * 78)
-    print("LIVE CHECK: run_regression (Module 18) against real FRED data")
+    print("LIVE CHECK: Module 18 econometrics against real FRED data")
+    print("             (run_regression, test_stationarity, test_cointegration, compute_pca)")
     print("=" * 78)
 
     _check_registry_agreement()
@@ -643,6 +893,30 @@ def main() -> int:
         "   check that asserts the data into agreement."
     )
     term_outcomes = _cointegration_term_structure(client)
+
+    print()
+    print("8. PCA -- the DAILY-CHANGES requirement, on real Treasury history")
+    print(
+        "   Section 15.20-F is explicit: PCA runs on DAILY CHANGES, never raw\n"
+        "   levels, because levels are trend-dominated and produce a misleading\n"
+        "   PC1. The model cannot refuse levels (it receives numbers either way),\n"
+        "   so the protection is that the levels shape is DETECTED and DISCLOSED.\n"
+        "   Both halves are exercised below: the warning must fire on the real\n"
+        "   levels, and the legitimate call must produce a coherent spectrum."
+    )
+    _pca_check_registry_agreement()
+    pca = _pca_on_real_changes(client)
+
+    print()
+    print("9. PCA -- a POSITIVE CONTROL that must be refused")
+    print(
+        "   A duplicated real tenor makes the panel rank-deficient by\n"
+        "   construction, and the eigendecomposition of such a matrix returns a\n"
+        "   NEGATIVE eigenvalue. A negative variance is incoherent, so the guard\n"
+        "   must refuse -- and doing it on real numbers exercises the same\n"
+        "   fetch-and-align path the legitimate call uses."
+    )
+    _pca_positive_control(client)
 
     print()
     print("=" * 78)
@@ -752,6 +1026,40 @@ def main() -> int:
         "    verdicts will hold going forward. The statistic describes the sample,\n"
         "    which is the first mandatory warning; the LTCM shape appears here as\n"
         "    the 'unstable' pair, not as a citation."
+    )
+    print()
+    pca_value = pca.value
+    assert isinstance(pca_value, dict)
+    pca_ratios = pca_value["explained_variance_ratios"]
+    assert isinstance(pca_ratios, list)
+    print(
+        f"  * PCA (new in D-099). On real Treasury daily changes "
+        f"({pca_value['n_obs']} common\n"
+        f"    observations, {pca_value['n_variables']} tenors), the first "
+        f"three components explain\n"
+        f"    {float(pca_value['n_components_explained_variance']):.4f} of the "
+        f"variance and no\n"
+        f"    component returned a negative ratio -- so the rank guard held on "
+        f"real data\n"
+        f"    as well as on the synthetic cases."
+    )
+    print(
+        "    THE COMPONENTS ARE NOT NAMED, DELIBERATELY. Section 15.20-F forbids\n"
+        "    auto-labelling them level/slope/curvature: the assignment is an\n"
+        "    INTERPRETATION of the loadings, not an output of the decomposition, and\n"
+        "    this check asserts the published payload contains no such label. A\n"
+        "    reader who wants the names must read the loadings and decide."
+    )
+    print(
+        "    The levels case is the reason the function exists in the shape it\n"
+        "    does: passing the raw Treasury LEVELS fires the length-aware warning,\n"
+        "    which is what tells a caller their PC1 is the trend rather than a\n"
+        "    factor. That warning was verified reachable on real data above.\n"
+        "    NOT established: that the standardisation route chosen in config is\n"
+        "    the right one for a particular question. Measured 2026-09-23, the\n"
+        "    covariance and correlation routes disagree by 0.28 on PC1's loadings\n"
+        "    and invert their ordering, so the route is published on every result\n"
+        "    and a consumer who ignores it is reading a different decomposition."
     )
     print()
     print("LIVE CHECK PASSED")

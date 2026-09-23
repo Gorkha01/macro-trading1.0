@@ -10,6 +10,102 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-100 — Module 18 #4: `compute_pca`; a fourth defect class in the constant-series guard; O-117 recurs
+
+**Added**
+
+- `compute_pca(daily_changes: pd.DataFrame, n_components: int = 3) -> ModelResult` in
+  `src/macro_engine/models/econometrics.py` (§15.20-F's verbatim signature), running
+  PCA on **DAILY CHANGES** and publishing the **eigenvalues**, the
+  **explained-variance ratios**, the **cumulative** series, and **LOADINGS** as
+  `{component: {series: loading}}` — named on both axes so a transposition is
+  unrepresentable rather than silently wrong.
+- The decomposition is `numpy.linalg.eigh` on the covariance (**D-099**), measured to
+  reproduce scikit-learn's PCA to machine precision (**no `scikit-learn` dependency,
+  no `pyproject.toml` change, no `mypy` override**). The two sklearn *conventions*
+  sklearn supplies by accident are reproduced **deliberately** and individually
+  mutation-tested: the **sign rule** (largest-|loading| element positive, sklearn's
+  `svd_flip` convention, published on every result) and the **unbiased `1/(n-1)`**
+  variance divisor (what `np.cov` produces — **not** the biased `1/n` sklearn's own
+  source suggests).
+- **Three silent-failure paths found by PROBING `eigh` before writing any guard:** a
+  rank-deficient panel yields a **NEGATIVE eigenvalue** (measured `-1.69e-15`, with
+  the published ratio printing `-0.000000000000` while the ratios still summed to
+  `1.0`); `n_components` out of range slices silently or cryptically; and a non-finite
+  panel propagates NaN into **every** eigenvalue and loading rather than raising.
+- **The fourth defect class: `std() == 0.0` does NOT fire on a constant column.** A
+  constant column's squared deviations leave a floating-point residue (measured
+  `8.9e-16` for `4.2` repeated 200×), which defeated **two** guards at once — the
+  correlation route's division (scaling the column to `~1e16`) *and* `matrix_rank`'s
+  **relative** tolerance on **both** routes. Refused by a tolerance **relative to each
+  series' own scale**, checked **before** standardisation so it governs both routes.
+- Config: `pca_min_observations` (60) and `pca_near_zero_tolerance` (`1.0e-8`) as
+  `CalibratedValue` envelopes; `pca_standardisation` as a plain `str` leaf
+  (`{"covariance", "correlation"}`, default `"correlation"`), refused at config load on
+  a third value.
+- The **standardisation route is consequential and therefore published**: measured
+  2026-09-23 on a five-tenor heteroskedastic panel, the two routes disagree by **0.28**
+  on PC1's loadings and **invert their ordering**. Both are legitimate answers to
+  different questions, so neither is excluded and the route is on every result.
+- A **length-aware** levels-detection boundary, `1 - 2.5/sqrt(n)`, replacing a fixed
+  `0.95` that missed **88.6%** of genuine level series at `n = 60` (measured over 500
+  walks). Measured **0.00% false positives on changes at every length**.
+- A **measured** pure-noise PC1-share table (5 columns, 500 draws per length) for the
+  thin-panel disclosure. **Marchenko-Pastur** (overstates the bias by `0.11`) and a
+  **least-squares fit** (under-predicts by `~0.03`) were both **REJECTED for being
+  wrong**, so the measured table is published with linear interpolation rather than a
+  fitted law.
+
+**Fixed**
+
+- **The constant-series guard's own tolerance was relative but not PROVEN relative.**
+  Mutation **M66** reverted it to a fixed `eps * 100 = 2.22e-14` and **SURVIVED**: every
+  constant the tests then used (`4.2`, `0.0`, `-3.0`) leaves a residue a fixed epsilon
+  also catches, so no test could tell the two guards apart. **Measured: the residue is
+  NOT monotone in magnitude** (`4.2` → `7.1e-14`, `271.83` → `1.1e-13`, `314.16` →
+  `4.3e-14`, but `1e6` → exactly `0.0`), so the defeating magnitudes had to be **found
+  by measurement**. New tests carrying `271.83` and `314.16` are **verified to kill M66
+  by hand**; the sweep moved **74/77 → 76/77**.
+- **O-117 RECURRED:** two `compute_pca` refusal tests were written with names already
+  owned by `test_stationarity`, so Python bound those names to their **last**
+  definitions and **two stationarity guards were silently DEAD** — the stationarity
+  constant-series and non-numeric guards had no coverage while appearing present.
+  `pytest` collected **176** tests where **178** existed; `ruff`'s **F811** caught it
+  twice. Renamed to `_by_pca` (matching the file's `_by_cointegration` convention); the
+  collected count rose **176 → 182**.
+
+**Changed**
+
+- `tools/sweep_health.py` now **prints the sweep census** (`sweep files discovered: 43`)
+  as a line of its own output instead of leaving the number to be re-typed by hand.
+- `scripts/live_econometrics_check.py` gained sections 8 and 9: the **daily-changes
+  requirement demonstrated on real data** (real Treasury **levels** must fire the
+  length-aware warning; the **changes** must produce a coherent spectrum with no
+  negative ratio, the sign rule applied, and **no auto-labelled** component), and a
+  **positive control** (a duplicated real tenor, rank-deficient by construction,
+  refused). Measured live: levels lag-1 **0.9975** against the **0.9041** boundary;
+  on changes PC1 **0.6759** / PC2 **0.2080** / PC3 **0.0928**, cumulative **0.9767**;
+  control refused at *"6 columns but rank 5"*, over **680** common daily observations.
+
+**Disclosed, not fixed (operator decision 2026-09-23)**
+
+- At `pca_min_observations = 60` a 5-column panel has 12 rows per series, so
+  `60 < 10 * 5` is false and the thin-panel warning **cannot fire on a yield-curve
+  panel**. The operator chose to keep the floor at 60 and warn on the ratio; the gap is
+  recorded in `_pca_limitations` ("THE SMALL-SAMPLE DISCLOSURE DOES NOT COVER A NARROW
+  PANEL") rather than papered over.
+
+**Documented**
+
+- **O-118:** the `.git` object store and `refs/` were **wiped mid-increment** — `refs/`
+  absent, the pack file gone leaving only its `.idx`, loose objects 0 — while the
+  working tree stayed intact. Recovered from the surviving **reflogs** plus the remote;
+  **one unpushed commit (`2027b6c`) was genuinely lost.** `git fsck` is now
+  completely clean and `HEAD` = `origin/main`. Cause **not determined** and stated as
+  unknown.
+
+---
+
 ### D-097 — Module 18 #3: `test_cointegration`; a fourth silent failure in `coint_johansen`; five tests shadowed by name
 
 **Added**

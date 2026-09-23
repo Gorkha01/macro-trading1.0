@@ -5493,3 +5493,89 @@ claiming green.
 (roots `src tests tools scripts`) · **2923 passed / 1 skipped / 17 deselected /
 0 failed** · sweep **55/56** (56 declared; M34 inert-by-route) · **43 sweeps,
 0 leftovers** · reachability **58 = 58**.
+
+---
+
+## D-100 — Module 18 #4: `compute_pca` (2026-09-23)
+
+**Tier 5 is now 4 of 23** by §21.3's list. Phase 5 remains STARTED; Module 18 is
+**4 of 6**.
+
+**What shipped.** `compute_pca(daily_changes, n_components=3) -> ModelResult` in
+`src/macro_engine/models/econometrics.py`, implementing §15.20-F: PCA on **daily
+changes**, publishing **eigenvalues**, **explained-variance ratios**, the
+**cumulative** series and **loadings** — with the prohibition on auto-labelling
+level/slope/curvature. Per **D-099** the route is `numpy.linalg.eigh` on the
+covariance — **no `scikit-learn` dependency** — with the sign rule and the
+`1/(n-1)` normalisation reproduced explicitly and individually mutation-tested.
+
+**Three silent failures found by PROBING `eigh` before writing any guard:** a
+rank-deficient panel yields a **NEGATIVE eigenvalue** (`-1.69e-15` measured, with
+the published ratio printing `-0.000000000000` while the ratios still summed to
+`1.0`); `n_components` out of range slices silently; and a non-finite panel
+propagates NaN into **every** eigenvalue and loading rather than raising.
+
+**☠ THE FOURTH DEFECT CLASS: `std() == 0.0` does not fire on a constant column.**
+Summing a constant column's squared deviations leaves a residue — `8.9e-16` for
+`4.2` repeated 200× — which defeated **two** guards at once (the correlation
+route's division, and the rank check's relative tolerance on both routes). Fixed
+with a tolerance **relative to each series' own scale**, refused **before**
+standardisation so it governs both routes.
+
+**☠ AND THEN THE SWEEP FOUND THE HOLE INSIDE THE FIX.** M66 (relative tolerance →
+fixed `eps * 100`) **SURVIVED** the first run: every constant in the tests then
+(`4.2`, `0.0`, `-3.0`) leaves a residue a fixed epsilon also catches, so **no test
+could tell the two guards apart**. **Measured: the residue is NOT monotone in
+magnitude** — `4.2` → `7.1e-14`, `271.83` → `1.1e-13`, `314.16` → `4.3e-14`, but
+`1e6` → exactly `0.0`. The magnitudes that defeat a fixed epsilon are **specific
+ones and had to be found by measurement**. New tests carrying `271.83` and `314.16`
+were **verified to kill M66 by hand**, after which M66 is KILLED and the sweep
+moved **74/77 → 76/77**. *A guard whose tolerance is relative can only be proven
+relative by a case where the relative and absolute answers DIVERGE.*
+
+**Two thresholds re-derived from data after intuition failed.** A fixed `0.95`
+levels cutoff misses **88.6%** of level series at `n=60` — replaced with the
+length-aware `1 - 2.5/sqrt(n)` (measured **0.00% false positives on changes at
+every length**). The thin-panel boundary went `5×` → `10× n_variables`, with the
+measured pure-noise PC1 table published rather than a fitted law: both
+**Marchenko-Pastur** (overstates by `0.11`) and a **least-squares fit**
+(under-predicts by `~0.03`) were **rejected for being wrong**.
+
+**The operator decision, recorded honestly.** At `pca_min_observations = 60` a
+5-tenor panel has 12 rows/series, so the thin-panel warning **cannot fire on a
+yield-curve panel**. Per the operator's choice the floor stays at 60 and the gap is
+disclosed in `_pca_limitations` ("THE SMALL-SAMPLE DISCLOSURE DOES NOT COVER A
+NARROW PANEL") rather than papered over.
+
+**⚠️ O-117 RECURRED — one increment after it was diagnosed.** This function's
+refusal tests were first written with names **already owned by `test_stationarity`**,
+so Python bound the names to the new definitions and **two stationarity guards were
+silently DEAD** — `pytest` collected **176** tests where **178** existed.
+`ruff`'s **F811** caught it twice (exactly the standing guard O-117 names). Fixed by
+suffixing `_by_pca`; the count rose **176 → 182** and **the count movement IS the
+evidence** that two tests had been absent.
+
+**⚠️ O-118: the `.git` object store and `refs/` were WIPED mid-session.**
+`git status` returned `fatal: not a git repository` while `.git/` was present;
+`refs/` was **absent**, the pack file was **gone** leaving only its `.idx`, and
+loose objects were **0**. The **working tree was intact**. Recovered from the
+surviving **reflogs** plus the remote: removing the bad local ref (a ref naming a
+missing object **blocks the fetch that repairs it**), then `git fetch origin`
+restored a **13.4 MB** pack; the stale `.idx`/`multi-pack-index` were removed and
+the index rebuilt. **One commit was genuinely lost — `2027b6c`, unpushed.** Final
+state: `git fsck` **completely clean**, `HEAD` = `6d5f253` = `origin/main`.
+
+### Gate baseline after D-100 (measured 2026-09-23)
+
+ruff clean · **`ruff format --check` 247 files** · **`mypy --strict` no issues in
+247 files** (roots `src tests tools scripts`) · **2993 passed / 1 skipped / 17
+deselected / 0 failed** · sweep **76/77** (77 declared; M34 inert-by-construction) ·
+**43 sweeps, 0 leftovers** · reachability **58 = 58** · live check **PASSED**
+(680 real Treasury observations).
+
+### Next
+
+`test_cointegration` ✅ · `run_regression` ✅ · `test_stationarity` ✅ ·
+`compute_pca` ✅ → **next is `kalman_latent_state`**, with **`yield_curve_pca`**
+(Module 8) the natural consumer of today's work. `compute_pca` needs no §4 decision
+now (D-099).

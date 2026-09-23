@@ -46,6 +46,12 @@ _stationarity = _econ.test_stationarity
 # the MODEL as a test case. See the note above.
 _cointegration = _econ.test_cointegration
 
+# `compute_pca` does NOT need an alias — its name does not begin with `test_` —
+# but it is bound here anyway so this file has one spelling of every model under
+# test, and so a future rename to a `test_*` name breaks in one place rather than
+# silently re-collecting a model as a test (the failure mode O-117 records).
+_pca = _econ.compute_pca
+
 
 def _value(result: ModelResult) -> dict[str, Any]:
     """Narrow ``test_stationarity``'s ``value`` to a mapping, asserting not casting.
@@ -1798,3 +1804,946 @@ def test_the_non_finite_guards_fire_when_the_route_is_reached() -> None:
 
     with pytest.raises(ValueError, match="non-finite"):
         _module._run_engle_granger(y, x, trend="n", alpha=0.05)
+
+
+# ===========================================================================
+# compute_pca — Section 15.20-F's fourth function
+# ===========================================================================
+
+#: A three-factor yield panel, generated deterministically. The generator is the
+#: KEY to these tests: it builds the panel from known level/slope/curvature
+#: shocks, so a test can assert that the recovered components correspond to the
+#: shocks it constructed rather than accepting whatever the decomposition
+#: returned. The names are real tenor labels so a failure message reads like a
+#: curve problem.
+_PCA_TENORS = ["3mo", "2yr", "5yr", "10yr", "30yr"]
+#: The true factor loadings. Columns are level, slope, curvature; rows are
+#: tenors. Signs are chosen so PC1 is all-one, PC2 runs front-to-back and PC3
+#: has a single interior peak -- the textbook yield-curve shape.
+_PCA_TRUE_LOADINGS = np.array(
+    [
+        [1.0, -1.4, 0.6],
+        [1.0, -0.7, -0.4],
+        [1.0, 0.0, -0.6],
+        [1.0, 0.7, -0.4],
+        [1.0, 1.4, 0.6],
+    ]
+)
+
+
+def _pca_panel(*, n: int = 260, seed: int = 17) -> pd.DataFrame:
+    """A deterministic daily-change panel with three known factors.
+
+    Factor variances descend steeply (the real shape of a curve: the level moves
+    most, then the slope, then curvature), which is what makes the component
+    ORDERING predictable and therefore assertable.
+    """
+    rng = np.random.default_rng(seed)
+    level = rng.normal(0.0, 0.050, size=n)
+    slope = rng.normal(0.0, 0.028, size=n)
+    curvature = rng.normal(0.0, 0.014, size=n)
+    idiosyncratic = rng.normal(0.0, 0.003, size=(n, len(_PCA_TENORS)))
+    values = (
+        np.outer(level, _PCA_TRUE_LOADINGS[:, 0])
+        + np.outer(slope, _PCA_TRUE_LOADINGS[:, 1])
+        + np.outer(curvature, _PCA_TRUE_LOADINGS[:, 2])
+        + idiosyncratic
+    )
+    return pd.DataFrame(values, columns=_PCA_TENORS)
+
+
+def _pca_result(**kwargs: Any) -> ModelResult:
+    return _pca(_pca_panel(**kwargs), 3)
+
+
+def _loadings(result: ModelResult, component: str) -> dict[str, float]:
+    """Extract one component's loadings, asserting the nesting is real."""
+    value = _value(result)
+    loadings = value["loadings"]
+    assert isinstance(loadings, dict)
+    component_map = loadings[component]
+    assert isinstance(component_map, dict)
+    return {str(name): float(loading) for name, loading in component_map.items()}
+
+
+# --- the report Section 15.20-F demands -----------------------------------
+
+
+def test_pca_publishes_eigenvalues_ratios_and_loadings() -> None:
+    """The three things the signature says it returns must all be present.
+
+    Asserted field-by-field rather than by spot-checking one, because the
+    failure this guards against is a result that publishes *some* of the
+    report — a caller that gets loadings but no ratios has a chart of arbitrary
+    scale, and one that gets ratios but no loadings cannot identify a factor.
+    """
+    value = _value(_pca_result())
+    for key in (
+        "eigenvalues",
+        "explained_variance_ratios",
+        "cumulative_explained_variance",
+        "loadings",
+        "n_obs",
+        "n_variables",
+        "standardisation",
+        "sign_rule",
+    ):
+        assert key in value, f"value is missing {key!r}: {sorted(value)}"
+
+
+def test_pca_ratios_sum_to_one() -> None:
+    """The explained-variance ratios are shares of one total, so they sum to 1.
+
+    A derivation check, not a tautology: the ratios would still look plausible
+    if the total were taken over the WRONG number of eigenvalues (only the
+    requested components, say), and this is the assertion that catches it.
+    """
+    value = _value(_pca_result())
+    ratios = value["explained_variance_ratios"]
+    assert isinstance(ratios, list)
+    assert math.isclose(sum(ratios), 1.0, rel_tol=0.0, abs_tol=1e-12), (
+        f"ratios sum to {sum(ratios)!r}, not 1.0"
+    )
+
+
+def test_pca_eigenvalues_are_all_positive_and_descending() -> None:
+    """Every eigenvalue is a variance, so none may be negative, and the order is by size.
+
+    This is the assertion that would have caught silent failure #1 if the rank
+    guard were absent — and it is kept *alongside* the guard, because a guard and
+    a test that check the same property from different directions fail
+    differently: the guard names the cause, this names the symptom.
+    """
+    value = _value(_pca_result())
+    eigenvalues = value["eigenvalues"]
+    assert isinstance(eigenvalues, list)
+    assert all(float(value_) >= 0.0 for value_ in eigenvalues), (
+        f"a negative variance was published: {eigenvalues!r}"
+    )
+    assert eigenvalues == sorted(eigenvalues, reverse=True), (
+        f"eigenvalues are not in descending order: {eigenvalues!r}"
+    )
+
+
+def test_pca_recovers_the_level_factor_first() -> None:
+    """PC1 on a curve panel is the factor the generator built with the largest variance.
+
+    The assertion is on the **loading pattern** rather than on a label, which is
+    the whole discipline Section 15.20-F demands: a level factor has loadings of
+    the same sign on every tenor. The test therefore verifies the components are
+    recoverable from the loadings without the function ever naming them.
+    """
+    loadings = _loadings(_pca_result(), "PC1")
+    assert all(loading > 0.0 for loading in loadings.values()), (
+        f"PC1's loadings do not share a sign, so there is no level-shaped factor: {loadings}"
+    )
+
+
+def test_pca_orders_components_by_variance_not_by_tenor() -> None:
+    """The component ORDER tracks the factor variances, which the generator fixes.
+
+    Independent of the loadings: it asserts the eigenvalues, which descend
+    steeply because the generator's factor variances do (0.050^2, 0.028^2,
+    0.014^2). A decomposition that returned them unsorted, or paired a variance
+    with the wrong factor, fails here.
+    """
+    value = _value(_pca_result())
+    ratios = value["explained_variance_ratios"]
+    assert isinstance(ratios, list)
+    assert float(ratios[0]) > 0.60, (
+        f"the level factor should dominate this panel; PC1 is only {float(ratios[0]):.3f}"
+    )
+    assert ratios[0] > ratios[1] > ratios[2], f"ordering lost: {ratios}"
+
+
+def test_pca_loadings_are_unit_norm() -> None:
+    """Each component is a unit vector — the definition, checked rather than assumed.
+
+    An eigenvector of a covariance matrix is normalised by LAPACK, but the sign
+    rule MULTIPLIES a column by -1, so a sign-rule bug that dropped the norm (or
+    scaled by the wrong factor) would leave every loading plausible and the
+    components non-orthonormal. This is the cheap invariant that catches it.
+    """
+    result = _pca_result()
+    for position in range(1, 4):
+        loadings = _loadings(result, f"PC{position}")
+        norm = math.sqrt(sum(loading**2 for loading in loadings.values()))
+        assert math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=1e-9), (
+            f"PC{position} has norm {norm!r}, not 1.0"
+        )
+
+
+def test_pca_components_are_orthogonal() -> None:
+    """Successive components are orthogonal — a property the sign rule preserves.
+
+    Orthogonality is what makes "PC2 is variance PC1 does not explain" true. A
+    transposed loadings matrix, or one whose columns were reordered separately
+    from its eigenvalues, breaks it while leaving every published number in
+    range.
+    """
+    result = _pca_result()
+    vectors = [
+        np.array(list(_loadings(result, f"PC{position}").values())) for position in range(1, 4)
+    ]
+    for left in range(len(vectors)):
+        for right in range(left + 1, len(vectors)):
+            dot = float(np.dot(vectors[left], vectors[right]))
+            assert math.isclose(dot, 0.0, rel_tol=0.0, abs_tol=1e-9), (
+                f"PC{left + 1} and PC{right + 1} are not orthogonal: inner product {dot!r}"
+            )
+
+
+def test_pca_cumulative_variance_is_the_running_sum() -> None:
+    """The cumulative series is the prefix sum of the ratios, to full precision."""
+    value = _value(_pca_result())
+    ratios = [float(x) for x in value["explained_variance_ratios"]]
+    cumulative = [float(x) for x in value["cumulative_explained_variance"]]
+    expected = [sum(ratios[: position + 1]) for position in range(len(ratios))]
+    for got, want in zip(cumulative, expected, strict=True):
+        assert math.isclose(got, want, rel_tol=0.0, abs_tol=1e-12), (
+            f"cumulative {got!r} != prefix sum {want!r}"
+        )
+    assert math.isclose(cumulative[-1], 1.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_pca_n_components_share_is_the_prefix_sum() -> None:
+    """``n_components_explained_variance`` is the first-k share, not the total."""
+    value = _value(_pca_result())
+    ratios = [float(x) for x in value["explained_variance_ratios"]]
+    share = float(value["n_components_explained_variance"])
+    assert math.isclose(share, sum(ratios[:3]), rel_tol=0.0, abs_tol=1e-12), (
+        f"the 3-component share {share!r} is not the sum of the first three ratios"
+    )
+    assert share < 1.0 + 1e-12
+
+
+# --- the sign rule: a CONVENTION, and the test that proves it fires --------
+
+
+def test_pca_sign_rule_makes_the_largest_loading_positive() -> None:
+    """Every component's largest-|loading| element is positive. sklearn's rule."""
+    result = _pca_result()
+    for position in range(1, 4):
+        loadings = _loadings(result, f"PC{position}")
+        values = list(loadings.values())
+        pivot = int(np.argmax(np.abs(values)))
+        assert values[pivot] > 0.0, (
+            f"PC{position}'s largest-magnitude loading is {values[pivot]!r}, not positive; "
+            f"the svd_flip convention was not applied: {loadings}"
+        )
+
+
+def test_pca_sign_rule_is_deterministic_under_negation() -> None:
+    """Negating the whole panel must not change a single published loading.
+
+    **This is the test that proves the sign rule does something.** Eigenvector
+    signs are LAPACK-arbitrary, so without the rule the same panel can come back
+    as ``v`` or ``-v``; negating the input flips the covariance's off-diagonal
+    structure in a way that can flip an ``eigh`` sign, and the rule has to
+    absorb it. Measured: the two results are byte-identical, which is what makes
+    this a real assertion rather than a tautology.
+    """
+    panel = _pca_panel()
+    forward = _pca(panel, 3)
+    negated = _pca(-panel, 3)
+    for position in range(1, 4):
+        assert _loadings(forward, f"PC{position}") == _loadings(negated, f"PC{position}"), (
+            f"PC{position}'s loadings changed when the panel was negated, so the "
+            f"sign convention is not absorbing the arbitrary eigenvector sign"
+        )
+
+
+def test_pca_sign_rule_is_named_in_the_output() -> None:
+    """The convention is published, because a loading sign is not self-describing."""
+    value = _value(_pca_result())
+    assert "largest_absolute_loading_positive" in str(value["sign_rule"])
+
+
+# --- the normalisation: the measured 1/(n-1) divisor -----------------------
+
+
+def test_pca_uses_the_unbiased_covariance_divisor() -> None:
+    """The ratios match a hand-built ``np.cov`` decomposition, not a ``1/n`` one.
+
+    **This pins the measurement D-099 recorded.** sklearn's
+    ``explained_variance_ratio_`` divides by the total that ``np.cov`` produces
+    (the ``1/(n-1)`` sum), not the biased ``1/n`` total its own source suggests
+    at a glance; measured agreement ``0.9999999999999994``. The two differ by
+    ``(n-1)/n``, which is 0.4% at ``n = 260`` — small enough to pass a loose
+    comparison and large enough to be a real bias. So the expectation is built
+    independently from ``np.cov`` and compared at 1e-12.
+    """
+    panel = _pca_panel()
+    result = _pca(panel, 3)
+    value = _value(result)
+
+    matrix = panel.to_numpy(dtype=float)
+    means = matrix.mean(axis=0)
+    standardised = (matrix - means) / matrix.std(axis=0, ddof=1)
+    expected = np.linalg.eigvalsh(np.cov(standardised, rowvar=False))
+    expected = np.sort(expected)[::-1] / expected.sum()
+
+    published = [float(x) for x in value["explained_variance_ratios"]]
+    for got, want in zip(published, expected, strict=True):
+        assert math.isclose(got, float(want), rel_tol=0.0, abs_tol=1e-12), (
+            f"ratio {got!r} does not match the np.cov expectation {float(want)!r}; the "
+            f"normalisation divisor is wrong (sklearn uses 1/(n-1), not 1/n)"
+        )
+
+
+def test_pca_eigenvalues_match_the_covariance_spectrum() -> None:
+    """The published eigenvalues ARE the covariance's, independently computed."""
+    panel = _pca_panel()
+    result = _pca(panel, 3)
+    value = _value(result)
+
+    matrix = panel.to_numpy(dtype=float)
+    standardised = (matrix - matrix.mean(axis=0)) / matrix.std(axis=0, ddof=1)
+    expected = np.sort(np.linalg.eigvalsh(np.cov(standardised, rowvar=False)))[::-1]
+
+    published = [float(x) for x in value["eigenvalues"]]
+    for got, want in zip(published, expected, strict=True):
+        assert math.isclose(got, float(want), rel_tol=1e-9, abs_tol=1e-12), (
+            f"eigenvalue {got!r} != {float(want)!r}"
+        )
+
+
+# --- the standardisation choice, measured as consequential -----------------
+
+
+def test_pca_publishes_the_standardisation_it_used() -> None:
+    """A reader is never left to assume which route produced the loadings."""
+    value = _value(_pca_result())
+    assert value["standardisation"] in {"covariance", "correlation"}
+
+
+def test_the_two_routes_disagree_materially_on_a_heteroskedastic_panel() -> None:
+    """The covariance/correlation choice changes PC1's loadings — measured, then pinned.
+
+    D-099 recorded the measurement (0.28 apart, ordering inverted) as the reason
+    the route is a published config leaf rather than an implicit default. This
+    test holds the measurement still: if a future change made the two routes
+    agree, the *reason* for the leaf would have evaporated and the record would be
+    stale, so the test fails and forces the decision to be re-examined.
+
+    **The covariance route is computed here rather than by calling
+    ``compute_pca`` twice**, because the public function reads its route from
+    config and both calls would therefore take the SAME route — which is exactly
+    the mistake this test made on its first run: it compared correlation with
+    correlation and reported a difference of exactly 0.0. The route under test is
+    reached by re-building its standardised matrix and decomposing it, and the
+    public function is then used as the ORACLE for the route it is configured
+    with, which is the only claim it can support.
+    """
+    matrix = _pca_panel().to_numpy(dtype=float)
+    # Match the measurement's shape: a curve whose front end moves most.
+    scales = np.array([1.90, 1.30, 1.00, 0.85, 0.70])
+    heteroskedastic = matrix * scales
+
+    def pc1_abs_loadings(candidate: np.ndarray) -> np.ndarray:
+        """|PC1 loadings| under the covariance route, computed step by step."""
+        passed = _econ._apply_sign_rule(_econ._decompose(candidate)[1])
+        return np.abs(passed[:, 0])
+
+    covariance_route = pc1_abs_loadings(heteroskedastic)
+
+    # The configured route, through the public function — asserted to BE the
+    # correlation route so this comparison cannot silently become self-to-self
+    # again.
+    settings = get_settings()
+    assert settings.econometrics.pca_standardisation == "correlation", (
+        "this test compares the covariance route against the configured one and "
+        f"assumes the configuration is 'correlation'; it is "
+        f"{settings.econometrics.pca_standardisation!r}"
+    )
+    standardised = (heteroskedastic - heteroskedastic.mean(axis=0)) / heteroskedastic.std(
+        axis=0, ddof=1
+    )
+    configured_route = np.abs(
+        np.array(
+            list(
+                _loadings(
+                    _pca(pd.DataFrame(heteroskedastic, columns=_PCA_TENORS), 3), "PC1"
+                ).values()
+            ),
+            dtype=float,
+        )
+    )
+
+    # The public function's output equals the correlation-route decomposition,
+    # so the route identity is measured rather than assumed.
+    assert np.allclose(configured_route, pc1_abs_loadings(standardised), atol=1e-12), (
+        "the configured route's loadings do not match a hand-computed correlation "
+        "decomposition, so the route being tested is not the one assumed"
+    )
+
+    assert np.abs(covariance_route - configured_route).max() > 0.05, (
+        "the covariance and correlation routes no longer disagree on PC1's "
+        "loadings — the measurement that justifies the pca_standardisation leaf "
+        "has changed and the record needs re-examining"
+    )
+
+    # And the DISAGREEMENT IS AN ORDERING INVERSION, which is the part that makes
+    # the choice dangerous rather than merely different: the tenor the covariance
+    # route loads most heavily is not the one the correlation route does.
+    assert int(np.argmax(covariance_route)) != int(np.argmax(configured_route)), (
+        f"both routes now load PC1 most heavily on "
+        f"{_PCA_TENORS[int(np.argmax(covariance_route))]}, so the inversion the "
+        f"measurement recorded is gone: covariance {covariance_route}, "
+        f"correlation {configured_route}"
+    )
+
+
+# --- refusals: silent failures #1, #2, #3 ---------------------------------
+
+
+def test_a_rank_deficient_panel_is_refused() -> None:
+    """Silent failure #1's guard: a duplicated series cannot be decomposed.
+
+    Without this refusal the covariance's eigendecomposition returns a NEGATIVE
+    eigenvalue, and the ``explained_variance_ratios`` still sum to 1.0, so the
+    result looks complete while publishing a negative variance.
+    """
+    frame = _pca_panel()
+    frame["2yr"] = frame["3mo"]  # an exact duplicate
+    with pytest.raises(ValueError, match="rank-deficient"):
+        _pca(frame, 3)
+
+
+def test_a_perfectly_collinear_panel_is_refused() -> None:
+    """``b = 2a`` is rank-deficient too — the shape that produced -1.69e-15."""
+    frame = _pca_panel()
+    frame["5yr"] = 2.0 * frame["3mo"]
+    with pytest.raises(ValueError, match="rank-deficient"):
+        _pca(frame, 3)
+
+
+def test_a_constant_series_is_refused_by_pca() -> None:
+    """A flat series carries no variance, and ``std == 0`` would not catch it.
+
+    The name carries the ``_by_pca`` suffix because O-117 is a live hazard, not
+    a closed one: four ``test_cointegration`` tests once reused
+    ``test_stationarity``'s names, Python bound each module-level name to its
+    LAST definition, and the sweep's M2/M30/M32 were reported as surviving for a
+    whole increment because they were being killed (or not) by tests that no
+    longer covered the mutated path. The same collision reappeared here when
+    this test was first written as ``test_a_constant_series_is_refused`` --
+    a duplicate of the ``test_stationarity`` guard at line 762 -- which made the
+    stationarity guard's coverage DEAD while looking present. ``ruff``'s F811
+    is the standing guard; the suffix is what keeps the two names distinguishable
+    when a reader greps for either.
+
+    The column is a NON-ZERO constant (``4.2``) deliberately: the measured
+    near-miss is that its floating-point spread is ``8.9e-16`` rather than
+    ``0.0``, so both a naive equality test and the rank check's relative
+    tolerance let it through.
+    """
+    frame = _pca_panel()
+    frame["10yr"] = 4.2
+    with pytest.raises(ValueError, match="constant"):
+        _pca(frame, 3)
+
+
+def test_an_all_zero_series_is_refused() -> None:
+    """The all-zero column is the same defect with a zero scale."""
+    frame = _pca_panel()
+    frame["30yr"] = 0.0
+    with pytest.raises(ValueError, match="constant"):
+        _pca(frame, 3)
+
+
+def test_the_constant_series_refusal_names_the_offending_series() -> None:
+    """A refusal that does not name the column is not actionable."""
+    frame = _pca_panel()
+    frame["5yr"] = -3.0
+    with pytest.raises(ValueError, match=r"\['5yr'\]"):
+        _pca(frame, 3)
+
+
+# The tolerance must be RELATIVE to each series' own scale. The three tests
+# above all use a constant whose floating-point residue happens to be small
+# (4.2 -> ~9e-16, 0.0 -> exactly 0.0, -3.0 -> exactly 0.0), so they are all
+# satisfied by an ABSOLUTE epsilon as well -- which is why the mutation sweep's
+# M66 (tolerance reverted to a fixed threshold) initially SURVIVED.
+#
+# Measured 2026-09-23, and the WEIRDNESS IS THE POINT. A constant column's
+# floating-point residue is not monotone in its magnitude: it depends on how
+# `c - mean` rounds at that particular scale. So the magnitudes that defeat an
+# absolute `eps * 100 = 2.22e-14` are specific ones, not "large" ones:
+#
+#     const 4.2     residue 7.1e-14   above 2.22e-14 -> defeats the absolute test
+#     const 42.0    residue 7.1e-14   (same magnitude, same conclusion)
+#     const 271.83  residue 1.1e-13   clearly above -> DEFEATS it (this is the killer)
+#     const 314.16  residue 4.3e-14   above -> defeats it
+#     const 1e6     residue exactly 0 -> does NOT defeat it
+#
+# So the parametrisation below is chosen for the ones that are PROVEN to kill
+# it -- verified by applying the M66 mutant by hand and observing this test
+# fail -- rather than for the ones that look large. `42.0` is retained in the
+# first case as the plausible-value case, and its assertion is honest either
+# way: it is refused under the real (relative) guard, which is what is being
+# tested here. The mutation sweep is what proves the relative/absolute
+# distinction is load-bearing, and it is run separately.
+@pytest.mark.parametrize("constant", [42.0, 271.8281828459045, 314.1592653589793])
+def test_the_constant_refusal_is_scale_relative_not_absolute(constant: float) -> None:
+    """A constant is refused whatever its magnitude, relative to its own scale.
+
+    ``42.0`` is the plausible-value case -- a 42-week series, a parity level, a
+    fixed spread. The other two are the magnitudes whose residues are measured
+    to exceed an absolute epsilon, so they are the ones that make this test
+    falsify a fixed-threshold guard rather than merely agree with it.
+    """
+    frame = _pca_panel()
+    frame["10yr"] = constant
+    with pytest.raises(ValueError, match="constant"):
+        _pca(frame, 3)
+
+
+def test_the_constant_refusal_fires_on_both_standardisation_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard sits BEFORE standardisation, so it governs covariance too.
+
+    This is the half the covariance route would otherwise lose: checked after
+    standardisation, the covariance route has no division to amplify the
+    residue and the column is invisible beside the larger ones. The route is
+    switched here through the real settings tree rather than by calling the
+    private helper, so the guard's position relative to standardisation is
+    what is actually under test.
+    """
+    settings = get_settings()
+    for route in ("correlation", "covariance"):
+        monkeypatch.setattr(settings.econometrics, "pca_standardisation", route, raising=False)
+        frame = _pca_panel()
+        frame["10yr"] = 42.0
+        with pytest.raises(ValueError, match="constant"):
+            _pca(frame, 3)
+
+
+def test_low_variance_but_genuine_series_is_not_refused() -> None:
+    """The constant guard must not fire on a series that merely moves little.
+
+    The tolerance is relative to each series' own scale, so a genuinely small
+    series survives. Without this test, tightening the tolerance to catch more
+    constants would silently start refusing valid panels — a false refusal is a
+    defect in the opposite direction from a false acceptance, and this project
+    treats both as failures.
+    """
+    frame = _pca_panel()
+    rng = np.random.default_rng(4)
+    frame["30yr"] = rng.normal(0.0, 1e-6, size=len(frame))
+    result = _pca(frame, 3)
+    assert result.model_name == "compute_pca"
+
+
+@pytest.mark.parametrize("requested", [6, 99])
+def test_too_many_components_is_refused(requested: int) -> None:
+    """Silent failure #2: asking for more components than the panel has series.
+
+    The panel has five tenors, so the maximum is five; anything ABOVE that must
+    be refused rather than silently truncated to a shorter list than the
+    caller's loop expects. Five itself is legal and is covered separately — a
+    bound test that includes its own boundary in the refusal set asserts the
+    wrong thing.
+    """
+    with pytest.raises(ValueError, match="exceeds the number of series"):
+        _pca(_pca_panel(), requested)
+
+
+@pytest.mark.parametrize("requested", [0, -1, -3])
+def test_fewer_than_one_component_is_refused(requested: int) -> None:
+    """A request for no output is not a PCA."""
+    with pytest.raises(ValueError, match="at least 1"):
+        _pca(_pca_panel(), requested)
+
+
+def test_a_float_component_count_is_refused() -> None:
+    """``2.0`` would be silently truncated by the index arithmetic."""
+    with pytest.raises(TypeError, match="must be an int"):
+        _pca(_pca_panel(), 2.0)  # type: ignore[arg-type]
+
+
+def test_the_exact_component_count_is_permitted() -> None:
+    """Asking for exactly the panel's width is legal, not off-by-one."""
+    result = _pca(_pca_panel(), len(_PCA_TENORS))
+    value = _value(result)
+    assert value["n_components"] == 5
+    assert isinstance(value["loadings"], dict)
+    assert len(value["loadings"]) == 5
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [1, 2, 3, 4, 5],
+)
+def test_every_permitted_component_count_works(requested: int) -> None:
+    """Every legal count produces a well-formed result — the bound is not racy."""
+    result = _pca(_pca_panel(), requested)
+    value = _value(result)
+    assert value["n_components"] == requested
+    ratios = value["explained_variance_ratios"]
+    assert isinstance(ratios, list)
+    assert math.isclose(sum(ratios), 1.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_a_non_finite_panel_is_refused() -> None:
+    """Silent failure #3: a NaN propagates into every eigenvalue and loading."""
+    frame = _pca_panel()
+    frame.iloc[7, 1] = math.nan
+    with pytest.raises(ValueError, match="non-finite"):
+        _pca(frame, 3)
+
+
+def test_the_non_finite_refusal_names_the_offending_series() -> None:
+    """The refusal must name the column, not just say 'a value is NaN'."""
+    frame = _pca_panel()
+    frame.iloc[3, 2] = math.inf
+    with pytest.raises(ValueError, match="5yr"):
+        _pca(frame, 3)
+
+
+def test_a_non_numeric_series_is_refused_by_pca() -> None:
+    """An object column that looks numeric is a real way to get a wrong answer.
+
+    Suffixed for the same O-117 reason as ``test_a_constant_series_is_refused_by_pca``:
+    the unsuffixed name is already owned by the ``test_stationarity`` guard.
+    """
+    frame = _pca_panel()
+    frame["2yr"] = ["x"] * len(frame)
+    with pytest.raises(ValueError, match="must be numeric"):
+        _pca(frame, 3)
+
+
+def test_a_bool_series_is_refused() -> None:
+    """Booleans are numeric in numpy's eyes and not a price series."""
+    frame = _pca_panel()
+    frame["2yr"] = True
+    with pytest.raises(ValueError, match="must be numeric"):
+        _pca(frame, 3)
+
+
+def test_a_non_frame_is_refused() -> None:
+    """A bare ndarray has no column names, and the loadings are keyed by them."""
+    with pytest.raises(TypeError, match="must be a pandas DataFrame"):
+        _pca(_pca_panel().to_numpy(), 3)  # type: ignore[arg-type]
+
+
+def test_a_single_series_is_refused() -> None:
+    """One series has no component to find; its PC1 is itself with a ratio of 1.0."""
+    frame = _pca_panel()[["2yr"]]
+    with pytest.raises(ValueError, match="at least two series"):
+        _pca(frame, 1)
+
+
+def test_an_empty_frame_is_refused() -> None:
+    with pytest.raises(ValueError, match="at least one series column"):
+        _pca(pd.DataFrame(), 3)
+
+
+def test_duplicate_series_names_are_refused() -> None:
+    """The loadings map is keyed by name, so a duplicate silently overwrites."""
+    frame = _pca_panel()
+    frame.columns = ["a", "a", "c", "d", "e"]
+    with pytest.raises(ValueError, match="duplicate column name"):
+        _pca(frame, 3)
+
+
+def test_a_short_panel_is_refused_at_the_floor() -> None:
+    """Below ``pca_min_observations`` the covariance is mostly sampling noise."""
+    with pytest.raises(ValueError, match="below the configured floor"):
+        _pca(_pca_panel(n=40), 3)
+
+
+# --- the near-zero disclosure ---------------------------------------------
+
+
+def test_a_redundant_series_is_disclosed_rather_than_silently_reported() -> None:
+    """A component with essentially no variance is flagged as a numerical residual.
+
+    A panel with five series where one is nearly a combination of the others
+    yields an eigenvalue at the noise floor. The rank check refuses the EXACT
+    case; this is the nearly-exact case, which is legal and over-confident at
+    the same time, so it is disclosed.
+    """
+    frame = _pca_panel()
+    rng = np.random.default_rng(9)
+    frame["30yr"] = frame["3mo"] + rng.normal(0.0, 1e-11, size=len(frame))
+    result = _pca(frame, 3)
+    assert any("near-zero tolerance" in warning for warning in result.warnings), (
+        f"a near-zero component was not disclosed: {result.warnings}"
+    )
+
+
+def test_a_full_rank_panel_has_no_near_zero_warning() -> None:
+    """The disclosure must not fire on a healthy panel — a warning that always fires is noise."""
+    result = _pca_result()
+    assert not any("near-zero tolerance" in warning for warning in result.warnings), (
+        f"a healthy panel was flagged as nearly rank-deficient: {result.warnings}"
+    )
+
+
+def _thin_panel(*, n: int = 70, k: int = 20, seed: int = 31) -> pd.DataFrame:
+    """A WIDE panel with few rows per series, so the inflation warning is reachable.
+
+    Five columns cannot reach the warning at all: the configured floor is 60 rows
+    and ``60 < 10 * 5`` is false, so a five-tenor curve is admitted at twelve rows
+    per series with the inflation present and undisclosed. Twenty columns need
+    200 rows to clear the boundary, so 70 rows is comfortably inside the region
+    the disclosure covers — and this is the panel shape where the ratio actually
+    gets thin in practice.
+    """
+    rng = np.random.default_rng(seed)
+    factor = rng.normal(0.0, 0.05, size=n)
+    values = np.outer(factor, np.ones(k)) + rng.normal(0.0, 0.01, size=(n, k))
+    return pd.DataFrame(values, columns=[f"t{index:02d}" for index in range(k)])
+
+
+def test_a_thin_panel_warns_about_the_leading_eigenvalue_bias() -> None:
+    """Few rows per series inflate PC1, and the result says so with a number.
+
+    Twenty series on 70 rows is 3.5 rows per series — well inside the region the
+    disclosure covers. The warning must carry the measured noise floor rather
+    than only the word "biased": a reader told PC1 is inflated has no way to
+    judge by how much.
+    """
+    result = _pca(_thin_panel(), 3)
+    assert any("Marchenko-Pastur" in warning for warning in result.warnings), (
+        f"the small-sample bias was not disclosed on 70 rows x 20 series: {result.warnings}"
+    )
+    assert any("rows per series" in warning for warning in result.warnings), (
+        f"the disclosure gave no noise-floor number to compare against: {result.warnings}"
+    )
+
+
+def test_the_narrow_panel_case_is_documented_as_uncovered() -> None:
+    """The five-tenor case cannot reach the warning, and the limits say so.
+
+    This is the honest half of the decision to leave ``pca_min_observations`` at
+    60 rather than raise it: at twelve rows per series the inflation is +0.075
+    above the asymptote, which is real but small enough to admit the panel. The
+    test asserts the user-facing consequence — a five-column panel at the floor
+    gets NO warning — so that if someone later changes the floor or the boundary,
+    the documented gap is re-examined rather than silently closed or widened.
+    """
+    result = _pca(_pca_panel(n=60), 3)
+    assert not any("Marchenko-Pastur" in warning for warning in result.warnings), (
+        "a five-column panel at the floor now reaches the inflation warning, so the "
+        f"documented gap no longer exists: {result.warnings}"
+    )
+    joined = " ".join(result.limitations)
+    assert "DOES NOT COVER A NARROW PANEL" in joined, (
+        "the uncovered case is no longer documented in the limitations"
+    )
+
+
+def test_the_noise_floor_rises_as_the_panel_thins() -> None:
+    """The published noise floor falls as rows per series rises.
+
+    A derivation check on the interpolation table: on a THINNER panel the noise
+    floor must be HIGHER, since the small-sample inflation grows as rows per
+    series falls. An interpolation that ran the wrong way — or a table entered in
+    the wrong order — would still print a plausible number inside a warning.
+    """
+    thin = _econ._expected_noise_pc1_share(60, 5)
+    middling = _econ._expected_noise_pc1_share(130, 5)
+    wide = _econ._expected_noise_pc1_share(500, 5)
+    assert thin > middling > wide, (thin, middling, wide)
+    assert wide == 1.0 / 5.0, "past the last measurement the floor is the 1/k asymptote"
+    assert thin < 1.0
+
+
+def test_the_noise_floor_is_interpolated_not_stepped() -> None:
+    """A value between two table entries lies between them — interpolated, not rounded.
+
+    Stepping to the nearest entry would report the same floor for two panels of
+    visibly different width, which is the kind of plausible-looking imprecision
+    this project's disclosures are supposed to avoid.
+    """
+    below = _econ._expected_noise_pc1_share(60, 5)
+    between = _econ._expected_noise_pc1_share(80, 5)
+    above = _econ._expected_noise_pc1_share(100, 5)
+    assert below > between > above, (below, between, above)
+
+
+def test_the_noise_floor_falls_back_to_the_asymptote_for_another_width() -> None:
+    """The table was measured at five columns, so another width gets 1/k, not a guess.
+
+    A scaling law derived from one column count would be the error the table
+    exists to avoid, so the fallback is deliberately unconditional.
+    """
+    assert _econ._expected_noise_pc1_share(60, 3) == 1.0 / 3.0
+    assert _econ._expected_noise_pc1_share(60, 11) == 1.0 / 11.0
+
+
+def test_a_wide_panel_does_not_warn_about_the_bias() -> None:
+    """260 rows for 5 series is 52 rows per series, comfortably past the threshold."""
+    result = _pca(_pca_panel(n=260), 3)
+    assert not any("Marchenko-Pastur" in warning for warning in result.warnings)
+
+
+def test_a_level_like_column_triggers_the_changes_warning() -> None:
+    """The levels-instead-of-changes hazard, made visible from the panel's shape.
+
+    Section 15.20-F says 'daily changes, never levels' and this function cannot
+    verify it — but a level series has a near-unit lag-1 autocorrelation, which
+    is measurable. This test builds a column that walks (a level) among genuine
+    changes and asserts the warning fires.
+    """
+    frame = _pca_panel()
+    rng = np.random.default_rng(12)
+    frame["30yr"] = np.cumsum(rng.normal(0.0, 0.01, size=len(frame)))
+    result = _pca(frame, 3)
+    assert any("lag-1 autocorrelation" in warning for warning in result.warnings), (
+        f"a level-like column was not flagged: {result.warnings}"
+    )
+
+
+def test_a_genuine_change_panel_does_not_trigger_the_levels_warning() -> None:
+    """The signature test must not fire on real differences."""
+    result = _pca_result()
+    assert not any("lag-1 autocorrelation" in warning for warning in result.warnings)
+
+
+def test_a_dominant_pc1_warns_about_a_possible_trend() -> None:
+    """PC1 above 95% is worth a levels check even without an autocorrelation tell."""
+    frame = _pca_panel()
+    rng = np.random.default_rng(21)
+    # A single dominant common factor plus near-constant idiosyncratic terms.
+    factor = rng.normal(0.0, 0.05, size=len(frame))
+    for tenor in _PCA_TENORS:
+        frame[tenor] = factor + rng.normal(0.0, 0.0008, size=len(frame))
+    result = _pca(frame, 3)
+    assert any("checking the input is changes" in warning for warning in result.warnings), (
+        f"a >95% PC1 did not prompt a levels check: {result.warnings}"
+    )
+
+
+def test_the_scale_dispersion_warning_fires_on_the_covariance_route() -> None:
+    """The covariance route on a scale-dispersed panel weights by variance, and says so.
+
+    Exercised by calling the warning builder directly with ``standardisation=
+    "covariance"``, because the configured route is ``correlation`` and the
+    warning is unreachable through the public API at that setting. This is the
+    same technique the file already uses for the NaN-critical-value route: when
+    the configured path provably cannot produce a state, test the function that
+    handles the state and say in the test why.
+    """
+    matrix = _pca_panel().to_numpy(dtype=float)
+    matrix = matrix * np.array([50.0, 1.0, 1.0, 1.0, 1.0])
+    warnings_ = _econ._pca_warnings(
+        eigenvalues=np.array([1.0, 1.0, 1.0, 1.0, 1.0]),
+        ratios=np.array([0.2, 0.2, 0.2, 0.2, 0.2]),
+        n_obs=len(matrix),
+        panel=matrix,
+        standardisation="covariance",
+        near_zero_threshold=1e-8,
+    )
+    assert any("scale dispersion" in warning or "noisiest" in warning for warning in warnings_), (
+        f"the covariance route did not disclose its variance weighting: {warnings_}"
+    )
+
+
+def test_the_scale_dispersion_warning_is_silent_on_the_correlation_route() -> None:
+    """The correlation route gives every series equal weight, so the caveat does not apply."""
+    matrix = _pca_panel().to_numpy(dtype=float)
+    matrix = matrix * np.array([50.0, 1.0, 1.0, 1.0, 1.0])
+    warnings_ = _econ._pca_warnings(
+        eigenvalues=np.array([1.0, 1.0, 1.0, 1.0, 1.0]),
+        ratios=np.array([0.2, 0.2, 0.2, 0.2, 0.2]),
+        n_obs=len(matrix),
+        panel=matrix,
+        standardisation="correlation",
+        near_zero_threshold=1e-8,
+    )
+    assert not any("noisiest" in warning for warning in warnings_)
+
+
+# --- the reasoning object --------------------------------------------------
+
+
+def test_pca_confidence_is_derived_not_asserted() -> None:
+    """Section 22.8: the confidence comes from ``compute_confidence``, never a literal."""
+    result = _pca_result()
+    settings = get_settings()
+    expected = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not settings.is_calibrated(
+                "econometrics.pca_near_zero_tolerance"
+            ),
+            source_independence_count=0,
+            depends_on_unobservable=False,
+        )
+    )
+    assert result.confidence == expected
+    assert result.confidence < 1.0
+
+
+def test_pca_limitations_forbid_a_factor_reading() -> None:
+    """The standing limits must say a component is not an economic factor."""
+    result = _pca_result()
+    joined = " ".join(result.limitations).lower()
+    assert "not economic factors" in joined
+    assert "sample-specific" in joined
+
+
+def test_pca_decision_prohibition_forbids_auto_labelling() -> None:
+    """Section 15.20-F's explicit prohibition, on the result rather than in prose."""
+    result = _pca_result()
+    joined = " ".join(result.decision_prohibition).lower()
+    assert "must not label the components level/slope/curvature" in joined
+    assert "must not be used as a signal on its own" in joined
+    assert "read across two pca fits" in joined
+
+
+def test_pca_records_the_daily_changes_assumption() -> None:
+    """The one instruction the function cannot verify is stated as an assumption."""
+    result = _pca_result()
+    joined = " ".join(result.assumptions).lower()
+    assert "daily changes, not levels" in joined
+
+
+def test_pca_declares_its_standardisation_assumption() -> None:
+    result = _pca_result()
+    joined = " ".join(result.assumptions)
+    assert "correlation" in joined
+
+
+def test_pca_model_name_is_stable() -> None:
+    """A stable identifier is the MLflow key and must not drift."""
+    assert _pca_result().model_name == "compute_pca"
+
+
+def test_pca_names_its_inputs_by_series() -> None:
+    """``inputs_used`` names each series, so provenance is per-column."""
+    result = _pca_result()
+    for tenor in _PCA_TENORS:
+        assert f"daily_changes:{tenor}" in result.inputs_used
+
+
+def test_pca_interpretation_reports_the_component_share() -> None:
+    """The interpretation carries the number, not only a sentence."""
+    result = _pca_result()
+    assert "principal component" in result.interpretation
+    assert "%" in result.interpretation
+
+
+def test_pca_does_not_label_its_components_in_the_interpretation() -> None:
+    """The prohibition applies to this function's OWN prose too.
+
+    A function that forbids labelling in ``decision_prohibition`` while its own
+    ``interpretation`` says "the level factor" has contradicted itself, and the
+    prose is what a reader actually sees first.
+    """
+    result = _pca_result()
+    lowered = result.interpretation.lower()
+    for label in ("level factor", "slope factor", "curvature factor"):
+        assert label not in lowered, (
+            f"the interpretation auto-labelled a component as {label!r}: {result.interpretation}"
+        )
+
+
+def test_pca_context_names_the_standardisation_and_sign_rule() -> None:
+    """The context is where a reader learns which conventions produced the numbers."""
+    result = _pca_result()
+    assert "Standardisation:" in result.context
+    assert "Sign convention:" in result.context

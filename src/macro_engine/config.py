@@ -4484,8 +4484,10 @@ class EconometricsSettings(BaseModel):
     cointegration_min_observations: CalibratedValue
     regime_stability_split_fraction: CalibratedValue
     assumed_test_family_size: CalibratedValue
+    pca_min_observations: CalibratedValue
+    pca_near_zero_tolerance: CalibratedValue
 
-    # These four are CHOICES, not calibrated quantities, and they are plain
+    # These five are CHOICES, not calibrated quantities, and they are plain
     # `str` rather than `CalibratedValue` on purpose. `tests/test_infrastructure.py`
     # enforces that every `CalibratedValue` leaf is readable as a plain NUMBER by
     # a property or `Settings.scalar()` — and `scalar()` returns `float`, so a
@@ -4499,6 +4501,7 @@ class EconometricsSettings(BaseModel):
     kpss_regression: str
     kpss_nlags: str
     cointegration_trend: str
+    pca_standardisation: str
 
     @model_validator(mode="after")
     def _validate_leaves(self) -> EconometricsSettings:
@@ -4527,6 +4530,8 @@ class EconometricsSettings(BaseModel):
             "cointegration_min_observations",
             "regime_stability_split_fraction",
             "assumed_test_family_size",
+            "pca_min_observations",
+            "pca_near_zero_tolerance",
         ):
             value = getattr(self, name).value
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -4607,6 +4612,17 @@ class EconometricsSettings(BaseModel):
             # use destroys the decision is not a config choice; excluding it
             # here means the failure cannot be reached.
             "cointegration_trend": {"c", "ct"},
+            # PCA's standardisation route. Both values are well-defined
+            # quantities answering different questions — "covariance" decomposes
+            # the raw second moments (each series weighted by its own variance),
+            # "correlation" standardises to unit variance first (equal weight
+            # regardless of scale). Measured 2026-09-23 on a five-tenor panel
+            # with the normal front-end-heavy shape: the two routes disagree by
+            # 0.28 on PC1's loadings and INVERT their ordering. Neither is
+            # wrong, so neither is excluded — but a third string is, because a
+            # typo would otherwise fall through to whichever branch the function
+            # happens to write last.
+            "pca_standardisation": {"covariance", "correlation"},
         }
         for name, allowed in permitted.items():
             value = getattr(self, name)

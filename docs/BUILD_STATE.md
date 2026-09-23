@@ -8499,3 +8499,70 @@ applying each mutation with the sweep's OWN anchors:** each swap compiles OK and
 suite fails (`1 failed, 111 passed`). **O-117 is CLOSED.** The one remaining survivor is
 **M34**, inert-by-route. *A mutation sweep's verdict is only as trustworthy as its test
 SELECTION, and a duplicated test name changes that selection silently.*
+
+---
+
+## D-100 — `compute_pca` (Module 18 #4)
+
+**Sweep:** `mutation_econometrics.py` **77 mutations, 76/77 killed.** The one survivor
+is **M34** (`non-finite p-value refusal`), **INERT_BY_CONSTRUCTION** and registered
+with a re-measurement across **93** (configuration × trend) combinations: **31**
+returned non-finite critical values, **ZERO** returned a non-finite p-value, because
+`coint` raises on the NaN critical values (M35) before M34's branch is reached. The
+route *is* reached directly by
+`test_the_non_finite_guards_fire_when_the_route_is_reached`, so the family is proven
+live even though this member is not.
+
+**M66 is now KILLED, and how it was killed is the finding.** M66 replaced the
+constant-series guard's **relative** tolerance with a fixed `eps * 100 = 2.22e-14`
+and **SURVIVED** the first run of the suite, because every constant the tests then
+used (`4.2`, `0.0`, `-3.0`) leaves a floating-point residue small enough that a
+fixed epsilon also catches it — so **no test could tell the two guards apart**.
+
+**Measured 2026-09-23: the residue is NOT monotone in magnitude.** It depends on how
+`c - mean` rounds at that scale:
+
+| constant | residue | defeats a fixed `2.22e-14`? |
+| --- | --- | --- |
+| `4.2` | `7.1e-14` | yes (near-miss, 3.2×) |
+| `271.83` | `1.1e-13` | **yes** |
+| `314.16` | `4.3e-14` | **yes** |
+| `1e6` | exactly `0.0` | no |
+
+So the magnitudes that defeat a fixed epsilon are **specific ones and had to be found
+by measurement**, not chosen as "large". `test_the_constant_refusal_is_scale_relative_not_absolute`
+now carries `271.83` and `314.16`, **verified to kill M66 by applying the mutant by
+hand and watching the test fail**. The sweep moved **74/77 → 76/77**.
+
+**The generalisable rule:** *a guard whose tolerance is RELATIVE can only be proven
+relative by a case where the relative and absolute answers DIVERGE. Agreeing on the
+easy magnitudes proves nothing.*
+
+**⚠️ O-117 RECURRED here, one increment after it was diagnosed.** Two `compute_pca`
+refusal tests were written with names already owned by `test_stationarity`
+(`test_a_constant_series_is_refused`, `test_a_non_numeric_series_is_refused`), so
+Python bound each module-level name to its **last** definition and **two stationarity
+guards were silently DEAD** — the stationarity constant-series and non-numeric guards
+had **no coverage at all** while appearing present. `pytest` collected **176** tests
+where **178** existed. `ruff check tests/models/test_econometrics.py` reported
+**F811 twice** — exactly the standing guard O-117 names. Fixed by suffixing the
+`compute_pca` copies `_by_pca` (matching the file's existing `_by_cointegration`
+convention); the collected count rose **176 → 182** and `ruff` is clean. **The count
+movement IS the evidence** that two tests had been silently absent. O-117's row in
+`docs/OPEN_ISSUES.md` now carries this recurrence.
+
+**⚠️ O-118 — the `.git` object store and `refs/` were WIPED mid-increment.** `git
+status` returned `fatal: not a git repository` while `.git/` was present: `refs/` was
+**absent entirely**, the pack file was **gone** (only its `.idx` remained), and loose
+objects were **0**. The **working tree was untouched** — no engineering work was lost.
+Recovered from the surviving **reflogs** plus the remote. **One commit was genuinely
+lost: `2027b6c`, which had never been pushed.** Final state: `git fsck --no-progress`
+returns **completely clean**, `HEAD` = `6d5f253` = `origin/main`. **The durable habits:
+run `git fsck` (not `git log`) to prove integrity, and PUSH IMMEDIATELY AFTER
+COMMITTING — an unpushed commit is a single point of failure.**
+
+**Gate baseline after D-100 (measured):** ruff clean · `ruff format --check` **247
+files** · `mypy --strict` no issues in **247 files** · **2993 passed / 1 skipped / 17
+deselected / 0 failed** · sweep **76/77** (77 declared) · **43 sweeps, 0 leftovers,
+0 mutant shapes** · reachability **58 = 58** · live check **PASSED** (680 real
+Treasury observations).
