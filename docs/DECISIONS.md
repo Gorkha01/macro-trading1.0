@@ -15544,7 +15544,7 @@ Phase 5 remains **not started**. This is a tooling-cost fix, not a scope change.
 `docs/PROGRESS.md`'s *Next* block records that **O-94** (Q12's exposure half)
 needs Module 18, and Module 18 is the tooling the other Tier-5 items will lean
 on. It is also the only Tier-5 module whose functions **do not exist as stubs**:
-§15.18's block F specifies them as *"formulas in prose only, no callable
+§15.20's block F specifies them as *"formulas in prose only, no callable
 signatures"*, so `run_regression`, `test_stationarity`, `test_cointegration`,
 `compute_pca`, `kalman_latent_state` and `yield_curve_pca` are absent from
 `src/` entirely. **Measured before writing anything:** 22 of §21.3's 23 Tier-5
@@ -15556,7 +15556,7 @@ than assumed.
 ### What the function does
 
 `run_regression(y, X, require_mechanism) -> RegressionResult`, a statsmodels OLS
-wrapper. Three of §15.18's disciplines are encoded rather than left to memory:
+wrapper. Three of §15 Module 18's disciplines are encoded rather than left to memory:
 
 1. **Mechanism first.** `require_mechanism` is a required positional argument and
    is length-checked (`econometrics.mechanism_min_length`). The floor is a
@@ -15820,7 +15820,7 @@ helpers), `config/settings.yaml` (+6 leaves), `src/macro_engine/config.py`,
 
 ### What the function does, and the discipline it encodes
 
-`test_stationarity(series) -> ModelResult` runs **both** ADF and KPSS. §15.18-F is
+`test_stationarity(series) -> ModelResult` runs **both** ADF and KPSS. §15.20-F is
 explicit about why: their nulls are **inverted** — ADF's H0 is a unit root, KPSS's
 H0 is stationarity — so they are two pieces of evidence rather than two opinions
 about one hypothesis, and a series is only confidently classified when they

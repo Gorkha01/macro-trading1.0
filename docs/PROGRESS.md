@@ -5277,7 +5277,7 @@ function per increment, then report and wait.** Do not batch, do not skip ahead.
 
 ### What D-092 established, and what it means for the next step
 
-Module 18's functions **did not exist as stubs**. §15.18's block F specifies them
+Module 18's functions **did not exist as stubs**. §15.20's block F specifies them
 as *"formulas in prose only, no callable signatures"*, and measured, **22 of the 23
 Tier-5 names appear nowhere in `src/`** — only `compute_risk_parity_weights`
 (Phase 4, D-071) exists. So §22.1's *"every function exists as a correctly-signed
@@ -5361,7 +5361,7 @@ time, production-grade*. **One function per increment, then report and wait.**
 | 5 | `kalman_latent_state` | — | not started |
 | 6 | `yield_curve_pca` | `compute_pca` | not started (§6.6 stub) |
 
-**Next: `test_cointegration`.** Both of its dependencies now exist, and §15.18-F
+**Next: `test_cointegration`.** Both of its dependencies now exist, and §15.20-F
 imposes more on it than on either predecessor — it **MUST** return, alongside the
 test statistic: **the spread series, its estimated half-life of mean reversion, and
 a regime-stability check**, and it **MUST** warn that cointegration is a
@@ -5394,7 +5394,7 @@ unnecessary. That decision belongs to its own increment.
   (21 → 33 mutations) rather than adding a sweep. Do the same again: the three
   pinned count locations only move when a *new* sweep file appears.
 - **`test_stationarity` must be imported under a private alias in tests.** Its name
-  begins with `test_` because §15.18-F mandates it, so
+  begins with `test_` because §15.20-F mandates it, so
   `from ... import test_stationarity` makes **pytest collect the model function as
   a test case** — failing with a fixture error that names nothing. `tests/` uses
   `_stationarity`; `scripts/` is safe because `testpaths = ["tests"]`.

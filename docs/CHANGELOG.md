@@ -17,7 +17,7 @@ Entry dates are the date of the change, not the release.
 - `test_stationarity(series) -> ModelResult` in
   `src/macro_engine/models/econometrics.py`. Runs **both** ADF and KPSS because
   their nulls are **inverted** (ADF's H0 is a unit root, KPSS's is stationarity),
-  so they are two pieces of evidence rather than two opinions — and §15.18-F
+  so they are two pieces of evidence rather than two opinions — and §15.20-F
   requires disagreement to be reported, *"not resolved by picking the convenient
   one"*. Four verdicts, all reachable: `stationary`, `non_stationary`,
   `inconclusive_conflict` (both reject) and `inconclusive_low_power` (neither
@@ -140,7 +140,7 @@ First sub-increment of the Tier-5 deferrals.
 
 - `src/macro_engine/models/econometrics.py` — `RegressionResult(ModelResult)` and
   `run_regression(y, X, require_mechanism)`, a statsmodels OLS wrapper. Section
-  15.18's ordering is enforced by the signature: `require_mechanism` is a required
+  §15 Module 18's ordering is enforced by the signature: `require_mechanism` is a required
   argument, so a caller that cannot state the mechanism it is testing cannot call
   the function. An intercept is always added and reported under `'const'`.
 - `config/settings.yaml` — an `econometrics:` section with four thresholds
@@ -1355,7 +1355,7 @@ instrument set.
 `src/macro_engine/portfolio/risk_budget.py`, which has held Module 17 since D-054:
 `compute_risk_parity_weights` (§9.2, **D-071**) and `translate_thesis_to_position`
 (§9.3, **D-072**). No new module; the file is already the shared home of the
-§6.6c ladder, the §15.18 drift check, `volatility_target_scaling` and
+§6.6c ladder, the §15 Module 18 drift check, `volatility_target_scaling` and
 `apply_fractional_kelly`.
 
 **A risk share is not a notional share, and §9.3's signature cannot make it one.**

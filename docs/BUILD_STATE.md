@@ -8212,10 +8212,10 @@ bodies were verified byte-identical — **76 deletions, 0 additions**.
 `scripts/live_econometrics_check.py`, `scripts/mutation_econometrics.py`, plus the
 three-place sweep-census bump.
 
-**Spec:** §15.18 (Module 18 — *"Regression requires an economic mechanism BEFORE
+**Spec:** §15 Module 18 (Module 18 — *"Regression requires an economic mechanism BEFORE
 statistical significance is trusted (never data-mine)"*; *"low R² = genuine
 humility signal, not failure"*; *"non-stationary level regression is spurious"*;
-*"PCA on daily changes, never levels"*), §15.18-F (the prose-only function block),
+*"PCA on daily changes, never levels"*), §15.20-F (the prose-only function block),
 §21.0 (the no-prototyping rule), §21.2 Steps 4-5 (hand-verified values; warning
 paths), §22.1 (stub-then-implement), §22.3 (US-only through Phase 4), §22.8
 (confidence is computed, never asserted), §3 (the reasoning-object contract).
@@ -8277,7 +8277,7 @@ contract, `adj_r_squared`, the stationarity caveat, the causal prohibition, and
 ### Not done here, and named rather than left silent
 
 - **`test_stationarity` does not exist.** `run_regression` therefore cannot test
-  what §15.18 tells it to test first, and says so in `limitations` on every call.
+  what §15 Module 18 tells it to test first, and says so in `limitations` on every call.
   It is the next sub-increment.
 - **`compute_pca` needs `scikit-learn`, which is not a dependency.** Measured:
   `import sklearn` → `ModuleNotFoundError`. §4 requires a recorded decision before
@@ -8295,8 +8295,8 @@ helpers), `config/settings.yaml` (+6 leaves), `src/macro_engine/config.py`,
 `tests/models/test_econometrics.py` (+23 tests), `scripts/live_econometrics_check.py`
 (§4), `scripts/mutation_econometrics.py` (+12 mutations).
 
-**Spec:** §15.18 (Module 18 — *"non-stationary level regression is spurious (test
-stationarity first)"*), §15.18-F (the function's own block: ADF **and** KPSS, nulls
+**Spec:** §15 Module 18 (Module 18 — *"non-stationary level regression is spurious (test
+stationarity first)"*), §15.20-F (the function's own block: ADF **and** KPSS, nulls
 **inverted**, disagreement *"itself informative (inconclusive), not something to
 resolve by picking the convenient one"*), §21.0, §21.2 Steps 4-5, §22.8, §3.
 
@@ -8361,7 +8361,7 @@ still run and still return numbers.
 ### Not done here, and named rather than left silent
 
 - **`test_cointegration` is now UNBLOCKED** — both of its dependencies exist. It is
-  the next increment, and §15.18-F requires more of it than of either predecessor:
+  the next increment, and §15.20-F requires more of it than of either predecessor:
   the spread series, its half-life, a regime-stability check, and two mandatory
   warnings (backward-looking estimates break in regime change; multiple pairwise
   tests without a correction inflate false positives).
