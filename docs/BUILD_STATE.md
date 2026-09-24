@@ -8728,3 +8728,71 @@ fixtures (**O-125**).
 
 Both gates carry a divergent-case test, and the walk carries a >200-file control, because both
 are vacuously true on an empty list.
+
+---
+
+## D-105 — Module 3's `classify_regime_markov_switching` (2026-09-24)
+
+**Tier 5 = 7/23.** §6.2, Module 3, `models/regime.py`. The Tier-5 REPLACEMENT for
+`classify_regime_rule_based` (§21.3, D-096): Phase 5+ builds the sophisticated
+version and **deletes nothing**, so both classifiers ship.
+
+### What is NEW in the tree
+
+* `src/macro_engine/models/regime.py` — `classify_regime_markov_switching`, the
+  `MARKOV_REGIME_ORDERING_RULE` / `MARKOV_TRANSITION_ORIENTATION` constants, the
+  `_relative_span` / `_canonical_regime_order` / `_canonicalise_fit` /
+  `_require_markov_series` helpers. It is the **first `statsmodels` import in this
+  module** (the sibling `econometrics.py` already imported it at module level).
+* `src/macro_engine/config.py` — a new `MarkovRegimeSettings` model and a
+  **required** `markov` field on `RegimeSettings`. Six numeric leaves (five
+  positive, one a share strictly inside `(0,1)`) and three choices as **plain
+  leaves** (`switching_variance`, `markov_trend`, `markov_optimizer`) — Section 4a:
+  the `CalibratedValue` envelope is for NUMBERS, and a selection has no such
+  question. `markov_trend` is restricted to `{"c", "ct"}` because `"n"` and `"t"`
+  produce **no regime intercept** (probed), which would leave the canonical
+  ordering with nothing to sort on.
+* `config/settings.yaml` — the `regime.markov` block, every note carrying its
+  measurement.
+* `scripts/live_regime_check.py` — `_check_markov_regime`, `_search_label_switch`,
+  `_refit_order`, `_refit_raw_matrix`, `_approx_equal`.
+* `scripts/mutation_regime.py` — **+30 mutations (41 → 71)**, and `-x` added to the
+  selection.
+* `tests/models/test_regime.py` — **+34 tests (39 → 73)**.
+* `tests/models/test_trilemma.py` — the `markov` block supplied in `_SYNTHETIC`
+  (the required-field break, **O-127**).
+
+### The two facts a reader should carry away
+
+1. **The library's regime index is not identified**, and the fix is a published
+   canonical ordering — not a better seed. Measured: at `search_reps=10`, 4 of 12
+   seeds put the HIGH-mean regime at index 1 and 8 put the MIDDLE-mean regime
+   there.
+2. **The library's transition matrix is COLUMN-stochastic** (its own docstring
+   says so; measured rows `[0.876519, 1.087713, 1.035767]`, columns exactly 1). The
+   published matrix is the transpose and the orientation is stated on every output.
+
+### Harness facts
+
+* **Editing `__all__` broke TWO sweeps' canaries** — both anchored on it. Both
+  re-anchored to the future import. **O-126** records the un-gated class.
+* **A required nested config field produced a COLLECTION ERROR in
+  `test_trilemma.py`**, which would have made **all 63 of that sweep's mutations
+  "kill" identically** — a perfect score measuring nothing (D-059's trap). Caught
+  only by the mandatory green-unmutated run. **O-127** records the class.
+* **A SIGTERM'd sweep left `MX12` applied**; the sidecar healed it and the leftover
+  predicate returned to 0. The 71-mutation sweep exceeds the foreground window
+  (**O-120**), so it ran in the background with the sidecar as protection.
+
+### Gates (measured 2026-09-24, never carried forward)
+
+ruff check clean · **`ruff format --check` 248** = **`mypy --strict` 248** ·
+**3146 passed / 1 skipped / 17 deselected / 0 failed** (default marker set,
+chunked and summed); the CI marker set is **3147 / 1 / 16 / 0** because it runs the
+one `slow`-marked test. **Delta vs D-104's 3112 = exactly +34.** ·
+`reachability_audit.py --check-baseline` **PASS 58/58** (SCRIPT-ONLY Tier 5: 6 → 7)
+· `openbb_reachability.py` **OK, 278 paths** · both mutant-shape greps print
+**nothing** · `mutation_regime.py` **71/71, exit 0** · `mutation_trilemma.py`
+**61/63 + 2 registered inert, exit 0** · `sweep_health.py` **LAST** → **43 sweeps ·
+0 control-less · 0 unbuffered · 0 leftovers · 0 shapes · 0 committed mutants · 0
+failures · OK** · the live check **PASSED** on real GDP growth.

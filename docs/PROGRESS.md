@@ -5809,3 +5809,138 @@ neither can pass by checking nothing.
 **Gates:** ruff clean · format **248** · mypy **248** · **3112 passed / 1 skipped / 17
 deselected / 0 failed** · reachability **58 = 58** · `sweep_health` **43 sweeps, 0 failures,
 0 leftovers, 0 mutant shapes, 0 unbuffered**.
+
+---
+
+## D-105 — Module 3's `classify_regime_markov_switching` (2026-09-24)
+
+**Tier 5 = 7/23.** Spec **§6.2** (AGENTS.md:831–845), Module 3,
+`models/regime.py`. §6.2's signature: `classify_regime_markov_switching(series:
+pd.Series, k_regimes: int = 3) -> ModelResult` — fixed "so the thesis layer's
+contract doesn't change when this replaces the rule-based version". It is the
+Tier-5 **REPLACEMENT** for `classify_regime_rule_based` (§21.3, D-096): Phase 5+
+builds the sophisticated version and **deletes nothing**, so the rule-based
+classifier is still shipped and still read by the builder.
+
+### The mechanism: the library's regime index is NOT identified
+
+`MarkovRegression` numbers its regimes by wherever the EM starting values put
+them. MEASURED on ONE fixed series at `search_reps=10`: over 12 rng seeds, **4**
+put the HIGH-mean regime at index 1 and **8** put the MIDDLE-mean regime there.
+The restarts improve the likelihood and make the labelling *less* stable — so a
+raw index published to a consumer is a coin flip.
+
+**The fix is a canonical ordering** by estimated mean (ascending, `kind="stable"`
+tiebreak), with the permutation AND the raw-index means published so the ordering
+is checkable from the output alone. **Proven by invariance:** a label switch *is*
+a permutation of the library's index, so `_canonicalise_fit` is asserted
+bit-identical under a permutation of every regime-keyed array while the RAW
+orderings differ.
+
+### Five more library behaviours, all found by PROBING
+
+| # | Behaviour | Consequence |
+| --- | --- | --- |
+| 2 | **The transition matrix is COLUMN-stochastic** — the library's own docstring says element (i,j) is P(from j to i). Measured: rows `[0.876519, 1.087713, 1.035767]`, columns exactly 1 | Published **transposed** to the conventional row-stochastic form, with the orientation stated on every output |
+| 3 | **The smoothed path is retrospective** — `|smoothed − filtered|` reaches **0.630416** and is **exactly 0.0** at the endpoint | The current read comes from the **filtered** path; the measured gap is published |
+| 4 | **A raw `numpy.linalg.LinAlgError` escapes** on a constant series, a NaN series (the library's `missing` default is `"none"` — no nan checking), and a 0/1 series | Typed refusals for the two nameable cases; the exception is caught and converted for the rest |
+| 5 | **The return container mirrors the INPUT container** — `fitted.params` is a Series for a Series endog and an ndarray for an array | **Positional** indexing via `param_names`, and `np.asarray` rather than `.to_numpy()` |
+| 6 | **`trend="n"`/`"t"` have no regime intercept** (probed: `"n"` has none, `"t"` has a TIME TREND `x1[i]`) | Excluded at the config layer, so the ordering key can never vanish; the function also asserts one intercept per regime |
+
+### One construction-inert mutation, recorded rather than hidden
+
+`current = filtered[-1]` → `smoothed[-1]` (**MX8b**) SURVIVED, and correctly: the
+two forms are the same program at `t = T`. That is D-059's class, and no test can
+kill it because none should. It was **removed** from the catalogue (this sweep has
+no `_EXPECTED_INERT` table, and a permanently-surviving entry trains a reader to
+ignore survivors) and recorded in **D-105**; the tripwire is a test asserting the
+equality the inertness depends on, so a library change that separated the paths
+would be loud.
+
+### Two weak tests found by the sweep, and one of them is the lesson in its purest form
+
+The first run was **69/71**. Neither survivor was inert:
+
+* **MX12 (the guard made ABSOLUTE).** My negative control was a series scaled by
+  `1e-9`, whose *absolute* span is `5.9e-09` — far above the absolute threshold —
+  so the relative and absolute guards give the **same verdict** there and the
+  fixture lay **outside** the divergence. The divergent region is **large magnitude
+  with small RELATIVE variation**: at `1e10` with a `1e-4` span the absolute span
+  is `9.918e-05` (**52 ULPs** — it genuinely moves) while the relative span is
+  `9.918e-15`, below the threshold. Added a test that **asserts the divergence
+  explicitly**.
+* **MX30 (the base rate on the FILTERED path).** Invisible whenever the two paths
+  agree on the argmax — and on the module's own fixture they **do** (three clean
+  40-period regimes). Needed a fixture **inside** the disagreement: two means only
+  **0.6 apart with unit noise**, which at seed 8 leaves **18 of 120** periods
+  differing. The test recomputes the counts from the **published** smoothed path
+  AND recomputes the filtered path to prove the fixture discriminates.
+
+**Certified close-out run: 71/71 killed, exit 0.** Catalogue **41 → 71**; `-x`
+added (D-057 — the selection is ~28 s, so 71 mutations without it is ~34 min);
+**measured: `-x` changed no outcome.**
+
+### Three harness findings, each of which would have certified something false
+
+1. **Editing `__all__` broke TWO sweeps' canaries.** Both `mutation_regime.py` and
+   `mutation_trilemma.py` anchored `CANARY1` on the `__all__` opening; adding a
+   name to `__all__` made the anchor occur **zero** times and `sweep_health.py`
+   correctly reported a **LEFTOVER** (O-119). Both moved to
+   `from __future__ import annotations`.
+2. **A required nested config field broke three explicit constructions across two
+   test files.** In `test_regime.py` only **`mypy --strict`** saw it (the two
+   constructions inside `pytest.raises(ValueError, ...)` still passed — the D-048
+   precedent verbatim). In `test_trilemma.py` it was a **collection error**, which
+   means **all 63 of that sweep's mutations would have been "killed" by it** — a
+   perfect score measuring nothing (**D-059's trap**). Caught only because the
+   suite is run **GREEN-UNMUTATED first**.
+3. **A SIGTERM'd sweep left `MX12` applied** — the D-082 scenario; the sidecar
+   healed both targets and the leftover predicate returned to 0. The sweep is
+   beyond the foreground window (**O-120**), so it ran in the background with the
+   sidecar as protection — a recorded deviation.
+
+### The live check
+
+`scripts/live_regime_check.py` gained `_check_markov_regime` on **real GDPC1
+year-over-year growth** (314 observations, 1948-01-01 → 2026-04-01). It asserts the
+published identities, recomputes the library's own matrix to prove the
+**transposition**, and checks the ordering rule **against the raw series** — the
+first-ordered regime must have the lowest **realised** mean growth. **Measured:
+realised `[−0.6116, 2.768, 5.5823]` vs the model's `[−0.4666, 2.7597, 5.5959]`.**
+It **searches 8 restarts for a label switch and reports honestly that none moved
+the raw index off `[0, 1, 2]`**. **PASSED.**
+
+### Gate baseline after D-105 (measured 2026-09-24)
+
+ruff check clean · **`ruff format --check` 248 files** · **`mypy --strict` no issues
+in 248 files** · **3146 passed / 1 skipped / 17 deselected / 0 failed** on the
+default marker set (`not live and not slow`), chunked and summed; the CI marker set
+(`not live`) is **3147 / 1 / 16 / 0** because it runs the one `slow`-marked test.
+**Delta against D-104's 3112 = exactly +34, the 34 new tests in `test_regime.py`
+(39 → 73 tests).** · `reachability_audit.py --check-baseline` **PASS 58/58**
+(SCRIPT-ONLY Tier 5: 6 → 7) · `openbb_reachability.py` **OK, 278 paths** · both
+mutant-shape greps print **nothing** · `mutation_regime.py` **71/71, exit 0** ·
+`mutation_trilemma.py` **61/63 + 2 registered inert, exit 0** · `sweep_health.py`
+**run LAST** → **43 sweeps · 0 control-less · 0 unbuffered · 0 leftovers · 0 shapes
+· 0 committed mutants · 0 failures · OK**.
+
+`test_regime.py` collects **73** tests (was 39); `mutation_regime.py`'s catalogue is
+**71** (was 41).
+
+### Next
+
+**Tier 5 = 7/23.** The Tier-5 list (§21.3) now has **16** outstanding:
+`cip_check`, `uip_expected_move`, `ppp_valuation`, `carry_score`,
+`dollar_smile_regime`, `intervention_capacity`, `em_vulnerability_checklist`,
+`oil_balance_signal`, `gold_driver_attribution`, `metals_complex_divergence`,
+`sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior`,
+`monte_carlo_var`, `compute_risk_parity_weights`, `statement_text_diff`.
+
+**§22.3's deferral list is the guide, not a keyword grep (D-096): ask what each
+REPLACES.** The next natural item is **`monte_carlo_var`** — it supersedes
+`historical_var` / `parametric_var` / `expected_shortfall` (all Tier 1, all shipped
+in Phase 4, all in `models/risk.py`), and §17.4's risk axis is the consumer. It is
+the same shape as this increment: a Phase-4 SIMPLE version exists and the Phase-5
+version replaces it without deleting anything. **Read §15 Module 11/17 and §17.4
+first, and probe the library before writing** — this increment found six defects by
+probing and none by reading.

@@ -1729,9 +1729,16 @@ shipped at **D-102**, so all five §15.20-F signatures AND the §6.6 consumer ar
 implemented; **Module 18 is 5 of 6** and the sixth is Module 8's, which is why the
 count and the row's module number disagreed until D-101 corrected it.
 
-**Next = `classify_regime_markov_switching`** — the Tier-5 REPLACEMENT for
-`classify_regime_rule_based` (§21.3; see D-096's reconciliation: Phase 5+ builds the
-sophisticated version of each deferred item and deletes nothing). **Tier 5 = 6/23.**
+**`classify_regime_markov_switching` SHIPPED at D-105** — the Tier-5 REPLACEMENT
+for `classify_regime_rule_based` (§21.3; see D-096's reconciliation: Phase 5+
+builds the sophisticated version of each deferred item and deletes nothing). It is
+**Module 3**, `models/regime.py`, and it does **not** touch Module 18's count.
+**Tier 5 = 7/23.**
+
+**Next = `monte_carlo_var`** — it supersedes `historical_var` / `parametric_var` /
+`expected_shortfall` (all Tier 1, all shipped in Phase 4, all in `models/risk.py`),
+and §17.4's risk axis is the consumer. **Same shape as D-105:** a Phase-4 SIMPLE
+version exists and the Phase-5 version replaces it without deleting anything.
 
 **One row was also WRONG about its module.** `yield_curve_pca` was recorded against
 Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in
@@ -1866,3 +1873,35 @@ concluded *"review the IDENTIFIERS, not just the arithmetic."* D-097 shows the s
 defect class in the **test namespace**. Any module that grows sibling tests needs
 its new names checked against the existing set, and a rising pass count is the proof
 rather than the absence of failures.
+
+---
+
+## D-105 — Module 3's `classify_regime_markov_switching` (2026-09-24)
+
+**Tier 5 = 7/23.** §6.2, Module 3, `models/regime.py`. **Module 18 is untouched at
+5 of 6** — this is Module 3's Tier-5 replacement, not a Module-18 row.
+
+**It lands in the SAME MODULE as the function it supersedes**, and that is a
+mapping fact worth stating: `classify_regime_rule_based` and
+`classify_regime_markov_switching` are both **Module 3**, both in `models/regime.py`,
+and §6.2 fixes the new signature "so the thesis layer's contract doesn't change
+when this replaces the rule-based version". **§21.3's tier table is the authority
+on WHEN a stub becomes IMPLEMENTED; the MODULE column is the authority on WHERE.**
+The Tier-5 list names 23 functions and they do not all belong to one module:
+`yield_curve_pca` is Module 8 (D-102), `classify_regime_markov_switching` is Module
+3 (D-105), and the rest of §15.20-F is Module 18. **A tier is a dependency depth,
+never a module.**
+
+**The supersession map, which is the only correct instrument for this list
+(D-096):** `classify_regime_rule_based` → `classify_regime_markov_switching`
+(this increment) · `realized_vol_simple` → GARCH · `historical_var` /
+`parametric_var` / `expected_shortfall` → `monte_carlo_var` (next). A keyword grep
+of the Tier-5 list for a capability answers the wrong question; **ask what each
+entry replaces.**
+
+**The output shape is deliberately NOT the rule-based one.** §6.2 asks for
+"smoothed regime probabilities per period, not a hard label", so `value` carries
+the probability path as its primary output and the hard label is a derived argmax
+published beside its own probability. A consumer reading the two classifiers as
+the same object is reading a partition and a posterior as if they were
+interchangeable — they are not, and the function's `decision_prohibition` says so.

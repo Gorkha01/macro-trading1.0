@@ -198,9 +198,17 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     # STRUCTURAL (`tests/` cannot collect) rather than incidental, and the
     # mutation cannot quietly become inert the way a behavioural one can.
     (
+        # The anchor is the FUTURE IMPORT, not the `__all__` block it used to be.
+        # MEASURED at D-105: adding a name to `__all__` (which every increment
+        # that exports a function does) made the old anchor occur ZERO times, and
+        # `sweep_health.py` correctly reported the canary as a LEFTOVER — the
+        # leftover predicate cannot tell a drifted anchor from an applied
+        # mutation (O-119). TWO sweeps anchor on this same file, so one `__all__`
+        # edit broke both. The future import is the module's first statement and
+        # does not churn; it occurs exactly once, which `check_targets` verifies.
         "CANARY1 the module literal is replaced with a syntax error (CONTROL)",
         SRC,
-        '__all__ = [\n    "REGIME_STATES",',
+        "from __future__ import annotations",
         "__CANARY__ = <<<SYNTAX ERROR>>>",
     ),
     # --- M1: the branch logic --------------------------------------------
@@ -536,6 +544,214 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         'GrowthAxis = Literal["deep_contraction", "contraction", "above_trend"]',
         'GrowthAxis = Literal["deep_contraction", "contraction", "at_trend", "above_trend"]',
     ),
+    # =====================================================================
+    # D-105 — `classify_regime_markov_switching` (Section 6.2, Tier 5)
+    #
+    # The function's four published corrections, each mutated back to the
+    # plausible alternative it replaced. MX1..MX4 attack the CANONICAL ORDERING
+    # (the mechanism); MX5..MX8 the ORIENTATION and the LOOK-AHEAD; MX9..MX16 the
+    # input guards; MX17..MX22 the config accessors; MX23..MX28 the warnings.
+    # =====================================================================
+    # --- MX1..MX4: the canonical ordering (the increment's mechanism) -----
+    (
+        "MX1 the ordering returns the library's index unchanged (no sort at all)",
+        SRC,
+        '    return [int(index) for index in np.argsort(constants, kind="stable")]',
+        "    return [int(index) for index in range(constants.size)]",
+    ),
+    (
+        "MX2 the ordering sorts DESCENDING (highest mean first)",
+        SRC,
+        '    return [int(index) for index in np.argsort(constants, kind="stable")]',
+        '    return [int(index) for index in np.argsort(constants, kind="stable")[::-1]]',
+    ),
+    (
+        "MX3 the ordering uses a non-stable sort, losing the tiebreak",
+        SRC,
+        '    return [int(index) for index in np.argsort(constants, kind="stable")]',
+        '    return [int(index) for index in np.argsort(constants, kind="quicksort")]',
+    ),
+    (
+        "MX4 the smoothed path is not re-indexed into the canonical order",
+        SRC,
+        "        means=constants[order],\n        smoothed=smoothed[:, order],",
+        "        means=constants[order],\n        smoothed=smoothed,",
+    ),
+    # --- MX5..MX8: the orientation and the look-ahead ---------------------
+    (
+        "MX5 the transition matrix is published in the LIBRARY's column-stochastic orientation",
+        SRC,
+        "    rows = raw_transition.T",
+        "    rows = raw_transition",
+    ),
+    (
+        "MX6 the transition matrix is not re-indexed into the canonical order",
+        SRC,
+        "        transition=transition[np.ix_(order, order)],",
+        "        transition=transition,",
+    ),
+    (
+        "MX7 the expected durations are not re-indexed into the canonical order",
+        SRC,
+        "        durations=durations[order],",
+        "        durations=durations,",
+    ),
+    (
+        "MX8 the smoothed/filtered look-ahead gap is published as zero",
+        SRC,
+        "    max_gap = float(np.max(np.abs(smoothed - filtered)))",
+        "    max_gap = 0.0",
+    ),
+    # MX8b (`current = filtered[-1]` -> `smoothed[-1]`) was written, run, and
+    # REMOVED. It SURVIVED, and correctly: MEASURED 2026-09-24, the smoothed and
+    # filtered paths are EXACTLY equal at the final observation (they must be —
+    # there is no future to smooth over), so the two forms are the same program
+    # on the whole domain. That is D-059's **construction** class: INERT IN THE
+    # STRONGEST SENSE, and no test can kill it because none should. This sweep
+    # has no `_EXPECTED_INERT` table (that lives in `mutation_econometrics.py`),
+    # and an entry whose verdict is permanently "survived" is exactly the noise
+    # that teaches a reader to ignore survivors — so the honest home for the
+    # observation is the record, not the catalogue. It is recorded in
+    # `docs/DECISIONS.md` (D-105) and pinned by
+    # `test_markov_current_read_is_the_filtered_endpoint_and_equals_the_smoothed_one`,
+    # which asserts the equality the inertness depends on — so a change in the
+    # library's smoothing that separated the two paths would be LOUD rather than
+    # silently making this decision load-bearing.
+    # --- MX9..MX16: the input guards --------------------------------------
+    (
+        "MX9 the pandas-Series type guard is disabled",
+        SRC,
+        "    if not isinstance(series, pd.Series):",
+        "    if False:",
+    ),
+    (
+        "MX10 the non-finite guard is disabled",
+        SRC,
+        "    if non_finite:",
+        "    if False:",
+    ),
+    (
+        "MX11 the no-variation guard is disabled",
+        SRC,
+        "    if _relative_span(values) <= _NO_VARIATION_RELATIVE_SPAN:",
+        "    if False:",
+    ),
+    (
+        "MX12 the no-variation guard is made ABSOLUTE (the O-121 / D-100 defect)",
+        SRC,
+        "    scale = float(np.max(np.abs(values)))\n    if scale == 0.0:\n        return 0.0\n    return float((np.max(values) - np.min(values)) / scale)",
+        "    return float(np.max(values) - np.min(values))",
+    ),
+    (
+        "MX13 the length floor is a hardcoded row count instead of the derived product",
+        SRC,
+        "    required = ceil(settings.min_observations_per_parameter * n_parameters)",
+        "    required = 60",
+    ),
+    (
+        "MX14 the k_regimes floor is relaxed to 1",
+        SRC,
+        "    if k_regimes < 2:",
+        "    if k_regimes < 1:",
+    ),
+    (
+        "MX15 the bool rejection is dropped (isinstance(True, int) is True)",
+        SRC,
+        "    if isinstance(k_regimes, bool) or not isinstance(k_regimes, int):",
+        "    if not isinstance(k_regimes, int):",
+    ),
+    (
+        "MX16 the library's raw LinAlgError is allowed to escape as a numpy exception",
+        SRC,
+        "    except np.linalg.LinAlgError as exc:",
+        "    except ZeroDivisionError as exc:",
+    ),
+    # --- MX17..MX22: the config accessors ---------------------------------
+    (
+        "MX17 parameters_for drops the switching-variance term",
+        CONFIG,
+        "        variances = k_regimes if self.switching_variance else 1",
+        "        variances = 1",
+    ),
+    (
+        "MX18 the max_regimes accessor returns its shipped literal",
+        CONFIG,
+        '        """Ceiling on the caller\'s ``k_regimes``. See the YAML note."""\n        return int(self.max_regimes_value.value)',
+        '        """Ceiling on the caller\'s ``k_regimes``. See the YAML note."""\n        return 6',
+    ),
+    (
+        "MX19 the modal-share threshold accessor returns its shipped literal",
+        CONFIG,
+        '        """Share of periods above which the modal regime is called a base state."""\n        return float(self.modal_share_warning_threshold_value.value)',
+        '        """Share of periods above which the modal regime is called a base state."""\n        return 0.9',
+    ),
+    (
+        "MX20 the per-parameter floor accessor returns its shipped literal",
+        CONFIG,
+        '        """Observations required per estimated parameter, before the fit is attempted."""\n        return float(self.min_observations_per_parameter_value.value)',
+        '        """Observations required per estimated parameter, before the fit is attempted."""\n        return 5.0',
+    ),
+    (
+        "MX21 the max_iterations accessor returns its shipped literal",
+        CONFIG,
+        '        """``maxiter`` for the MLE step."""\n        return int(self.max_iterations_value.value)',
+        '        """``maxiter`` for the MLE step."""\n        return 200',
+    ),
+    (
+        "MX22 the k_regimes ceiling is removed entirely",
+        SRC,
+        "    if k_regimes > settings.max_regimes:",
+        "    if False:",
+    ),
+    # --- MX23..MX28: the published evidence and the warnings --------------
+    (
+        "MX23 the library-warning count is published as zero",
+        SRC,
+        '            "library_warning_count": warning_count,',
+        '            "library_warning_count": 0,',
+    ),
+    (
+        "MX24 the base-state warning branch is disabled",
+        SRC,
+        "    if modal_share >= settings.modal_share_warning_threshold:",
+        "    if False:",
+    ),
+    (
+        "MX25 the library-warning branch is disabled",
+        SRC,
+        "    if warning_count:",
+        "    if False:",
+    ),
+    (
+        "MX26 the non-convergence branch is disabled",
+        SRC,
+        "    if not converged:",
+        "    if False:",
+    ),
+    (
+        "MX27 the published permutation is the identity",
+        SRC,
+        '            "regime_order_raw_index": order,',
+        '            "regime_order_raw_index": list(range(k_regimes)),',
+    ),
+    (
+        "MX28 the published raw-index means are the canonical ones",
+        SRC,
+        '            "regime_means_raw_index": [float(m) for m in constants],',
+        '            "regime_means_raw_index": [float(m) for m in canonical_constants],',
+    ),
+    (
+        "MX29 the regime counts are published from the library's index order",
+        SRC,
+        "    counts = [int(np.count_nonzero(period_labels == index)) for index in range(k_regimes)]",
+        "    counts = [int(period_labels.size)] + [0] * (k_regimes - 1)",
+    ),
+    (
+        "MX30 the base rate is measured on the FILTERED path instead of the smoothed one",
+        SRC,
+        "    period_labels = np.argmax(smoothed, axis=1)",
+        "    period_labels = np.argmax(filtered, axis=1)",
+    ),
 ]
 
 
@@ -549,6 +765,15 @@ def run_tests() -> bool:
             "tests/test_infrastructure.py",
             "-q",
             "--no-header",
+            # `-x` is MANDATORY here, and it is D-057's rule rather than a
+            # preference: the selection takes ~28 s, so 72 mutations without it
+            # is ~34 minutes of foreground — which is exactly the run that gets
+            # interrupted, and on win32 an interrupted sweep leaves every mutant
+            # applied so far on disk (D-082). A kill is a kill: the first failing
+            # test is sufficient evidence, and `returncode != 0` is the verdict
+            # either way. MEASURED at D-105: adding it did not change a single
+            # mutation's outcome.
+            "-x",
             "-m",
             "not live",
         ],

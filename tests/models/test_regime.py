@@ -32,15 +32,19 @@ synthetic leaves are **all distinct** so an accessor swap cannot hide (D-035).
 
 from __future__ import annotations
 
+import json
 from contextlib import ExitStack
 from itertools import product
-from typing import cast, get_args
+from typing import Any, cast, get_args
 from unittest.mock import patch
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from macro_engine.config import (
     CalibratedValue,
+    MarkovRegimeSettings,
     RegimeBaseRates,
     RegimeRateValues,
     RegimeSettings,
@@ -51,12 +55,17 @@ from macro_engine.config import (
 )
 from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
 from macro_engine.models.regime import (
+    MARKOV_REGIME_ORDERING_RULE,
+    MARKOV_TRANSITION_ORIENTATION,
     REGIME_STATES,
     REGIME_TENSIONS,
     GrowthAxis,
     InflationAxis,
     RegimeInputs,
     RegimeTension,
+    _canonical_regime_order,
+    _canonicalise_fit,
+    classify_regime_markov_switching,
     classify_regime_rule_based,
     regime_tension,
 )
@@ -126,6 +135,24 @@ _SYNTHETIC = RegimeSettings(
             expected_severity="CRITICAL_PEG_STRESS",
             expected_month="1992-09",
         ),
+    ),
+    # `RegimeSettings.markov` is required for the same reason `trilemma` is, and
+    # the SAME defect class recurred when it was added: three explicit
+    # `RegimeSettings(...)` constructions in this file became unconstructible,
+    # every one of the `pytest.raises(ValueError, ...)` tests still PASSED
+    # (the band validators fire before pydantic reports the missing field), and
+    # only `mypy --strict` caught it. The values are synthetic and distinct from
+    # the shipped ones so a property returning a shipped literal is visible.
+    markov=MarkovRegimeSettings(
+        max_regimes_value=_leaf(5),
+        min_observations_per_parameter_value=_leaf(4.0),
+        max_iterations_value=_leaf(150),
+        em_iterations_value=_leaf(4),
+        search_reps_value=_leaf(0),
+        modal_share_warning_threshold_value=_leaf(0.85),
+        switching_variance=True,
+        markov_trend="c",
+        markov_optimizer="bfgs",
     ),
 )
 
@@ -971,6 +998,7 @@ def test_config_bands_must_be_ordered() -> None:
             measured_rising_inflation_rate=_leaf(0.775),
             base_rates=_SYNTHETIC.base_rates,
             trilemma=_SYNTHETIC.trilemma,
+            markov=_SYNTHETIC.markov,
         )
 
 
@@ -987,6 +1015,7 @@ def test_negative_half_width_band_is_rejected() -> None:
             measured_rising_inflation_rate=_leaf(0.775),
             base_rates=_SYNTHETIC.base_rates,
             trilemma=_SYNTHETIC.trilemma,
+            markov=_SYNTHETIC.markov,
         )
 
 
@@ -1111,3 +1140,724 @@ class TestRegimeTension:
             neutral_band=0.2,  # the patched neutral band
         )
         assert value["regime_tension"] == expected
+
+
+# =============================================================================
+# Module 3 (Phase 5+) — classify_regime_markov_switching (Section 6.2)
+# =============================================================================
+#
+# What is worth asserting here is not the arithmetic — the arithmetic belongs to
+# statsmodels — but the FOUR things this function exists to correct, each of
+# which the library gets right *for a different purpose* and wrong for this one:
+#
+# 1. **The regime index is not identified.** The library numbers regimes by its
+#    EM starting values; measured 2026-09-24, one fixed series at
+#    `search_reps=10` put the HIGH-mean regime at index 1 for 4 of 12 seeds and
+#    the MIDDLE-mean regime there for the other 8. The canonical ordering is the
+#    fix, and the invariance test below is the proof: a label switch is exactly a
+#    permutation of the library's index, so permuting the inputs must leave every
+#    canonical output bit-identical while the RAW order changes.
+# 2. **The transition matrix is column-stochastic.** The library documents
+#    element (i,j) as P(from j to i). The published matrix is the transpose and
+#    the orientation is stated; both are asserted.
+# 3. **The smoothed path is retrospective.** `|smoothed - filtered|` is positive
+#    somewhere in the sample and exactly 0 at the endpoint; the current read is
+#    taken from the filtered path. Asserted as an identity, not a comment.
+# 4. **`converged=False` is not evidence of a bad fit.** Measured here on the
+#    module's own series: at `max_iterations=50` the flag is False while the
+#    log-likelihood is within 0.32 of the converged value. The test pins that
+#    gap, so the warning's claim is measured rather than asserted.
+#
+# Every guard has a NEGATIVE CONTROL beside it — the input the guard must ACCEPT
+# — because a guard that refuses everything passes its own test. That matters
+# most for the no-variation guard, whose tolerance is fully RELATIVE: the
+# control is a series that moves a thousandth as much and must still be fitted.
+
+_MARKOV_N = 120
+_MARKOV_SEED = 20260924
+_MARKOV_TRUE_MEANS = (-2.0, 0.0, 2.0)
+
+#: Mutually non-colliding markers, one per warning branch (D-052's partition rule).
+_MARKOV_WARNING_MARKERS: tuple[str, ...] = (
+    "STATISTICAL DECOMPOSITION, NOT A CAUSAL CLAIM",
+    "CHOSEN BY THE CALLER",
+    "REGIME ORDERING:",
+    "THE SMOOTHED PATH IS RETROSPECTIVE",
+    "THE HARD LABEL IS DERIVED",
+    "BASE RATE:",
+    "BASE STATE:",
+    "THE LIBRARY RAISED",
+    "THE OPTIMIZER REPORTED NON-CONVERGENCE",
+)
+
+
+def _markov_series(n: int = _MARKOV_N, seed: int = _MARKOV_SEED) -> pd.Series:
+    """A three-regime series with KNOWN means, on a quarterly index.
+
+    Built from the true means so a test can assert recovery rather than merely
+    that some number came back, and seeded so every assertion is reproducible.
+    """
+    rng = np.random.default_rng(seed)
+    labels = np.repeat(np.arange(3), int(np.ceil(n / 3)))[:n]
+    values = np.array(_MARKOV_TRUE_MEANS)[labels] + rng.normal(0.0, 0.35, n)
+    return pd.Series(values, index=pd.date_range("1980-01-01", periods=n, freq="QS"))
+
+
+def _markov_config(**leaf_updates: Any) -> MarkovRegimeSettings:
+    """The shipped markov block with named leaves replaced by this test's values."""
+    real = get_settings().regime.markov
+    return MarkovRegimeSettings(**{**real.model_dump(), **leaf_updates})
+
+
+def _with_markov(**leaf_updates: Any) -> _PatchedSettings:
+    """Patch ONLY the `regime.markov` block, leaving confidence real."""
+    real = get_settings().regime
+    return _PatchedSettings(real.model_copy(update={"markov": _markov_config(**leaf_updates)}))
+
+
+def _markov_leaf(value: float) -> CalibratedValue:
+    return CalibratedValue(
+        value=value,
+        calibration_status="fitted_assumption",
+        note="synthetic — moved by a test so a literal cannot produce the same answer",
+    )
+
+
+def _markov_value(result: Any) -> dict[str, Any]:
+    """Narrow `ModelResult.value` to the dict this function publishes.
+
+    `ModelResult.value` is a broad union by design (Section 22.9), so mypy cannot
+    index it. The `assert` is what makes the annotation honest rather than a cast:
+    a function that started returning a bare float fails here, loudly.
+    """
+    value = result.value
+    assert isinstance(value, dict), f"expected a dict value, got {type(value).__name__}"
+    return cast("dict[str, Any]", value)
+
+
+@pytest.fixture(scope="module")
+def markov_result() -> Any:
+    """ONE fit, shared by the read-only assertions.
+
+    Module-scoped deliberately: a fit costs ~1.7 s and most of what follows reads
+    the result rather than producing a new one. The mutation sweep restarts
+    pytest per mutant, so the fixture is rebuilt under every mutation — sharing it
+    cannot hide a change in behaviour.
+    """
+    return classify_regime_markov_switching(_markov_series())
+
+
+# --- 1. the canonical ordering (the increment's mechanism) -------------------
+
+
+def test_markov_canonicalisation_is_invariant_under_a_label_switch() -> None:
+    """THE PROOF: permuting the library's index must not move any published value.
+
+    A label switch IS a permutation of the library's regime index — that is what
+    the measured 4-of-12 / 8-of-12 split produces. So this drives the exact
+    operation: the same fit, with every regime-keyed array re-indexed by a
+    permutation, and every canonical output asserted bit-identical.
+
+    The last assertion is the one that makes it a proof rather than a tautology:
+    the RAW orderings must DIFFER, or the permutation changed nothing and the
+    invariance was free.
+    """
+    constants = np.array([2.5, 0.0, 1.0])
+    smoothed = np.array([[0.10, 0.70, 0.20], [0.60, 0.30, 0.10]])
+    filtered = np.array([[0.20, 0.60, 0.20], [0.50, 0.40, 0.10]])
+    transition = np.array([[0.8, 0.1, 0.1], [0.2, 0.7, 0.1], [0.1, 0.2, 0.7]])
+    durations = np.array([5.0, 3.3333, 3.3333])
+
+    straight = _canonicalise_fit(constants, smoothed, filtered, transition, durations)
+    perm = [2, 0, 1]
+    switched = _canonicalise_fit(
+        constants[perm],
+        smoothed[:, perm],
+        filtered[:, perm],
+        transition[np.ix_(perm, perm)],
+        durations[perm],
+    )
+
+    assert straight.order != switched.order, (
+        "the permutation did not change the raw ordering, so the invariance below "
+        "is vacuous — pick a permutation that actually moves a regime"
+    )
+    assert np.array_equal(straight.means, switched.means)
+    assert np.array_equal(straight.smoothed, switched.smoothed)
+    assert np.array_equal(straight.filtered, switched.filtered)
+    assert np.array_equal(straight.transition, switched.transition)
+    assert np.array_equal(straight.durations, switched.durations)
+    # The canonical means are the SORTED raw means, which is the rule itself.
+    assert np.array_equal(straight.means, np.sort(constants))
+
+
+def test_markov_ordering_puts_the_means_in_ascending_order() -> None:
+    order = _canonical_regime_order(np.array([2.5, -1.0, 0.5]))
+    assert order == [1, 2, 0]
+    means = np.array([2.5, -1.0, 0.5])[order]
+    assert list(means) == sorted(means)
+
+
+def test_markov_ordering_ties_keep_the_library_index_order() -> None:
+    """The tiebreak is `kind='stable'`, and it is what makes the order deterministic.
+
+    Two regimes with equal estimated means are indistinguishable by the ordering
+    rule; a non-stable sort would order them by whatever the algorithm happened to
+    do, so the published permutation could differ between two runs of identical
+    input. The stable sort keeps the library's index order instead.
+
+    The 12-entry fixture is not decoration. MEASURED 2026-09-24: at 3, 4 and 6
+    tied entries numpy's `quicksort` and `heapsort` return the SAME permutation as
+    `stable`, so a small fixture cannot distinguish them and the `kind=` argument
+    would be untested — this is 5y's "a grid must be fine enough to land off the
+    boundary", in the sort-stability dimension. The first size that separates them
+    is 12.
+    """
+    assert _canonical_regime_order(np.array([1.0, 1.0, 0.0])) == [2, 0, 1]
+    assert _canonical_regime_order(np.array([0.0, 1.0, 1.0])) == [0, 1, 2]
+
+    # Six regimes tied at 1.0 alternating with six tied at 0.0. The stable sort
+    # preserves index order within each tied run.
+    tied = np.zeros(12)
+    tied[::2] = 1.0
+    assert _canonical_regime_order(tied) == [1, 3, 5, 7, 9, 11, 0, 2, 4, 6, 8, 10]
+    # The discriminating claim, asserted rather than assumed: a non-stable sort
+    # returns something else at this size.
+    assert list(np.argsort(tied, kind="quicksort")) != _canonical_regime_order(tied)
+
+
+def test_markov_published_means_are_ascending_and_the_permutation_explains_them(
+    markov_result: Any,
+) -> None:
+    """End to end: the published ordering must be checkable from the output alone.
+
+    The last assertion is the load-bearing one. Checking that the means are
+    sorted and that the permutation is a permutation is NOT enough: a
+    permutation published beside an unrelated sorted list satisfies both. The
+    raw means are published precisely so the two can be tied together.
+    """
+    value = _markov_value(markov_result)
+    assert isinstance(value, dict)
+    means = value["regime_means"]
+    order = value["regime_order_raw_index"]
+    raw = value["regime_means_raw_index"]
+    assert means == sorted(means), f"means are not ascending: {means}"
+    assert sorted(order) == list(range(value["k_regimes"])), (
+        f"regime_order_raw_index is not a permutation: {order}"
+    )
+    assert means == [raw[i] for i in order], (
+        f"the published permutation does not map the RAW means onto the published ones: "
+        f"means={means}, raw={raw}, order={order}"
+    )
+    assert value["regime_ordering_rule"] == MARKOV_REGIME_ORDERING_RULE
+
+
+# --- 2. the transition matrix orientation ------------------------------------
+
+
+def test_markov_transition_matrix_is_published_row_stochastic(markov_result: Any) -> None:
+    """Rows sum to 1 — the OPPOSITE of the library's own orientation.
+
+    The library's `regime_transition[i, j]` is P(from j to i), so its COLUMNS sum
+    to one. Asserting the row sums is what distinguishes the published matrix
+    from a verbatim copy of the library's, and asserting the COLUMN sums differ
+    from 1 is what proves the transpose actually happened.
+    """
+    value = _markov_value(markov_result)
+    matrix = value["transition_matrix"]
+    rows = [sum(row) for row in matrix]
+    assert rows == pytest.approx([1.0] * value["k_regimes"], rel=1e-12), rows
+    columns = [
+        sum(matrix[i][j] for i in range(value["k_regimes"])) for j in range(value["k_regimes"])
+    ]
+    assert any(abs(c - 1.0) > 1e-6 for c in columns), (
+        f"the columns also sum to 1 ({columns}), so the transpose was a no-op and the "
+        f"orientation claim is untested"
+    )
+    assert value["transition_matrix_orientation"] == MARKOV_TRANSITION_ORIENTATION
+    assert "row_stochastic" in MARKOV_TRANSITION_ORIENTATION
+
+
+def test_markov_expected_durations_match_the_transition_diagonal(markov_result: Any) -> None:
+    """`1 / (1 - p_ii)`, recomputed from the PUBLISHED matrix.
+
+    Recomputing from the published matrix rather than from the library's own
+    `expected_durations` is the point: it checks the two published quantities
+    against each other, so a re-indexing applied to one and not the other fails.
+    """
+    value = _markov_value(markov_result)
+    matrix = value["transition_matrix"]
+    recomputed = [1.0 / (1.0 - matrix[i][i]) for i in range(value["k_regimes"])]
+    # Exact to floating-point noise, because neither side is rounded: rounding the
+    # matrix would break this identity by 1/(1-p)^2 per 1e-6 of p.
+    assert value["expected_durations"] == pytest.approx(recomputed, rel=1e-12)
+
+
+# --- 3. the look-ahead in the smoothed path ----------------------------------
+
+
+def test_markov_current_read_is_the_filtered_endpoint_and_equals_the_smoothed_one(
+    markov_result: Any,
+) -> None:
+    """The current read is the FINAL observation, where the two paths must coincide.
+
+    The equality is asserted EXACTLY rather than approximately, because it is the
+    fact that licenses taking the real-time read from either path at the endpoint
+    while the *history* must come from the filtered one. It is also the reason a
+    mutation swapping the two is **construction-inert** — the two forms are the
+    same program at ``t = T`` — so this test is the tripwire that makes a change
+    in the library's smoothing (which would separate them) loud instead of silent.
+    See D-105.
+    """
+    value = _markov_value(markov_result)
+    current = value["current_probabilities"]
+    assert current == value["smoothed_probabilities"][-1], (
+        "the current read and the final smoothed row differ, so the choice between the "
+        "filtered and smoothed paths at the endpoint is now load-bearing and the "
+        "construction-inert argument for it no longer holds"
+    )
+    assert sum(current) == pytest.approx(1.0, rel=1e-12)
+    assert value["current_regime"] == int(np.argmax(current))
+    assert value["current_regime_probability"] == current[value["current_regime"]]
+
+
+def test_markov_look_ahead_gap_is_measured_and_positive_historically(markov_result: Any) -> None:
+    """The published gap must be a real measurement, not a decorative zero.
+
+    If the function silently published the filtered path under the smoothed name,
+    the gap would be 0.0 and the retrospective warning would be false.
+    """
+    value = _markov_value(markov_result)
+    assert value["max_smoothed_filtered_gap"] > 0.0, (
+        "the smoothed and filtered paths never differ, which cannot be true of a "
+        "smoothed path that is revised by later observations"
+    )
+    assert value["max_smoothed_filtered_gap"] <= 1.0
+
+
+# --- 4. the guards, each with its negative control ---------------------------
+
+
+def test_markov_refuses_a_non_series_and_accepts_a_series() -> None:
+    with pytest.raises(TypeError, match="must be a pandas Series"):
+        classify_regime_markov_switching(pd.DataFrame({"x": _markov_series()}))  # type: ignore[arg-type]
+    # NEGATIVE CONTROL: the accepted shape really is accepted.
+    assert _markov_value(classify_regime_markov_switching(_markov_series()))["periods"] == _MARKOV_N
+
+
+def test_markov_refuses_a_non_finite_series() -> None:
+    broken = _markov_series()
+    broken.iloc[7] = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        classify_regime_markov_switching(broken)
+    infinite = _markov_series()
+    infinite.iloc[3] = float("inf")
+    with pytest.raises(ValueError, match="non-finite"):
+        classify_regime_markov_switching(infinite)
+
+
+def test_markov_refuses_a_constant_series() -> None:
+    with pytest.raises(ValueError, match="no variation"):
+        classify_regime_markov_switching(pd.Series([2.0] * _MARKOV_N))
+
+
+def test_markov_accepts_a_series_that_moves_at_a_tiny_scale() -> None:
+    """NEGATIVE CONTROL for the no-variation guard — and the reason it is RELATIVE.
+
+    An absolute guard (`max - min <= eps`) would refuse this series, which moves
+    perfectly well; it is only small. That is D-100/O-121's defect — an
+    effectively-absolute tolerance below scale 1 — and this is the case that
+    distinguishes the two.
+    """
+    tiny = _markov_series() * 1e-9
+    assert float(tiny.max() - tiny.min()) < 1e-8  # an ABSOLUTE guard would refuse it
+    result = classify_regime_markov_switching(tiny)
+    assert _markov_value(result)["periods"] == _MARKOV_N
+
+
+def test_markov_refuses_a_large_series_whose_variation_is_only_float_noise() -> None:
+    """The OTHER half of the divergence, and the half that actually discriminates.
+
+    The tiny-scale test above shows the guard is not absolute on the small side —
+    but MEASURED 2026-09-24, an absolute guard and a relative one give the SAME
+    verdict there (both accept: the span is `5.9e-09`, far above the absolute
+    threshold), so that fixture lies OUTSIDE the region where the two disagree
+    and a mutation making the guard absolute SURVIVES it. This is the project's
+    recurring lesson (M74, M108): **a relative guard needs a divergent case lying
+    inside the divergence.**
+
+    The divergent region is large magnitude with small RELATIVE variation. At
+    `1e10` with a `1e-4` span the absolute span is `9.918e-05` — 52 double-precision
+    ULPs at that magnitude, so the series genuinely moves — while the relative
+    span is `9.918e-15`, below the `2.22e-14` threshold. The relative guard
+    refuses it; an absolute one would accept it and hand the fit a likelihood
+    dominated by float noise. The divergence is asserted explicitly, so this test
+    cannot silently drift outside it again.
+    """
+    magnitudes = 1e10 + (np.arange(_MARKOV_N) % 2) * 1e-4
+    series = pd.Series(magnitudes, index=pd.date_range("1980-01-01", periods=_MARKOV_N, freq="QS"))
+
+    absolute_span = float(series.max() - series.min())
+    relative_span = absolute_span / float(np.max(np.abs(series.to_numpy())))
+    # The claim, stated: this fixture is inside the divergence, and a series that
+    # moves by 52 ULPs is not degenerate in any absolute sense.
+    assert absolute_span > 1e-8, absolute_span
+    assert absolute_span / np.spacing(float(series.max())) > 10.0, "the variation is float noise"
+    assert relative_span < 100.0 * float(np.finfo(np.float64).eps), relative_span
+
+    with pytest.raises(ValueError, match="no variation"):
+        classify_regime_markov_switching(series)
+
+
+def test_markov_length_floor_is_derived_from_the_parameter_count() -> None:
+    """The floor MOVES with the parameter count, which is why it is derived.
+
+    With the shipped 5.0 per parameter and 12 parameters (k=3, switching
+    variance) the floor is 60. Lowering the per-parameter factor to 2.0 makes the
+    floor 24, so a 30-observation series is refused under the shipped config and
+    accepted under the moved one — a symmetry-breaking test, because a hardcoded
+    floor cannot follow the leaf.
+    """
+    short = _markov_series(n=30)
+    with pytest.raises(ValueError, match="requiring at least 60"):
+        classify_regime_markov_switching(short)
+    with _with_markov(min_observations_per_parameter_value=_markov_leaf(2.0)):
+        assert _markov_value(classify_regime_markov_switching(short))["periods"] == 30
+
+
+def test_markov_refuses_k_below_two_above_the_ceiling_and_non_integer() -> None:
+    series = _markov_series()
+    with pytest.raises(ValueError, match="at least 2"):
+        classify_regime_markov_switching(series, k_regimes=1)
+    with pytest.raises(ValueError, match=r"exceeds regime\.markov\.max_regimes_value"):
+        classify_regime_markov_switching(series, k_regimes=7)
+    with pytest.raises(TypeError, match="must be an int"):
+        classify_regime_markov_switching(series, k_regimes=3.0)  # type: ignore[arg-type]
+    # `isinstance(True, int)` is True in Python, so a bool would silently select a
+    # two-regime model without this check.
+    with pytest.raises(TypeError, match="must be an int"):
+        classify_regime_markov_switching(series, k_regimes=True)
+
+
+def test_markov_k_ceiling_is_read_from_config() -> None:
+    with (
+        _with_markov(max_regimes_value=_markov_leaf(2)),
+        pytest.raises(ValueError, match=r"max_regimes_value=2"),
+    ):
+        classify_regime_markov_switching(_markov_series(), k_regimes=3)
+
+
+def test_markov_refuses_a_degenerate_two_valued_series() -> None:
+    """The library's raw `LinAlgError` must be converted into a named refusal.
+
+    Measured 2026-09-24: a 0/1 series has plenty of variation (so the no-variation
+    guard passes it) and still kills the fit inside the EM step with
+    `numpy.linalg.LinAlgError: SVD did not converge` — an exception that names
+    neither the series nor the row.
+    """
+    rng = np.random.default_rng(5)
+    binary = pd.Series(rng.integers(0, 2, _MARKOV_N).astype(float))
+    with pytest.raises(ValueError, match="Markov-switching fit failed"):
+        classify_regime_markov_switching(binary)
+
+
+# --- 5. config leaves are read, not restated ---------------------------------
+
+
+def test_markov_switching_variance_is_read_from_config(markov_result: Any) -> None:
+    """The parameter count is the observable, and it moves with the leaf."""
+    assert (
+        _markov_value(markov_result)["n_parameters"] == 12
+    )  # 6 transitions + 3 means + 3 variances
+    with _with_markov(switching_variance=False):
+        common = classify_regime_markov_switching(_markov_series())
+    assert _markov_value(common)["n_parameters"] == 10  # one shared variance
+
+
+def test_markov_modal_share_bar_is_read_from_config(markov_result: Any) -> None:
+    """Move the bar below the measured share and the base-state warning must appear."""
+    value = _markov_value(markov_result)
+    share = value["modal_regime_share"]
+    assert share < 0.9, f"the fixture's modal share ({share}) is above the shipped bar"
+    assert not any("BASE STATE:" in w for w in markov_result.warnings)
+    with _with_markov(modal_share_warning_threshold_value=_markov_leaf(share / 2.0)):
+        moved = classify_regime_markov_switching(_markov_series())
+    assert any("BASE STATE:" in w for w in moved.warnings)
+
+
+def test_markov_max_iterations_is_read_from_config(markov_result: Any) -> None:
+    """The cap is not decorative: at 50 the optimizer reports non-convergence."""
+    assert _markov_value(markov_result)["converged"] is True
+    with _with_markov(max_iterations_value=_markov_leaf(50)):
+        truncated = classify_regime_markov_switching(_markov_series())
+    assert _markov_value(truncated)["converged"] is False
+
+
+def test_markov_non_convergence_is_reported_without_discarding_the_fit() -> None:
+    """D-101's finding, MEASURED here on a different library: the flag can lie.
+
+    At `max_iterations=50` the optimizer reports `converged=False` while the
+    log-likelihood is within a few tenths of the fully converged value — it is at
+    the optimum and does not know it. The function therefore PUBLISHES the flag
+    and warns, rather than refusing. This test pins the gap, so the warning's
+    claim is a measurement rather than an assertion.
+    """
+    with _with_markov(max_iterations_value=_markov_leaf(50)):
+        truncated = classify_regime_markov_switching(_markov_series())
+    converged = classify_regime_markov_switching(_markov_series())
+    assert _markov_value(truncated)["converged"] is False
+    assert _markov_value(converged)["converged"] is True
+    gap = abs(
+        _markov_value(truncated)["log_likelihood"] - _markov_value(converged)["log_likelihood"]
+    )
+    assert gap < 1.0, (
+        f"the truncated fit is {gap:.2f} log-likelihood units from the converged one, so "
+        f"non-convergence here is NOT the benign stopping-rule case the warning describes"
+    )
+
+
+def test_markov_config_refuses_unusable_leaves() -> None:
+    from pydantic import ValidationError
+
+    share = "modal_share_warning_threshold_value"
+    with pytest.raises(ValidationError, match="must be at least 2"):
+        _markov_config(max_regimes_value=_markov_leaf(1))
+    with pytest.raises(ValidationError, match="must be a whole number"):
+        _markov_config(max_regimes_value=_markov_leaf(3.5))
+    with pytest.raises(ValidationError, match=r"strictly\s+inside"):
+        _markov_config(**{share: _markov_leaf(1.0)})
+    with pytest.raises(ValidationError, match=r"strictly\s+inside"):
+        _markov_config(**{share: _markov_leaf(0.0)})
+    with pytest.raises(ValidationError, match=r"must exceed 1\.0"):
+        _markov_config(min_observations_per_parameter_value=_markov_leaf(1.0))
+    with pytest.raises(ValidationError, match="markov_trend"):
+        _markov_config(markov_trend="n")
+    with pytest.raises(ValidationError, match="markov_optimizer"):
+        _markov_config(markov_optimizer="gradient-descent")
+    with pytest.raises(ValidationError, match="whole number >= 0"):
+        _markov_config(search_reps_value=_markov_leaf(-1))
+
+
+def test_markov_trend_leaf_excludes_the_values_without_a_regime_intercept() -> None:
+    """The exclusion is load-bearing: without an intercept there is nothing to order by.
+
+    Probed 2026-09-24: `trend="n"` produces no regime-specific parameter at all
+    and `trend="t"` produces a TIME TREND (`x1[i]`) rather than a level. Under
+    either, the canonical ordering would have no key and the published index
+    would revert to the library's arbitrary labelling.
+    """
+    from pydantic import ValidationError
+
+    for excluded in ("n", "t"):
+        with pytest.raises(ValidationError, match="markov_trend"):
+            _markov_config(markov_trend=excluded)
+    for permitted in ("c", "ct"):
+        assert _markov_config(markov_trend=permitted).markov_trend == permitted
+
+
+def test_markov_parameter_count_formula_matches_the_fitted_model(markov_result: Any) -> None:
+    """The derived count must equal what the library actually estimated.
+
+    The floor is derived from this formula, so if the formula and the library
+    disagree the floor is enforcing the wrong number.
+    """
+    settings = get_settings().regime.markov
+    for k in (2, 3, 4):
+        expected = k * (k - 1) + k + (k if settings.switching_variance else 1)
+        assert settings.parameters_for(k) == expected
+    assert _markov_value(markov_result)["n_parameters"] == settings.parameters_for(
+        _markov_value(markov_result)["k_regimes"]
+    )
+    assert _markov_value(markov_result)["observations_per_parameter"] == pytest.approx(
+        _MARKOV_N / _markov_value(markov_result)["n_parameters"], rel=1e-6
+    )
+
+
+# --- 6. warnings: every branch reachable, and a partition not a hit ----------
+
+
+def test_markov_warning_markers_are_mutually_non_colliding() -> None:
+    """5f: a hit is not a partition. No marker may be a substring of another."""
+    for outer in _MARKOV_WARNING_MARKERS:
+        for inner in _MARKOV_WARNING_MARKERS:
+            if inner is not outer:
+                assert inner not in outer, f"{inner!r} collides inside {outer!r}"
+
+
+def test_markov_every_emitted_warning_matches_exactly_one_marker(markov_result: Any) -> None:
+    """The partition half: each emitted warning is claimed by exactly one branch."""
+    for warning in markov_result.warnings:
+        hits = [m for m in _MARKOV_WARNING_MARKERS if m in warning]
+        assert len(hits) == 1, f"warning matched {hits}: {warning[:120]}"
+
+
+def test_markov_every_warning_branch_is_reachable_by_some_test() -> None:
+    """The coverage half, driven explicitly so no branch can ship uncovered."""
+    seen: set[str] = set()
+
+    def collect(result: Any) -> None:
+        for warning in result.warnings:
+            for marker in _MARKOV_WARNING_MARKERS:
+                if marker in warning:
+                    seen.add(marker)
+
+    collect(classify_regime_markov_switching(_markov_series()))
+    with _with_markov(max_iterations_value=_markov_leaf(50)):
+        collect(classify_regime_markov_switching(_markov_series()))
+    with _with_markov(modal_share_warning_threshold_value=_markov_leaf(0.05)):
+        collect(classify_regime_markov_switching(_markov_series()))
+
+    missing = set(_MARKOV_WARNING_MARKERS) - seen
+    assert not missing, f"warning branches no test reaches: {sorted(missing)}"
+
+
+def test_markov_library_warnings_are_counted_and_named() -> None:
+    """A library call that warns is a silent-failure surface unless the count travels.
+
+    Driven with a random walk, which was measured 2026-09-24 to make the library
+    raise EstimationWarnings while still converging — so this exercises the
+    library-warning branch WITHOUT the non-convergence branch.
+    """
+    rng = np.random.default_rng(0)
+    walk = pd.Series(np.cumsum(rng.normal(0.05, 1.0, _MARKOV_N)))
+    result = classify_regime_markov_switching(walk)
+    value = _markov_value(result)
+    assert value["converged"] is True, "this fixture is chosen to converge"
+    assert value["library_warning_count"] > 0, "the library was expected to warn on this series"
+    assert sum(value["library_warning_categories"].values()) == value["library_warning_count"]
+    assert any("THE LIBRARY RAISED" in w for w in result.warnings)
+
+
+def test_markov_base_rate_is_published_with_its_denominator(markov_result: Any) -> None:
+    """A share without its denominator is not a base rate (D-029)."""
+    value = _markov_value(markov_result)
+    shares = value["regime_shares"]
+    counts = value["regime_period_counts"]
+    assert len(shares) == value["k_regimes"]
+    # The counts are the auditable form: they must total the sample exactly, and
+    # the shares must be exactly those counts over that total.
+    assert sum(counts) == value["periods"]
+    assert shares == pytest.approx([c / value["periods"] for c in counts], rel=1e-12)
+    assert sum(shares) == pytest.approx(1.0, rel=1e-12)
+    assert value["modal_regime_share"] == pytest.approx(max(shares))
+    assert value["modal_regime"] == int(np.argmax(shares))
+    assert value["periods"] == _MARKOV_N
+    assert any(f"{value['modal_regime_share']:.1%}" in w for w in markov_result.warnings)
+
+
+def test_markov_base_rate_is_measured_on_the_smoothed_path() -> None:
+    """Recomputed from the PUBLISHED path, which is what makes the choice testable.
+
+    The base rate is a frequency over HISTORY, so it is measured on the smoothed
+    path — the retrospective best estimate of which regime each period was in —
+    not on the real-time filtered one. That choice is invisible whenever the two
+    paths agree on the argmax, and MEASURED 2026-09-24 they agree on the module's
+    own fixture (its three regimes are 40 clean consecutive periods each), so a
+    mutation swapping the paths SURVIVED it.
+
+    This fixture is built to be INSIDE the disagreement — two means only 0.6 apart
+    with unit noise — and the disagreement is ASSERTED rather than assumed: at
+    seed 8 it leaves 18 of 120 periods where the two paths' argmax differs, with
+    counts `[43, 4, 73]` (smoothed) against `[34, 3, 83]` (filtered). The counts
+    are then recomputed from `smoothed_probabilities`, a published component, so a
+    base rate taken from the other path cannot match.
+
+    The filtered path is recomputed below ONLY to prove the FIXTURE discriminates —
+    a test of the fixture, not of the function — because a fixture that drifted out
+    of the divergence would let the mutation survive silently (M74/M108).
+    """
+    from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
+
+    rng = np.random.default_rng(8)
+    values = np.concatenate([np.full(60, 0.0), np.full(60, 0.6)]) + rng.normal(0.0, 1.0, _MARKOV_N)
+    series = pd.Series(values, index=pd.date_range("1980-01-01", periods=_MARKOV_N, freq="QS"))
+    value = _markov_value(classify_regime_markov_switching(series))
+
+    smoothed = np.asarray(value["smoothed_probabilities"], dtype=float)
+    recomputed = np.bincount(np.argmax(smoothed, axis=1), minlength=value["k_regimes"]).tolist()
+    assert value["regime_period_counts"] == recomputed, (
+        f"the published counts {value['regime_period_counts']} are not the argmax of the "
+        f"published smoothed path {recomputed} — the base rate was taken from a "
+        f"different path than the one published"
+    )
+    assert sum(recomputed) == value["periods"]
+
+    # The fixture's discriminating power, measured rather than assumed.
+    settings = get_settings().regime.markov
+    order = value["regime_order_raw_index"]
+    model = MarkovRegression(
+        np.asarray(series.to_numpy(), dtype=float),
+        k_regimes=value["k_regimes"],
+        trend=settings.markov_trend,
+        switching_variance=settings.switching_variance,
+    )
+    fitted = model.fit(
+        method=settings.markov_optimizer,
+        maxiter=settings.max_iterations,
+        em_iter=settings.em_iterations,
+        search_reps=settings.search_reps,
+    )
+    filtered = np.asarray(fitted.filtered_marginal_probabilities, dtype=float)[:, order]
+    filtered_counts = np.bincount(
+        np.argmax(filtered, axis=1), minlength=value["k_regimes"]
+    ).tolist()
+    assert filtered_counts != recomputed, (
+        f"this fixture's smoothed and filtered argmax paths now agree ({recomputed}), so "
+        f"it can no longer distinguish a base rate measured on one from a base rate "
+        f"measured on the other — pick a seed inside the divergence"
+    )
+
+
+# --- 7. the output contract --------------------------------------------------
+
+
+def test_markov_confidence_comes_from_compute_confidence(markov_result: Any) -> None:
+    """Pinned against the ABSOLUTE rule, not against the function's own output.
+
+    Comparing two calls of the same function would move both sides together, so a
+    changed constant would be invisible (D-046). The expected value is recomputed
+    from `compute_confidence` with the inputs the docstring states, and is also
+    asserted to DIFFER from the value a naive `base` literal would give.
+    """
+    expected = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=True,
+            depends_on_unobservable=True,
+            source_independence_count=0,
+        )
+    )
+    assert markov_result.confidence == expected
+    assert markov_result.confidence != compute_confidence(ConfidenceInputs())
+
+
+def test_markov_output_is_json_serialisable(markov_result: Any) -> None:
+    """A numpy scalar leaking into `value` would break the API layer, not the model.
+
+    `ModelResult.value` is a broad union, so pydantic accepts a `np.float64` and
+    the failure would surface only at serialisation — one layer away from the
+    cause.
+    """
+    payload = json.dumps({"value": markov_result.value, "warnings": markov_result.warnings})
+    assert '"smoothed_probabilities"' in payload
+
+
+def test_markov_provenance_and_prohibitions_are_published(markov_result: Any) -> None:
+    value = _markov_value(markov_result)
+    assert markov_result.inputs_used == ["series"]
+    assert markov_result.country == "us"
+    assert markov_result.as_of.tzinfo is not None
+    assert value["current_period"].startswith("2009"), value["current_period"]
+    assert markov_result.observation_dates == {"series_last_period": value["current_period"]}
+    joined = " ".join(markov_result.decision_prohibition)
+    assert "causal" in joined
+    assert "k_regimes" in joined
+    assert any("NO channel for a data-quality flag" in item for item in markov_result.limitations)
+
+
+def test_markov_fit_is_deterministic() -> None:
+    """The shipped `search_reps=0` makes the fit reproducible, which the tests rely on."""
+    series = _markov_series()
+    assert (
+        classify_regime_markov_switching(series).value
+        == classify_regime_markov_switching(series).value
+    )

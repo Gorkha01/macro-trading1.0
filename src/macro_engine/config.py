@@ -36,6 +36,7 @@ __all__ = [
     "InvalidationSettings",
     "KellySettings",
     "LeadingIndicatorSettings",
+    "MarkovRegimeSettings",
     "OpenBBSettings",
     "RegimeBaseRates",
     "RegimeRateValues",
@@ -3550,6 +3551,219 @@ class TrilemmaSettings(BaseModel):
         return self
 
 
+class MarkovRegimeSettings(BaseModel):
+    """Module 3's Markov-switching regime classifier (Section 6.2, Phase 5+).
+
+    The Tier-5 REPLACEMENT for :func:`classify_regime_rule_based` (Section
+    21.3, D-096). Phase 5+ builds the sophisticated version and **deletes
+    nothing**, so this block configures a *second* route rather than editing the
+    first.
+
+    Five numeric leaves and three choices. The choices are plain leaves rather
+    than ``CalibratedValue`` envelopes for the reason Section 4a records: the
+    envelope answers *"is this number a fact, a convention, or a placeholder?"*,
+    and there is no such question about a selection — the invariant in
+    ``tests/test_infrastructure.py`` requires every envelope to be readable as a
+    ``float``, which a string or a bool can never be. Their reasoning lives in
+    ``settings.yaml`` as a comment beside the value.
+
+    The one derived quantity here is the **parameter count**, which the function
+    computes rather than this class storing: ``k(k-1) + k + [k or 1]`` depends
+    on the caller's ``k_regimes`` and on ``switching_variance``, so a stored
+    copy could only ever be right for one ``k``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_regimes_value: CalibratedValue
+    min_observations_per_parameter_value: CalibratedValue
+    max_iterations_value: CalibratedValue
+    em_iterations_value: CalibratedValue
+    search_reps_value: CalibratedValue
+    modal_share_warning_threshold_value: CalibratedValue
+
+    switching_variance: bool
+    markov_trend: str
+    markov_optimizer: str
+
+    @property
+    def max_regimes(self) -> int:
+        """Ceiling on the caller's ``k_regimes``. See the YAML note."""
+        return int(self.max_regimes_value.value)
+
+    @property
+    def modal_share_warning_threshold(self) -> float:
+        """Share of periods above which the modal regime is called a base state."""
+        return float(self.modal_share_warning_threshold_value.value)
+
+    @property
+    def min_observations_per_parameter(self) -> float:
+        """Observations required per estimated parameter, before the fit is attempted."""
+        return float(self.min_observations_per_parameter_value.value)
+
+    @property
+    def max_iterations(self) -> int:
+        """``maxiter`` for the MLE step."""
+        return int(self.max_iterations_value.value)
+
+    @property
+    def em_iterations(self) -> int:
+        """``em_iter`` — EM iterations used to build the MLE starting values."""
+        return int(self.em_iterations_value.value)
+
+    @property
+    def search_reps(self) -> int:
+        """``search_reps`` — random EM restarts. 0 keeps the fit deterministic."""
+        return int(self.search_reps_value.value)
+
+    def parameters_for(self, k_regimes: int) -> int:
+        """The number of free parameters a ``k_regimes`` fit estimates.
+
+        Derived here rather than stored, because it is a function of the
+        caller's ``k`` and of ``switching_variance``:
+
+        * ``k * (k - 1)`` transition probabilities (each of the ``k`` rows of a
+          stochastic matrix has ``k - 1`` free entries),
+        * ``k`` intercepts (one per regime, since ``markov_trend`` is ``"c"``),
+        * ``k`` variances under a switching specification, else ``1``.
+
+        The length floor the function enforces is
+        ``ceil(min_observations_per_parameter * parameters_for(k))``, so the
+        floor moves with ``k`` instead of being a fixed row count that is
+        correct at one ``k`` and wrong at every other.
+        """
+        transitions = k_regimes * (k_regimes - 1)
+        intercepts = k_regimes
+        variances = k_regimes if self.switching_variance else 1
+        return transitions + intercepts + variances
+
+    @model_validator(mode="after")
+    def _leaves_must_be_usable(self) -> MarkovRegimeSettings:
+        """Refuse a leaf that would make the guard consuming it unfalsifiable.
+
+        Checked at config-load time rather than at call time, for the reason
+        ``EconometricsSettings`` records: a bad value silently changes the
+        meaning of the check that reads it, and a model-layer gate cannot see a
+        config defect at all.
+        """
+        for name in (
+            "max_regimes_value",
+            "min_observations_per_parameter_value",
+            "max_iterations_value",
+            "em_iterations_value",
+        ):
+            value = getattr(self, name).value
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"regime.markov.{name} must be a number, got {type(value).__name__}"
+                )
+            if value <= 0:
+                raise ValueError(
+                    f"regime.markov.{name} must be > 0, got {value!r}. A non-positive "
+                    "value makes the guard that consumes it unfalsifiable."
+                )
+
+        # The modal-share threshold has its own domain check rather than joining
+        # the loop above: "positive" is not enough for a SHARE. At 1.0 no share
+        # can ever exceed it (a share is at most 1), so the base-state warning
+        # would be unreachable while looking configured — the declared-but-
+        # unreachable shape this project has recorded many times.
+        modal_share = self.modal_share_warning_threshold
+        if not 0.0 < modal_share < 1.0:
+            raise ValueError(
+                f"regime.markov.modal_share_warning_threshold_value must lie strictly "
+                f"inside (0, 1), got {modal_share!r}. It is compared against a SHARE of "
+                f"periods, so 1.0 makes the base-state warning unreachable and 0.0 makes "
+                f"it fire on every call."
+            )
+
+        # `search_reps` is the one numeric leaf whose valid domain INCLUDES 0 —
+        # it is a restart COUNT, and 0 is the shipped default (a deterministic
+        # fit). It gets its own check rather than joining the loop above, which
+        # would reject the shipped value.
+        reps = self.search_reps_value.value
+        if isinstance(reps, bool) or not isinstance(reps, (int, float)):
+            raise ValueError(
+                f"regime.markov.search_reps_value must be a number, got {type(reps).__name__}"
+            )
+        if float(reps) < 0 or not float(reps).is_integer():
+            raise ValueError(
+                f"regime.markov.search_reps_value must be a whole number >= 0, got "
+                f"{reps!r}. It counts random EM restarts, so a fractional or negative "
+                f"value describes no number of restarts."
+            )
+
+        # The parameter-count leaves must be whole numbers, because they are
+        # used as COUNTS: `max_regimes` bounds an integer the caller passes and
+        # the other two are iteration budgets.
+        for name, value in (
+            ("max_regimes_value", self.max_regimes_value.value),
+            ("max_iterations_value", self.max_iterations_value.value),
+            ("em_iterations_value", self.em_iterations_value.value),
+        ):
+            if not float(value).is_integer():
+                raise ValueError(
+                    f"regime.markov.{name} must be a whole number, got {value!r}. It "
+                    f"is used as a count, so a fractional value describes no model."
+                )
+
+        if self.max_regimes < 2:
+            raise ValueError(
+                f"regime.markov.max_regimes_value must be at least 2, got "
+                f"{self.max_regimes!r}. statsmodels itself refuses `k_regimes=1` with "
+                f"'Markov switching models must have at least two regimes' (measured "
+                f"2026-09-24) — a one-regime model has no switching to estimate — and "
+                f"catching it here means the refusal names this file."
+            )
+
+        # A floor at or below 1.0 observations per parameter would permit a model
+        # with fewer observations than free parameters, which is not identified:
+        # the likelihood is flat in at least one direction and the optimizer
+        # reports a boundary hit as a maximum. This is the D-047 shape — a config
+        # value that encodes something the code can also derive, so the code
+        # DERIVES it and refuses disagreement rather than storing a second copy.
+        per_parameter = self.min_observations_per_parameter
+        if per_parameter <= 1.0:
+            raise ValueError(
+                f"regime.markov.min_observations_per_parameter_value must exceed 1.0, "
+                f"got {per_parameter!r}. At or below 1.0 the derived length floor "
+                f"permits fewer observations than free parameters, and a likelihood "
+                f"with an unidentified direction reports a boundary hit as a maximum."
+            )
+
+        permitted = {
+            # `trend`'s deterministic terms inside each regime. ONLY the two
+            # values containing "c" are permitted, and the exclusion is
+            # load-bearing rather than stylistic. Probed 2026-09-24, the
+            # library's parameter names by trend:
+            #
+            #   "n"  -> p[...], sigma2[i]                    (NO regime level)
+            #   "c"  -> p[...], const[i], sigma2[i]
+            #   "t"  -> p[...], x1[i],    sigma2[i]           (a TIME TREND)
+            #   "ct" -> p[...], const[i], x1[i], sigma2[i]
+            #
+            # The canonical regime ordering sorts on `const[i]` -- the regime's
+            # estimated MEAN, which is the only regime-specific quantity that is
+            # comparable across fits. Under "n" and "t" that parameter does not
+            # exist, so the ordering would have nothing to sort on and the
+            # function's headline mechanism would silently become the library's
+            # arbitrary index. Excluded here so the failure cannot be reached;
+            # the function ALSO asserts the constants were found, so a change in
+            # the library's naming is loud rather than silent.
+            "markov_trend": {"c", "ct"},
+            "markov_optimizer": {"bfgs", "nm", "powell", "lbfgs"},
+        }
+        for name, allowed in permitted.items():
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(
+                    f"regime.markov.{name} must be one of {sorted(allowed)}, got "
+                    f"{value!r}. statsmodels would accept a nonsense value and raise "
+                    f"from inside the library, naming neither the setting nor this file."
+                )
+        return self
+
+
 class RegimeSettings(BaseModel):
     """Module 3's rule-based regime classifier bands (Section 6.2).
 
@@ -3574,6 +3788,7 @@ class RegimeSettings(BaseModel):
     measured_rising_inflation_rate: CalibratedValue
     base_rates: RegimeBaseRates
     trilemma: TrilemmaSettings
+    markov: MarkovRegimeSettings
 
     @property
     def recession_gap(self) -> float:

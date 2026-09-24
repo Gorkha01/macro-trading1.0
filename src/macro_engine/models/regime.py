@@ -99,10 +99,14 @@ live check, because the wrong pairing produces a perfectly plausible
 
 from __future__ import annotations
 
-from math import isfinite
-from typing import Literal, get_args
+import warnings
+from math import ceil, isfinite
+from typing import Literal, NamedTuple, get_args
 
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
@@ -114,6 +118,8 @@ from macro_engine.models.contracts import (
 from macro_engine.models.evidence_family import EvidenceSourceFamily
 
 __all__ = [
+    "MARKOV_REGIME_ORDERING_RULE",
+    "MARKOV_TRANSITION_ORIENTATION",
     "REGIME_STATES",
     "REGIME_TENSIONS",
     "TRILEMMA_SEVERITIES",
@@ -126,6 +132,7 @@ __all__ = [
     "TrilemmaInputs",
     "TrilemmaSeverity",
     "check_trilemma_tension",
+    "classify_regime_markov_switching",
     "classify_regime_rule_based",
     "regime_tension",
 ]
@@ -1542,3 +1549,706 @@ def check_trilemma_tension(inputs: TrilemmaInputs) -> ModelResult:
 # severities, where an undeclared severity would be read by a caller as calm.
 assert set(get_args(TrilemmaSeverity)) == set(TRILEMMA_SEVERITIES)
 assert set(get_args(PolicyDirection)) == {"easing", "tightening"}
+
+
+# =============================================================================
+# Module 3 (Phase 5+) — the Markov-switching regime classifier (Section 6.2)
+# =============================================================================
+#
+# Section 6.2 fixes the signature "now so the thesis layer's contract doesn't
+# change when this replaces the rule-based version", and it is deliberately
+# short: ``(series, k_regimes=3) -> ModelResult``. Everything else here is a
+# consequence of running the library against real data, and FOUR of the five
+# findings are library BEHAVIOURS rather than our arithmetic.
+#
+# **1. The regime index is NOT identified.** ``MarkovRegression`` numbers its
+# regimes by wherever the EM starting values happen to put them, and that
+# numbering is not stable. MEASURED 2026-09-24 on ONE fixed synthetic series at
+# ``search_reps=10``: over 12 seeds, **4** assigned index 1 to the HIGH-mean
+# regime and **8** assigned it to the MIDDLE-mean regime. The restarts IMPROVE
+# the likelihood and make the labelling *less* stable — so a raw index published
+# to a consumer is a coin flip, and the fix is not a better seed. It is to order
+# the regimes by a quantity that is a property of the FIT rather than of the
+# SOLVER, and to publish the permutation. See :func:`_canonical_regime_order`.
+#
+# **2. The transition matrix is COLUMN-stochastic.** The library's own docstring:
+#
+#     "The (i,j)th element of this matrix is the probability of transitioning
+#      from regime j to regime i; thus the previous regime is represented in a
+#      column and the next regime is represented by a row. It is left-stochastic,
+#      meaning that each column sums to one."
+#
+# MEASURED on real GDP growth: the ROWS sum to ``[0.876519, 1.087713,
+# 1.035767]`` and the COLUMNS to exactly 1. A consumer that read the published
+# matrix expecting rows to sum to one would be reading the transpose, and nothing
+# would raise. The published matrix is therefore TRANSPOSED into the conventional
+# row-stochastic orientation, and the orientation is stated in ``value``.
+#
+# **3. The smoothed path uses the WHOLE sample.** Section 6.2 asks for "smoothed
+# regime probabilities per period", and smoothed is what it gets — but a smoothed
+# probability at ``t`` is revised by every observation after ``t``, so it is a
+# RETROSPECTIVE reading and not what was knowable at ``t``. MEASURED on real GDP
+# growth: ``|smoothed - filtered|`` reaches **0.6304** somewhere in the sample
+# and is **exactly 0.0** at the final observation (there is no future to smooth
+# over). The *current* read is therefore taken from the FILTERED path, and the
+# measured divergence is published so the retrospective half of the path is not
+# mistaken for a real-time one.
+#
+# **4. The library raises a raw numpy exception on degenerate input.** MEASURED:
+# ``numpy.linalg.LinAlgError: SVD did not converge`` escapes for a **constant**
+# series (with the library's DEFAULT flags), for a series containing a **NaN**
+# (its ``missing`` default is ``"none"``, i.e. no nan checking at all), and for a
+# two-valued **0/1** series. That names neither the series nor the row. The two
+# nameable cases are guarded explicitly; the rest are caught and refused.
+#
+# And one finding is ours rather than the library's:
+#
+# **5. ``k_regimes`` is the CALLER's choice and the model cannot test it.** A
+# 3-regime model fitted to a 1-regime economy returns 3 regimes. Nothing here
+# selects ``k``, and every output says so.
+
+#: The rule applied to the library's regime index before anything is published.
+#:
+#: A plain module constant rather than a one-member ``Literal``, deliberately:
+#: a closed vocabulary of SIZE ONE reads like a validated declaration and
+#: validates nothing (D-064's "a closed vocabulary of size one cannot express
+#: its own incompatibility"). The real check is behavioural and lives in the
+#: test suite — the published permutation must actually sort the published
+#: means ascending — which is a check a type cannot make.
+MARKOV_REGIME_ORDERING_RULE = "ascending_estimated_mean"
+
+#: The orientation the transition matrix is published in.
+#:
+#: Stated on every output rather than left to the reader, because the library's
+#: own orientation is the TRANSPOSE (see finding 2 above) and both are plausible
+#: readings of the phrase "the transition matrix".
+MARKOV_TRANSITION_ORIENTATION = "row_stochastic: element [i][j] = P(next=j | previous=i)"
+
+#: Relative span at or below which a series is treated as having NO variation.
+#:
+#: **Fully relative, deliberately.** The obvious absolute form —
+#: ``max - min <= eps`` — is the D-100/O-121 defect: it is effectively absolute
+#: below scale 1, so a tiny series that genuinely moves is refused while a huge
+#: one that does not is accepted. Dividing the span by the series' own magnitude
+#: makes the test scale-free, and the multiplier of 100 leaves room for the
+#: rounding a real series carries.
+_NO_VARIATION_RELATIVE_SPAN = 100.0 * float(np.finfo(np.float64).eps)
+
+
+def _relative_span(values: np.ndarray) -> float:
+    """The series' range as a FRACTION of its own magnitude.
+
+    Scale-free by construction: ``1e-9 * arange(100)`` and ``1e9 * arange(100)``
+    both return ``1.0``, so the guard built on it cannot depend on the caller's
+    choice of units. A series that is identically zero returns ``0.0``, which is
+    the correct answer rather than a division by zero.
+    """
+    scale = float(np.max(np.abs(values)))
+    if scale == 0.0:
+        return 0.0
+    return float((np.max(values) - np.min(values)) / scale)
+
+
+def _canonical_regime_order(constants: np.ndarray) -> list[int]:
+    """Order the library's regimes by their estimated mean, ascending.
+
+    This is the increment's load-bearing mechanism. ``constants[i]`` is regime
+    ``i``'s estimated intercept under ``trend="c"``/``"ct"`` — the regime's mean
+    level — and the ORDER of those means is a property of the fit, whereas the
+    library's INDEX is a property of the solver's starting values (finding 1).
+    Sorting makes the published labels comparable across fits, across seeds and
+    across two runs of the same series with different fitting options.
+
+    ``kind="stable"`` is deliberate and is the tiebreak: two regimes with equal
+    estimated means keep their library index order, so the permutation is a
+    deterministic function of the fit rather than of the sort algorithm.
+
+    The returned list is the PERMUTATION: canonical position ``c`` holds library
+    regime ``order[c]``. It is published alongside the means so a reader can
+    verify the ordering instead of trusting it.
+    """
+    return [int(index) for index in np.argsort(constants, kind="stable")]
+
+
+class _CanonicalFit(NamedTuple):
+    """A fit with its regimes re-indexed into the canonical order.
+
+    Returned by :func:`_canonicalise_fit` so the re-indexing is a single tested
+    operation rather than four inline slices at the call site. The point of
+    naming it is that a **label switch is exactly a permutation of the library's
+    index**, so the invariance that matters — *the canonical output does not
+    change when the library renumbers the regimes* — is a property of THIS
+    function and can be asserted directly on it.
+    """
+
+    order: list[int]
+    means: np.ndarray
+    smoothed: np.ndarray
+    filtered: np.ndarray
+    transition: np.ndarray
+    durations: np.ndarray
+
+
+def _canonicalise_fit(
+    constants: np.ndarray,
+    smoothed: np.ndarray,
+    filtered: np.ndarray,
+    transition: np.ndarray,
+    durations: np.ndarray,
+) -> _CanonicalFit:
+    """Re-index every regime-keyed quantity into the canonical (mean-ascending) order.
+
+    All four arrays are in the LIBRARY's index on entry and in the canonical order
+    on exit. ``transition`` is expected already transposed into the row-stochastic
+    orientation; the re-indexing is the same permutation applied to both axes.
+
+    This is the function that makes the published labels comparable. It is
+    deliberately separate from the fit so that the property it exists for — being
+    invariant under the library's own renumbering — is testable without fitting
+    anything.
+    """
+    order = _canonical_regime_order(constants)
+    return _CanonicalFit(
+        order=order,
+        means=constants[order],
+        smoothed=smoothed[:, order],
+        filtered=filtered[:, order],
+        transition=transition[np.ix_(order, order)],
+        durations=durations[order],
+    )
+
+
+def _require_markov_series(series: pd.Series) -> np.ndarray:
+    """Validate the caller's series and return it as a float array.
+
+    Every refusal here is a MEASURED library failure mode rather than a
+    defensive nicety — see findings 4 in the section comment above. The messages
+    name the offending property because the library's own failure names neither
+    the series nor the row.
+    """
+    if not isinstance(series, pd.Series):
+        raise TypeError(
+            f"series must be a pandas Series, got {type(series).__name__}. Section "
+            f"6.2's signature is `(series: pd.Series, k_regimes: int = 3)`; a "
+            f"DataFrame is refused rather than squeezed, because which column was "
+            f"meant is not recoverable from the argument."
+        )
+
+    values = np.asarray(series.to_numpy(), dtype=float)
+
+    if values.size == 0:
+        raise ValueError(
+            "series is EMPTY. A Markov-switching model estimates k(k-1) transition "
+            "probabilities from the observed transitions, so an empty series has no "
+            "transitions to count."
+        )
+
+    non_finite = int(np.count_nonzero(~np.isfinite(values)))
+    if non_finite:
+        raise ValueError(
+            f"series contains {non_finite} non-finite value(s) out of {values.size}. "
+            "A NaN is not a missing value here: the library's `missing` default is "
+            "'none' (no nan checking), so a NaN reaches the likelihood and the fit "
+            "dies with a raw `numpy.linalg.LinAlgError: SVD did not converge` "
+            "naming neither the series nor the row (measured 2026-09-24). Drop or "
+            "impute the observation upstream and record which was done."
+        )
+
+    if _relative_span(values) <= _NO_VARIATION_RELATIVE_SPAN:
+        raise ValueError(
+            f"series has no variation: its range is {float(np.max(values) - np.min(values))!r} "
+            f"against a magnitude of {float(np.max(np.abs(values)))!r} "
+            f"(relative span {_relative_span(values):.3e}). A constant series has no "
+            "regimes to switch between, and the library does not say so — measured "
+            "2026-09-24, it raises `numpy.linalg.LinAlgError: SVD did not converge` "
+            "from inside the EM step. Refused here, as `compute_pca` and "
+            "`kalman_latent_state` refuse one."
+        )
+
+    return values
+
+
+def classify_regime_markov_switching(
+    series: pd.Series,
+    k_regimes: int = 3,
+) -> ModelResult:
+    """Estimate a Markov-switching regime model and publish its probabilities.
+
+    Section 6.2's Phase-5 hook, and the Tier-5 REPLACEMENT for
+    :func:`classify_regime_rule_based` (Section 21.3, D-096). Phase 5+ builds the
+    sophisticated version and **deletes nothing**, so the rule-based classifier
+    is still shipped; this is the second route.
+
+    What replaces what, precisely
+    -----------------------------
+    The rule-based classifier returns a **label** from two threshold
+    comparisons and its own docstring says the confidence is "a statement about
+    the INPUTS, not about the probability that the label is correct". This
+    function returns **probabilities**, estimated from the series' own
+    dynamics — so the thing that was missing (a likelihood) is the thing it
+    produces. What it does **not** produce is a causal claim: the regimes are
+    latent statistical states, and nothing here says a regime *causes* the
+    readings.
+
+    ``value`` contract
+    ------------------
+    A ``dict``. Section 6.2's own docstring fixes the semantic: *"Returns
+    smoothed regime probabilities per period, not a hard label."* So the
+    probability path is the primary output and the hard label is a derived
+    convenience, published with its probability beside it.
+
+    * ``smoothed_probabilities`` — ``periods x k``, **canonical** regime order,
+      per period. Retrospective (see finding 3).
+    * ``current_probabilities`` — length ``k``, canonical order, from the
+      **filtered** path: the real-time read, which equals the smoothed read at
+      the final observation by construction.
+    * ``current_regime`` / ``current_regime_probability`` — the argmax of the
+      above and the probability it carries. A hard label, and it is only ever
+      as good as that probability.
+    * ``regime_means`` — canonical order. The ordering key, published so the
+      index is interpretable rather than taken on faith.
+    * ``regime_means_raw_index`` — the SAME means in the LIBRARY's index order,
+      and ``regime_order_raw_index`` — canonical position -> the library's
+      index. Together these make the ordering **checkable from the output
+      alone**: ``regime_means == [regime_means_raw_index[i] for i in
+      regime_order_raw_index]``. Without the raw copy a reader could verify that
+      the means are sorted and that the permutation is a permutation, but not
+      that the two describe the same fit — and a permutation published beside an
+      unrelated sorted list is exactly the shape a defect takes here.
+    * ``regime_shares`` / ``regime_period_counts`` / ``modal_regime`` /
+      ``modal_regime_share`` — the frequency of each regime over the fitted
+      sample, as a share AND as an integer count. Published because a regime
+      that covers most of the sample is not a regime, and the label alone
+      cannot say so (D-029). The counts are what make the share auditable.
+    * ``transition_matrix`` — canonical order, **row-stochastic** (see finding
+      2); ``transition_matrix_orientation`` states it.
+    * ``expected_durations`` — canonical order, in periods, ``1 / (1 - p_ii)``.
+    * ``periods`` / ``n_parameters`` / ``observations_per_parameter`` — the
+      realised length against the DERIVED floor, so a reader can see how close
+      the fit is to being unidentified.
+    * ``log_likelihood`` / ``converged`` / ``k_regimes``.
+    * ``library_warning_count`` / ``library_warning_categories`` — the count of
+      warnings the LIBRARY raised, published rather than swallowed (D-097: a
+      library call that warns on every call is a silent-failure surface, and the
+      frequency warning fires on every call on this installation).
+    * ``max_smoothed_filtered_gap`` — the measured look-ahead in the path.
+    * ``current_period`` — the index label of the final observation, so the
+      vintage of the current read is explicit.
+
+    **Nothing numeric is rounded**, and that is a correctness choice rather than
+    a style one: every probability here carries a stated identity (the matrix's
+    rows sum to one, a probability vector sums to one, ``expected_durations`` IS
+    ``1/(1 - p_ii)``) and rounding to six decimals breaks each of them.
+
+    Confidence
+    ----------
+    From :func:`compute_confidence`, never a literal (Section 22.8). The factors
+    are facts about THIS computation:
+
+    * ``depends_on_unobservable`` — the regimes are **latent states**: they are
+      never observed, only inferred, which is the definition of Section 21.4
+      item 13's unobservable. A regime probability is a posterior about a hidden
+      variable.
+    * ``is_heuristic_not_calibrated`` — ``k_regimes`` is the caller's choice,
+      selected by no information criterion here, and the thresholds that decide
+      the length floor are plausibility bars rather than estimates. The
+      specification offers no calibration for either.
+    * ``source_independence_count`` — **0, deliberately**. One series is one
+      source. A regime model on a single series cannot corroborate itself, and
+      claiming independence from the number of *regimes* would be exactly the
+      "signal count mistaken for source independence" error Section 12 warns
+      about (D-046's circularity class).
+    """
+    settings = get_settings().regime.markov
+
+    # --- the input contract, before anything is estimated -------------------
+    if isinstance(k_regimes, bool) or not isinstance(k_regimes, int):
+        raise TypeError(
+            f"k_regimes must be an int, got {type(k_regimes).__name__}. A float or a "
+            f"bool is refused rather than coerced: `isinstance(True, int)` is True in "
+            f"Python, so a bool would otherwise select a two-regime model silently."
+        )
+    if k_regimes < 2:
+        raise ValueError(
+            f"k_regimes must be at least 2, got {k_regimes}. A one-regime model has no "
+            f"switching to estimate; the library raises its own ValueError for this "
+            f"(measured 2026-09-24), caught here so the refusal names this argument."
+        )
+    if k_regimes > settings.max_regimes:
+        raise ValueError(
+            f"k_regimes={k_regimes} exceeds regime.markov.max_regimes_value="
+            f"{settings.max_regimes}. The parameter count grows QUADRATICALLY — "
+            f"k(k-1) transition probabilities plus k means plus k variances — so "
+            f"{k_regimes} regimes would estimate {settings.parameters_for(k_regimes)} "
+            f"parameters from one series, and the regimes would not be reproducible "
+            f"across restarts."
+        )
+
+    values = _require_markov_series(series)
+
+    # The floor is DERIVED from the parameter count rather than being a fixed row
+    # count, because the count depends on BOTH `k_regimes` and the variance
+    # specification (D-087.22: derive the budget, never type it).
+    n_parameters = settings.parameters_for(k_regimes)
+    required = ceil(settings.min_observations_per_parameter * n_parameters)
+    if values.size < required:
+        raise ValueError(
+            f"series has {values.size} observations but k_regimes={k_regimes} with "
+            f"switching_variance={settings.switching_variance} estimates "
+            f"{n_parameters} parameters, requiring at least {required} "
+            f"({settings.min_observations_per_parameter:g} per parameter). Fewer "
+            f"observations than free parameters is not an unidentified DIRECTION, it is "
+            f"an unidentified MODEL: the likelihood is flat along it and the optimizer "
+            f"reports a boundary hit as a maximum. Supply a longer series, a smaller "
+            f"k_regimes, or (deliberately) a lower "
+            f"regime.markov.min_observations_per_parameter_value."
+        )
+
+    # --- the fit, with the library's warnings CAPTURED rather than leaked -----
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model = MarkovRegression(
+                values,
+                k_regimes=k_regimes,
+                trend=settings.markov_trend,
+                switching_variance=settings.switching_variance,
+            )
+            fitted = model.fit(
+                method=settings.markov_optimizer,
+                maxiter=settings.max_iterations,
+                em_iter=settings.em_iterations,
+                search_reps=settings.search_reps,
+            )
+    except np.linalg.LinAlgError as exc:
+        raise ValueError(
+            f"the Markov-switching fit failed on this series with "
+            f"`{type(exc).__name__}: {exc}`. The library's own default flags hide the "
+            f"cause: `missing='none'` performs no nan checking, and a degenerate "
+            f"likelihood (too few DISTINCT values to identify {k_regimes} regimes) "
+            f"surfaces as a linear-algebra failure rather than a diagnostic. Check the "
+            f"series for repeated or near-repeated values and for the length floor."
+        ) from exc
+
+    warning_categories: dict[str, int] = {}
+    for entry in caught:
+        name = entry.category.__name__
+        warning_categories[name] = warning_categories.get(name, 0) + 1
+    warning_count = sum(warning_categories.values())
+
+    # --- the canonical ordering ---------------------------------------------
+    param_names = [str(name) for name in model.param_names]
+    constant_names = [name for name in param_names if name.startswith("const[")]
+    # The config layer already excludes the trend values under which no
+    # regime-specific intercept exists (probed: "n" and "t" have none), so this
+    # fires only if the LIBRARY's naming changes — which is exactly when it
+    # should be loud rather than silently falling back to the arbitrary index.
+    if len(constant_names) != k_regimes:
+        raise ValueError(
+            f"expected {k_regimes} regime intercepts named 'const[i]' but found "
+            f"{len(constant_names)} in {param_names!r}. The canonical regime ordering "
+            f"sorts on the regime's estimated MEAN, so without one intercept per regime "
+            f"there is nothing to order by and the published index would revert to the "
+            f"library's arbitrary labelling (measured: that labelling changes with the "
+            f"EM starting values)."
+        )
+    # POSITIONAL indexing, deliberately. MEASURED 2026-09-24: `fitted.params` is a
+    # pandas Series when the endog was a Series and a bare `numpy.ndarray` when it
+    # was an array — so `fitted.params["const[0]"]` raises `IndexError` on the
+    # route this function actually takes (it passes an array). The library's
+    # RETURN TYPE depends on the INPUT TYPE, which is the D-101 class: a
+    # convenience API's contract is not only its arguments. `param_names` is a
+    # list on both routes, so positions are the container-agnostic index.
+    parameter_values = np.asarray(fitted.params, dtype=float)
+    positions = {name: position for position, name in enumerate(param_names)}
+    constants = np.array(
+        [float(parameter_values[positions[name]]) for name in constant_names], dtype=float
+    )
+
+    # --- the paths ----------------------------------------------------------
+    # `np.asarray` rather than `.to_numpy()`: MEASURED 2026-09-24, these are
+    # pandas objects when the endog was a Series and bare ndarrays when it was an
+    # array — the return CONTAINER mirrors the input container. `asarray` is the
+    # one spelling that is correct on both routes.
+    smoothed_raw = np.asarray(fitted.smoothed_marginal_probabilities, dtype=float)
+    filtered_raw = np.asarray(fitted.filtered_marginal_probabilities, dtype=float)
+
+    # --- the transition matrix, transposed into the conventional orientation --
+    raw_transition = np.asarray(fitted.regime_transition, dtype=float)[:, :, 0]
+    # The library documents `raw[i, j]` as P(from j TO i) — column-stochastic.
+    # Transposing makes `rows[i, j]` = P(from i TO j), which is what a reader
+    # means by "the transition matrix", and the orientation is published.
+    rows = raw_transition.T
+    if not np.allclose(rows.sum(axis=1), 1.0, atol=1e-8):
+        raise ValueError(
+            f"the transition matrix does not have rows summing to 1 after transposition "
+            f"(got {rows.sum(axis=1).tolist()}). The library documents its own matrix as "
+            f"left-stochastic — element (i,j) is P(from j to i), so COLUMNS sum to one — "
+            f"and this function publishes the transpose. If that convention has changed, "
+            f"the published orientation is now wrong and a consumer would read the "
+            f"transpose of the truth."
+        )
+
+    durations_raw = np.asarray(fitted.expected_durations, dtype=float)
+
+    # --- the canonical re-indexing (the increment's mechanism) ---------------
+    canonical = _canonicalise_fit(constants, smoothed_raw, filtered_raw, rows, durations_raw)
+    order = canonical.order
+    canonical_constants = canonical.means
+    smoothed = canonical.smoothed
+    filtered = canonical.filtered
+    canonical_transition = canonical.transition
+    durations = canonical.durations
+
+    current = filtered[-1]
+    current_index = int(np.argmax(current))
+    current_probability = float(current[current_index])
+
+    # The look-ahead in the path, measured rather than asserted. It is 0.0 at the
+    # final observation by construction, which is what licenses reading the
+    # endpoint as a real-time estimate.
+    max_gap = float(np.max(np.abs(smoothed - filtered)))
+
+    # --- the base rate (D-029) ----------------------------------------------
+    period_labels = np.argmax(smoothed, axis=1)
+    counts = [int(np.count_nonzero(period_labels == index)) for index in range(k_regimes)]
+    shares = np.array([count / period_labels.size for count in counts], dtype=float)
+    modal_regime = int(np.argmax(shares))
+    modal_share = float(shares[modal_regime])
+
+    converged = bool(getattr(fitted, "mle_retvals", {}).get("converged", False))
+    log_likelihood = float(fitted.llf)
+    observations_per_parameter = float(values.size) / float(n_parameters)
+
+    current_period = str(series.index[-1]) if len(series.index) else "unknown"
+
+    # --- the warnings --------------------------------------------------------
+    warnings_out: list[str] = [
+        "STATISTICAL DECOMPOSITION, NOT A CAUSAL CLAIM. The regimes are latent "
+        "states inferred from this series' own dynamics; nothing here says a regime "
+        "causes the readings, and the probabilities are posterior model quantities, "
+        "not frequencies in the world.",
+        f"k_regimes={k_regimes} was CHOSEN BY THE CALLER and is not tested here. A "
+        f"k-regime model fitted to an economy with fewer regimes still returns "
+        f"k regimes — the extra ones are the model spending its degrees of freedom. "
+        f"No information criterion selects k in this function, and the specification "
+        f"does not specify one.",
+        f"REGIME ORDERING: the library's regime index is NOT identified — it follows "
+        f"the EM starting values, and measured 2026-09-24 on one fixed series it "
+        f"assigned index 1 to the high-mean regime for 4 of 12 seeds and to the "
+        f"middle-mean regime for the other 8. The published labels are therefore "
+        f"re-ordered by '{MARKOV_REGIME_ORDERING_RULE}' (ascending estimated mean) "
+        f"and `regime_order_raw_index` gives the permutation, so the ordering can be "
+        f"checked rather than trusted. Read the labels as RANKED BY LEVEL, never as "
+        f"a fixed identity like 'expansion' or 'recession'.",
+        f"THE SMOOTHED PATH IS RETROSPECTIVE. `smoothed_probabilities` at period t is "
+        f"revised by every observation after t, so it is not what was knowable at t; "
+        f"measured on this series the path departs from the real-time (filtered) path "
+        f"by up to {max_gap:.4f}. `current_probabilities` is taken from the FILTERED "
+        f"path, which coincides with the smoothed one at the final observation. Use "
+        f"the path for history and the current read for now — never the path's last "
+        f"value as if the earlier ones had been knowable.",
+        f"THE HARD LABEL IS DERIVED. `current_regime` is the argmax of "
+        f"`current_probabilities` and carries "
+        f"{current_probability:.4f} of the probability mass; the remaining "
+        f"{1.0 - current_probability:.4f} sits with other regimes. Section 6.2 asks "
+        f"for probabilities rather than a hard label precisely because the label "
+        f"discards that number.",
+        f"BASE RATE: the modal regime covers {modal_share:.1%} of the "
+        f"{period_labels.size} fitted periods. A regime that most of the sample sits "
+        f"in is closer to a constant than to a finding, and the label alone cannot "
+        f"say so (D-029).",
+    ]
+
+    if modal_share >= settings.modal_share_warning_threshold:
+        warnings_out.append(
+            f"BASE STATE: the modal regime covers {modal_share:.1%} of the sample, at or "
+            f"above the {settings.modal_share_warning_threshold:.1%} bar. On this series "
+            f"the model has found ONE dominant state plus exceptions, so the "
+            f"probabilities mostly report how confidently the series sits in that state "
+            f"rather than distinguishing between regimes."
+        )
+
+    if warning_count:
+        breakdown = ", ".join(
+            f"{name} x{count}" for name, count in sorted(warning_categories.items())
+        )
+        warnings_out.append(
+            f"THE LIBRARY RAISED {warning_count} WARNING(S) during this fit: "
+            f"{breakdown}. These are reported rather than swallowed because a library "
+            f"call that warns on every call is a silent-failure surface (D-097). The "
+            f"ValueWarning is the library inferring the series' frequency from the "
+            f"index and fires on every call on this installation; an EstimationWarning "
+            f"or a ConvergenceWarning is a statement about the fit and should be read "
+            f"as one."
+        )
+
+    if not converged:
+        warnings_out.append(
+            "THE OPTIMIZER REPORTED NON-CONVERGENCE. This is NOT evidence that the fit "
+            "is wrong: the likelihood of a Markov-switching model is flat in the "
+            "variance parameters, and D-101 measured that a gradient optimizer can sit "
+            "AT the optimum while its own stopping rule fails — the same seeds failed "
+            "at 200, 1000 and 3000 iterations, which identifies the RULE rather than "
+            "the budget. Check the alternative before discarding the result, and read "
+            "the published log-likelihood against a lower-k fit."
+        )
+
+    confidence = compute_confidence(
+        ConfidenceInputs(
+            # Section 6.2's signature is `(series, k_regimes)` — it has NO channel
+            # for a data-quality flag, so a caller holding a flagged series cannot
+            # say so. Left at the default rather than asserted either way, and
+            # disclosed in `limitations` instead of being silently claimed clean.
+            is_heuristic_not_calibrated=True,
+            # The regimes are LATENT: never observed, only inferred.
+            depends_on_unobservable=True,
+            # One series is one source; the regime COUNT is not independence.
+            source_independence_count=0,
+        )
+    )
+
+    return ModelResult(
+        model_name="classify_regime_markov_switching",
+        country="us",
+        as_of=utc_now(),
+        # NOTHING numeric is rounded, deliberately. Every probability here carries
+        # a stated IDENTITY — the transition matrix's rows sum to one, a
+        # probability vector sums to one, `expected_durations` IS `1/(1 - p_ii)`,
+        # and the shares are counts over periods — and rounding to 6 dp breaks
+        # each of them. Measured before the change: the rounded rows summed to
+        # 0.999999 and the recomputed durations drifted by 0.0035, because
+        # `1/(1-p)` amplifies a 1e-6 error in `p` by `1/(1-p)^2` when `p` is near
+        # 1. A published quantity that does not satisfy the identity printed
+        # beside it is worse than an unrounded one, and JSON carries the full
+        # precision without complaint. The COUNTS are published too, so the base
+        # rate is checkable from integers rather than trusted from a float.
+        value={
+            "k_regimes": k_regimes,
+            "current_regime": current_index,
+            "current_regime_probability": current_probability,
+            "current_probabilities": [float(p) for p in current],
+            "regime_means": [float(m) for m in canonical_constants],
+            "regime_means_raw_index": [float(m) for m in constants],
+            "regime_order_raw_index": order,
+            "regime_ordering_rule": MARKOV_REGIME_ORDERING_RULE,
+            "regime_shares": [float(s) for s in shares],
+            "regime_period_counts": counts,
+            "modal_regime": modal_regime,
+            "modal_regime_share": modal_share,
+            "transition_matrix": [[float(p) for p in row] for row in canonical_transition],
+            "transition_matrix_orientation": MARKOV_TRANSITION_ORIENTATION,
+            "expected_durations": [float(d) for d in durations],
+            "smoothed_probabilities": [[float(p) for p in row] for row in smoothed],
+            "periods": int(values.size),
+            "n_parameters": n_parameters,
+            "observations_per_parameter": observations_per_parameter,
+            "log_likelihood": log_likelihood,
+            "converged": converged,
+            "library_warning_count": warning_count,
+            "library_warning_categories": dict(sorted(warning_categories.items())),
+            "max_smoothed_filtered_gap": max_gap,
+            "current_period": current_period,
+        },
+        confidence=confidence,
+        interpretation=(
+            f"Markov-switching regime model, {k_regimes} regimes: the current period "
+            f"({current_period}) sits in regime {current_index} of "
+            f"{k_regimes} (ranked by estimated mean, ascending) with probability "
+            f"{current_probability:.3f}. Regime means "
+            + ", ".join(f"{m:+.2f}" for m in canonical_constants)
+            + f". Modal regime covers {modal_share:.1%} of the sample."
+        ),
+        context=(
+            f"Module 3 (Section 6.2), the Tier-5 replacement for "
+            f"classify_regime_rule_based (Section 21.3, D-096). statsmodels "
+            f"MarkovRegression: trend={settings.markov_trend!r}, "
+            f"switching_variance={settings.switching_variance}, "
+            f"optimizer={settings.markov_optimizer!r}, {values.size} observations, "
+            f"{n_parameters} parameters ({observations_per_parameter:.1f} per "
+            f"parameter), log-likelihood {log_likelihood:.2f}, converged={converged}. "
+            f"Compare against the rule-based label, not against the market: the two "
+            f"answer different questions (a partition versus a posterior)."
+        ),
+        inputs_used=["series"],
+        warnings=warnings_out,
+        unit="probability per regime per period (dimensionless, sums to 1 over regimes)",
+        direction=(
+            "Regime labels are RANKED BY ESTIMATED MEAN, ascending: regime 0 is the "
+            "lowest-mean state on this sample and the last index the highest. The "
+            "direction of travel between regimes is read from `transition_matrix`."
+        ),
+        assumptions=[
+            "The series is a realisation of a first-order Markov-switching process "
+            "with a regime-specific mean and (under the shipped configuration) a "
+            "regime-specific variance. A series whose regime changes are NOT "
+            "well-approximated by an exogenous Markov chain — a structural break, a "
+            "policy regime that responds to the economy — is misdescribed by this "
+            "model, and nothing in the output detects that.",
+            "Regime transitions are exogenous: the model does not let the economy's "
+            "own state affect the probability of switching, which is what the "
+            "time-varying-transition-probability form would allow.",
+            "`k_regimes` is the caller's choice. The number of regimes is a modelling "
+            "decision, not an estimate, and this function does not select it.",
+            "The canonical ordering assumes the regimes are DISTINGUISHED BY LEVEL. "
+            "A regime that differs only in VARIANCE has the same mean as its "
+            "neighbour, and the two would then be ordered by their library index "
+            "rather than by anything economic.",
+        ],
+        data_provenance=[
+            "series — SUPPLIED BY THE CALLER. This function fetches nothing; it does "
+            "not know the series' symbol, provider or vintage. The provenance is "
+            "recorded one layer up, where the series was read.",
+            f"current_period — the index label of the final observation, "
+            f"{current_period!r}, taken from the caller's index.",
+        ],
+        observation_dates={"series_last_period": current_period},
+        limitations=[
+            "LATENT STATES, NOT OBSERVED ONES: the regimes are inferred, never seen. "
+            "A regime probability is a posterior about a hidden variable under this "
+            "model's assumptions, so it inherits every misspecification in them.",
+            "Section 6.2's fixed signature is `(series, k_regimes)` and therefore has "
+            "NO channel for a data-quality flag. A caller holding a series that "
+            "carries a Section 5.4 flag cannot say so, and the confidence is computed "
+            "as if the series were clean. This is a gap in the specification's "
+            "signature, disclosed rather than papered over.",
+            "The regime COUNT is not identified by this function. A k-regime model "
+            "fitted to a k-1-regime economy returns k regimes and a higher "
+            "log-likelihood; the published log-likelihood is therefore NOT a "
+            "goodness-of-fit statistic on its own and must be compared across k with "
+            "the parameter count in mind.",
+            "The regime INDEX is a labelling convention, not an estimate. Two runs "
+            "with different EM starting values can number the same regimes "
+            "differently; the canonical ordering makes the published labels stable, "
+            "but the raw library index is published too (regime_order_raw_index) and "
+            "is NOT comparable across runs.",
+            "Point-in-time: the fit uses the WHOLE series at once. A model estimated "
+            "over a sample ending today uses data that was revised after its own "
+            "observation dates, so the historical path is an ex-post reconstruction "
+            "even where the filtered path is used.",
+        ],
+        decision_relevance=(
+            "Section 7.1's `regime` field names 'markov_switching' as the Phase-5+ "
+            "method alongside 'rule_based', and Section 6.2 fixes this signature so "
+            "the thesis layer's contract does not change when this replaces the "
+            "rule-based classifier. A consumer reads `current_probabilities` and "
+            "`current_regime` for the present state and `regime_means` to interpret "
+            "what the labels mean on this sample."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a causal claim, a forecast, or a trading signal. It "
+            "is a statistical decomposition of one series' own dynamics.",
+            "MUST NOT be read without `k_regimes` and `regime_means`. The label "
+            "'regime 2' means only 'the third-lowest mean on this sample', and a "
+            "consumer that hard-codes a meaning for an index is reading a number the "
+            "fit chose.",
+            "MUST NOT be compared to a rule-based regime label as if the two were the "
+            "same object. One is a posterior over latent states; the other is a "
+            "partition of two thresholds. Disagreement between them is information, "
+            "not an error in either.",
+            "MUST NOT consume the smoothed path as a real-time series. It is "
+            "retrospective; only the current read is taken from the filtered path.",
+            "MUST NOT be used to size a position. Section 17.4's sizing inputs are "
+            "asymmetry and conviction, and a regime posterior is neither.",
+        ],
+    )

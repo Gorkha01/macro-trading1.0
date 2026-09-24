@@ -10,6 +10,64 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-105 — `classify_regime_markov_switching`: the regime index is not identified
+
+**Added**
+
+- **`classify_regime_markov_switching`** (§6.2, Module 3) — the Tier-5 REPLACEMENT for
+  `classify_regime_rule_based` (§21.3, D-096). Phase 5+ builds the sophisticated version and
+  **deletes nothing**, so the rule-based classifier still ships. **Tier 5 = 7/23.** It publishes
+  the **smoothed probability path per period** (the primary output — §6.2 asks for probabilities,
+  "not a hard label"), the real-time current read from the **filtered** path, the transition
+  matrix, expected durations, per-regime shares **and integer counts**, the parameter count, the
+  log-likelihood, and the library's own warning count.
+- **`MarkovRegimeSettings`** in `config.py` plus a required `regime.markov` block in
+  `settings.yaml`: six numeric leaves and three choices as **plain leaves** (`switching_variance`,
+  `markov_trend`, `markov_optimizer`) — Section 4a's rule that the `CalibratedValue` envelope is
+  for NUMBERS and a selection has no such question.
+- **`scripts/live_regime_check.py::_check_markov_regime`** — real GDPC1 year-over-year growth
+  (314 observations, 1948 → 2026), asserting the published identities, recomputing the library's
+  own matrix to prove the transposition, and checking the ordering rule **against the raw series**.
+
+**Changed**
+
+- **`models/regime.py` now imports `statsmodels`** (the sibling `econometrics.py` already did at
+  module level).
+- **`mutation_regime.py`: 41 → 71 mutations**, and `-x` added to the selection (D-057 — the
+  selection is ~28 s, so 71 mutations without it is ~34 minutes of foreground). Measured: `-x`
+  changed no mutation's outcome.
+- **`tests/models/test_regime.py`: 39 → 73 tests.** The suite goes **3112 → 3146** passed
+  (default marker set), a delta of exactly the 34 new tests.
+
+**Fixed**
+
+- **Two sweeps' honesty canaries were anchored on `__all__`** — a line every increment that
+  exports a function edits. Both moved to the module's first statement (**O-126**).
+- **`tests/models/test_trilemma.py` could not COLLECT** after the required `markov` field was
+  added, which would have made **all 63 of that sweep's mutations "kill" identically** — a perfect
+  score measuring nothing (**D-059's trap**). Caught only by the mandatory green-unmutated run
+  (**O-127**).
+
+**Notes**
+
+- **The library's regime index is NOT identified.** Measured at `search_reps=10`: over 12 rng
+  seeds, **4** put the HIGH-mean regime at index 1 and **8** put the MIDDLE-mean regime there.
+  The restarts *improve* the likelihood and make the labelling *less* stable, so the fix is a
+  published **canonical ordering by estimated mean** — with the permutation *and* the raw-index
+  means published, so the ordering is checkable from the output alone.
+- **The library's transition matrix is COLUMN-stochastic** — its own docstring says element (i,j)
+  is P(from j to i). Measured: rows `[0.876519, 1.087713, 1.035767]`, columns exactly 1. The
+  published matrix is the **transpose** and the orientation is stated on every output.
+- **The smoothed path is retrospective** — `|smoothed − filtered|` reaches **0.630416** and is
+  **exactly 0.0** at the endpoint, so the current read comes from the filtered path.
+- **Six library behaviours were found by PROBING, none by reading** — including that
+  `fitted.params` is a Series for a Series endog and an ndarray for an array (so the return
+  container mirrors the *input* container), and that `trend="n"`/`"t"` leave the ordering key with
+  nothing to sort on.
+- **Nothing numeric is rounded**, because every probability here carries a stated identity and
+  rounding to 6 dp broke each of them (measured: rows summed to 0.999999, durations drifted by
+  0.0035).
+
 ### D-104 — the two most frequent defects, made into GATES
 
 **Added**

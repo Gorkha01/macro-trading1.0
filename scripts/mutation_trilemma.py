@@ -896,9 +896,18 @@ def _mutation_table() -> list[tuple[str, Path, str, str]]:
         # testing". It replaces a module-level literal with a SYNTAX ERROR, so the
         # kill is STRUCTURAL (tests/ cannot collect) rather than incidental.
         (
+            # The anchor is the FUTURE IMPORT, not the `__all__` block it used to
+            # be. MEASURED at D-105: adding a name to `__all__` (which every
+            # increment that exports a function does) made the old anchor occur
+            # ZERO times, and `sweep_health.py` correctly reported the canary as
+            # a LEFTOVER — the leftover predicate cannot tell a drifted anchor
+            # from an applied mutation (O-119). TWO sweeps anchor on this same
+            # file, so one `__all__` edit broke both. The future import is the
+            # module's first statement and does not churn; it occurs exactly
+            # once, which `check_targets` verifies.
             "CANARY1 the module literal is replaced with a syntax error (CONTROL)",
             SRC,
-            '__all__ = [\n    "REGIME_STATES",',
+            "from __future__ import annotations",
             "__CANARY__ = <<<SYNTAX ERROR>>>",
         ),
     ]

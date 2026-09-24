@@ -52,6 +52,7 @@ from pydantic import ValidationError
 
 from macro_engine.config import (
     CalibratedValue,
+    MarkovRegimeSettings,
     RegimeBaseRates,
     RegimeRateValues,
     RegimeSettings,
@@ -160,6 +161,26 @@ _SYNTHETIC = RegimeSettings(
             expected_severity="CRITICAL_PEG_STRESS",
             expected_month="1992-09",
         ),
+    ),
+    # `RegimeSettings.markov` is required, and adding it (D-105) broke this
+    # construction — the SAME defect class D-048 recorded for `trilemma` and the
+    # THIRD time it has fired. It is worth naming the failure mode precisely,
+    # because it is invisible to the model's own gates: the module raises
+    # `ValidationError` at IMPORT, so `tests/models/test_trilemma.py` cannot
+    # COLLECT. Every one of `mutation_trilemma.py`'s 63 mutations would then have
+    # been "killed" by that single collection error — a perfect score measuring
+    # nothing, which is D-059's trap exactly. It was caught only because the
+    # suite was run GREEN-UNMUTATED first, as the standing brief requires.
+    markov=MarkovRegimeSettings(
+        max_regimes_value=_leaf(5),
+        min_observations_per_parameter_value=_leaf(4.0),
+        max_iterations_value=_leaf(150),
+        em_iterations_value=_leaf(4),
+        search_reps_value=_leaf(0),
+        modal_share_warning_threshold_value=_leaf(0.85),
+        switching_variance=True,
+        markov_trend="c",
+        markov_optimizer="bfgs",
     ),
 )
 
