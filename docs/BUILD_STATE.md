@@ -8705,3 +8705,26 @@ sidecar. Read the certification block and check the tree independently.
 * **O-117 recurred** — a duplicated append defined a test name twice, and a duplicate name
   **silently DELETES a test**. mypy `no-redef` caught it. **A LF anchor against a CRLF file
   matches nothing, silently** — it bit three times in one session.
+
+**D-104 (2026-09-24) — two repo-wide GATES, no model function (Tier 5 stays 6/23).**
+
+`tests/test_source_hygiene.py` asserts the two invariants that recurred most often and that no
+existing gate could see:
+
+* **No module defines a top-level name twice** (O-117, recurred ×3). Python binds the LAST
+  definition, so a duplicate `test_*` silently deletes a test while `pytest` reports a healthy
+  count. Asserted directly rather than left to `ruff` F811 / mypy `no-redef`, because a
+  per-file lint of the file you just edited is exactly where a duplicate hides.
+* **No source file contains a carriage return.** An anchor written with `\n` matches ZERO times
+  in a CRLF file — the edit looks applied and changes nothing. **`git` cannot detect this:**
+  `git status` was clean and `git add --renormalize` staged **nothing**, because the stored form
+  was already LF. **21 working-tree files** were CRLF and are now LF.
+
+**The CRLF gate found a live defect on its first run:** `tools/reachability_audit.py:133` called
+`write_text` without `newline=""`, writing the reachability baseline as **78 CRLF / 0 LF** — the
+exact D-061 defect class. Fixed at the root; the regenerated baseline is content-identical under
+a CR-insensitive comparison. **18 `write_text` calls lack `newline=""`**; 17 are `tmp_path`
+fixtures (**O-125**).
+
+Both gates carry a divergent-case test, and the walk carries a >200-file control, because both
+are vacuously true on an empty list.

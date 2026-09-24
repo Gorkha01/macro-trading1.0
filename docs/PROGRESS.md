@@ -5780,3 +5780,32 @@ the first time. Measured: **0 sweeps** lack it.
 was defined twice — **a duplicate name silently DELETES a test**. mypy's `no-redef` caught
 it. **Line-ending mismatches bit three times** in one session: a LF anchor against a CRLF
 file matches nothing, silently.
+
+---
+
+## D-104 — the two most frequent defects, made into GATES (2026-09-24)
+
+**No model function. Tier 5 stays 6/23.** D-103 fixed the two traps; this closes the two
+**defects** those increments kept meeting — by turning each from a convention into a check,
+in a new **`tests/test_source_hygiene.py`** over the whole tree.
+
+**Gate 1 — a duplicate module-level name (O-117, recurred ×3).** Two `def test_x()` leave ONE
+test and `pytest` reports **nothing**. Asserted directly, not left to `ruff` F811 / mypy
+`no-redef`, because a per-file lint of the file you just edited is where a duplicate hides.
+**Proven**: hand-appending a duplicate produced
+`AssertionError: 1 module-level name(s) are defined more than once`.
+
+**Gate 2 — a carriage return in a source file.** `.gitattributes` pins `eol=lf` (D-061) but the
+**working tree** had **21 CRLF files** — and **`git` cannot see it**: `git status` was clean and
+`git add --renormalize` staged **nothing**, because the stored form was already LF. All 21
+normalised. **And the gate found a LIVE writer on its first run:**
+`tools/reachability_audit.py:133` wrote the baseline as **78 CRLF / 0 LF** — `write_text` without
+`newline=""`, the exact D-061 defect. Fixed at the root; the regenerated baseline is
+**content-identical** under a CR-insensitive comparison.
+
+Both gates carry a **divergent-case** test and the walk carries a **control** (>200 files), so
+neither can pass by checking nothing.
+
+**Gates:** ruff clean · format **248** · mypy **248** · **3112 passed / 1 skipped / 17
+deselected / 0 failed** · reachability **58 = 58** · `sweep_health` **43 sweeps, 0 failures,
+0 leftovers, 0 mutant shapes, 0 unbuffered**.

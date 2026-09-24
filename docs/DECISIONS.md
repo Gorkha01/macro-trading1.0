@@ -17041,3 +17041,65 @@ O-117's exact signature, and it is the **third** recurrence. `ruff`'s F811 and m
   concurrent gate; the sweep only says so. A lock file was considered and rejected: the
   failure it guards against is slow, not corrupting, and a lock that outlives a killed run
   would block the next sweep — trading a slowdown for a hang.
+
+---
+
+## D-104 — The two most frequent defects, made into GATES
+
+**Date:** 2026-09-24. **No model function. Tier 5 stays 6/23.** D-103 fixed the two traps
+D-101/D-102 recorded; this closes the two **defects** those increments kept meeting, the same
+way — by turning each from a convention into a check. Both live in a new
+`tests/test_source_hygiene.py`, over the whole tree.
+
+### Gate 1 — a duplicate module-level name (O-117, recurred ×3)
+
+Python binds a module-level name to the **last** definition, so two `def test_x()` leave ONE
+test and `pytest` reports **nothing at all** — a healthy count over a suite that is missing
+tests. Measured three times: D-097 (three mutations' verdicts corrupted, 52/56 → 55/56 with
+**no mutation changed**), D-100 (`pytest` collected **176 where 178 existed**), D-103 (an
+append written twice). `ruff` F811 and mypy `no-redef` both see it — **but only if run over
+the whole tree**, and a per-file lint of the file you just edited is exactly where a duplicate
+hides.
+
+The gate parses every module under the owned roots and fails on any top-level
+function/class name defined twice. **Proven in both directions**: it passes on the clean tree,
+and hand-appending a duplicate produced
+`AssertionError: 1 module-level name(s) are defined more than once: ['tests\test_source_hygiene.py::test_the_walk_finds_files_at_all']`.
+
+### Gate 2 — a carriage return in a source file (D-061's defect class, still live)
+
+`.gitattributes` already pins `* text=auto eol=lf` (D-061), whose comment records the cause:
+`Path.write_text` translates `"\n"` to `os.linesep` **on write**, so a sweep's round-trip is
+stable *in memory* and lossy *on disk* — every sweep silently converted its target to CRLF.
+An anchor written with `\n` then matches **zero** times in that file: the edit looks applied
+and changes nothing, and the failure is indistinguishable from a typo'd anchor (O-119). It bit
+**three times in one session** at D-103.
+
+**The exposure was measured at 21 files, not one** — `risk.py`, `catalysts.py`, 14 test files,
+4 live checks, `mutation_api_layer.py`. All 21 were normalised to LF. **`git` cannot see this:**
+`git status` reported the tree clean, and `git add --renormalize` staged **nothing**, because
+the *stored* form was already LF and git normalises for comparison. **So no git-level check can
+detect it — which is precisely why it needs its own gate**, since the sweeps read the **working
+tree**.
+
+**And the gate immediately found a LIVE writer.** `tools/reachability_audit.py:133` called
+`write_text` **without `newline=""`**, so `config/reachability_baseline.txt` was written as
+**78 CRLF lines and 0 LF**. Fixed at the root (`newline=""`), the baseline regenerated, and the
+result verified **content-identical** by a CR-insensitive comparison — so the fix changed the
+line endings and nothing else. A census then found **18 `write_text` calls without `newline=""`**
+across the tree; **17 are in test files writing `tmp_path` fixtures** (harmless, recorded as
+O-125) and the one that mattered was the baseline.
+
+**Proven in both directions**: it passes on the normalised tree, and it fired live on the CRLF
+baseline before the writer was fixed. Each gate also carries a **divergent-case** test that
+runs the detector against a deliberately-broken fixture, so neither can be satisfied by a
+detector that returns `[]` for everything — plus a **walk control** asserting the file walk
+finds >200 files, because both gates are vacuously true on an empty list.
+
+### What this does NOT establish
+
+* **The gates cover the owned roots** (`src tests tools scripts config`), not `data/` or
+  `.probe/` — generated directories, deliberately excluded.
+* **The duplicate gate does not replace `ruff` F811 / mypy `no-redef`.** It asserts the same
+  invariant independently, so the reading does not depend on which checker is watching; it
+  cannot see a duplicate introduced by a code generator that never writes the file to disk.

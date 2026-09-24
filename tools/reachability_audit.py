@@ -130,7 +130,14 @@ def write_baseline(unreachable: set[str]) -> None:
         "",
     ]
     lines.extend(sorted(unreachable))
-    BASELINE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # `newline=""` is LOAD-BEARING, not style (D-061/D-104). `Path.write_text`
+    # translates "\n" to `os.linesep` on write, so on Windows this wrote the
+    # baseline as CRLF while the rest of the repo is LF. That made the file the
+    # one source-of-truth text file whose bytes carry a CR — and a mutation anchor
+    # written with "\n" matches ZERO times in such a file, silently. Found by
+    # `tests/test_source_hygiene.py`'s carriage-return gate, which is the check
+    # that would have caught D-061's 21 converted files if it had existed then.
+    BASELINE.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
 def _recorded_calls() -> tuple[set[str], str | None]:

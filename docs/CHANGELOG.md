@@ -10,6 +10,48 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-104 — the two most frequent defects, made into GATES
+
+**Added**
+
+- **`tests/test_source_hygiene.py`** — repo-wide invariants that no single module owns, both
+  of which recurred often enough to stop being accidents and were invisible to every existing
+  gate.
+- **A duplicate-name gate (O-117, recurred ×3).** Python binds a module-level name to the
+  **last** definition, so two `def test_x()` leave ONE test and `pytest` reports **nothing**.
+  The gate parses every module under the owned roots and fails on any top-level
+  function/class name defined twice — asserted directly rather than left to a linter's scope,
+  because a per-file lint of the file you just edited is exactly where a duplicate hides.
+- **A carriage-return gate (D-061's defect class, still live).** An anchor written with `\n`
+  matches **zero** times in a CRLF file: the edit looks applied and changes nothing. **`git`
+  cannot see this** — `git status` reported clean and `git add --renormalize` staged
+  **nothing**, because the stored form was already LF and git normalises for comparison. So
+  the gate reads the **working tree**, which is what the sweeps read.
+- **Two divergent-case tests and a walk control.** Each detector is run against a
+  deliberately-broken fixture, and the file walk is asserted to find >200 files, because both
+  gates are vacuously true on an empty list.
+
+**Fixed**
+
+- **21 source files were CRLF in the working tree** — `risk.py`, `catalysts.py`, 14 test
+  files, 4 live checks, `mutation_api_layer.py` — normalised to LF. The exposure was
+  **21 files, not one**.
+- **`tools/reachability_audit.py:133` wrote the baseline as CRLF** — `write_text` without
+  `newline=""`, the exact D-061 defect. Found **by the new gate, immediately**:
+  `config/reachability_baseline.txt` was **78 CRLF / 0 LF**. Fixed at the root and regenerated;
+  the result is **content-identical** under a CR-insensitive comparison.
+
+**Findings**
+
+- **The gate paid for itself on its first run** — it found a live writer that had been
+  corrupting a tracked file, which no git-level check could have seen.
+- **18 `write_text` calls lack `newline=""`**; 17 are `tmp_path` fixtures (harmless, **O-125**)
+  and the one that mattered was the baseline.
+
+**Documented**
+
+- `docs/DECISIONS.md` **D-104**; `docs/OPEN_ISSUES.md` **O-125**.
+
 ### D-103 — a harness increment: the sweep's exit code, and the machine it owns
 
 **Fixed**
