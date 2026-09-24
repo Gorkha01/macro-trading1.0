@@ -16868,3 +16868,88 @@ the suite moved **2993 → 3068**. The mutation catalogue moved **77 → 109**.
   the gap silently. Verified by hand-applying the mutant and watching the test FAIL.
   **D-100's rule needed a corollary: a divergent case must be checked to lie INSIDE
   the divergence, not merely to exist.**
+
+---
+
+## D-102 — Module 8's `yield_curve_pca`: the maturity order IS the analysis
+
+**Date:** 2026-09-24. **Spec:** §6.6 (AGENTS.md:992). **Module 8**, `models/yield_curve.py`.
+**Tier 5 = 6/23.** The signature is §6.6's: `yield_curve_pca(daily_changes) -> ModelResult`
+— **no `n_components`**, unlike `compute_pca`.
+
+### What it is, and why it is not a wrapper in name only
+
+It consumes `compute_pca` (D-099/D-100) and adds the three things a generic
+decomposition cannot supply:
+
+| Addition | Why the sibling cannot do it |
+| --- | --- |
+| **Maturity ordering** | `compute_pca`'s loadings are keyed by column name, and a component's *shape* is a fact about the ORDER of those loadings. A panel arriving as `30yr, 3mo, 10yr` decomposes identically and reads as noise. The tenors are parsed to years, sorted, and the loadings published in that order — with `tenor_years` beside them so the ordering is checkable. |
+| **`sign_changes`** | Adjacent maturity-ordered loadings with different signs, per component. Measured on five real Treasury tenors: **PC1 0, PC2 1, PC3 2**. |
+| **The three-component scope** | §6.6 names PC1/PC2/PC3, so the count is the specification's rather than the caller's. |
+
+### `sign_changes` is a DESCRIPTION, never a label
+
+§15.20-F forbids naming the components level/slope/curvature, and §6.6's own stub
+repeats it ("confirmed via loadings, never auto-labeled"). **The prohibition bites
+hardest here**, because the curve context makes the names feel obvious — a component
+with zero sign changes across the maturity order IS consistent with a level shift and
+is *equally* consistent with every tenor moving for an unrelated common reason. The
+count is published; the name is the reader's to write down. A test scans every
+published string and every loadings key for the forbidden phrases.
+
+### The tenor parser, and why the module's own helper could not be reused
+
+**Measured 2026-09-24: `_tenor_years` refuses all eleven of the registry's own tenor
+labels.** It is deliberately narrow — a number followed by `y` (`"2y"`/`"10y"`) —
+because it reads years for a duration plausibility check. The registry's
+`treasury_curve` entry writes `1mo`/`3mo`/`6mo`/`1yr`/`2yr`/…/`30yr`, so a panel built
+from the registry, **the only place this project names providers**, cannot be parsed
+by it. The new `_curve_tenor_years` accepts the registry's shapes (`mo`, `yr`, `y`) and
+refuses everything else, for the sibling's reason: a label it cannot read is a caller
+error, and guessing the unit would put a wrong maturity into the ordering the loadings
+are read across.
+
+### Three failures found by testing, not by reading
+
+* **A component's shape is only known if the panel was BUILT to give it one.** The
+  first synthetic fixture had a level and a slope and left the third component to the
+  noise, so PC3's sign pattern was arbitrary and "2 changes" failed with **3**. The
+  fixture now carries a curvature factor.
+* **The eigendecomposition is order-invariant; the floating-point arithmetic is not.**
+  Reordering the columns permutes the covariance matrix, so LAPACK's workspace and
+  blocking change and the last digits move — measured **~1e-11 relative** on the third
+  component. The invariance test asserts `approx`, not `==`, and says why.
+* **`MX8b SURVIVED the first sweep because `dict == dict` ignores KEY ORDER.** It keys
+  the loadings in the caller's column order — every value correct, the shape
+  unreadable — and the invariance test compares two dicts, which cannot observe order.
+  Closed by a test asserting the key order directly.
+
+### The D-055 trap fired — in a sweep I was not editing
+
+Adding `yield_curve_pca` **broke `mutation_curve_trade.py`'s M7.4**, a sweep for a
+*different* function, because the new parser duplicated `_tenor_years`'s opening line
+(`text = tenor.strip().lower()`) and made its anchor two-site. `tools/sweep_health.py`
+caught it on the first run. **My own MX8s was aimed at the same ambiguous line and was
+fixed in the same pass.** This is the rule "re-run EVERY sweep whose path touches the
+file you added to", and the failure is invisible to `git status`.
+
+### `EXIT=1` from a sweep is not evidence of a survivor (O-122)
+
+The D-101 certified run exited 1 on a sweep that had **completed at 108/109**: the
+sandbox's per-turn bulk-delete counter (`count: 167` vs a threshold of 50) refused the
+sweep's **own sidecar cleanup**, leaving a stale sidecar. Verified byte-identical to
+the live file before removal; `sweep_health.py` returned to **0 leftovers**. **Read the
+certification block and check the tree independently.**
+
+### The buffering hole was GENERAL, not one sweep's
+
+D-101 fixed `mutation_econometrics.py` with `flush=True` on its progress prints. A
+census at D-102 found **42 of the 43 sweeps had no `flush` anywhere** — every one of
+them loses its entire log to a kill, while the sidecar correctly preserves the tree.
+Fixing 42 files is 42 chances to miss one, so the fix went into the **shared
+`_sweep_gate.line_buffer_stdout()`**, called FIRST by `sweep_lifecycle` before any file
+is read: one `reconfigure` covers the whole catalogue, including sweeps written later.
+**Two sweeps do not use `sweep_lifecycle`** (`mutation_api_layer.py`,
+`mutation_regime.py`) and are therefore still exposed — recorded rather than papered
+over.

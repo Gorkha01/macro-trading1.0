@@ -74,6 +74,7 @@ from macro_engine.models.econometrics import (
     test_cointegration,
     test_stationarity,
 )
+from macro_engine.models.yield_curve import yield_curve_pca
 
 # Transcribed from config/series_registry.yaml — the registry is the only place
 # that names providers, and a live check is not an exception to that. The
@@ -1068,6 +1069,54 @@ def _kalman_positive_control() -> str:
     )
 
 
+def _yield_curve_pca_check(client: OpenBBClient) -> ModelResult:
+    """`yield_curve_pca` on the SAME real panel the PCA section already fetches.
+
+    Three NECESSARY conditions are asserted and the decomposition is reported:
+
+    1. **the published tenors are in MATURITY order** — the function's core claim,
+       and the one thing `compute_pca` cannot supply, because its loadings are
+       keyed by whatever the caller named the columns;
+    2. **the loadings' KEY order matches it**, asserted separately because
+       `dict == dict` ignores key order — which is exactly how **MX8b survived its
+       first sweep** with every value correct and the shape unreadable;
+    3. **every component's `sign_changes` lies in `[0, n_tenors - 1]`**, the
+       arithmetic range for a vector of that length.
+
+    The ratios, the loadings and the counts are REPORTED, never asserted into a
+    shape: which components a real curve has is the finding, not the premise.
+    """
+    changes = _pca_panel(client)
+    result = yield_curve_pca(changes)
+    value = result.value
+    assert isinstance(value, dict)
+
+    tenors = value["tenors"]
+    years = value["tenor_years"]
+    loadings = value["loadings"]
+    sign_changes = value["sign_changes"]
+    assert isinstance(tenors, list) and isinstance(years, dict)
+    assert isinstance(loadings, dict) and isinstance(sign_changes, dict)
+
+    if tenors != sorted(tenors, key=lambda name: years[name]):
+        raise AssertionError(f"the published tenors are not in maturity order: {tenors}")
+    if len(tenors) != len(set(tenors)):
+        raise AssertionError(f"a tenor is repeated: {tenors}")
+
+    for component, per_tenor in loadings.items():
+        if list(per_tenor) != tenors:
+            raise AssertionError(
+                f"{component}'s loadings are keyed {list(per_tenor)}, not in maturity "
+                f"order {tenors}. A component's SHAPE is a fact about this order."
+            )
+    for component, count in sign_changes.items():
+        if not 0 <= count <= len(tenors) - 1:
+            raise AssertionError(
+                f"{component}: sign_changes {count} is outside [0, {len(tenors) - 1}]"
+            )
+    return result
+
+
 def main() -> int:
     print("=" * 78)
     print("LIVE CHECK: Module 18 econometrics against real FRED data")
@@ -1223,6 +1272,16 @@ def main() -> int:
     )
     low_scale, high_scale = _kalman_scale_invariance(kalman_series)
     _kalman_positive_control()
+
+    print()
+    print("14. YIELD-CURVE PCA -- Module 8's consumer of Module 18's decomposition")
+    print(
+        "   The same real Treasury panel, read ACROSS the maturity order. The\n"
+        "   ordering is the analysis: a component's shape is a fact about the ORDER\n"
+        "   of its loadings, and `compute_pca` keys them by column name, so a panel\n"
+        "   arriving shuffled decomposes identically and reads as noise."
+    )
+    curve_pca = _yield_curve_pca_check(client)
 
     print()
     print("=" * 78)
@@ -1453,6 +1512,30 @@ def main() -> int:
         "    computed, positive, and invariant to units. That is why\n"
         "    `depends_on_unobservable=True` prices the confidence down rather\n"
         "    than claiming the estimate."
+    )
+    curve_value = curve_pca.value
+    assert isinstance(curve_value, dict)
+    curve_ratios = curve_value["explained_variance_ratios"]
+    curve_signs = curve_value["sign_changes"]
+    assert isinstance(curve_ratios, list) and isinstance(curve_signs, dict)
+    print(
+        f"  * YIELD-CURVE PCA (new in D-102). On the same "
+        f"{curve_value['n_obs']} real daily changes\n"
+        f"    across {curve_value['n_tenors']} tenors, the components explain "
+        f"{float(curve_ratios[0]):.1%}, {float(curve_ratios[1]):.1%}\n"
+        f"    and {float(curve_ratios[2]):.1%} of the variance. Sign changes across "
+        f"the maturity order:\n"
+        + "    "
+        + ", ".join(f"{name} {count}" for name, count in curve_signs.items())
+        + "."
+    )
+    print(
+        "    THE COMPONENTS ARE NOT NAMED, DELIBERATELY — and the prohibition bites\n"
+        "    hardest here, because the curve context makes the names feel obvious.\n"
+        "    `sign_changes` is a fact about a loading VECTOR; a factor name is a claim\n"
+        "    about the economy, and only a reader who has looked at the loadings can\n"
+        "    make it. NOT established: that three components are the right number for\n"
+        "    this curve — §6.6 names three, which is a choice and not a finding."
     )
     print()
     print("LIVE CHECK PASSED")

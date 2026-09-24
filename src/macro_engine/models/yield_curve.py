@@ -27,8 +27,10 @@ market-implied path, and the same logic governs the decomposition it depends on.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Literal
 
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
@@ -38,6 +40,7 @@ from macro_engine.models.contracts import (
     compute_confidence,
     utc_now,
 )
+from macro_engine.models.econometrics import compute_pca
 
 __all__ = [
     "BreakevenInputs",
@@ -53,6 +56,7 @@ __all__ = [
     "curve_slope",
     "decompose_yield",
     "inversion_probability_adjustment",
+    "yield_curve_pca",
 ]
 
 
@@ -1746,3 +1750,364 @@ def _inversion_warnings(
             f"about how far past it the uncapped value lay."
         )
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# yield_curve_pca (Section 6.6) — Module 8's consumer of Module 18's PCA
+# ---------------------------------------------------------------------------
+
+#: Section 6.6 names three components explicitly — PC1/PC2/PC3 — so the count is
+#: the SPECIFICATION's rather than a tunable, and it is named once here so the
+#: call and the refusal message cannot disagree about it. `compute_pca` takes an
+#: `n_components` argument; this function's signature deliberately does not
+#: (§6.6's signature is `yield_curve_pca(daily_changes)`), so the value is fixed
+#: at the specification's and the caller cannot silently ask for a different
+#: decomposition from the one §6.6 describes.
+_YIELD_CURVE_COMPONENTS = 3
+
+
+def _curve_tenor_years(tenor: str) -> float:
+    """Parse a REGISTRY tenor label such as ``3mo`` / ``1yr`` / ``30yr`` into years.
+
+    **Why this does not reuse the module's own :func:`_tenor_years`.** That one
+    is deliberately narrow: it accepts only a number followed by ``y``
+    (``"2y"``/``"10y"``), because it reads years for a duration plausibility check
+    and refuses to guess at any other unit. The registry's ``treasury_curve``
+    entry writes its tenors as ``1mo``/``3mo``/``6mo``/``1yr``/``2yr``/``3yr``/
+    ``5yr``/``7yr``/``10yr``/``20yr``/``30yr`` — and **the sibling parser refuses
+    every one of them** (measured 2026-09-24: all eleven raise). So a panel built
+    from the registry, which is the only place this project names providers,
+    cannot be parsed by the existing helper, and reusing it would refuse the
+    correct input.
+
+    This accepts the shapes the registry actually writes: a number followed by
+    ``mo``, ``yr`` or ``y``. It refuses everything else rather than normalising,
+    for the sibling's reason — a label it cannot read is a caller error, and
+    guessing the unit would put a wrong maturity into the ordering the loadings
+    are read across.
+    """
+    text = tenor.strip().lower()
+    for suffix, per_year in (("mo", 1.0 / 12.0), ("yr", 1.0), ("y", 1.0)):
+        if text.endswith(suffix) and text[: -len(suffix)]:
+            try:
+                count = float(text[: -len(suffix)])
+            except ValueError as exc:
+                raise ValueError(
+                    f"tenor {tenor!r} does not carry a numeric count before its {suffix!r} suffix."
+                ) from exc
+            if count <= 0.0:
+                raise ValueError(f"tenor {tenor!r} is not a positive maturity.")
+            return count * per_year
+    raise ValueError(
+        f"tenor {tenor!r} is not a maturity label of the form '3mo'/'1yr'/'30yr', "
+        f"which is the shape config/series_registry.yaml writes. A curve "
+        f"component's loadings are only readable in MATURITY order, so a label "
+        f"whose maturity cannot be read is refused rather than sorted arbitrarily."
+    )
+
+
+def _sign(value: float) -> int:
+    """The sign of a loading, as ``-1``, ``0`` or ``1`` — with zero its own value.
+
+    Not ``numpy.sign`` used loosely: the count below treats a zero loading as
+    BREAKING a run rather than as agreeing with either neighbour, so the
+    definition has to be stated rather than assumed.
+    """
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
+
+
+def _sign_changes(loadings: list[float]) -> int:
+    """Adjacent pairs of a MATURITY-ORDERED loading vector with different signs.
+
+    **This is a DESCRIPTION of the loading vector, not a name for the component.**
+    Section 15.20-F forbids labelling the components level/slope/curvature, and
+    the count of sign changes is the fact a reader uses to make that call
+    themselves. Measured 2026-09-24 on five real Treasury tenors: PC1's loadings
+    change sign **0** times, PC2's once and PC3's twice — the textbook shapes.
+    Reporting "0 sign changes across the maturity order" states what the vector
+    DOES; reporting "the level factor" would be an interpretation this function is
+    not entitled to make, and §6.6's own stub says the same thing ("confirmed via
+    loadings, never auto-labeled").
+
+    A zero loading breaks a run rather than agreeing with either neighbour, which
+    is why :func:`_sign` returns 0 instead of folding it into one side.
+    """
+    return sum(1 for left, right in pairwise(loadings) if _sign(left) != _sign(right))
+
+
+def _prepare_curve_panel(
+    daily_changes: pd.DataFrame,
+) -> tuple[list[str], dict[str, float]]:
+    """Validate the tenor panel and return its labels in MATURITY order.
+
+    Four refusals, each of which would otherwise produce loadings nobody can read:
+
+    1. **not a DataFrame, or no columns** — `compute_pca` refuses these too, but a
+       wrapper that let them through would report `compute_pca`'s message about a
+       function the caller never invoked.
+    2. **a label that is not a maturity** — the whole point of this function is
+       that the loadings are read ACROSS the curve, so a panel labelled
+       ``a``/``b``/``c`` has no curve to read and its "PC1" is uninterpretable.
+    3. **a duplicated label** — the loadings map is keyed by tenor, so two columns
+       sharing a name would silently describe fewer tenors than were supplied.
+    4. **fewer than three tenors** — §6.6 names three components, and a curve with
+       two points has no curvature to decompose. `compute_pca` would refuse
+       ``n_components=3`` against two columns anyway; naming the reason here means
+       the caller is told what the curve is missing rather than what the PCA
+       could not do.
+    """
+    if not isinstance(daily_changes, pd.DataFrame):
+        raise TypeError(
+            f"daily_changes must be a pandas DataFrame, got {type(daily_changes).__name__}."
+        )
+    if daily_changes.shape[1] == 0:
+        raise ValueError(
+            "daily_changes must have at least one tenor column; it has none. A "
+            "curve with no points has no shape to decompose."
+        )
+
+    duplicated = sorted(
+        {str(name) for name in daily_changes.columns[daily_changes.columns.duplicated()]}
+    )
+    if duplicated:
+        raise ValueError(
+            f"daily_changes has duplicate column name(s) {duplicated}. The loadings "
+            f"are keyed by tenor, so one tenor would overwrite another and the "
+            f"result would describe fewer points on the curve than you supplied."
+        )
+
+    tenor_years = {str(name): _curve_tenor_years(str(name)) for name in daily_changes.columns}
+    tenors = sorted(tenor_years, key=lambda name: (tenor_years[name], name))
+
+    if len(tenors) < _YIELD_CURVE_COMPONENTS:
+        raise ValueError(
+            f"daily_changes has {len(tenors)} tenor(s), but Section 6.6 names "
+            f"{_YIELD_CURVE_COMPONENTS} components and a curve needs at least that "
+            f"many points to decompose. With fewer, one of the three would be "
+            f"algebraically determined rather than measured — a 'curvature' fitted "
+            f"to two points is a line. Supply at least "
+            f"{_YIELD_CURVE_COMPONENTS} tenors."
+        )
+
+    return tenors, tenor_years
+
+
+def yield_curve_pca(daily_changes: pd.DataFrame) -> ModelResult:
+    """The yield curve's principal components, read ACROSS the maturity order.
+
+    Section 6.6's signature, and Module 8's consumer of Module 18's
+    ``compute_pca`` (D-099/D-100). §15.18's narrative calls this Module 18's
+    *output*; §21.1 puts the function in **Module 8**, which is where it lives.
+
+    **What this adds over ``compute_pca``, and why it is not a wrapper in name
+    only.** Three things, each of which the generic decomposition cannot supply:
+
+    1. **A maturity ordering.** ``compute_pca``'s loadings are keyed by column
+       name, and a component's *shape* is a fact about the ORDER of those
+       loadings. A panel whose columns arrive as ``30yr, 3mo, 10yr`` decomposes
+       identically but reads as noise, so the tenors are parsed to years, sorted,
+       and the loadings published in that order — with ``tenor_years`` beside them
+       so the ordering is checkable rather than asserted.
+    2. **A descriptive curve shape.** ``sign_changes`` counts, per component, the
+       adjacent pairs of maturity-ordered loadings with different signs. Measured
+       2026-09-24 on five real Treasury tenors: PC1 changes sign **0** times, PC2
+       once, PC3 twice.
+    3. **The three-component scope §6.6 names.** The signature takes no
+       ``n_components``, so the count is the specification's rather than the
+       caller's — a caller cannot silently ask for a different decomposition from
+       the one §6.6 describes.
+
+    **``sign_changes`` is a DESCRIPTION and NOT a label.** §15.20-F forbids
+    labelling the components level/slope/curvature, and §6.6's own stub agrees
+    ("confirmed via loadings, never auto-labeled"). The prohibition is at its
+    sharpest here, because the curve context makes the labels feel obvious — a
+    component with zero sign changes across the maturity order IS consistent with
+    a level shift, and it is equally consistent with every tenor moving for an
+    unrelated common reason. The count is published; the name is the reader's to
+    write down, in the thesis, where it can be argued with.
+
+    The result inherits ``compute_pca``'s warnings and limitations — they are
+    conditions of this run and true here — and adds the two the curve context
+    creates: a panel whose input order was not maturity order (so the reader knows
+    the published order is this function's), and a panel with exactly as many
+    tenors as components (where the last component is the algebraic remainder
+    rather than a measured residual).
+    """
+    settings = get_settings()
+
+    tenors, tenor_years = _prepare_curve_panel(daily_changes)
+
+    # The input order is preserved for the COMPUTATION (the eigendecomposition
+    # does not care about column order) and only the PRESENTATION is reordered.
+    # Reordering before the fit would change nothing numerically but would make
+    # the `compute_pca` context string describe a panel the caller did not pass.
+    pca = compute_pca(daily_changes, n_components=_YIELD_CURVE_COMPONENTS)
+    pca_published = pca.value
+    assert isinstance(pca_published, dict)
+
+    loadings_all = pca_published["loadings"]
+    assert isinstance(loadings_all, dict)
+    ratios_all = pca_published["explained_variance_ratios"]
+    cumulative_all = pca_published["cumulative_explained_variance"]
+    eigenvalues_all = pca_published["eigenvalues"]
+    assert isinstance(ratios_all, list)
+    assert isinstance(cumulative_all, list)
+    assert isinstance(eigenvalues_all, list)
+
+    component_names = list(loadings_all)[:_YIELD_CURVE_COMPONENTS]
+    ordered_loadings: dict[str, dict[str, float]] = {}
+    sign_changes: dict[str, int] = {}
+    for component in component_names:
+        values = loadings_all[component]
+        assert isinstance(values, dict)
+        # MATURITY order, which is the only order in which a component's shape is
+        # readable. `tenors` came from sorting the parsed years, so this is the
+        # curve's own order rather than the caller's column order.
+        ordered_loadings[component] = {tenor: float(values[tenor]) for tenor in tenors}
+        sign_changes[component] = _sign_changes(
+            [ordered_loadings[component][tenor] for tenor in tenors]
+        )
+
+    published: dict[str, object] = {
+        "tenors": tenors,
+        "tenor_years": tenor_years,
+        "n_tenors": len(tenors),
+        "n_obs": int(pca_published["n_obs"]),
+        "n_components": _YIELD_CURVE_COMPONENTS,
+        "explained_variance_ratios": [float(value) for value in ratios_all],
+        "cumulative_explained_variance": [float(value) for value in cumulative_all],
+        "eigenvalues": [float(value) for value in eigenvalues_all],
+        "loadings": ordered_loadings,
+        "sign_changes": sign_changes,
+        "standardisation": pca_published["standardisation"],
+        "sign_rule": pca_published["sign_rule"],
+    }
+
+    warnings_ = list(pca.warnings)
+    input_order = [str(name) for name in daily_changes.columns]
+    if input_order != tenors:
+        warnings_.append(
+            f"THE INPUT COLUMNS WERE NOT IN MATURITY ORDER, so the loadings below "
+            f"are published in this function's order ({', '.join(tenors)}) rather "
+            f"than the order you supplied ({', '.join(input_order)}). The "
+            f"decomposition is unaffected — an eigendecomposition does not depend "
+            f"on column order — but a component's SHAPE does, and reading one "
+            f"against the wrong axis is how a level component gets mistaken for a "
+            f"slope one."
+        )
+    if len(tenors) == _YIELD_CURVE_COMPONENTS:
+        warnings_.append(
+            f"THE PANEL HAS EXACTLY AS MANY TENORS AS COMPONENTS ({len(tenors)}), so "
+            f"the last component is the ALGEBRAIC REMAINDER rather than a measured "
+            f"residual: the three components span the panel completely and the "
+            f"cumulative variance is 1.0 by construction. Its ratio is therefore "
+            f"not evidence that the curve has a third factor — add a tenor and it "
+            f"will change."
+        )
+
+    total_three = float(sum(float(value) for value in ratios_all[:_YIELD_CURVE_COMPONENTS]))
+    first_ratio = float(ratios_all[0]) if ratios_all else 0.0
+
+    return ModelResult(
+        model_name="yield_curve_pca",
+        country="us",
+        as_of=utc_now(),
+        value=published,
+        unit=(
+            "dimensionless: explained-variance ratios are shares of the panel's "
+            "total variance, loadings are unit-free directions, and tenor_years is "
+            "in years"
+        ),
+        direction=None,
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                # The SAME leaf `compute_pca` prices, because this function's
+                # disclosure inherits that threshold — the near-zero ratio below
+                # which a component is reported as a numerical residual rather than
+                # as a weak factor.
+                is_heuristic_not_calibrated=not settings.is_calibrated(
+                    "econometrics.pca_near_zero_tolerance"
+                ),
+                source_independence_count=0,
+                # NOT unobservable: the components are COMPUTED from observed
+                # yields, unlike `kalman_latent_state`'s r*. §21.4 item 13's list
+                # (r*, u*, potential GDP, TFP, the term premium) does not include a
+                # principal component of observed data.
+                depends_on_unobservable=False,
+            )
+        ),
+        interpretation=(
+            f"{_YIELD_CURVE_COMPONENTS} principal components of {len(tenors)} tenors "
+            f"({', '.join(tenors)}) over {int(pca_published['n_obs'])} daily changes. "
+            f"They explain {total_three:.1%} of the panel's variance "
+            f"(PC1 {first_ratio:.1%}). Sign changes across the maturity order: "
+            + ", ".join(f"{name} {count}" for name, count in sign_changes.items())
+            + ". Those counts describe the loading vectors; this function does not "
+            "name the components — read `loadings` and name them yourself."
+        ),
+        context=(
+            "Tenors in maturity order: "
+            + ", ".join(f"{tenor} ({tenor_years[tenor]:g}y)" for tenor in tenors)
+            + f". Standardisation: {pca_published['standardisation']}. Sign "
+            f"convention: {pca_published['sign_rule']}. Explained-variance ratios: "
+            + ", ".join(f"{float(value):.4%}" for value in ratios_all[:_YIELD_CURVE_COMPONENTS])
+            + ". Cumulative: "
+            + ", ".join(f"{float(value):.4%}" for value in cumulative_all[:_YIELD_CURVE_COMPONENTS])
+            + f". Sample: {int(pca_published['n_obs'])} rows, {len(tenors)} tenors. "
+            f"Computed by `compute_pca` on DAILY CHANGES."
+        ),
+        inputs_used=[f"daily_changes:{tenor}" for tenor in tenors],
+        warnings=warnings_,
+        assumptions=[
+            "The input is DAILY CHANGES, not levels. This function cannot verify "
+            "that — `compute_pca` warns when the panel's shape suggests levels, but "
+            "a level panel still yields a PC1 that is a time trend dressed as a "
+            "curve factor. Run a stationarity test on each level first.",
+            "The tenors are MATURITY labels of the shapes the series registry "
+            "writes ('3mo'/'1yr'/'30yr'), and their order is the axis a component's "
+            "shape is read across. A label this function cannot parse is refused "
+            "rather than sorted arbitrarily.",
+            f"The components are computed on the "
+            f"{pca_published['standardisation']!r} matrix, inherited from "
+            f"`econometrics.pca_standardisation`. The covariance route weights each "
+            f"tenor by its own variance; the correlation route gives every tenor "
+            f"equal weight regardless of scale.",
+        ],
+        limitations=[
+            *pca.limitations,
+            "A COMPONENT'S SHAPE IS A PROPERTY OF THE TENOR SET, NOT OF THE CURVE "
+            "IN GENERAL. The sign-change count depends on which maturities are in "
+            "the panel: adding a 6-month point can introduce a change that a "
+            "five-tenor panel could not show, and dropping the front end can remove "
+            "one. Compare two fits' sign counts only when the tenor sets match.",
+            "THREE COMPONENTS ARE A CHOICE, NOT A FINDING. §6.6 names three, so "
+            "three are reported; nothing in the decomposition says the curve HAS "
+            "three factors. When the panel is wider, the remaining components carry "
+            "real variance — measured 2026-09-24 on five tenors, PC4 and PC5 "
+            "together carried 2.3% — and `compute_pca` publishes all of them.",
+        ],
+        decision_prohibition=[
+            "MUST NOT label the components level/slope/curvature, or any other "
+            "name. §15.20-F forbids it and §6.6's own stub repeats it. The "
+            "prohibition bites hardest HERE, because the curve context makes the "
+            "names feel obvious: a component with zero sign changes across the "
+            "maturity order is consistent with a level shift AND with every tenor "
+            "moving for an unrelated common reason, and only a reader who has "
+            "looked at the loadings can tell those apart. `sign_changes` is a fact "
+            "about a vector; a factor name is a claim about the economy.",
+            "MUST NOT be used as a signal on its own. A principal component is a "
+            "direction of maximum variance, not a forecast and not a value signal: "
+            "the largest variance can be the largest NOISE. §15.18's mechanism-first "
+            "ordering applies here as it does to every other function in this "
+            "module.",
+            "MUST NOT be read across two fits as though the components were the "
+            "same factor. The basis is that window's covariance, so after a regime "
+            "change the ordering and the loadings both move. This is the same "
+            "backward-looking hazard `test_cointegration` and `compute_pca` warn "
+            "about.",
+        ],
+    )

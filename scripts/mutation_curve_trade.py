@@ -276,7 +276,12 @@ _M7_ORDERING = """        if short_years >= long_years:
             raise ValueError("""
 _M7_SUFFIX = '    if not text.endswith("y") or not text[:-1]:'
 _M7_POSITIVE = "    if years <= 0.0:"
-_M7_LOWER = "    text = tenor.strip().lower()"
+# WIDENED at D-102. The bare normalisation line became AMBIGUOUS the moment
+# `yield_curve_pca`'s own tenor parser gained an identical one (the D-055 trap:
+# adding a function to a swept file silently makes a NEIGHBOUR's anchor
+# two-site). The distinguishing neighbour is the line the SIBLING parser writes
+# next, so this now targets `_tenor_years` and not the new parser.
+_M7_LOWER = '    text = tenor.strip().lower()\n    if not text.endswith("y") or not text[:-1]:'
 
 # --- M8: the config accessors (config.py) ------------------------------------
 
@@ -615,7 +620,7 @@ def build_mutations() -> list[Mutation]:
             name="M7.4 the parser does not normalise case or whitespace",
             path=YIELD_CURVE,
             old=_M7_LOWER,
-            new="    text = tenor",
+            new=('    text = tenor\n    if not text.endswith("y") or not text[:-1]:'),
             intent="The case/whitespace folding is asserted by its own test.",
         ),
         # -- M8: config accessors ------------------------------------------

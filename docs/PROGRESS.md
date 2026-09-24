@@ -5704,3 +5704,48 @@ by `mutation_yield_curve.py` (69 mutations)**. So it will hit the same anchor-am
 trap D-101 met in `econometrics.py`: **re-run that sweep and widen any anchor my new
 function makes two-site.** Its signature takes **no `n_components`** (unlike
 `compute_pca`), and D-099 already settled the dependency question it raises.
+
+---
+
+## D-102 — Module 8's `yield_curve_pca` (2026-09-24)
+
+**Tier 5 = 6/23.** Spec **§6.6** (AGENTS.md:992), Module 8, `models/yield_curve.py`.
+§6.6's signature: `yield_curve_pca(daily_changes) -> ModelResult` — **no
+`n_components`**, unlike `compute_pca`.
+
+**It is the consumer of `compute_pca` (D-099/D-100) and adds the three things a
+generic decomposition cannot supply:** a **maturity ordering** (a component's shape is
+a fact about the ORDER of its loadings, and `compute_pca`'s are keyed by column name),
+**`sign_changes`** (adjacent maturity-ordered loadings with different signs — measured
+on five real Treasury tenors: PC1 **0**, PC2 **1**, PC3 **2**), and **§6.6's
+three-component scope**.
+
+**`sign_changes` is a DESCRIPTION, never a label.** §15.20-F forbids naming the
+components level/slope/curvature and §6.6's stub repeats it. The prohibition bites
+hardest here — the curve context makes the names feel obvious — so a test scans every
+published string and every loadings key for the forbidden phrases.
+
+### Three findings
+
+1. **`_tenor_years` refuses all eleven of the registry's own tenor labels** (measured),
+   so the module's own parser could not be reused: it accepts only `"2y"`-style labels
+   while the registry writes `"1mo"`/`"1yr"`/`"30yr"`. Recorded as **O-123** — a
+   vocabulary split, not a bug in either parser.
+2. **The D-055 trap fired in a sweep I was NOT editing.** Adding this function broke
+   `mutation_curve_trade.py`'s **M7.4**, because the new parser duplicated
+   `_tenor_years`'s opening line and made its anchor two-site. `sweep_health.py` caught
+   it. My own **MX8s** was aimed at the same line and fixed in the same pass.
+3. **`MX8b SURVIVED the first sweep because `dict == dict` ignores KEY ORDER** — it
+   keys the loadings in the caller's order (every value right, the shape unreadable)
+   and the invariance test compares two dicts. Closed by asserting the key order.
+
+### Two harness facts
+
+* **`EXIT=1` from a sweep is not evidence of a survivor (O-122).** The D-101 certified
+  run exited 1 on a sweep that had completed at 108/109 — the bulk-delete counter
+  refused the sweep's **own sidecar cleanup**.
+* **The buffering hole was GENERAL.** D-101 fixed one sweep with `flush=True`; a census
+  found **42 of 43** had no `flush` anywhere. The fix went into the shared
+  **`_sweep_gate.line_buffer_stdout()`**, called first by `sweep_lifecycle` — one
+  `reconfigure` for the whole catalogue. **Two sweeps do not use that helper**
+  (`mutation_api_layer.py`, `mutation_regime.py`) and stay exposed: **O-124**.

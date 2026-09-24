@@ -8656,3 +8656,35 @@ cleanup**. The certification block must be read and the tree checked independent
 stale sidecar was left behind, verified **byte-identical to the live file**, and
 removed. Same counter that makes test counts non-reproducible — here it reached the
 sweep's *cleanup* rather than its tests.
+
+---
+
+## D-102 — Module 8's `yield_curve_pca` (2026-09-24)
+
+**Tier 5 = 6/23.** §6.6, Module 8, `models/yield_curve.py`.
+`yield_curve_pca(daily_changes) -> ModelResult` — §6.6's signature, **no
+`n_components`**.
+
+It consumes `compute_pca` and adds the **maturity ordering** (the axis a component's
+shape is read across), **`sign_changes`** (a DESCRIPTIVE count — measured on five real
+Treasury tenors: PC1 0, PC2 1, PC3 2), and §6.6's three-component scope. It publishes
+the loadings keyed in maturity order, with `tenor_years` beside them so the ordering is
+checkable rather than asserted.
+
+**It never names a component.** §15.20-F forbids level/slope/curvature, and a test
+scans every published string and every loadings key for the forbidden phrases — the
+curve context is where the temptation is strongest and the prohibition therefore
+matters most.
+
+**Findings:** `_tenor_years` refuses all eleven registry tenor labels, so a second
+parser was required (**O-123**); the D-055 trap fired in `mutation_curve_trade.py`'s
+M7.4, a sweep for a *different* function, because the new parser duplicated
+`_tenor_years`'s opening line; **MX8b survived the first sweep because `dict == dict`
+ignores key order**; and the sweep-log buffering hole was general — **42 of 43 sweeps**
+had no `flush`, fixed once in the shared `_sweep_gate.line_buffer_stdout()` (**O-124**
+covers the two that bypass it).
+
+**⚠️ `EXIT=1` FROM A SWEEP IS NOT EVIDENCE OF A SURVIVOR (O-122).** The D-101 certified
+run exited 1 on a sweep that had **completed at 108/109**: the sandbox's per-turn
+bulk-delete counter refused the sweep's **own sidecar cleanup**, leaving a stale
+sidecar. Read the certification block and check the tree independently.

@@ -5,6 +5,10 @@ AGENTS.md Section 6.6, Section 20.8, Section 22.5, Section 21.2 Steps 4-5.
 
 from __future__ import annotations
 
+from typing import Any
+
+import numpy as np
+import pandas as pd
 import pytest
 
 from macro_engine.config import YieldCurveSettings, get_settings
@@ -18,6 +22,7 @@ from macro_engine.models.yield_curve import (
     curve_slope,
     decompose_yield,
     inversion_probability_adjustment,
+    yield_curve_pca,
 )
 
 _LIVE_SHAPED_CURVE = {
@@ -845,3 +850,443 @@ def test_inversion_adjustment_reads_max_adjustment_through_the_accessor() -> Non
     assert _number(one, "adjustment") * 2 == pytest.approx(
         doubled.max_probability_adjustment, abs=1e-4
     )
+
+
+# ---------------------------------------------------------------------------
+# yield_curve_pca (Section 6.6) — Module 8's consumer of Module 18's PCA
+#
+# The three disciplines this section exists to protect:
+#
+# * **The maturity order is the axis.** A component's SHAPE is a fact about the
+#   order of its loadings, so a shuffled panel must give the same answer and the
+#   published order must be the curve's own.
+# * **`sign_changes` is a DESCRIPTION, never a label.** §15.20-F forbids naming
+#   the components, and the prohibition bites hardest here because the curve
+#   context makes the names feel obvious. The tests assert the COUNT and assert
+#   the absence of the NAME.
+# * **The guards refuse rather than sort.** A label whose maturity cannot be read
+#   is a caller error, not something to normalise.
+# ---------------------------------------------------------------------------
+
+_yield_curve_pca = yield_curve_pca
+
+
+def _synthetic_curve(n: int = 400) -> pd.DataFrame:
+    """A five-tenor panel built from THREE factors whose shapes are known.
+
+    The first version of this fixture had only a level and a slope and left the
+    third component to the noise — so PC3's sign pattern was ARBITRARY, and the
+    test asserting "2 changes" failed with 3. **A component's shape is only known
+    if the panel was built to give it one**, which is why the curvature factor is
+    here: the level loads equally on every tenor (0 changes), the slope loads
+    monotonically from the front end to the long end (1 change), and the curvature
+    is U-shaped (2 changes). The factor standard deviations are ordered
+    0.06 > 0.02 > 0.01 so the three cannot swap, and the noise is an order of
+    magnitude below the smallest.
+    """
+    rng = np.random.default_rng(11)
+    level = rng.normal(0.0, 0.06, n)
+    slope = rng.normal(0.0, 0.02, n)
+    curve = rng.normal(0.0, 0.01, n)
+    coefficients = {
+        "3mo": (1.0, 1.0, 1.0),
+        "1yr": (1.0, 0.6, 0.3),
+        "2yr": (1.0, 0.2, -1.0),
+        "10yr": (1.0, -0.4, 0.3),
+        "30yr": (1.0, -1.0, 1.0),
+    }
+    # A fresh noise draw per tenor, written out rather than hidden behind a
+    # lambda: `--strict` flags an untyped callable, and the project's rule is to
+    # type the test as strictly as the model.
+    return pd.DataFrame(
+        {
+            tenor: level_coef * level
+            + slope_coef * slope
+            + curve_coef * curve
+            + rng.normal(0.0, 0.001, n)
+            for tenor, (level_coef, slope_coef, curve_coef) in coefficients.items()
+        }
+    )
+
+
+def _uncorrelated_curve(n: int = 400) -> pd.DataFrame:
+    """Three mutually ORTHOGONAL zero-mean columns, so the covariance is diagonal.
+
+    Under the configured `correlation` standardisation a diagonal covariance
+    becomes the identity, so every component carries exactly one third of the
+    variance — a hand-computable expectation that no implementation detail can
+    shift.
+    """
+    pattern = np.array([1.0, 1.0, -1.0, -1.0])
+    first = np.tile(pattern, n // 4 + 1)[:n]
+    second = np.tile(np.array([1.0, -1.0, 1.0, -1.0]), n // 4 + 1)[:n]
+    third = np.tile(np.array([1.0, -1.0, -1.0, 1.0]), n // 4 + 1)[:n]
+    return pd.DataFrame({"3mo": first, "1yr": second, "30yr": third})
+
+
+def _curve_value(result: ModelResult) -> dict[str, Any]:
+    """Narrow ``yield_curve_pca``'s ``value`` to a mapping, asserting not casting.
+
+    ``Any`` rather than ``object`` because the published dict is MIXED-TYPE — a
+    list of tenor labels, a float map of years, nested loading maps — so a
+    ``dict[str, object]`` return makes every element unindexable under
+    ``--strict``. This is the same widening ``tests/models/test_econometrics.py``'s
+    ``_value`` uses, for the same reason.
+    """
+    value = result.value
+    assert isinstance(value, dict), (
+        f"{result.model_name}: expected a dict value, got {type(value).__name__}"
+    )
+    return value
+
+
+def _curve_loadings(result: ModelResult) -> dict[str, dict[str, float]]:
+    loadings = _curve_value(result)["loadings"]
+    assert isinstance(loadings, dict)
+    return loadings
+
+
+# --- the maturity ordering --------------------------------------------------
+
+
+def test_yield_curve_pca_publishes_tenors_in_maturity_order() -> None:
+    shuffled = _synthetic_curve()[["30yr", "3mo", "10yr", "1yr", "2yr"]]
+    published = _curve_value(_yield_curve_pca(shuffled))
+    assert published["tenors"] == ["3mo", "1yr", "2yr", "10yr", "30yr"]
+    assert published["tenor_years"]["3mo"] == pytest.approx(0.25)
+    assert published["tenor_years"]["30yr"] == pytest.approx(30.0)
+
+
+def test_yield_curve_pca_is_invariant_to_the_input_column_order() -> None:
+    """The loadings are a set; only their ORDER across the curve carries meaning.
+
+    A shuffled panel decomposes identically — an eigendecomposition does not
+    depend on column order — so this asserts the published loadings are the same
+    MAP, which is what makes the reordering a presentation fix rather than a
+    silent recomputation.
+    """
+    panel = _synthetic_curve()
+    ordered = _curve_loadings(_yield_curve_pca(panel))
+    shuffled = _curve_loadings(_yield_curve_pca(panel[["30yr", "2yr", "1yr", "10yr", "3mo"]]))
+    # APPROXIMATE, not exact, and the gap is measured rather than tolerated:
+    # reordering the columns permutes the covariance matrix, so LAPACK's
+    # workspace and blocking change and the last few digits move — measured
+    # 2026-09-24 at ~1e-11 relative on the third component. The mathematics is
+    # order-invariant; the floating-point ARITHMETIC is not, and asserting `==`
+    # here failed for exactly that reason.
+    assert ordered.keys() == shuffled.keys()
+    for component in ordered:
+        for tenor in ordered[component]:
+            assert shuffled[component][tenor] == pytest.approx(ordered[component][tenor], rel=1e-9)
+
+
+def test_yield_curve_pca_publishes_loading_keys_in_maturity_order() -> None:
+    """The loadings' KEY order is the axis, and `dict == dict` cannot see it.
+
+    **MX8b SURVIVED the first sweep for exactly this reason.** It keys the
+    loadings in the CALLER's column order — every value correct, the shape
+    unreadable — and the invariance test above compares two dicts, which ignores
+    key order entirely. A component's shape is a fact about the ORDER of its
+    loadings, so the order is asserted directly rather than through a comparison
+    that cannot observe it.
+    """
+    shuffled = _synthetic_curve()[["30yr", "3mo", "10yr", "1yr", "2yr"]]
+    result = _yield_curve_pca(shuffled)
+    for component, loadings in _curve_loadings(result).items():
+        assert list(loadings) == ["3mo", "1yr", "2yr", "10yr", "30yr"], component
+
+
+def test_yield_curve_pca_warns_when_the_input_order_is_not_maturity_order() -> None:
+    shuffled = _synthetic_curve()[["30yr", "3mo", "10yr", "1yr", "2yr"]]
+    joined = " ".join(_yield_curve_pca(shuffled).warnings)
+    assert "NOT IN MATURITY ORDER" in joined
+
+
+def test_yield_curve_pca_does_not_warn_when_the_input_is_already_ordered() -> None:
+    """The NEGATIVE CONTROL: without it the branch could pass by always firing."""
+    assert _yield_curve_pca(_synthetic_curve()).warnings == []
+
+
+def test_yield_curve_pca_orders_by_years_not_by_label() -> None:
+    """``6mo`` is 0.5 years and must precede ``1yr``, whatever a string sort says.
+
+    A lexicographic sort would put ``'10yr'`` before ``'2yr'`` and ``'6mo'``
+    before ``'1yr'`` would be a coincidence — so this panel is built so the two
+    orders DISAGREE.
+    """
+    panel = _synthetic_curve()
+    # An INDEPENDENT column, not a function of an existing one: the first version
+    # built `6mo` as `3mo * 0.5 + 0.0001`, which makes the panel rank-deficient
+    # and `compute_pca` refuses it — correctly, and with a message about rank
+    # rather than about this test's intent.
+    rng = np.random.default_rng(29)
+    panel = pd.concat([panel, pd.DataFrame({"6mo": rng.normal(0.0, 0.03, len(panel))})], axis=1)
+    published = _curve_value(_yield_curve_pca(panel))
+    assert published["tenors"] == ["3mo", "6mo", "1yr", "2yr", "10yr", "30yr"]
+    assert published["tenor_years"]["6mo"] == pytest.approx(0.5)
+    # A lexicographic sort would give this instead, and it is wrong.
+    assert published["tenors"] != sorted(published["tenors"])
+
+
+# --- sign_changes, the descriptive shape -----------------------------------
+
+
+def test_yield_curve_pca_counts_the_textbook_shapes() -> None:
+    """A level/slope/curvature construction must count 0, 1 and 2 changes.
+
+    The count is the FACT a reader uses to name the components; the naming itself
+    is forbidden, so this is the strongest assertion the function can make about
+    the shapes.
+    """
+    published = _curve_value(_yield_curve_pca(_synthetic_curve()))
+    assert published["sign_changes"] == {"PC1": 0, "PC2": 1, "PC3": 2}
+
+
+def test_yield_curve_pca_sign_changes_is_zero_for_a_same_signed_vector() -> None:
+    from macro_engine.models.yield_curve import _sign_changes
+
+    assert _sign_changes([0.2, 0.4, 0.5, 0.5, 0.4]) == 0
+
+
+def test_yield_curve_pca_sign_changes_counts_each_crossing() -> None:
+    from macro_engine.models.yield_curve import _sign_changes
+
+    assert _sign_changes([0.8, 0.2, -0.3, -0.4]) == 1
+    assert _sign_changes([0.5, -0.5, -0.4, 0.2, 0.5]) == 2
+
+
+def test_yield_curve_pca_sign_changes_treats_a_zero_as_a_break() -> None:
+    """The documented rule: a zero loading agrees with NEITHER neighbour.
+
+    Asserted directly because the alternative — folding a zero into one side —
+    would make a component with a vanishing middle loading count one change fewer
+    than it does, and nothing in the output would say which rule was applied.
+    """
+    from macro_engine.models.yield_curve import _sign, _sign_changes
+
+    assert _sign(0.0) == 0
+    assert _sign_changes([0.5, 0.0, 0.5]) == 2
+    assert _sign_changes([0.5, 0.5, 0.5]) == 0
+
+
+def test_yield_curve_pca_sign_changes_uses_the_maturity_order() -> None:
+    """The same loading VECTOR, read in the wrong order, is a different shape."""
+    from macro_engine.models.yield_curve import _sign_changes
+
+    vector = [0.8, 0.2, -0.3, -0.4]
+    assert _sign_changes(vector) == 1
+    assert _sign_changes(list(reversed(vector))) == 1
+    assert _sign_changes([0.8, -0.3, 0.2, -0.4]) == 3
+
+
+def test_yield_curve_pca_uncorrelated_panel_splits_the_variance_evenly() -> None:
+    """A hand-computable expectation: orthogonal columns, correlation route.
+
+    Under `correlation` standardisation a diagonal covariance IS the identity, so
+    every component carries exactly one third of the variance. Nothing about the
+    implementation can move this, which is what makes it a golden case rather
+    than a restatement of the output.
+    """
+    published = _curve_value(_yield_curve_pca(_uncorrelated_curve()))
+    ratios = published["explained_variance_ratios"]
+    assert isinstance(ratios, list)
+    assert ratios[:3] == pytest.approx([1 / 3, 1 / 3, 1 / 3], rel=1e-9)
+
+
+# --- the guards -------------------------------------------------------------
+
+
+def test_yield_curve_pca_refuses_a_non_dataframe() -> None:
+    with pytest.raises(TypeError, match="must be a pandas DataFrame"):
+        _yield_curve_pca([1.0, 2.0, 3.0])  # type: ignore[arg-type]
+
+
+def test_yield_curve_pca_refuses_a_columnless_frame() -> None:
+    with pytest.raises(ValueError, match="at least one tenor column"):
+        _yield_curve_pca(pd.DataFrame(index=range(100)))
+
+
+@pytest.mark.parametrize("label", ["a", "abc", "10", "yr", "3m"])
+def test_yield_curve_pca_refuses_a_label_whose_maturity_cannot_be_read(
+    label: str,
+) -> None:
+    panel = _synthetic_curve().rename(columns={"3mo": label})
+    with pytest.raises(ValueError, match=r"not a maturity label|does not carry a numeric"):
+        _yield_curve_pca(panel)
+
+
+def test_yield_curve_pca_refuses_a_non_positive_maturity() -> None:
+    panel = _synthetic_curve().rename(columns={"3mo": "0y"})
+    with pytest.raises(ValueError, match="not a positive maturity"):
+        _yield_curve_pca(panel)
+
+
+def test_yield_curve_pca_refuses_duplicate_labels() -> None:
+    """The message must be THIS function's, not `compute_pca`'s.
+
+    `compute_pca` has its own duplicate-label guard, so removing this one leaves
+    the REFUSAL intact and changes only the text — which is why the first version
+    of this test (matching the shared phrase "duplicate column name") let **MX8i
+    SURVIVE**. The distinguishing phrase is "keyed by tenor": this guard names the
+    curve, the sibling names a series. A wrapper whose guard can be deleted
+    without any test noticing is a guard whose only product is its message, so the
+    message is what is asserted.
+    """
+    panel = _synthetic_curve()
+    panel.columns = ["3mo", "3mo", "2yr", "10yr", "30yr"]
+    with pytest.raises(ValueError, match="keyed by tenor"):
+        _yield_curve_pca(panel)
+
+
+def test_yield_curve_pca_refuses_fewer_than_three_tenors() -> None:
+    panel = _synthetic_curve()[["3mo", "30yr"]]
+    with pytest.raises(ValueError, match="names 3 components"):
+        _yield_curve_pca(panel)
+
+
+def test_yield_curve_pca_warns_when_tenors_equal_components() -> None:
+    """With three tenors the third component is the ALGEBRAIC REMAINDER.
+
+    Its cumulative variance is 1.0 by construction, so its ratio is not evidence
+    that the curve has a third factor. Asserted on both the warning and the
+    cumulative value, because the 1.0 is what makes the warning true.
+    """
+    panel = _synthetic_curve()[["3mo", "2yr", "30yr"]]
+    result = _yield_curve_pca(panel)
+    assert "ALGEBRAIC REMAINDER" in " ".join(result.warnings)
+    cumulative = _curve_value(result)["cumulative_explained_variance"]
+    assert isinstance(cumulative, list)
+    assert cumulative[2] == pytest.approx(1.0, rel=1e-9)
+
+
+# --- the contract -----------------------------------------------------------
+
+
+def test_yield_curve_pca_model_name_is_stable() -> None:
+    assert _yield_curve_pca(_synthetic_curve()).model_name == "yield_curve_pca"
+
+
+def test_yield_curve_pca_uses_the_specifications_three_components() -> None:
+    """§6.6 names PC1/PC2/PC3, and the signature takes no `n_components`."""
+    published = _curve_value(_yield_curve_pca(_synthetic_curve()))
+    assert published["n_components"] == 3
+    assert list(_curve_loadings(_yield_curve_pca(_synthetic_curve()))) == [
+        "PC1",
+        "PC2",
+        "PC3",
+    ]
+
+
+def test_yield_curve_pca_confidence_comes_from_the_shared_rule() -> None:
+    from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
+
+    result = _yield_curve_pca(_synthetic_curve())
+    assert result.confidence == compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not get_settings().is_calibrated(
+                "econometrics.pca_near_zero_tolerance"
+            ),
+            source_independence_count=0,
+            depends_on_unobservable=False,
+        )
+    )
+
+
+def test_yield_curve_pca_does_not_price_an_unobservable() -> None:
+    """The components are COMPUTED from observed yields, unlike r*.
+
+    The discriminating half: a result that set `depends_on_unobservable=True`
+    would score lower, so asserting the value alone would not catch it.
+    """
+    from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
+
+    result = _yield_curve_pca(_synthetic_curve())
+    with_flag = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not get_settings().is_calibrated(
+                "econometrics.pca_near_zero_tolerance"
+            ),
+            source_independence_count=0,
+            depends_on_unobservable=True,
+        )
+    )
+    assert result.confidence > with_flag
+
+
+def test_yield_curve_pca_names_its_inputs_by_tenor() -> None:
+    result = _yield_curve_pca(_synthetic_curve())
+    assert result.inputs_used == [
+        f"daily_changes:{tenor}" for tenor in ("3mo", "1yr", "2yr", "10yr", "30yr")
+    ]
+
+
+def test_yield_curve_pca_direction_is_none() -> None:
+    assert _yield_curve_pca(_synthetic_curve()).direction is None
+
+
+def test_yield_curve_pca_never_names_a_component() -> None:
+    """§15.20-F's prohibition, asserted on the OUTPUT rather than on the prose.
+
+    The forbidden words are the obvious ones for a curve, and the curve context is
+    exactly where the temptation is strongest. Every published string and every
+    loadings key is scanned.
+    """
+    result = _yield_curve_pca(_synthetic_curve())
+    haystack = " ".join(
+        [
+            result.interpretation,
+            result.context,
+            *result.assumptions,
+            *result.warnings,
+            *result.limitations,
+        ]
+    ).lower()
+    for forbidden in ("level factor", "slope factor", "curvature factor"):
+        assert forbidden not in haystack, f"the output named a component {forbidden!r}"
+    assert list(_curve_loadings(result)) == ["PC1", "PC2", "PC3"]
+
+
+def test_yield_curve_pca_forbids_labelling_explicitly() -> None:
+    joined = " ".join(_yield_curve_pca(_synthetic_curve()).decision_prohibition)
+    assert "MUST NOT label the components level/slope/curvature" in joined
+
+
+def test_yield_curve_pca_inherits_compute_pcas_limitations() -> None:
+    """The wrapper must not drop the decomposition's own standing caveats."""
+    joined = " ".join(_yield_curve_pca(_synthetic_curve()).limitations)
+    assert "NOT ECONOMIC FACTORS" in joined
+    assert "PROPERTY OF THE TENOR SET" in joined
+    assert "THREE COMPONENTS ARE A CHOICE" in joined
+
+
+def test_yield_curve_pca_inherits_the_levels_warning() -> None:
+    """Passing LEVELS must still fire `compute_pca`'s suspicion check.
+
+    A wrapper that rebuilt the result instead of inheriting it would lose this,
+    and the loss would be silent: the ratios and loadings look fine on a level
+    panel, which is the whole reason the warning exists.
+    """
+    levels = _synthetic_curve().cumsum() + 4.0
+    joined = " ".join(_yield_curve_pca(levels).warnings)
+    assert "autocorrelation" in joined
+
+
+def test_yield_curve_pca_unit_names_the_shares() -> None:
+    unit = _yield_curve_pca(_synthetic_curve()).unit
+    assert unit is not None
+    assert "shares of the panel's" in unit
+    assert "tenor_years is in years" in unit
+
+
+def test_yield_curve_pca_interpretation_reports_the_cumulative_share() -> None:
+    result = _yield_curve_pca(_synthetic_curve())
+    assert "principal components" in result.interpretation
+    assert "%" in result.interpretation
+    assert "does not name the components" in result.interpretation
+
+
+def test_yield_curve_pca_context_names_the_tenors_in_maturity_order() -> None:
+    context = _yield_curve_pca(_synthetic_curve()).context
+    assert "3mo (0.25y)" in context
+    assert "30yr (30y)" in context
+    assert "Computed by `compute_pca` on DAILY CHANGES" in context

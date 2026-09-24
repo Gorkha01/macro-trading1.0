@@ -1712,7 +1712,7 @@ therefore silent about two implemented functions and their tests. Added at
 | **15.20-F** | 18 | `test_cointegration` | `models/econometrics.py:514` | `test_econometrics.py` | **D-097** |
 | **15.20-F** | 18 | `compute_pca` | `models/econometrics.py:816` | `test_econometrics.py` | **D-099**, **D-100** |
 | **15.20-F** | 18 | `kalman_latent_state` | `models/econometrics.py:1845` | `test_econometrics.py` | **D-101** |
-| **6.6** | **8** | `yield_curve_pca` | *not implemented* (§6.6 stub) | — | **← the binding Next**; consumes `compute_pca` |
+| **6.6** | **8** | `yield_curve_pca` | `models/yield_curve.py:1899` | `test_yield_curve.py` | **D-102** |
 
 **The line numbers above were RE-MEASURED at D-101, and ALL FOUR older ones had
 drifted AGAIN** — by exactly `+3`, the size of the Kalman block inserted above them
@@ -1723,6 +1723,15 @@ above the rows below it**, so a line number in this table has a half-life of one
 increment. The D-100 note predicted exactly this and it happened anyway. **A line
 number is a claim, and it must be re-derived with `grep -n` at every close** — or the
 column should be replaced by something that does not rot.
+
+**The Module 18 table is now COMPLETE except for its Module-8 consumer.** `yield_curve_pca`
+shipped at **D-102**, so all five §15.20-F signatures AND the §6.6 consumer are
+implemented; **Module 18 is 5 of 6** and the sixth is Module 8's, which is why the
+count and the row's module number disagreed until D-101 corrected it.
+
+**Next = `classify_regime_markov_switching`** — the Tier-5 REPLACEMENT for
+`classify_regime_rule_based` (§21.3; see D-096's reconciliation: Phase 5+ builds the
+sophisticated version of each deferred item and deletes nothing). **Tier 5 = 6/23.**
 
 **One row was also WRONG about its module.** `yield_curve_pca` was recorded against
 Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in

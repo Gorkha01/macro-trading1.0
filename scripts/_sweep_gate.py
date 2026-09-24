@@ -88,6 +88,7 @@ from __future__ import annotations
 import shutil
 import signal
 import subprocess
+import sys
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -97,6 +98,7 @@ __all__ = [
     "describe_dirty_targets",
     "format_problems",
     "install_signal_restore",
+    "line_buffer_stdout",
     "record_pristine",
     "restore_from_sidecar",
     "sidecar_for",
@@ -359,6 +361,31 @@ def restore_from_sidecar(paths: list[Path]) -> list[Path]:
     return restored
 
 
+def line_buffer_stdout() -> None:
+    """Make this process's stdout line-buffered, so a killed run keeps its log.
+
+    **Measured 2026-09-24 (D-101/D-102): a sweep redirected to a file loses its
+    ENTIRE log when it is killed.** Python block-buffers stdout when it is not a
+    tty, so a run SIGTERM'd after 36 mutations left a **zero-byte** log while the
+    sidecar correctly preserved the tree — the *recovery* worked and the
+    *evidence* did not. `mutation_econometrics.py` was fixed with `flush=True` on
+    its four progress prints, and a census then found that **42 of the 43 sweeps
+    had no `flush` anywhere**, so every one of them had the same hole.
+
+    Fixing 42 files by hand is 42 chances to miss one, so the fix lives HERE, in
+    the helper every sweep calls before it mutates anything: one `reconfigure`
+    covers the whole catalogue, including sweeps written later.
+
+    `getattr` rather than `sys.stdout.reconfigure` directly because `sys.stdout`
+    is typed as `TextIO`, which does not declare `reconfigure`; the attribute is
+    present on the real `TextIOWrapper` and absent under a captured stream, where
+    the callable check skips it rather than raising.
+    """
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(line_buffering=True)
+
+
 @contextmanager
 def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
     """The full interrupt defence in ONE call: heal, protect, spend (O-103).
@@ -405,6 +432,10 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
     ``restore_from_sidecar`` or the sweep itself already consumed a sidecar, the
     cleanup must not raise on the way out.
     """
+    # FIRST, before any file is read or written: a kill from here on must
+    # leave a log behind (see `line_buffer_stdout`).
+    line_buffer_stdout()
+
     existing = [p for p in paths if p.exists()]
 
     dirty = describe_dirty_targets(existing)

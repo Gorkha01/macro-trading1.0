@@ -10,6 +10,69 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-102 — Module 8's `yield_curve_pca`; the maturity order IS the analysis; a general sweep-log hole
+
+**Added**
+
+- `yield_curve_pca(daily_changes: pd.DataFrame) -> ModelResult` in
+  `src/macro_engine/models/yield_curve.py` (§6.6's verbatim signature — **no
+  `n_components`**), Module 8's consumer of Module 18's `compute_pca`. It publishes the
+  **loadings keyed in MATURITY order** with `tenor_years` beside them, the
+  explained-variance ratios and their cumulative, and **`sign_changes`** — the count of
+  adjacent maturity-ordered loadings with different signs, per component.
+- `_curve_tenor_years`, a parser for the label shapes the series registry writes
+  (`3mo`/`1yr`/`30yr`), and `_sign_changes` / `_sign`, whose zero-handling is
+  documented because a zero loading breaks a run rather than agreeing with a neighbour.
+
+**Fixed**
+
+- **`_sweep_gate.line_buffer_stdout()`** — the sweep-log buffering hole was GENERAL,
+  not one sweep's. D-101 fixed `mutation_econometrics.py` with `flush=True` on its
+  progress prints; a census found **42 of the 43 sweeps had no `flush` anywhere**, so
+  every one of them lost its entire log to a kill while the sidecar correctly preserved
+  the tree. The fix is one `reconfigure` in the shared helper `sweep_lifecycle` calls
+  first, covering the whole catalogue including sweeps written later.
+- **`mutation_curve_trade.py`'s M7.4 anchor was WIDENED** — adding `yield_curve_pca`
+  gave `_tenor_years`'s opening line a second occurrence, making M7.4 two-site (the
+  D-055 trap, in a sweep for a *different* function). `sweep_health.py` caught it.
+
+**Changed**
+
+- `scripts/mutation_yield_curve.py` grew **69 → 90** mutations (the MX8 group).
+- `tests/models/test_yield_curve.py` collects **41 → 78** tests (+37).
+
+**Findings**
+
+- **`_tenor_years` refuses every tenor label the series registry writes** — all eleven
+  of `1mo`/`3mo`/`6mo`/`1yr`/…/`30yr` raise, while `2y`/`10y`/`30y` parse. So the
+  module's own parser could not be reused for a registry-built panel, and the project
+  has **two incompatible tenor vocabularies** (**O-123**).
+- **`MX8b SURVIVED the first sweep because `dict == dict` ignores KEY ORDER.** It keys
+  the loadings in the caller's column order — every value correct, the shape unreadable
+  — and the invariance test compares two dicts, which cannot observe order. Closed by a
+  test asserting the key order directly.
+- **A component's shape is only known if the panel was BUILT to give it one.** The first
+  synthetic fixture left the third component to the noise, so PC3's sign pattern was
+  arbitrary and "2 changes" failed with **3**.
+- **The eigendecomposition is order-invariant; the floating-point arithmetic is not** —
+  measured `~1e-11` relative drift from reordering the columns, because LAPACK's
+  blocking depends on the memory layout.
+
+**Disclosed**
+
+- `sign_changes` is a DESCRIPTION of a loading vector, **not a label**: §15.20-F forbids
+  naming the components and §6.6's stub repeats it. A test scans every published string
+  and every loadings key for the forbidden phrases.
+- A component's shape is a property of the **tenor set**, not of the curve in general;
+  three components are §6.6's choice, not a finding; and the panel's remaining
+  components carry real variance when it is wider.
+
+**Documented**
+
+- `docs/DECISIONS.md` **D-102**; `docs/OPEN_ISSUES.md` **O-123** (two tenor
+  vocabularies) and **O-124** (two sweeps bypass the shared lifecycle and so the
+  buffering fix); `docs/PROGRESS.md`, `docs/BUILD_STATE.md`.
+
 ### D-101 — Module 18 #5: `kalman_latent_state`; four silent failures in a Kalman filter; the fit was unit-dependent
 
 **Added**

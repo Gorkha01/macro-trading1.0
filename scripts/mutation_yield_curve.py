@@ -801,6 +801,162 @@ def _config_mutations() -> list[tuple[str, Path, str, str]]:
     ]
 
 
+def _curve_pca_mutations() -> list[tuple[str, Path, str, str]]:
+    """`yield_curve_pca` (Section 6.6) — Module 8's consumer of Module 18's PCA.
+
+    Aimed at the three claims this function makes beyond `compute_pca`:
+
+    * **The maturity order is the axis.** MX8a removes the sort and MX8b publishes
+      the loadings in the CALLER's order — both leave every number correct and the
+      SHAPE wrong, which is the failure a "the ratios look fine" test would miss.
+    * **`sign_changes` is a description.** MX8c inverts the comparison and MX8d
+      folds a zero into the positive side, so a component's count changes without
+      any loading moving.
+    * **The wrappers' inheritance.** MX8e drops `compute_pca`'s warnings and MX8f
+      its limitations — the two things a wrapper that REBUILT the result instead
+      of inheriting it would lose, and the loss is silent because the loadings are
+      unaffected.
+
+    The rest are the guards (MX8g-MX8j), the component scope (MX8k, MX8l), the
+    contract (MX8m-MX8p) and the tenor parser (MX8q-MX8u).
+    """
+    return [
+        (
+            "MX8a the tenors are not sorted by maturity",
+            SRC,
+            "    tenors = sorted(tenor_years, key=lambda name: (tenor_years[name], name))",
+            "    tenors = list(tenor_years)  # MUTANT MX8a",
+        ),
+        (
+            "MX8b loadings published in the CALLER's column order",
+            SRC,
+            "        ordered_loadings[component] = {tenor: float(values[tenor]) for tenor in tenors}",
+            "        ordered_loadings[component] = {\n"
+            "            str(name): float(values[str(name)]) for name in daily_changes.columns\n"
+            "        }  # MUTANT MX8b",
+        ),
+        (
+            "MX8c sign-change comparison inverted",
+            SRC,
+            "    return sum(1 for left, right in pairwise(loadings) if _sign(left) != _sign(right))",
+            "    return sum(1 for left, right in pairwise(loadings) if _sign(left) == _sign(right))  # MUTANT MX8c",
+        ),
+        (
+            "MX8d a zero loading folded into the positive side",
+            SRC,
+            "    if value > 0.0:\n        return 1\n    if value < 0.0:\n        return -1\n    return 0",
+            "    if value >= 0.0:\n        return 1\n    return -1  # MUTANT MX8d",
+        ),
+        (
+            "MX8e compute_pca's warnings dropped (the wrapper rebuilds the result)",
+            SRC,
+            "    warnings_ = list(pca.warnings)",
+            "    warnings_ = []  # MUTANT MX8e",
+        ),
+        (
+            "MX8f compute_pca's limitations dropped",
+            SRC,
+            "            *pca.limitations,",
+            "            # MUTANT MX8f -- the inherited limitations are gone",
+        ),
+        (
+            "MX8g the tenor floor removed",
+            SRC,
+            "    if len(tenors) < _YIELD_CURVE_COMPONENTS:",
+            "    if False:  # MUTANT MX8g",
+        ),
+        (
+            "MX8h the columnless refusal removed",
+            SRC,
+            "    if daily_changes.shape[1] == 0:",
+            "    if False:  # MUTANT MX8h",
+        ),
+        (
+            "MX8i the duplicate-label refusal removed",
+            SRC,
+            "    if duplicated:",
+            "    if False:  # MUTANT MX8i",
+        ),
+        (
+            "MX8j the DataFrame type check removed",
+            SRC,
+            "    if not isinstance(daily_changes, pd.DataFrame):",
+            "    if False:  # MUTANT MX8j",
+        ),
+        (
+            "MX8k the component count is 2, not the specification's 3",
+            SRC,
+            "_YIELD_CURVE_COMPONENTS = 3",
+            "_YIELD_CURVE_COMPONENTS = 2  # MUTANT MX8k",
+        ),
+        (
+            "MX8l every component is published, not the specification's three",
+            SRC,
+            "    component_names = list(loadings_all)[:_YIELD_CURVE_COMPONENTS]",
+            "    component_names = list(loadings_all)  # MUTANT MX8l",
+        ),
+        (
+            "MX8m model_name renamed",
+            SRC,
+            '        model_name="yield_curve_pca",',
+            '        model_name="curve_pca",  # MUTANT MX8m',
+        ),
+        (
+            "MX8n unobservable dependence ADDED to confidence",
+            SRC,
+            "                depends_on_unobservable=False,",
+            "                depends_on_unobservable=True,  # MUTANT MX8n",
+        ),
+        (
+            "MX8o heuristic penalty dropped from confidence",
+            SRC,
+            "                is_heuristic_not_calibrated=not settings.is_calibrated(",
+            "                is_heuristic_not_calibrated=False,  # MUTANT MX8o\n"
+            "                _unused_is_calibrated=not settings.is_calibrated(",
+        ),
+        (
+            "MX8p the labelling prohibition removed",
+            SRC,
+            '            "MUST NOT label the components level/slope/curvature, or any other "',
+            '            "The components may be named from their loadings. "  # MUTANT MX8p',
+        ),
+        (
+            "MX8q a MONTH tenor is read as a YEAR (the suffix table's first branch)",
+            SRC,
+            '    for suffix, per_year in (("mo", 1.0 / 12.0), ("yr", 1.0), ("y", 1.0)):',
+            '    for suffix, per_year in (("mo", 1.0), ("yr", 1.0), ("y", 1.0)):  # MUTANT MX8q',
+        ),
+        (
+            "MX8r a zero maturity is accepted",
+            SRC,
+            "            if count <= 0.0:",
+            "            if count < 0.0:  # MUTANT MX8r",
+        ),
+        (
+            "MX8s an unreadable tenor is accepted (no suffix matches)",
+            SRC,
+            # Two lines, because the first alone is ALSO `_tenor_years`'s opening
+            # line -- aiming at it made this mutation ambiguous the moment it was
+            # written (D-055). The pair is unique to the new parser.
+            "    text = tenor.strip().lower()\n"
+            '    for suffix, per_year in (("mo", 1.0 / 12.0), ("yr", 1.0), ("y", 1.0)):',
+            "    return 1.0  # MUTANT MX8s -- every label becomes one year",
+        ),
+        (
+            "MX8t the reorder warning dropped",
+            SRC,
+            "    if input_order != tenors:",
+            "    if False:  # MUTANT MX8t",
+        ),
+        (
+            "MX8u the degenerate-panel warning dropped",
+            SRC,
+            "    if len(tenors) == _YIELD_CURVE_COMPONENTS:",
+            "    if False:  # MUTANT MX8u",
+        ),
+    ]
+
+
 def _mutation_table() -> list[tuple[str, Path, str, str]]:
     return [
         *_branch_mutations(),
@@ -811,6 +967,7 @@ def _mutation_table() -> list[tuple[str, Path, str, str]]:
         *_contract_mutations(),
         *_confidence_mutations(),
         *_config_mutations(),
+        *_curve_pca_mutations(),
         # -- O-72 canary (CONTROL) ----------------------------------------
         # NOT a revert of a project correction: a mutation CERTAIN to be caught,
         # so the sweep REFUSES TO CERTIFY when it survives. A sweep whose anchors
