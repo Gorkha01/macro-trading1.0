@@ -8960,3 +8960,67 @@ mutant returns the same order twice. **Proved:** `M2.6` **fails** for seeds `0�
 evidence** — it is O-131's class reached from the other side, and it would equally hide a real
 escape behind a lucky seed.
 
+
+---
+
+## O-133 — a NAME-GREP is not a COVERAGE PROXY (2026-09-25, measurement correction)
+
+**No model function changed, no test changed; one TOOL added.** The entry exists because a
+REPORT stated a defect that did not exist.
+
+### The fact a reader should carry away
+
+**A substring grep of the test files for a function's NAME measures naming convention, not
+coverage, and its error is unbounded in both directions.** Measured on the nine Tier-5
+IMPLEMENTED functions: `monte_carlo_var` → **43** hits and `yield_curve_pca` → **32**, but
+`run_regression` → **0**, `test_cointegration` → **0**, `compute_risk_parity_weights` → **0**,
+`kalman_latent_state` → **0**. Read naively, four shipped functions are **untested** — false.
+`run_regression`'s tests are `test_mechanism_is_recorded_on_the_result`,
+`test_the_regression_type_used_is_named_in_the_context`,
+`test_insubstantial_mechanism_is_refused`; the functions that hit are those whose name is also a
+**module** name, so their file is named after them.
+
+### The class
+
+**O-95/O-98's self-concealing class from the REPORTING side.** Those say an ANCHOR whose text
+stops matching the code silently turns a gate **off**; this says a REPORT whose proxy stops
+matching the property silently **states a defect**. **No gate reads a report**, so neither is
+visible to the suite.
+
+### The instrument (new)
+
+**`tools/tier5_line_coverage.py`** — runs the six dedicated test files under a `sys.settrace`
+line tracer; denominator from `co_lines()` so blank/comment lines are excluded; no third-party
+dependency; `--uncovered` dumps the missing lines for gap classification. It is in `tools/`, so
+`ruff`/`mypy --strict` cover it (`pyproject.toml:162`).
+
+### Measured (2026-09-25)
+
+**828 / 847 = 97.8%** aggregate. `run_regression` **98.5%** — the function the name-grep called
+untested. `kalman_latent_state` 99.1 · `test_cointegration` 98.9 · `yield_curve_pca` 98.9 ·
+`test_stationarity` 98.5 · `compute_pca` 98.5 · `compute_risk_parity_weights` 98.5 ·
+`classify_regime_markov_switching` 95.9 · `monte_carlo_var` 95.7.
+
+**The residual gaps are THREE deliberate defensive guards, not holes:** `monte_carlo_var`
+L1418–1424 (the `ratio = nan` branch, commented *"Guarded rather than divided"*; the published
+`stressed_to_normal_ratio` **is** asserted in 4 tests and the sweep mutates the `math.isnan`
+dispatch) and `classify_regime_markov_switching` L1947–1954 + L1983–1990 (two `raise ValueError`s
+that fire *"only if the LIBRARY's naming changes"*).
+
+**Artefact, not a gap:** the **`def` line of every function reads as uncovered** — the `def`
+STATEMENT executes at import, before tracing starts. Subtract it and six of the nine are 100%.
+
+### Gates (measured 2026-09-25, never carried forward)
+
+```
+ruff format --check src tests tools scripts   ->  252 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 252 source files
+reachability_audit.py                          ->  Tier 1-4 with no pipeline caller: 58  (unchanged)
+full suite (--junitxml)                        ->  see the D-107 gate block; re-measured below
+```
+
+**252 == 252** (D-035: the two counts must match); the +1 from D-107's 251 is exactly this new
+tool file. **The standing rule (skill 5cy):** when asked "is X tested", the answer is a measurement
+of **execution**; the project already owns the strongest naming-independent instrument — **the
+mutation sweep** — and a name-grep must never stand in for it in a report.

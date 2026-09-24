@@ -6244,3 +6244,86 @@ or an `--only`/`--range` chunking argument the sweep still lacks.
 > `test_stationarity` (D-094) · `test_cointegration` (D-097) · `compute_pca` (D-100) ·
 > `kalman_latent_state` (D-101) · `yield_curve_pca` (D-102) ·
 > `classify_regime_markov_switching` (D-105) · `monte_carlo_var` (D-106).
+
+---
+
+## O-133 — a NAME-GREP is not a COVERAGE PROXY (2026-09-25, measurement correction only)
+
+**No model function changed; no test changed; one tool added.** This entry exists because a
+REPORT stated a defect that did not exist, and that is the same class the project's evidence
+standard is built to prevent.
+
+**Prompted by the user's challenge** *"confirm all are this really implemented or you are
+lying"* about the nine Tier-5 functions recorded IMPLEMENTED. Assembling the per-function
+evidence, coverage was first estimated with a substring grep for each function's name in the
+test files. **Measured:** `monte_carlo_var` → **43** hits, `yield_curve_pca` → **32** — but
+`run_regression` → **0**, `test_cointegration` → **0**, `compute_risk_parity_weights` → **0**,
+`kalman_latent_state` → **0**. Read naively that is a claim that four shipped functions are
+**untested**. **The claim is false.**
+
+**Why the grep lies.** A test is named after the **behaviour it asserts**, not the function it
+calls:
+
+| Function | Its actual test names |
+|---|---|
+| `run_regression` | `test_mechanism_is_recorded_on_the_result`, `test_the_regression_type_used_is_named_in_the_context`, `test_insubstantial_mechanism_is_refused` |
+
+None contains the string `run_regression`. The functions that DO hit are those whose name is
+**also a module name** (`monte_carlo_var` → `tests/models/test_monte_carlo_var.py`), so their
+file is named after them; `run_regression` shares `econometrics.py` with four siblings and its
+tests are named after assertions to stay readable. **The metric measures naming convention, and
+its error is unbounded in both directions** — it can report 0 for fully-tested code, and a high
+number for a module whose tests are thin.
+
+**The class.** This is **O-95/O-98's self-concealing class from the REPORTING side.** Those say
+an ANCHOR whose text stops matching the code silently turns a gate **off**; this says a REPORT
+whose proxy stops matching the property silently **states a defect**. Neither is visible to any
+gate, because **no gate reads a report.**
+
+**The fix is to measure the real property — execution, not names.** Added
+**`tools/tier5_line_coverage.py`**: runs the six dedicated test files under a `sys.settrace`
+line tracer and records which executable SOURCE LINE of each target actually executes.
+Denominator from `co_lines()` so blank/comment lines are excluded. No third-party dependency.
+
+**Measured (2026-09-25):**
+
+| Function | exec | total | % |
+|---|---|---|---|
+| `run_regression` | 64 | 65 | 98.5 |
+| `test_stationarity` | 65 | 66 | 98.5 |
+| `test_cointegration` | 91 | 92 | 98.9 |
+| `compute_pca` | 66 | 67 | 98.5 |
+| `kalman_latent_state` | 116 | 117 | 99.1 |
+| `monte_carlo_var` | 110 | 115 | 95.7 |
+| `compute_risk_parity_weights` | 66 | 67 | 98.5 |
+| `classify_regime_markov_switching` | 164 | 171 | 95.9 |
+| `yield_curve_pca` | 86 | 87 | 98.9 |
+| **TOTAL** | **828** | **847** | **97.8** |
+
+**The residual gaps are THREE deliberate defensive guards, not holes:**
+
+* `monte_carlo_var` **L1418–1424** — the `ratio = nan` branch when normal VaR is non-positive.
+  Its own code comment reads *"Guarded rather than divided"*. The published
+  `stressed_to_normal_ratio` field **is** asserted in 4 tests
+  (`tests/models/test_monte_carlo_var.py:239,272,319,500`), and
+  `scripts/mutation_monte_carlo_var.py:172` mutates the `math.isnan(ratio)` dispatch — so the
+  branch is gated by mutation even though no test takes the `else`.
+* `classify_regime_markov_switching` **L1947–1954** and **L1983–1990** — two `raise ValueError`
+  guards whose docstrings say they *"fire only if the LIBRARY's naming changes — which is exactly
+  when it should be loud"*.
+
+**A guard whose condition is false on every legitimate call is CORRECTLY uncovered.** Exercising
+it would mean monkeypatching the library — which is what the **mutation sweeps** do, and why a
+sweep can kill a mutant on a line no test reaches.
+
+**Artefact, not a gap:** the **`def` line of every function reads as uncovered**, because the
+`def` STATEMENT executes at import, before tracing starts. Subtract it and six of the nine are
+**100%**.
+
+**Also:** the tool file is in `tools/`, which `ruff`/`mypy --strict` cover
+(`pyproject.toml:162 files = ["src", "tests", "tools", "scripts"]`) — so it was gate-clean before
+commit. The gate counts moved **+1 to 252 == 252** for exactly this reason.
+
+**Standing rule (skill 5cy):** when asked "is X tested", the answer is a measurement of
+**execution**; the project already owns the strongest naming-independent instrument — **the
+mutation sweep** — and a name-grep must never stand in for it in a report.

@@ -1742,10 +1742,11 @@ builds the sophisticated version of each deferred item and deletes nothing). It 
 **Same shape as D-105:** a Phase-4 SIMPLE version exists and the Phase-5 version
 replaces it without deleting anything.
 
-**Next = `compute_risk_parity_weights`** — the Tier-5 REPLACEMENT for the Phase-4
-inverse-volatility weighting, and it shares `models/risk.py`'s neighbourhood, so the
-sweep-reachability check (`grep -l "models/risk.py" scripts/mutation_*.py`) will
-already be warmed. The same "ask what it replaces" rule applies.
+**Next = `cip_check`** — Module 8's FX-parity half, the head of §21.3's Tier-5 list, and
+the first of the **14** Tier-5 functions that do **not** yet exist in `src/` (they need
+**creating**, not un-stubbing). `compute_risk_parity_weights` was previously named here as
+"the next function" — **it is not outstanding: it shipped at D-071, in Phase 4** (see the
+correction below). The same "ask what it replaces" rule applies.
 
 **One row was also WRONG about its module.** `yield_curve_pca` was recorded against
 Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in
@@ -1933,8 +1934,9 @@ the MODULE column is the authority on WHERE.**
 (D-105) · **`historical_var` / `parametric_var` / `expected_shortfall` →
 `monte_carlo_var` (this increment)** · `realized_vol_simple` → GARCH (still
 outstanding) · the inverse-volatility weighting → `compute_risk_parity_weights`
-(outstanding). A keyword grep of the Tier-5 list for a capability answers the wrong
-question; **ask what each entry replaces.**
+(**DONE — D-071, Phase 4, NOT outstanding; the pointer that named it "next" was
+stale and was corrected 2026-09-25**). A keyword grep of the Tier-5 list for a
+capability answers the wrong question; **ask what each entry replaces.**
 
 **The output shape is deliberately NOT the Phase-4 one.** The three Phase-4
 functions take a **return series** and read a quantile of it; this one takes the
@@ -1994,3 +1996,21 @@ large enough that container-iteration order cannot coincide with the expected or
 measured here, seven names differ from sorted for **every** seed `0..7`, two do not.
 
 
+
+**A tenth mapping rule — a NAME is not a COVERAGE claim, and a name-grep maps nothing
+(O-133).** A substring grep of the test files for a function's name reports
+`run_regression` → **0** while the same function's tests execute **64 of its 65 executable
+lines**. `monte_carlo_var` → **43** and `yield_curve_pca` → **32** only because their name is
+also the **module** name, so their test file is named after them; `run_regression` shares
+`econometrics.py` with four siblings and its tests are named after the **assertions** they
+make (`test_mechanism_is_recorded_on_the_result`), so the grep finds nothing. **The count
+measures naming convention, and its error is unbounded in both directions.** Since this file
+exists to map *a function to the tests and sweeps that witness it*, a name-grep maps a
+function to **nothing** — the same class as O-132's environment-dependent verdict, reached
+from the reporting side. **The rule: ask what the tests EXECUTE, never what they are
+CALLED.** The instruments are `tools/tier5_line_coverage.py` (a `sys.settrace` line tracer;
+measured **828/847 = 97.8%** across the nine Tier-5 functions) and the **mutation sweep**,
+which kills against live code and is naming-independent. **A `def` line always reads as
+uncovered** under the tracer — the `def` STATEMENT runs at import — so subtract it before
+judging a gap, and read a **defensive guard** whose condition is false on every legitimate
+call as **correctly** uncovered rather than as a hole.

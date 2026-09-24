@@ -10,6 +10,47 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### O-133 — a NAME-GREP is not a COVERAGE PROXY (measurement correction; no model change)
+
+Prompted by a direct challenge to the nine-function Tier-5 IMPLEMENTED table
+(*"confirm all are this really implemented or you are lying"*). While assembling
+the evidence, per-function coverage was first estimated with a substring grep of
+the test files for each function's **name** — and it reported **0 tests** for
+`run_regression`, `test_cointegration`, `compute_risk_parity_weights` and
+`kalman_latent_state`, i.e. it manufactured a defect that does not exist.
+
+**Added**
+
+- **`tools/tier5_line_coverage.py`** — measures what the tests **execute**, not
+  what they are **called**. Runs the six dedicated test files under a
+  `sys.settrace` line tracer; the denominator comes from each function's
+  `co_lines()` so blank/comment lines are excluded. No third-party dependency.
+  `--uncovered` dumps the missing lines for gap classification.
+
+**Measured**
+
+- The nine Tier-5 functions: **828 / 847 = 97.8%** aggregate line coverage.
+  `run_regression` **98.5%** — the function the name-grep called untested.
+- The only real gaps are **three deliberate defensive guards**: `monte_carlo_var`
+  L1418–1424 (the `ratio = nan` branch, commented *"Guarded rather than divided"*)
+  and `classify_regime_markov_switching` L1947–1954 + L1983–1990 (two
+  `raise ValueError`s that fire *"only if the LIBRARY's naming changes"*).
+
+**Fixed**
+
+- **The measurement, not the tests.** The tests were never wrong; the *proxy* was.
+  Renaming tests to contain the function name was considered and **rejected** — it
+  edits labels to satisfy a metric, changes no behaviour, and makes the suite less
+  readable.
+
+**Recorded**
+
+- **O-133 (CLOSED)** — a name-grep used as a coverage proxy under-reports without
+  bound and is **O-95/O-98's self-concealing class from the reporting side**.
+- **Skill lesson 5cy** — "is X tested" is answered by measuring execution; the
+  mutation sweep is the project's naming-independent instrument and a name-grep
+  must never stand in for it in a report.
+
 ### D-107 — a fix D-106 CLAIMED but did not deliver, and the instrument that finally saw it
 
 **Fixed**
