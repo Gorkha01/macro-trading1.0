@@ -1,20 +1,26 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-24** (after **D-106 — Module 17's `monte_carlo_var`**, the
-Tier-5 **REPLACEMENT** for `historical_var` / `parametric_var` / `expected_shortfall`
-(all Tier 1, shipped in Phase 4, all in `models/risk.py`; §17.1/§17.4/§18.2's consumer).
-**Tier 5 = 8/23 by §21.3's list; Module 18 = 5 of 6.** The sharpest finding was a **unit
-the docstring had BACKWARDS** — `factor_volatilities` are ANNUALISED, and only the live
-check against real FRED data (0.4956% vs analytic 0.4947%, 0.0009pp) exposed it.
-**Gate baseline: ruff format --check 251 files · mypy --strict 251 files · 3191 passed /
-1 skipped / 17 deselected / 0 failed · monte_carlo sweep 39/39 killed · live check PASS ·
-44 sweeps, sweep_health OK.**)
-Previous update: **D-105 — Module 3's `classify_regime_markov_switching`** (Tier 5 =
-7/23; the library's regime index is NOT identified, so a canonical ordering by mean and
-the published permutation carry the contract). Before it, **D-104** made the two most
-frequent defects into gates, **D-103** a harness increment, and the last MODEL function
-before those was **D-102 `yield_curve_pca`** (Module 8, §6.6).
+Last updated: **2026-09-25** (after **D-107 — a CORRECTION increment.** D-106 reported a
+docstring fix it had **not delivered**; the operator asked "have you fixed this?", a direct
+read of `HEAD` showed the prose still contradicted the code by **sqrt(252)**, and the repair
+plus a two-halves regression test were applied. **No new model function; Tier 5 stays 8/23;
+Module 18 = 5 of 6.** **Three** harness findings: **O-120 re-fired and honestly corrupted the
+tree** (a foreground SIGTERM'd sweep left a mutation applied, which then *manufactured* a false
+survivor in an unrelated test → **O-131**); **pytest's exit code is unreliable here** — the
+safe-delete hook refuses pytest's own temp dir and leaks `exit=1` on a green run, so
+**`--junitxml` is the authority**; and **a sweep VERDICT flipped with the interpreter's HASH
+SEED** — a sort-determinism test used a two-name fixture whose set order sometimes coincides
+with sorted, so `M2.6` was killed for seeds 0/3/5 and survived for 1/2/4/6/7 (**O-132**, fixed
+by widening the fixture to seven names; now killed for every seed). **A mutation verdict that
+depends on the hash seed is not evidence.** **Gates: ruff format --check 251 · mypy 251 ·
+3192 passed / 1 skipped / 0 failed (default set, JUnit) · monte_carlo 39/39 · rebalancing
+61/3 seed-independent · 44 sweeps OK.**)
+Previous update: **D-106 — Module 17's `monte_carlo_var`** (Tier 5 = 8/23; the joint-draw
+replacement for the three Tier-1 estimators; its live check found a **unit the docstring had
+BACKWARDS**, and **D-107 is the increment that actually fixed it**). Before it, **D-105** =
+Module 3's `classify_regime_markov_switching`, **D-104** made two defects into gates, **D-103**
+a harness increment, and the last MODEL function before those was **D-102 `yield_curve_pca`**.
 Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
 (the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
@@ -6082,3 +6088,142 @@ REPLACEMENT for the Phase-4 inverse-volatility weighting, and it shares this inc
 (`grep -l "models/risk.py" scripts/mutation_*.py`) will already be warmed. **Read §17's
 risk axis and probe the library before writing** — this increment found three defects by
 probing, one by the live check, and none by reading.
+
+---
+
+## D-107 — a fix D-106 CLAIMED but did not deliver (2026-09-25)
+
+**No new model function. Tier 5 stays 8/23.** A **correction increment**: it repairs a
+defect that **D-106 reported as fixed and had not fixed**, adds the regression test that
+makes the repair durable, and records two harness findings the repair exposed.
+
+### The defect, stated plainly
+
+D-106's decision entry said *"The docstring and the field description were corrected in
+this increment."* **They were not.** Reading `HEAD` directly showed the class docstring
+and the `factor_volatilities` field description **still said the opposite of the code** —
+"per-period DECIMALS ... NOT annualised" — while the code applies
+`horizon_scale = sqrt(horizon_days / periods_per_year)`. **The prose and the arithmetic
+disagreed by sqrt(252) = 15.87x, and the prose was wrong.**
+
+**This is a record-level failure, and it is worse than the original defect.** D-106 found
+the contradiction, described it correctly in four documents, then wrote a sentence in the
+**authority** claiming a repair that did not happen. **The lesson: a decision entry may not
+claim an edit unless the edit was re-read from disk after it was made.** The one command
+that would have caught it — `git show HEAD:<file> | grep <the fixed text>` — was not run.
+
+### The unit, settled by measurement
+
+Production path, one-factor book, unit weight, 15% annualised vol, 1-day horizon, 200k
+draws, `stress_correlations` supplied:
+
+| reading of `factor_volatilities` | expected 95% VaR | produced |
+| --- | --- | --- |
+| **annualised** (the code) | **1.5542 %** | **1.5625 %** |
+| per-day decimal (the old docstring) | 0.0979 % | — |
+
+`1.5625 / 1.5542 = 1.0053` (Monte-Carlo error at 200k draws); `1.5625 / 0.0979 = 15.96` =
+**sqrt(252)**. Measured two independent ways now (this probe and D-106's live check).
+
+### What changed
+
+1. `risk.py`'s class docstring: unit now **ANNUALISED DECIMALS** (0.15 = 15 %/yr), scaled
+   DOWN by `sqrt(horizon_days / periods_per_year)`, with a paragraph recording the
+   first-draft error, why no unit test could see it, and the measured sqrt(252) factor.
+2. `risk.py`'s `factor_volatilities` field description: now states ANNUALISED.
+3. **New regression test** `test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic`
+   — **two halves**: the **words** (the declarative bullet + the field description read off
+   the source with `ast` must say annualised and not negate it) and the **numbers** (the
+   15 %-annualised book must produce a VaR within 2 % of `z * 0.15 * sqrt(1/252)`, with the
+   two candidate readings separated by a **100x** wider margin than the tolerance).
+
+**Both halves are mutation-proven by hand** (the MX12 discipline) and restored byte-identically.
+**The test's own first draft was wrong and is recorded rather than tidied away:** it scanned
+the whole docstring for "not annualised", which the **correction paragraph itself quotes**,
+so it failed on the fixed file — the check was scoped to the declarative bullet.
+
+### Harness finding 1 — O-120 RE-FIRED and corrupted the tree
+
+`mutation_rebalancing.py` has **64 mutations / ~4 min**, past the foreground window. A
+foreground run hit the cap, **SIGTERM'd mid-run, and left its mutation applied** to
+`risk_budget.py` — twice (first `len(targets)`→`len(drifted)`, then `"drifted"`→`"drifted_v2"`).
+
+**The dangerous part is what a leftover does to the NEXT run:** the sweep does not report
+"leftover" — `check_targets` finds that mutation's original text **absent** and **refuses to
+start** (`64 mutations, 2 problem(s)`), and in that same corrupted state one run reported a
+**bogus unexplained survivor (M11.3)** that hand-application proves is **killed 4/4** on a
+clean tree. **A leftover mutation manufactures a false finding about an unrelated test.**
+Restored from `HEAD` both times; the stale byte-identical `.sweepbackup` removed;
+`check_targets` then returned `64 mutations, 0 problem(s)`.
+
+**Run twice on a clean tree IN THE BACKGROUND: `61 killed / 3 survived / exit 0`, both times**
+(inert M4.6, inert CX3, control M9.1). **The sweep is deterministic when the tree is clean.**
+
+### Harness finding 3 — a sweep VERDICT that flips with the interpreter's HASH SEED (O-132)
+
+**Found by re-running the rebalancing sweep on the clean tree AND DISBELIEVING the number.**
+That re-run reported **60 killed / 4 survived** with one **unexplained** survivor —
+`M2.6 the unbudgeted set stops being sorted` — against the **61 / 3** this increment's own
+record carried. The first step was to rule out **O-131**: `git diff HEAD --stat --
+src/macro_engine/portfolio/risk_budget.py` was **empty** and the blob hash matched `HEAD`
+(`436063fa…`), so the tree was clean and the survivor was **real**.
+
+**Hand-applying M2.6** (`sorted(set(current_contributions) - seen)` →
+`list(set(current_contributions) - seen)`, `risk_budget.py:512`) reproduced it — the full
+selection passed **122/122**. **The cause is the fixture:** the test supplied **two** names,
+`{"zzz": 0.01, "aaa": 0.01}`, and asserted `== ["aaa", "zzz"]`; under the mutant the
+publication is the set's iteration order, which for strings is a function of
+**`PYTHONHASHSEED`**. Measured over eight seeds, `list({'zzz','aaa'})` is `['aaa','zzz']` for
+**0, 3, 5** and `['zzz','aaa']` for **1, 2, 4, 6, 7** — so the test **killed the mutant for
+0/3/5 and passed it for 1/2/4/6/7**, and end-to-end on the sweep's own selection
+**`PYTHONHASHSEED=0` → 122 passed (SURVIVES)** vs **`=1` → 1 failed (KILLED)**.
+
+**Why it matters beyond this test:** a mutation verdict is the project's strongest evidence
+instrument; one that is a function of the hash seed is **not evidence**. It is **O-131's class
+reached from the other side** — a report you cannot trust — and it would equally hide a real
+escape behind a lucky seed.
+
+**The fix is fixture SIZE, not assertion strength.** The test now supplies **seven** unbudgeted
+names (`zzz, aaa, ccc, bbb, qqq, mmm, yyy`; measured to iterate differently from sorted for
+**every** seed `0..7`), asserts the sorted publication, and adds a second independent pin that
+the list does not vary with the caller's insertion order. **A first attempt adding only a
+`forward == reversed_` assertion was NOT sufficient** — both calls receive the same set, so the
+mutant returns the same order twice and the assertion cannot discriminate. **Proved:**
+`M2.6` **fails** for seeds `0,1,2,3,4`; the clean tree **passes** for the same seeds.
+**Corrected, seed-independent verdict:** `mutation_rebalancing.py`
+**64/64 applied · 61 killed · 3 survived · `every survivor is either expected or proven inert`**.
+
+### Harness finding 2 — pytest's EXIT CODE is unreliable here
+
+The full suite produced **`exit=1` on a run with zero failing tests**, twice: the safe-delete
+hook refuses the bulk delete of **pytest's own temp directory** (`count:172, threshold:50`)
+*after* pytest prints 100 %, and that refusal leaks a non-zero exit. **The authority is the
+report file, not the exit code** — O-122's class, now measured for `pytest` itself.
+**The instrument: `--junitxml=<Windows path>`** (the managed interpreter does not resolve Git
+Bash's `/tmp`), parsed by summing `tests/failures/errors/skipped` over `iter('testsuite')`.
+
+### Gate baseline after D-107 (measured 2026-09-25, via JUnit)
+
+ruff check clean · **`ruff format --check` 251 files** · **`mypy --strict` no issues in 251
+files** · default marker set (`not live and not slow`) **3193 collected / 3192 passed / 0
+failed / 1 skipped**; the wider `not live` set **3194 / 3193 / 0 / 1**. **Delta against
+D-106's 3191 = exactly +1**, the one new regression test. ·
+`reachability_audit.py --check-baseline` **PASS 58/58**, no regressions · both mutant-shape
+greps print **nothing** · `mutation_monte_carlo_var.py` **39/39, exit 0** ·
+`mutation_rebalancing.py` **64/64 applied · 61 killed · 3 survived (all inert or control) · every
+survivor expected or proven inert**, now **seed-independent** (M2.6 fixed here, O-132) ·
+**`sweep_health.py` LAST** → **44 sweeps · 0 leftovers · 0 mutant shapes · 0 committed
+mutants · 0 failures · OK**.
+
+**Three files changed:** `src/macro_engine/models/risk.py` (the unit prose) ·
+`tests/models/test_monte_carlo_var.py` (the two-halves regression test) ·
+`tests/portfolio/test_rebalancing_drift.py` (the seed-independent sort pin, O-132).
+
+### Next
+
+**Tier 5 = 8/23, unchanged.** The next natural item is still
+**`compute_risk_parity_weights`** — the Tier-5 REPLACEMENT for the Phase-4
+inverse-volatility weighting, in `models/risk.py`'s neighbourhood. **Read §17's risk axis and
+PROBE before writing.** And **do not run a >50-mutation sweep in the foreground** — O-120's
+remedy is background-with-sidecar, or an `--only`/`--range` chunking argument the sweep still
+lacks.

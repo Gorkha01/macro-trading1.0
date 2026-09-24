@@ -1065,3 +1065,150 @@ def test_the_tier_one_estimators_still_ship_and_still_agree_with_each_other() ->
         )
     )
     assert as_float(para, key="var_pct") > 0.0
+
+
+# --------------------------------------------------------------------------
+# THE DOCSTRING'S UNIT CLAIM IS PINNED TO THE CODE'S ARITHMETIC (D-106 fix)
+# --------------------------------------------------------------------------
+# This test exists because the class docstring and the `factor_volatilities`
+# field description both said the inputs were "per-period DECIMALS ... NOT
+# annualised" while the code annualises by sqrt(horizon_days/periods_per_year)
+# — the prose and the arithmetic disagreed by ~sqrt(252). NOTHING ELSE CAUGHT
+# IT: every other test supplies annualised numbers and cross-checks against an
+# analytic that annualises on the SAME assumption, so the two routes agree with
+# each other and both disagree with the prose. Only the live check on real data
+# exposed it. This test makes the disagreement impossible to reintroduce
+# silently: it reads the CLASS DOCSTRING and the FIELD DESCRIPTION off the
+# source and asserts the unit word they use matches what the code does.
+
+
+def _factor_volatilities_field_description() -> str:
+    """The `factor_volatilities` field's description, read from the source."""
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[2] / "src" / "macro_engine" / "models" / "risk.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and node.name == "MonteCarloVaRInputs"):
+            continue
+        for stmt in node.body:
+            if not isinstance(stmt, ast.AnnAssign):
+                continue
+            if not isinstance(stmt.target, ast.Name):
+                continue
+            if stmt.target.id != "factor_volatilities":
+                continue
+            for child in ast.walk(stmt):
+                if not (isinstance(child, ast.Call) and isinstance(child.func, ast.Name)):
+                    continue
+                if child.func.id != "Field" or not child.keywords:
+                    continue
+                for kw in child.keywords:
+                    if kw.arg == "description" and isinstance(kw.value, ast.Constant):
+                        return str(kw.value.value)
+    raise AssertionError(
+        "could not read the `factor_volatilities` field description from "
+        "MonteCarloVaRInputs; if the field was renamed, update this test"
+    )
+
+
+def test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic() -> None:
+    """The prose names the unit the arithmetic actually uses — ANNUALISED.
+
+    Two independent checks, because either alone is weak:
+
+    1. **The words.** The class docstring's ``factor_volatilities`` unit bullet
+       and the field description must name the unit as ANNUALISED and must not
+       negate it. Checked on the DECLARATION only: the docstring deliberately
+       *quotes* the old wrong claim while explaining the defect, and a whole-text
+       substring check flags that quotation (this test hit exactly that false
+       positive on its first run, which is why the check is scoped).
+    2. **The numbers.** A book of unit weight on one factor at 15% *annualised*
+       vol, one-day horizon, must produce a VaR ≈ ``z * 0.15 * sqrt(1/252)`` —
+       i.e. the annualised reading. If the code were ever changed to treat the
+       input as a per-period decimal instead, this numeric half fails
+       immediately, whatever the prose says.
+    """
+    from macro_engine.models.risk import MonteCarloVaRInputs as _Inputs
+
+    docstring = _Inputs.__doc__ or ""
+    field_description = _factor_volatilities_field_description()
+
+    for where, text in (("class docstring", docstring), ("field description", field_description)):
+        lowered = text.lower().replace("-", " ")
+
+        # The DECLARATIVE bullet — the one line that states the unit — must say
+        # annualised and must not negate it. Checked on the DECLARATION only,
+        # because the docstring legitimately QUOTES the old wrong claim while
+        # explaining the defect, and a substring check over the whole text
+        # would flag the quotation (a false positive this test hit on its
+        # first run — see the note in the test body).
+        decl = lowered
+        if where == "class docstring":
+            # Isolate the `factor_volatilities` bullet: from its marker to the
+            # next bullet or paragraph break.
+            start = lowered.find("``factor_volatilities`` are")
+            assert start != -1, (
+                "the class docstring no longer has a ``factor_volatilities`` "
+                "unit bullet; this test anchors on it — update the anchor"
+            )
+            rest = lowered[start:]
+            end = rest.find("``weights``", 1)
+            decl = rest[: end if end != -1 else len(rest)]
+
+        assert "annualised" in decl or "annualized" in decl, (
+            f"{where}'s unit declaration does not name the unit as annualised; "
+            f"the code scales by sqrt(horizon_days/periods_per_year), which is "
+            f"an annualisation. Declaration was: {decl!r}"
+        )
+        assert not re.search(r"not\s+annuali[sz]ed", decl), (
+            f"{where}'s unit declaration still claims the inputs are NOT "
+            f"annualised — the exact contradiction D-106 found. "
+            f"Declaration was: {decl!r}"
+        )
+
+    # --- the numeric half: the code must actually annualise ----------------
+    sigma_annual = 0.15
+    book = _Inputs(
+        weights=[1.0],
+        factor_volatilities=[sigma_annual],
+        normal_correlations=[[1.0]],
+        portfolio_value=1_000_000.0,
+        horizon_days=1,
+        confidence=0.95,
+        n_sims=200_000,
+        seed=20260924,
+    )
+    result = monte_carlo_var(
+        book, stress_correlations=_stress_transform(), stressed_correlation=0.9
+    )
+    var_pct = as_float(result, key="var_normal_pct")
+
+    z = z_score_for_confidence(0.95)
+    # Published in PERCENT, so the analytic is in percent too.
+    expected_annualised_pct = z * sigma_annual * math.sqrt(1 / 252) * 100.0
+    # A per-period reading would be this much smaller (the sqrt(252) defect).
+    expected_periodic_pct = expected_annualised_pct / math.sqrt(252)
+
+    assert var_pct == pytest.approx(expected_annualised_pct, rel=0.02), (
+        f"monte_carlo_var published {var_pct:.4f}%, which does not match the "
+        f"ANNUALISED reading ({expected_annualised_pct:.4f}%). If it matches "
+        f"{expected_periodic_pct:.4f}% instead, the code has changed unit and "
+        f"the docstring must change with it."
+    )
+    # And prove the assertion DISCRIMINATES: the wrong reading is far outside
+    # the tolerance, so a passing test here cannot be a coincidence of a wide
+    # band (the MX12 lesson: a guard needs a divergent case inside it).
+    assert abs(var_pct - expected_periodic_pct) > 100.0 * abs(var_pct - expected_annualised_pct), (
+        "the two candidate readings must be separated by a wide margin for "
+        "this test to mean anything"
+    )
+
+
+def _stress_transform() -> StressCorrelationTransform:
+    """The production stress rule, imported lazily to avoid a models->portfolio import."""
+    from macro_engine.portfolio.risk_budget import stress_correlations
+
+    return stress_correlations

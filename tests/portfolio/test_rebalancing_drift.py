@@ -312,9 +312,42 @@ def test_an_unbudgeted_instrument_does_not_create_a_drift_row() -> None:
 
 
 def test_unbudgeted_instruments_are_sorted_for_determinism() -> None:
-    result = _check({**_CURRENT, "zzz": 0.01, "aaa": 0.01})
+    """The published order is SORTED, not the order a set happens to iterate.
 
-    assert _values_of(result)["unbudgeted_instruments"] == ["aaa", "zzz"]
+    **Why this test was rewritten (D-107).** The original supplied
+    ``{"zzz": 0.01, "aaa": 0.01}`` and asserted ``== ["aaa", "zzz"]``. Under a
+    mutant that returns ``list(set(...) - seen)`` instead of
+    ``sorted(set(...) - seen)`` that is **only a pin by luck of the interpreter's
+    hash seed**: ``list({"zzz", "aaa"})`` is ``["aaa", "zzz"]`` for some seeds and
+    ``["zzz", "aaa"]`` for others, so the mutation was killed in some processes and
+    SURVIVED in others. Measured: ``PYTHONHASHSEED=0`` -> the mutant survives,
+    ``PYTHONHASHSEED=1`` -> the mutant is killed. A sweep verdict that depends on
+    the hash seed certifies nothing.
+
+    **The fix is the fixture size.** A set whose iteration order *coincides* with
+    sorted order is what made the mutant survivable; at two elements that is a
+    coin-flip, at seven it is astronomically unlikely (measured: the set order
+    differs from sorted for every seed tried, ``0..7``). The test therefore
+    supplies seven unbudgeted names and pins the sorted order, and — as a second,
+    independent pin — asserts the published list does not vary with the caller's
+    insertion order.
+    """
+    names = ["zzz", "aaa", "ccc", "bbb", "qqq", "mmm", "yyy"]
+    expected = sorted(names)
+
+    forward = _values_of(_check({**_CURRENT, **dict.fromkeys(names, 0.01)}))[
+        "unbudgeted_instruments"
+    ]
+    reversed_ = _values_of(_check({**_CURRENT, **dict.fromkeys(reversed(names), 0.01)}))[
+        "unbudgeted_instruments"
+    ]
+
+    # Sorted — and with seven names a `list(set(...))` mutant cannot satisfy this
+    # for any realistic hash seed.
+    assert forward == expected
+    # The same set supplied in the opposite insertion order must publish identically.
+    assert reversed_ == expected
+    assert forward == reversed_
 
 
 def test_no_unbudgeted_instrument_emits_no_unbudgeted_warning() -> None:

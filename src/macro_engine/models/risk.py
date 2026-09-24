@@ -850,9 +850,9 @@ class MonteCarloVaRInputs(BaseModel):
 
     Units and basis — stated because two bare float lists cannot reveal them:
 
-    * ``factor_volatilities`` are **per-period DECIMALS** (``0.01`` = 1% per
-      day for a daily series), NOT annualised. They are scaled to
-      ``horizon_days`` internally by ``sqrt(time)``.
+    * ``factor_volatilities`` are **ANNUALISED DECIMALS** (``0.15`` = 15% per
+      year). They are scaled DOWN to ``horizon_days`` internally by
+      ``sqrt(horizon_days / periods_per_year)``.
     * ``weights`` are **signed fractions of capital** (``0.6`` = +60%, ``-0.4``
       = a 40% short). Unlike :class:`PortfolioVaRInputs` they are NOT required
       to sum to 1.0: a book with a short leg and a cash position has weights
@@ -861,6 +861,18 @@ class MonteCarloVaRInputs(BaseModel):
       book unrepresentable — the failure D-055 found in a different form.
     * ``factor_volatilities`` and the two correlation matrices are in the SAME
       PERIOD as each other; the horizon is applied once, to both regimes.
+
+    **⚠️ This docstring said the OPPOSITE in the first draft** — *"per-period
+    DECIMALS (0.01 = 1% per day), NOT annualised"* — and the field description
+    repeated it. The code has always annualised (``horizon_scale =
+    sqrt(horizon_days / periods_per_year)``), so the prose was wrong. **No unit
+    test could see it:** every test supplies annualised numbers and cross-checks
+    against an analytic that annualises on the SAME assumption, so the two routes
+    agree with each other and both disagree with the prose. Only the live check —
+    a run on real data, cross-checked against ``parametric_var`` — exposed it, at
+    **≈ sqrt(252) x** (a daily-decimal reading gave 0.0312% against an analytic
+    0.4946%; the annualised reading gave 0.4956% against 0.4947%, **0.0009 pp**).
+    A docstring is a citation, and a citation is a claim.
 
     ``factor_volatilities`` may contain a ZERO (an instrument with no
     simulated risk, e.g. a cash leg). That is legal and is handled: its
@@ -876,7 +888,10 @@ class MonteCarloVaRInputs(BaseModel):
     )
     factor_volatilities: list[float] = Field(
         min_length=1,
-        description="Per-period volatility per factor, as DECIMALS. 0.01 = 1%.",
+        description=(
+            "ANNUALISED volatility per factor, as a decimal. 0.15 = 15%/yr. "
+            "Scaled down to horizon_days by sqrt(horizon_days/periods_per_year)."
+        ),
     )
     normal_correlations: list[list[float]] = Field(
         description="NxN correlation matrix for the normal regime, from the sample.",

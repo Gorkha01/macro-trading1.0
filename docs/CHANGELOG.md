@@ -10,6 +10,52 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-107 — a fix D-106 CLAIMED but did not deliver, and the instrument that finally saw it
+
+**Fixed**
+
+- **`factor_volatilities`'s documented unit was STILL backwards on disk.** D-106's record
+  stated *"The docstring and the field description were corrected in this increment"* — **that
+  sentence was false.** `git show HEAD:src/macro_engine/models/risk.py` printed
+  `` ``factor_volatilities`` are **per-period DECIMALS** (``0.01`` = 1% per day …), NOT
+  annualised ``, verbatim the wrong unit, while the code applies
+  `horizon_scale = sqrt(horizon_days / periods_per_year)`. **Corrected for real in this
+  increment**, in both the class docstring and the `factor_volatilities` field description, and
+  the episode is recorded **inside** `risk.py` so a reader of the source meets it there.
+- **The false D-106 sentence was corrected in place in `docs/DECISIONS.md`**, not deleted, so
+  the audit trail shows a claim and its retraction rather than a silent rewrite.
+
+**Added**
+
+- **`tests/models/test_monte_carlo_var.py::test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic`**
+  — a regression guard with **two halves**, both mutation-proved by hand. The **WORDS** half
+  parses the class docstring's `factor_volatilities` bullet and the field's `description` **from
+  source** with `ast` and requires "annualised", refusing `not\s+annuali[sz]ed` within the
+  declarative bullet **only** (the correction paragraph quotes the old wording on purpose). The
+  **NUMBERS** half asserts `var_normal_pct == approx(z * 0.15 * sqrt(1/252) * 100, rel=0.02)` and
+  an inequality that pins the periodic reading a factor ~100 away. `test_monte_carlo_var.py`
+  **1067 → 1185 lines; 42 → 43 tests.**
+
+**Changed**
+
+- The suite goes **3191 → 3192** passed (default marker set), a delta of exactly **+1**.
+- **`tests/portfolio/test_rebalancing_drift.py`** — the sort-determinism pin is now
+  **seed-independent** (**O-132**). The old two-name fixture (`{"zzz", "aaa"}`) made the verdict
+  on `M2.6` a function of `PYTHONHASHSEED` (killed for seeds `0/3/5`, **survived** for
+  `1/2/4/6/7`); widened to seven names, proved killed for seeds `0–4` and clean-passing for the
+  same seeds. **`risk_budget.py` is byte-identical to `HEAD`** — a test hardening only.
+
+**Registered**
+
+- **O-130** — a decision entry can claim an edit that was never made, and the authority then
+  certifies a repair that did not happen. **Closed by this increment.**
+- **O-131** — a leftover mutation from a SIGTERM'd foreground sweep manufactures a **false
+  survivor** on the next run (`mutation_rebalancing.py` reported M11.3 as surviving when a clean
+  tree kills it 4/4). **Closed by this increment**; it is a worse consequence than O-120 records.
+- **O-132** — a mutation **verdict** can flip with the interpreter's **hash seed**, because a test
+  pinned a SORTED order with a fixture small enough that set-iteration order sometimes coincides
+  with it. **Closed by this increment.**
+
 ### D-106 — `monte_carlo_var`: a correlation gap, and a unit the docstring got backwards
 
 **Added**

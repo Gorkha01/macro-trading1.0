@@ -8864,3 +8864,99 @@ summed); the CI marker set is **3192 / 1 / 16 / 0**. **Delta vs D-105's 3146 = e
 **clean exit 0** · `sweep_health.py` **LAST** → **44 sweeps · 0 control-less · 0
 unbuffered · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK** · the live
 check **PASSED** on real FRED data (normal 0.4956 %, stressed 1.2390 %, ratio 2.5000×).
+
+---
+
+## D-107 — a fix D-106 CLAIMED but did not deliver (2026-09-25)
+
+**No new function.** This increment repairs a **record-level failure**: D-106's entry in
+`docs/DECISIONS.md` said *"The docstring and the field description were corrected in this
+increment"* about `factor_volatilities`'s unit, and **neither edit existed on disk.**
+
+### The finding, and the instrument that saw it
+
+The user asked whether the claim was real. **Measured against the tree, not the report:**
+`git show HEAD:src/macro_engine/models/risk.py | sed -n '851,880p'` printed
+
+```
+``factor_volatilities`` are **per-period DECIMALS** (``0.01`` = 1% per day for a
+daily series), NOT annualised.
+```
+
+— verbatim the **wrong unit** — while line 1285 applies
+`horizon_scale = math.sqrt(horizon_days / inputs.periods_per_year)`, an **annualisation**.
+**The D-106 analysis was correct** (the unit IS annualised, and the arithmetic proves it —
+15.96× ≈ √252); only the **claim of having edited** was unbacked. That is the dangerous shape:
+a true finding wrapped around an untrue action claim reads as verified. **No gate could see
+it** — the mutation sweep kills a mutant, mypy checks types, ruff checks layout; **nothing
+automated reads a docstring's meaning**, and the full green gate set ran on a tree whose
+prose contradicted its arithmetic.
+
+### What is NEW in the tree
+
+* `src/macro_engine/models/risk.py` — the `factor_volatilities` unit bullet in
+  `MonteCarloVaRInputs`'s class docstring and the field's `description` now both say
+  **ANNUALISED** and name the internal scaling direction, plus a paragraph recording that the
+  first draft said the opposite and that only the live check exposed it.
+* `tests/models/test_monte_carlo_var.py` — **+1 test, 42 → 43** (1067 → 1185 lines):
+  `test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic`, guarded in
+  **two halves** (the WORDS parsed from source via `ast`; the NUMBERS as an analytic
+  identity), each mutation-proved by hand.
+* `docs/DECISIONS.md` — the false D-106 sentence **corrected in place**; **D-107 appended.**
+* `docs/OPEN_ISSUES.md` — **O-130** (a decision entry can claim an edit that was never made)
+  and **O-131** (a leftover mutation manufactures a false survivor), both closed here, plus
+  **O-132** (a sweep verdict that flips with the interpreter's hash seed), closed here.
+* `tests/portfolio/test_rebalancing_drift.py` — **the seed-independent sort pin (O-132).**
+  `test_unbudgeted_instruments_are_sorted_for_determinism` used a **two-name** fixture whose
+  set-iteration order sometimes coincides with sorted, so `M2.6` was killed for `PYTHONHASHSEED`
+  `0/3/5` and SURVIVED for `1/2/4/6/7`. Widened to **seven** names (measured to iterate
+  differently from sorted for every seed `0..7`); **proved killed for seeds `0–4` and clean-passing
+  for the same seeds.** `risk_budget.py` itself is **byte-identical to `HEAD`** — this is a test
+  hardening only.
+
+### The fact a reader should carry away
+
+**A docstring is a citation, and a citation is a claim — and so is a decision entry.**
+D-106 correctly identified the defect and then recorded a repair it had not made. The durable
+guard is not prose vigilance but a **test that reads the prose from the file it lives in**:
+the new test parses the bullet and the field description out of `risk.py`'s source, so a
+future edit that flips the unit back fails a test rather than quietly misleading a reader.
+
+### Gates (measured 2026-09-25, never carried forward)
+
+ruff format --check **251** = `mypy --strict` **251** · ruff check clean ·
+**3192 passed / 1 skipped / 17 deselected / 0 failed** (default marker set, chunked and
+summed; via `--junitxml`, the authoritative instrument); the `not live` set is
+**3193 / 1 / 0**. **Delta vs D-106's 3191 = exactly +1** (the one regression test). ·
+`reachability_audit.py --check-baseline` **PASS 58/58** (SCRIPT-ONLY Tier 5 = 7) ·
+`mutation_monte_carlo_var.py` **39/39, exit 0** · `mutation_rebalancing.py`
+**64/64 applied · 61 killed · 3 survived · `every survivor is either expected or proven
+inert`** — now **seed-independent** (M2.6 fixed here, O-132); run in the BACKGROUND
+(O-120's documented deviation) · `sweep_health.py` **LAST** → **44 sweeps · 0 failures ·
+0 leftovers · 0 mutant shapes · 0 committed mutants · OK** ·
+both mutant-shape greps print **nothing**.
+
+### Harness finding 3 — a sweep VERDICT that flips with the interpreter's HASH SEED (O-132)
+
+**Found by re-running the rebalancing sweep on the clean tree AND DISBELIEVING the number.**
+That re-run reported **60 killed / 4 survived** with one **unexplained** survivor,
+`M2.6 the unbudgeted set stops being sorted`, against the **61 / 3** D-106's record carried.
+**O-131 was ruled out first:** `git diff HEAD --stat -- src/macro_engine/portfolio/risk_budget.py`
+was **empty** and the blob hash matched `HEAD` (`436063fa…`), so the survivor was **real**.
+**Hand-applying M2.6** reproduced it — the full selection passed **122/122**.
+
+**The cause is the fixture.** The test supplied **two** names, `{"zzz": 0.01, "aaa": 0.01}`, and
+asserted `== ["aaa", "zzz"]`; under the mutant the publication is the set's iteration order,
+which for strings is a function of **`PYTHONHASHSEED`**. Measured over eight seeds,
+`list({'zzz','aaa'})` is `['aaa','zzz']` for **0, 3, 5** and `['zzz','aaa']` for **1, 2, 4, 6, 7**
+— so the test **killed the mutant for 0/3/5 and passed it for 1/2/4/6/7**; end-to-end on the
+sweep's own selection, **`PYTHONHASHSEED=0` → 122 passed (SURVIVES)** vs **`=1` → 1 failed
+(KILLED)**. **The fix is fixture SIZE, not assertion strength:** seven unbudgeted names (measured
+to iterate differently from sorted for **every** seed `0..7`), the sorted publication asserted,
+plus a second pin that the list does not vary with insertion order. **A first attempt adding only
+a `forward == reversed_` assertion was NOT sufficient** — both calls receive the same set, so the
+mutant returns the same order twice. **Proved:** `M2.6` **fails** for seeds `0–4`; the clean tree
+**passes** for the same seeds. **A mutation verdict that depends on the hash seed is not
+evidence** — it is O-131's class reached from the other side, and it would equally hide a real
+escape behind a lucky seed.
+

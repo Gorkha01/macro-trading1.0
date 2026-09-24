@@ -1946,3 +1946,51 @@ understates tail loss precisely in the high-correlation state, and the published
 exposes the gap. A consumer reading the four as interchangeable risk numbers is
 reading a **sample quantile** and a **model quantile** as if they were the same
 object — they are not, and the function's `decision_prohibition` says so.
+
+---
+
+## D-107 — no new mapping; a mapping RULE is added (2026-09-25)
+
+**Tier 5 is unchanged at 8/23.** No function was added, moved, or promoted. **Module 18
+is untouched at 5 of 6.** `monte_carlo_var` remains Module 17 · `models/risk.py`, the
+Tier-5 replacement for `historical_var` / `parametric_var` / `expected_shortfall` — the
+**same module and file** as the three it supersedes (D-106).
+
+**What this increment adds to the mapping discipline is a eighth rule, about the
+mapping's own vocabulary:**
+
+> **An eighth mapping rule — "implemented" is a statement about a FILE, and a prose
+> claim about a file is not a mapping.** D-106 mapped `monte_carlo_var` to
+> `models/risk.py` correctly, and that mapping was true throughout. What was **not**
+> true was the accompanying sentence that a docstring *inside* that file had been
+> corrected: `git show HEAD:src/macro_engine/models/risk.py` still carried the wrong
+> unit. The mapping table answers *where a function lives*; it does not and cannot
+> certify *what a file says*, and an increment that lets the second inherit the
+> credibility of the first has smuggled a claim past its own instrument. **The rule:
+> the column names the artefact; the artefact is verified by reading it.** Here that
+> verification is now a test
+> (`test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic`) that
+> parses the docstring bullet and the field `description` **out of `risk.py`'s own
+> source** with `ast` — the prose is checked against the file, not against a report.
+
+**The supersession map is unchanged** (D-096): `classify_regime_rule_based` →
+`classify_regime_markov_switching` (D-105) · `historical_var` / `parametric_var` /
+`expected_shortfall` → `monte_carlo_var` (D-106) · `realized_vol_simple` → GARCH
+(outstanding) · the inverse-volatility weighting → `compute_risk_parity_weights`
+(**the next function**). **Ask what each entry replaces, never grep the list for a
+keyword.**
+
+**A ninth mapping rule — a VERDICT is a mapping claim, and a verdict that varies with
+the environment maps nothing (O-132).** D-107 found that `mutation_rebalancing.py`'s
+verdict on `M2.6` was a function of the interpreter's **hash seed**: a sort-determinism
+test pinned a sorted order using a **two-name** fixture, and `list({'zzz','aaa'})`
+coincides with sorted for some seeds and not others — so the same sweep reported the
+mutant as killed in one process and **surviving** in the next. Since the mutation sweeps
+are how this project maps *a guard to the defect it catches*, a verdict that depends on
+`PYTHONHASHSEED` maps the guard to **nothing**; it is worse than an absent row, because
+an absent row is visibly absent. **The rule: a mapped guard must FAIL for the same
+reason in every process.** For any test that pins an **order**, the fixture must be
+large enough that container-iteration order cannot coincide with the expected order —
+measured here, seven names differ from sorted for **every** seed `0..7`, two do not.
+
+

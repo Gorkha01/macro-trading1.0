@@ -17457,11 +17457,18 @@ with the annualised reading, the two agree to **0.0009 pp**. MEASURED 2026-09-24
 | daily decimal (docstring's claim) | 0.0312 % | 0.4946 % | 0.4634 pp (≈ √252 ×) |
 | annualised decimal (the code) | **0.4956 %** | **0.4947 %** | **0.0009 pp** |
 
-**The docstring and the field description were corrected in this increment.** A
-documented unit that contradicts the code is not a documentation bug — it is a
-**silent unit trap for every future caller**, and the only instrument that could
-see it was a run on real data. The live check's docstring records the episode so
-the next reader knows the check earned its place.
+**⚠️ THE SENTENCE THAT STOOD HERE WAS FALSE, AND IS CORRECTED IN PLACE.** It read:
+*"The docstring and the field description were corrected in this increment."*
+**They were not** — the fix was described in four documents but never applied, so
+`HEAD` still carried the contradictory prose. **D-107 (this file, below) applied the
+repair, added the regression test that pins it, and measured the contradiction at
+sqrt(252) = 15.96x.** The claim is left visible rather than deleted because the
+failure to verify an edit before recording it is the lesson: **re-read the file from
+disk after editing it, or the decision entry becomes the defect.** A documented
+unit that contradicts the code is not a documentation bug — it is a **silent unit
+trap for every future caller**, and the only instrument that could see it was a run
+on real data. The live check's docstring records the episode so the next reader
+knows the check earned its place.
 
 ### 3. THE ZERO-VOLATILITY FACTOR — a warning that was DEAD CODE, fixed by pruning
 
@@ -17596,3 +17603,217 @@ Nothing is a round number chosen for looking reasonable. All six live in
   the seam rather than a coincidence.
 * **No portfolio optimiser, no GARCH, no CVaR-by-optimisation.** Those remain
   the Phase 5+ items they were.
+
+---
+
+## D-107 — a FIX D-106 CLAIMED BUT DID NOT DELIVER, and the instrument that finally saw it
+
+**Date:** 2026-09-25. **No new model function. Tier 5 stays 8/23.** This is a
+**correction increment**: it repairs a defect that **D-106 reported as fixed and
+had not fixed**, adds the regression test that makes the repair durable, and
+records two harness findings the repair exposed.
+
+### What was wrong, stated plainly
+
+D-106's decision entry (this file, ~line 17460) says:
+
+> **The docstring and the field description were corrected in this increment.**
+
+**They were not.** The operator asked "have you fixed this?" and a direct read of
+the committed file at `HEAD` showed the class docstring and the
+`factor_volatilities` field description **still said the opposite of the code**:
+
+* Class docstring (committed): ``factor_volatilities`` are **per-period DECIMALS**
+  (0.01 = 1% per day for a daily series), **NOT annualised**. They are scaled to
+  ``horizon_days`` internally by ``sqrt(time)``.
+* Field description (committed): ``"Per-period volatility per factor, as DECIMALS. 0.01 = 1%."``
+
+while the code at the same commit applies
+``horizon_scale = math.sqrt(horizon_days / periods_per_year)`` — the **annualisation**
+of an annualised input. **The prose and the arithmetic disagreed by sqrt(252) =
+15.87x, and the prose was wrong.**
+
+**This is a record-level failure, and it is worse than the original defect.** D-106
+found the contradiction, described it correctly in four documents, and then wrote a
+sentence in the authority claiming a repair that did not happen. A reader who
+trusted `docs/DECISIONS.md` would have concluded the file was consistent — and a
+reader checking the file would have found the opposite. **The lesson is
+project-general: a decision entry may not claim an edit unless the edit was
+re-read from disk after it was made.** The verification that would have caught it
+is one command — `git show HEAD:<file> | grep <the fixed text>` — and it was not run.
+
+### The unit, settled by measurement (not by reading the code twice)
+
+Run through the **production path** on a one-factor book, unit weight, 15%
+annualised vol, 1-day horizon, 200k draws, `stress_correlations` supplied:
+
+| reading of `factor_volatilities` | expected 95% VaR | produced |
+| --- | --- | --- |
+| **annualised** (the code) | **1.5542 %** | **1.5625 %** |
+| per-day decimal (the old docstring) | 0.0979 % | — |
+
+`1.5625 / 1.5542 = 1.0053` — Monte-Carlo sampling error at 200k draws — and
+`1.5625 / 0.0979 = 15.96`, i.e. **sqrt(252)**. The code annualises; that is now
+measured two ways (this probe and D-106's live check against `parametric_var`,
+which agreed to 0.0009 pp).
+
+### What this increment actually changes
+
+1. **`risk.py`'s class docstring** now states the unit as **ANNUALISED DECIMALS**
+   (0.15 = 15 %/yr), scaled DOWN to `horizon_days` by
+   `sqrt(horizon_days / periods_per_year)` — and carries a paragraph recording
+   that it said the opposite in the first draft, why no unit test could see it,
+   and the measured sqrt(252) factor.
+2. **`risk.py`'s `factor_volatilities` field description** now says
+   ``"ANNUALISED volatility per factor, as a decimal. 0.15 = 15%/yr. Scaled down
+   to horizon_days by sqrt(horizon_days/periods_per_year)."``
+3. **A new regression test**, `test_the_documented_unit_of_factor_volatilities_matches_the_arithmetic`,
+   in `tests/models/test_monte_carlo_var.py`. It has **two halves**, because
+   either alone is weak:
+   * **The words** — the class docstring's `factor_volatilities` unit bullet and
+     the field description must name the unit as annualised and must not negate
+     it. The field description is read off the source with `ast`, so the test
+     compares the shipped text rather than an import-time copy.
+   * **The numbers** — the same 15 %-annualised one-factor book above must produce
+     a VaR within 2 % of `z * 0.15 * sqrt(1/252)`, i.e. the annualised reading.
+     It then asserts the two candidate readings are separated by a margin **100x
+     wider** than the tolerance, so a pass cannot be a coincidence of a wide band.
+
+**Both halves are mutation-proven by hand** (the MX12 discipline): reapplying the
+old "per-period ... NOT annualised" bullet fails the words half; deleting the
+`* horizon_scale` multiplication in `_simulate_regime_pnls` fails the numbers
+half. Both restored the file byte-identically afterwards.
+
+**The test's own first draft was wrong, and that is recorded rather than tidied
+away.** It checked the whole docstring for the substring "not annualised" — which
+the *correction paragraph itself* quotes while explaining the defect — so it
+failed on the fixed file. The check was scoped to the **declarative bullet**. A
+guard that flags the text explaining the bug is a guard that cannot ship.
+
+### Harness finding 1 — O-120 RE-FIRED, and it corrupted the tree in this session
+
+`mutation_rebalancing.py` carries **64 mutations** and needs **~4 minutes** — past
+the foreground window. Running it in the foreground and hitting the cap
+**SIGTERM'd it mid-run and left its mutation applied** to
+`src/macro_engine/portfolio/risk_budget.py`. Measured, twice:
+
+* first leftover: `"instruments_evaluated": len(targets)` → `len(drifted)`;
+* second leftover: `"drifted"` → `"drifted_v2"`.
+
+**The consequence is the dangerous part, and it is not obvious.** With a mutation
+applied, the *next* sweep run does not report "leftover" — it **refuses to start**,
+because `check_targets` finds that mutation's original text **absent** (it is the
+mutated text that is on disk):
+
+```
+check_targets: 64 mutations, 2 problem(s)
+  !! M7.3 ...: target ABSENT in risk_budget.py (0 occurrences)
+REFUSING TO RUN: check_targets found absent or ambiguous targets.
+```
+
+and before that, in the same corrupted state, one run reported a **bogus
+unexplained survivor (M11.3)** — which hand-application proved is killed 4/4 on a
+clean tree. **So a leftover mutation does not merely fail to be detected; it
+manufactures a false finding about an unrelated test.** The tree was restored from
+`HEAD` in both cases and the stale `.sweepbackup` (byte-identical to the restored
+file) was removed; `check_targets` then returned `64 mutations, 0 problem(s)`.
+
+**Run twice on the clean tree in the BACKGROUND: `killed 61 / survived 3 / exit 0`,
+"every survivor is either expected or proven inert", both times** — survivors being
+M4.6 (inert), CX3 (inert) and M9.1 (the required-survival control). **The sweep is
+deterministic when the tree is clean; the nondeterminism was entirely the
+leftovers.**
+
+### Harness finding 2 — pytest's EXIT CODE is also unreliable on this machine
+
+The full suite produced **`exit=1` on a run with zero failing tests**, twice. The
+safe-delete hook refuses the bulk delete of **pytest's own temp directory**
+(`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":172,"threshold":50,
+"targets":["...\\pytest-of-Hp\\garbage-..."]}`) *after* pytest has printed 100 %,
+and that refusal leaks a non-zero process exit. **The authority is the report
+file, not the exit code** — which is the same class as O-122's sweep finding,
+now measured for `pytest` itself.
+
+**The instrument that settles it is `--junitxml`, and it is now the documented way
+to read a suite verdict on this machine:**
+
+* run the suite with `--junitxml=<path>` (use a **Windows path**; the managed
+  interpreter does not resolve Git Bash's `/tmp`);
+* parse it and sum `tests`/`failures`/`errors`/`skipped` over `iter('testsuite')`.
+
+**Measured with it:** default marker set (`not live and not slow`) **3193 collected
+/ 3192 passed / 0 failed / 1 skipped**; the wider `not live` set **3194 / 3193 / 0 /
+1**. **Delta against D-106's 3191 = exactly +1** — the one new regression test.
+(The default-set denominator is 3193, not D-106's 3192, because the new test is not
+`slow`-marked; the `not live` set collects one extra `slow` test.)
+
+### Harness finding 3 — a sweep VERDICT that depends on the interpreter's HASH SEED
+
+**This was found by re-running `mutation_rebalancing.py` on the clean tree, and it is the
+reason the "61 killed / 3 survived" figure in this increment's first draft was not the whole
+story.** The re-run reported **60 killed / 4 survived**, with one **unexplained** survivor:
+
+```
+[DEFECT]  M2.6 the unbudgeted set stops being sorted (set order leaks through) -- no test pins this
+```
+
+**Verified by hand before believing it** (the O-131 ordering rule applied in the opposite
+direction: a surprising number is a claim too). `risk_budget.py` had **no diff vs `HEAD`**
+(`git diff HEAD --stat` empty; blob hash `436063fa…` both sides), so the sweep had not run on
+a leftover. Applying `M2.6` by hand — `sorted(set(current_contributions) - seen)` →
+`list(set(current_contributions) - seen)` at `risk_budget.py:512` — reproduced the survival:
+the full selection passed **122/122**.
+
+**The cause is the fixture, and it is a genuine missing pin.** The test
+`test_unbudgeted_instruments_are_sorted_for_determinism` supplied **two** names,
+`{"zzz": 0.01, "aaa": 0.01}`, and asserted `== ["aaa", "zzz"]`. Under the mutant the published
+list is `list(set(...) - seen)`, whose order is the set's iteration order — and for strings
+that is a function of the **process's hash seed**. Measured, eight seeds:
+
+```
+PYTHONHASHSEED:  0     1     2     3     4     5     6     7
+list({'zzz','aaa'}): ['aaa','zzz']  ['zzz','aaa']  ['zzz','aaa']  ['aaa','zzz']
+                     ['zzz','aaa']  ['aaa','zzz']  ['zzz','aaa']  ['zzz','aaa']
+```
+
+so the test **killed the mutant for seeds 0, 3, 5 and passed it (SURVIVED) for 1, 2, 4, 6, 7**.
+Confirmed end-to-end on the sweep's own selection: `PYTHONHASHSEED=0` → **122 passed (mutant
+survives)**; `PYTHONHASHSEED=1` → **1 failed (mutant killed)**. **A mutation verdict that
+flips with the hash seed certifies nothing** — it is O-131's class (a report you cannot trust)
+reached from the other side.
+
+**The fix — fixture SIZE, not assertion strength.** A set whose iteration order coincides with
+sorted order is what made the mutant survivable; at two elements that is roughly a coin-flip,
+and at seven it is astronomically unlikely. The test now supplies **seven** unbudgeted names
+(`zzz, aaa, ccc, bbb, qqq, mmm, yyy` — measured to give an iteration order different from
+sorted for **every** seed `0..7`), asserts the sorted publication, and adds a second independent
+pin that the list does not vary with the caller's insertion order. **Proved both directions on
+the mutant**: `PYTHONHASHSEED` `0, 1, 2, 3, 4` all **fail** under `M2.6`, and all **pass** on the
+clean tree. A first attempt that added a `forward == reversed_` assertion *alone* was **not
+sufficient** — both calls receive the same set, so the mutant returns the same order twice and
+the assertion cannot discriminate; **the fixture size is the load-bearing part.**
+
+**Corrected verdict, and it is now seed-independent:** `mutation_rebalancing.py`
+**applied 64/64 · killed 61 · survived 3**, `RESULT: every survivor is either expected or proven
+inert` — survivors **M4.6 (inert) · CX3 (inert) · M9.1 (the required-survival control)**, i.e.
+exactly the set recorded before, but now pinned for the right reason. The sweep still **exits
+1**, which is O-122's safe-delete artefact, not a survivor.
+
+### What this increment does NOT establish
+
+* **No model behaviour changed.** `risk.py`'s arithmetic is byte-identical to
+  D-106's; the change is prose plus a test. The mutation sweep certifies exactly
+  what it certified at D-106: **39/39 killed, exit 0.**
+* **The M2.6 fix is a test hardening in a NEIGHBOUR sweep, not a model change.**
+  `risk_budget.py` is byte-identical to `HEAD` before and after; only
+  `tests/portfolio/test_rebalancing_drift.py` changed. The third changed file is
+  therefore in scope precisely because **leaving a seed-dependent verdict in place
+  while quoting that sweep's number would have made the number a claim I could not
+  stand behind.**
+* **The 8501-line `docs/BUILD_STATE.md` CRLF normalisation (O-128) is still
+  deferred** — unchanged from D-106, for the same reason.
+* **The `.sweepbackup` cleanup is still by hand.** The sidecar heals the *file*
+  but its own removal can be refused by the delete counter (O-122's finding
+  applies to `pytest` too, above). Nothing in this increment gates that.
+* **No new Module-17 function.** `compute_risk_parity_weights` remains the next
+  Tier-5 item.
