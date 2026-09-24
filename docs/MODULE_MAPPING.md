@@ -1735,10 +1735,17 @@ builds the sophisticated version of each deferred item and deletes nothing). It 
 **Module 3**, `models/regime.py`, and it does **not** touch Module 18's count.
 **Tier 5 = 7/23.**
 
-**Next = `monte_carlo_var`** — it supersedes `historical_var` / `parametric_var` /
-`expected_shortfall` (all Tier 1, all shipped in Phase 4, all in `models/risk.py`),
-and §17.4's risk axis is the consumer. **Same shape as D-105:** a Phase-4 SIMPLE
-version exists and the Phase-5 version replaces it without deleting anything.
+**`monte_carlo_var` SHIPPED at D-106** — the Tier-5 REPLACEMENT for `historical_var` /
+`parametric_var` / `expected_shortfall` (all Tier 1, all shipped in Phase 4, all in
+`models/risk.py`), with §17.4's risk axis as the consumer. It is **Module 17**,
+`models/risk.py`, and it too does **not** touch Module 18's count. **Tier 5 = 8/23.**
+**Same shape as D-105:** a Phase-4 SIMPLE version exists and the Phase-5 version
+replaces it without deleting anything.
+
+**Next = `compute_risk_parity_weights`** — the Tier-5 REPLACEMENT for the Phase-4
+inverse-volatility weighting, and it shares `models/risk.py`'s neighbourhood, so the
+sweep-reachability check (`grep -l "models/risk.py" scripts/mutation_*.py`) will
+already be warmed. The same "ask what it replaces" rule applies.
 
 **One row was also WRONG about its module.** `yield_curve_pca` was recorded against
 Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in
@@ -1905,3 +1912,37 @@ the probability path as its primary output and the hard label is a derived argma
 published beside its own probability. A consumer reading the two classifiers as
 the same object is reading a partition and a posterior as if they were
 interchangeable — they are not, and the function's `decision_prohibition` says so.
+
+---
+
+## D-106 — Module 17/18's `monte_carlo_var` (2026-09-24)
+
+**Tier 5 = 8/23.** §17.1 (AGENTS.md:3680–3696) and §18.2 (3870–3886), Module 17,
+`models/risk.py`. **Module 18 is untouched at 5 of 6.**
+
+**Where it lands — and the row that already exists for it.** `MONTE_CARLO` has no
+row of its own above because it is Tier 5; but the row it supersedes does: line 64
+lists **Module 17 · Risk · `historical_var` · `models/risk.py` · `test_risk.py`**.
+`monte_carlo_var` lands in the **same module and the same file** as the three Tier-1
+functions it replaces, exactly as D-105's comparator landed beside its rule-based
+sibling. **§21.3's tier table is the authority on WHEN a stub becomes IMPLEMENTED;
+the MODULE column is the authority on WHERE.**
+
+**The supersession map, which is the only correct instrument for this list
+(D-096):** `classify_regime_rule_based` → `classify_regime_markov_switching`
+(D-105) · **`historical_var` / `parametric_var` / `expected_shortfall` →
+`monte_carlo_var` (this increment)** · `realized_vol_simple` → GARCH (still
+outstanding) · the inverse-volatility weighting → `compute_risk_parity_weights`
+(outstanding). A keyword grep of the Tier-5 list for a capability answers the wrong
+question; **ask what each entry replaces.**
+
+**The output shape is deliberately NOT the Phase-4 one.** The three Phase-4
+functions take a **return series** and read a quantile of it; this one takes the
+**factor covariance matrix** and a **loading vector** and draws **joint** (correlated)
+factor shocks through a Cholesky factor, so the portfolio P&L is a **co-moving** sum.
+That is the mechanism §18.2 names for the LTCM detection rule — a *sum of marginals*
+understates tail loss precisely in the high-correlation state, and the published
+`diversification_ratio_normal` / `diversification_ratio_stressed` are the pair that
+exposes the gap. A consumer reading the four as interchangeable risk numbers is
+reading a **sample quantile** and a **model quantile** as if they were the same
+object — they are not, and the function's `decision_prohibition` says so.

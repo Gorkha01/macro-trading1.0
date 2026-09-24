@@ -8796,3 +8796,71 @@ one `slow`-marked test. **Delta vs D-104's 3112 = exactly +34.** ·
 **61/63 + 2 registered inert, exit 0** · `sweep_health.py` **LAST** → **43 sweeps ·
 0 control-less · 0 unbuffered · 0 leftovers · 0 shapes · 0 committed mutants · 0
 failures · OK** · the live check **PASSED** on real GDP growth.
+
+---
+
+## D-106 — Module 17/18's `monte_carlo_var` (2026-09-24)
+
+**Tier 5 = 8/23.** §17.1 (AGENTS.md:3680–3696) and §18.2 (3870–3886, which NAMES
+`models/risk.py`'s Monte Carlo VaR as the LTCM detection rule), `models/risk.py`. The
+Tier-5 REPLACEMENT for `historical_var` / `parametric_var` / `expected_shortfall`
+(§21.3, D-096): Phase 5+ builds the sophisticated version and **deletes nothing**, so
+all three Phase-4 functions still ship.
+
+### What is NEW in the tree
+
+* `src/macro_engine/models/risk.py` — `monte_carlo_var`, `MonteCarloVaRInputs`, the
+  `StressCorrelationTransform` Protocol, and the helpers `_correlation_to_covariance`,
+  `_cholesky_factor`, `_simulate_regime_pnls`, `_loss_quantile`,
+  `_expected_shortfall_from_pnls`, `_diversification_ratio`, `_uniform_correlation_stress`.
+  **788 → 1492 lines.**
+* `src/macro_engine/config.py` — a new `MonteCarloSettings` model and a **required**
+  `monte_carlo` field on `RiskSettings`. Six `CalibratedValue` leaves
+  (`n_sims`, `seed`, `min_tail_draws`, `horizon_days`, `stressed_volatility_multiplier`,
+  `stress_diversification_warning`) with `tail_draws_for()` and a validator.
+* `config/settings.yaml` — the `risk.monte_carlo` block, every note carrying its
+  measurement (line ~1646).
+* `scripts/live_monte_carlo_check.py` — **NEW**, fetches real FRED series via
+  `OpenBBClient` and asserts the LTCM inequality + an analytic cross-check.
+* `scripts/mutation_monte_carlo_var.py` — **NEW**, 39 mutations, carrying the CANARY1
+  refusal gate (O-72's third mechanism).
+* `tests/models/test_monte_carlo_var.py` — **NEW, 42 tests**.
+* `tests/portfolio/test_risk_budget.py`, `tests/portfolio/test_risk_parity.py` — the
+  `monte_carlo` block supplied (the required-field break, **O-127** 4th instance).
+* `tests/test_sweep_sidecar_lifecycle.py`, `tests/test_sweep_health_leftover_predicate.py`,
+  `tools/sweep_health.py` — the sweep count **43 → 44** (**O-129**).
+
+### The fact a reader should carry away
+
+**The docstring had the unit BACKWARDS, and only the LIVE CHECK caught it.**
+`factor_volatilities` are **ANNUALISED decimals** (0.15 = 15 %/yr), scaled down to
+`horizon_days` by `sqrt(horizon_days / periods_per_year)`. Reading them as daily
+decimals — which the class docstring and the field description both said — is off by
+**√252 ≈ 15.86**. Measured against `parametric_var` on real data: the daily reading gave
+**0.0312 %** vs an analytic **0.4946 %**; the annualised reading gave **0.4956 %** vs
+**0.4947 %** (**0.0009 pp**). Fixed in both places, with the episode recorded in
+`risk.py`. **A docstring is a citation, and a citation is a claim.**
+
+### Harness facts
+
+* **A required nested config field broke two explicit `RiskSettings(...)`
+  constructions** across two test files — the 4th instance of **O-127**, caught only by
+  the mandatory green-unmutated run.
+* **Two files landed as CRLF in the working tree** and were caught by
+  `tests/test_source_hygiene.py` — **O-128** re-firing inside the owned roots.
+* **The sweep count lives in three test files plus a comment**; the comment (in the
+  authority, `tools/sweep_health.py`) was made count-agnostic. **O-129** records it.
+
+### Gates (measured 2026-09-24, never carried forward)
+
+ruff check clean · **`ruff format --check` 251** = **`mypy --strict` 251** ·
+**3191 passed / 1 skipped / 17 deselected / 0 failed** (default marker set, chunked and
+summed); the CI marker set is **3192 / 1 / 16 / 0**. **Delta vs D-105's 3146 = exactly
++45** (42 in `test_monte_carlo_var.py`, 3 net in the sweep-count/hygiene tests). ·
+`reachability_audit.py --check-baseline` **PASS 58/58** (SCRIPT-ONLY Tier 5: 7 → **8**) ·
+`openbb_reachability.py` **OK** · both mutant-shape greps print **nothing** ·
+`mutation_monte_carlo_var.py` **39/39, exit 0** · the five neighbour sweeps
+(drawdown, rebalancing, voltarget, cross_market_rv, instrument_selection) all re-run
+**clean exit 0** · `sweep_health.py` **LAST** → **44 sweeps · 0 control-less · 0
+unbuffered · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK** · the live
+check **PASSED** on real FRED data (normal 0.4956 %, stressed 1.2390 %, ratio 2.5000×).

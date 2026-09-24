@@ -752,12 +752,14 @@ def main() -> int:
         print("!! no sweeps found; the glob is wrong")
         return 1
     # The SWEEP CENSUS, printed rather than remembered. Every hand-written record
-    # in this repo quotes this number ("43 sweeps, 0 leftovers"), and it is
+    # in this repo quotes this number ("N sweeps, 0 leftovers"), and it is
     # derived from a glob -- so it drifts the moment a sweep is added and **no
     # gate can catch a record that quotes yesterday's census**. Printing it here
     # makes the figure copyable from the tool's own output instead of from a
     # note (D-035: quote the measured count). `_BUDGET_*` is deliberately not
     # included in this count: it is the driver's cap table, not a sweep.
+    # (No literal N here on purpose: this comment itself was once "43", and
+    # D-106 made it 44. A comment that quotes a count is a citation.)
     print(f"sweep files discovered:    {len(sweeps)}")
 
     # O-112(c): a driver's budget typed by hand drifts from the work it guards.

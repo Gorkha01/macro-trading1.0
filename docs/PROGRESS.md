@@ -1,12 +1,20 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-24** (after **D-103 — a HARNESS increment**, which closed the two
-traps D-101/D-102 recorded: a sweep's exit code now reports its mutation verdict rather
-than the sandbox's delete counter, and the rule that a sweep owns the MACHINE now prints
-where every sweep starts. **Tier 5 = 6/23 by §21.3's list; Module 18 = 5 of 6.** The last
-MODEL function was **D-102 `yield_curve_pca`** (Module 8, §6.6), which makes `compute_pca`
-and `kalman_latent_state` (D-101) the preceding two.)
+Last updated: **2026-09-24** (after **D-106 — Module 17/18's `monte_carlo_var`**, the
+Tier-5 **REPLACEMENT** for `historical_var` / `parametric_var` / `expected_shortfall`
+(all Tier 1, shipped in Phase 4, all in `models/risk.py`; §17.1/§17.4/§18.2's consumer).
+**Tier 5 = 8/23 by §21.3's list; Module 18 = 5 of 6.** The sharpest finding was a **unit
+the docstring had BACKWARDS** — `factor_volatilities` are ANNUALISED, and only the live
+check against real FRED data (0.4956% vs analytic 0.4947%, 0.0009pp) exposed it.
+**Gate baseline: ruff format --check 251 files · mypy --strict 251 files · 3191 passed /
+1 skipped / 17 deselected / 0 failed · monte_carlo sweep 39/39 killed · live check PASS ·
+44 sweeps, sweep_health OK.**)
+Previous update: **D-105 — Module 3's `classify_regime_markov_switching`** (Tier 5 =
+7/23; the library's regime index is NOT identified, so a canonical ordering by mean and
+the published permutation carry the contract). Before it, **D-104** made the two most
+frequent defects into gates, **D-103** a harness increment, and the last MODEL function
+before those was **D-102 `yield_curve_pca`** (Module 8, §6.6).
 Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
 (the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
@@ -5944,3 +5952,133 @@ the same shape as this increment: a Phase-4 SIMPLE version exists and the Phase-
 version replaces it without deleting anything. **Read §15 Module 11/17 and §17.4
 first, and probe the library before writing** — this increment found six defects by
 probing and none by reading.
+
+---
+
+## D-106 — Module 17/18's `monte_carlo_var` (2026-09-24)
+
+**Tier 5 = 8/23.** Spec **§17.1** (AGENTS.md:3680–3696) and **§18.2** (3870–3886,
+which NAMES `models/risk.py`'s Monte Carlo VaR as the LTCM detection rule),
+`models/risk.py`. It is the Tier-5 **REPLACEMENT** for `historical_var` /
+`parametric_var` / `expected_shortfall` (§21.3, D-096): Phase 5+ builds the
+sophisticated version and **deletes nothing**, so all three Phase-4 functions are
+still shipped. `models/risk.py` **788 → 1492 lines**.
+
+### The mechanism: a JOINT (correlated) draw, not a sum of marginals
+
+The Phase-4 functions take a **return series** and read a quantile. This one takes
+the **factor covariance matrix** and a **loading vector** and draws joint factor
+shocks through the **Cholesky factor** of the stressed covariance, common across
+both regimes — so the portfolio P&L is a **co-moving** sum, which is the whole point:
+the naive independent-asset sum understates tail loss precisely in the high-correlation
+state LTCM died in.
+
+* `StressCorrelationTransform` is a **Protocol** (`stress_correlations(covariance_matrix,
+  stressed_correlation, *, only_correlations_that_rise=True)`) matching the shipped
+  `_uniform_correlation_stress` — the same dependency-inversion seam as D-046/D-058, so
+  `models/` never imports `portfolio/`.
+* **One RNG stream is shared across regimes** (`seed`, default `20260924`): the normal
+  and stressed P&L vectors use the *same* standard-normal draws, so `stressed_to_normal_ratio`
+  is a **paired** comparison, not two independent samples. Proven by an identity stress
+  whose ratio is *exactly* the volatility multiple.
+* Value keys published: `var_normal_pct`, `var_stressed_pct`, `var_normal_amount`,
+  `var_stressed_amount`, `es_normal_pct`, `es_stressed_pct`, `stressed_to_normal_ratio`,
+  `diversification_ratio_normal`, `diversification_ratio_stressed`, `n_sims`, `seed`,
+  `confidence`, `horizon_days`.
+
+### ⚠️ The unit defect — the sharpest finding, and the LIVE CHECK found it
+
+The class docstring and the `factor_volatilities` field description said the inputs
+were **"per-period DECIMALS (0.01 = 1%), NOT annualised."** The code's
+`horizon_scale = sqrt(horizon_days / periods_per_year)` proves they are **ANNUALISED**.
+Reading them as daily decimals is off by **√252 ≈ 15.86**.
+
+| reading | VaR produced | analytic cross-check | error |
+| --- | --- | --- | --- |
+| daily decimal (the docstring) | **0.0312%** | 0.4946% | factor **15.86** |
+| annualised (the code) | **0.4956%** | 0.4947% | **0.0009 pp** |
+
+Only the live check — real FRED data through the production path, cross-checked
+against `parametric_var` — made the discrepancy visible. **Fixed in both places**
+(the class docstring and the field description), with a paragraph in `risk.py`
+recording that the live check found it. This is the project's standing lesson in
+its purest form: **a citation is a claim, and a docstring is a citation.**
+
+### Two more defects the probing found
+
+* **Zero-volatility factors were not pruned** — a factor with `sigma == 0` makes the
+  covariance singular and `_cholesky_factor` raise `LinAlgError`. Fixed by dropping
+  zero-variance factors before the factorisation, with a typed refusal when the
+  remaining set is empty.
+* **The sign convention** had to be pinned: VaR is published as a **positive loss
+  magnitude** (`-quantile` of the P&L), so a positive number means a loss — stated on
+  every key, since the opposite convention is equally common in the literature.
+
+### Two survivors, both killed by fixing the TEST rather than the code
+
+* **C1b — the seed test read its own accessor.** The test compared against
+  `get_settings().risk.monte_carlo.seed`, the *same* accessor the mutation rewrote, so
+  the mutation was self-consistent and survived. Fixed by reading the **`seed_value`
+  literal from `config/settings.yaml` on disk** (regex, LF-only YAML); hand-confirmed
+  `assert 1 == 20260924` fails.
+* **M6c — the ratio bound was looser than the convergence.** Asserted
+  `|ratio − multiple| < 0.05` at `n = 100000`, where the streams have converged to
+  within the bound. Fixed to **`1e-6` at `n = 2000` with an identity stress** (ratio is
+  *exactly* the multiple); hand-confirmed `2.622 ≠ 2.5`.
+
+### Three harness findings
+
+1. **O-127's 4th instance.** `RiskSettings.monte_carlo` is a new REQUIRED nested field,
+   so `tests/portfolio/test_risk_budget.py` and `tests/portfolio/test_risk_parity.py`
+   broke on explicit `RiskSettings(...)` construction. Caught by the GREEN-UNMUTATED run
+   of the selection first — the *only* thing that catches a collection-error-certified
+   false sweep (D-059's trap).
+2. **O-128 re-fired.** `tests/models/test_monte_carlo_var.py` and
+   `tests/portfolio/test_risk_budget.py` were written **CRLF**; git does not see it, only
+   `tests/test_source_hygiene.py` does. Normalised to LF byte-level.
+3. **The sweep count lives in THREE places.** Adding a sweep made it **44**, and three
+   tests plus a `tools/sweep_health.py` comment asserted **43**. Fixed all four
+   (including making the comment count-agnostic — a citation that drifts is a bug).
+
+### The live check
+
+`scripts/live_monte_carlo_check.py` fetches **real FRED series** via `OpenBBClient`
+(SP500 pct-return, `BAMLH0A0HYM2` diff/100, `DGS10` diff/100), builds **annualised**
+vols and a correlation matrix, runs the **production** `stress_correlations`, and asserts
+the **LTCM inequality** (a stressed correlation raises the diversification ratio). It also
+cross-checks against `parametric_var` (bound **0.05 pp**). **Result: PASS** — normal
+**0.4956%**, stressed **1.2390%**, ratio **2.5000×**, analytic delta **0.0009 pp**.
+
+### Gate baseline after D-106 (measured 2026-09-24)
+
+ruff check clean · **`ruff format --check` 251 files** · **`mypy --strict` no issues in
+251 files** · **3191 passed / 1 skipped / 17 deselected / 0 failed** on the default marker
+set (`not live and not slow`), chunked and summed; the CI marker set (`not live`) is
+**3192 / 1 / 16 / 0**. **Delta against D-105's 3146 = exactly +45** (42 in
+`test_monte_carlo_var.py`, 3 net in the sweep-count/hygiene tests). ·
+`reachability_audit.py --check-baseline` **PASS 58/58** (SCRIPT-ONLY Tier 5: 7 → **8**) ·
+`openbb_reachability.py` **OK** · both mutant-shape greps print **nothing** ·
+`mutation_monte_carlo_var.py` **39/39 killed, exit 0** · the five neighbour sweeps
+(drawdown, rebalancing, voltarget, cross_market_rv, instrument_selection) all re-run
+**clean exit 0** · **`sweep_health.py` run LAST** → **44 sweeps · 0 control-less · 0
+unbuffered · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK**.
+
+`tests/models/test_monte_carlo_var.py` collects **42** tests; `mutation_monte_carlo_var.py`'s
+catalogue is **39** (and carries the CANARY1 refusal gate — O-72's third mechanism).
+
+### Next
+
+**Tier 5 = 8/23.** The Tier-5 list (§21.3) now has **15** outstanding:
+`cip_check`, `uip_expected_move`, `ppp_valuation`, `carry_score`,
+`dollar_smile_regime`, `intervention_capacity`, `em_vulnerability_checklist`,
+`oil_balance_signal`, `gold_driver_attribution`, `metals_complex_divergence`,
+`sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior`,
+`compute_risk_parity_weights`, `statement_text_diff`.
+
+**§22.3's deferral list is the guide, not a keyword grep (D-096): ask what each
+REPLACES.** The natural next item is **`compute_risk_parity_weights`** — the Tier-5
+REPLACEMENT for the Phase-4 inverse-volatility weighting, and it shares this increment's
+`models/risk.py` neighbourhood, so the sweep-reachability check
+(`grep -l "models/risk.py" scripts/mutation_*.py`) will already be warmed. **Read §17's
+risk axis and probe the library before writing** — this increment found three defects by
+probing, one by the live check, and none by reading.

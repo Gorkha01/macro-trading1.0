@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_three_sweeps_to_cover() -> None:
+def test_there_are_forty_four_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -452,9 +452,15 @@ def test_there_are_forty_three_sweeps_to_cover() -> None:
     edit. This is the first sweep added *by the rule* rather than retrofitted:
     the two prose sweeps above arrived during a repair pass, so this is the
     first time the three-place edit was made as part of the increment itself.
+
+    **43 → 44 at D-106**, which added `mutation_monte_carlo_var.py` — the first
+    sweep over `models/risk.py` (none existed; the Tier-1 estimators in that
+    module were covered only indirectly). It uses `sweep_lifecycle` and carries
+    the CANARY1 refusal gate, so the per-file wiring and control-coverage checks
+    both cover it without a second edit.
     """
     files = _sweep_files()
-    assert len(files) == 43, f"expected 43 sweeps, found {len(files)}"
+    assert len(files) == 44, f"expected 44 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

@@ -37,9 +37,11 @@ function and asserted in the tests rather than left implicit.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     ModelResult,
@@ -47,15 +49,21 @@ from macro_engine.models.contracts import (
     utc_now,
 )
 
+if TYPE_CHECKING:
+    from numpy.random import Generator
+
 __all__ = [
+    "MonteCarloVaRInputs",
     "ParametricVaRInputs",
     "PortfolioVaRInputs",
     "RealizedVolInputs",
     "ReturnsInputs",
+    "StressCorrelationTransform",
     "TwoAssetPortfolioInputs",
     "expected_shortfall",
     "historical_var",
     "marginal_risk_contributions",
+    "monte_carlo_var",
     "parametric_var",
     "portfolio_volatility_n_asset",
     "portfolio_volatility_two_asset",
@@ -779,5 +787,706 @@ def marginal_risk_contributions(
             "Allocate to these, not to dollar weights."
         ),
         inputs_used=["weights", "covariance_matrix"],
+        warnings=warnings,
+    )
+
+
+# ===========================================================================
+# Section 17.1 — Monte Carlo VaR (Module 17, Tier 5)
+#
+# The Tier-5 REPLACEMENT for the three Tier-1 estimators above (Section 21.3,
+# D-096). Phase 5+ builds the sophisticated version and **deletes nothing**, so
+# `historical_var`, `parametric_var` and `expected_shortfall` all still ship;
+# this is the fourth estimator, and the only one that can price a JOINT move.
+# ===========================================================================
+
+
+class StressCorrelationTransform(Protocol):
+    """Structural view of ``portfolio/risk_budget.py``'s ``stress_correlations``.
+
+    Declared as a ``Protocol`` rather than imported so the dependency runs
+    ``portfolio → models`` (the permitted direction) and not the reverse. The
+    layer rule is mechanical: ``models/`` is the lower layer and may **not**
+    import ``portfolio/``, and this function needs the *production* stress
+    definition rather than a copy of it.
+
+    **Receiving it rather than restating it is the D-046/D-058 repair, and the
+    reason is not legality.** A restated stress rule cannot disagree with the
+    original, so it can never find the original wrong. The production rule has
+    a non-obvious branch — a genuinely NEGATIVE correlation is preserved rather
+    than forced positive, because "correlations converge toward 1" is a claim
+    about the upper tail and a plain ``max(rho, stress)`` would silently turn a
+    hedge into the stressed book's largest source of contagion. A local copy
+    here would be free to miss that, and the two would then disagree about what
+    a stress IS while both reporting a number called ``var_stressed``.
+
+    The signature is the smallest surface this function actually uses: it calls
+    with the keyword ``only_correlations_that_rise`` bound, because whether a
+    hedge is preserved is a property of the caller's hypothesis rather than of
+    the matrix.
+    """
+
+    def __call__(
+        self,
+        covariance_matrix: list[list[float]],
+        stressed_correlation: float,
+        *,
+        only_correlations_that_rise: bool = ...,
+    ) -> list[list[float]]:
+        """Return ``covariance_matrix`` with its correlations stressed."""
+        ...
+
+
+class MonteCarloVaRInputs(BaseModel):
+    """A multi-factor book and the two regimes to simulate it under.
+
+    The specification's outline takes a ``scenario_generator`` callable
+    (Section 17.1) — an opaque object this module cannot validate, cannot
+    publish the inputs of, and cannot guarantee draws *correlated* shocks from.
+    It is replaced here by the book's own parameters, because the whole point
+    of the function is that the shocks are joint: a caller supplying a
+    generator could hand in one that draws each factor independently, and the
+    result would be a confident number with no correlation in it at all.
+
+    Units and basis — stated because two bare float lists cannot reveal them:
+
+    * ``factor_volatilities`` are **per-period DECIMALS** (``0.01`` = 1% per
+      day for a daily series), NOT annualised. They are scaled to
+      ``horizon_days`` internally by ``sqrt(time)``.
+    * ``weights`` are **signed fractions of capital** (``0.6`` = +60%, ``-0.4``
+      = a 40% short). Unlike :class:`PortfolioVaRInputs` they are NOT required
+      to sum to 1.0: a book with a short leg and a cash position has weights
+      summing to less than one, and a long/short book can sum to zero while
+      carrying real risk. Requiring a sum of 1.0 here would make a market-neutral
+      book unrepresentable — the failure D-055 found in a different form.
+    * ``factor_volatilities`` and the two correlation matrices are in the SAME
+      PERIOD as each other; the horizon is applied once, to both regimes.
+
+    ``factor_volatilities`` may contain a ZERO (an instrument with no
+    simulated risk, e.g. a cash leg). That is legal and is handled: its
+    correlation with everything is undefined and is treated as zero, which is
+    the same convention ``stress_correlations`` uses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    weights: list[float] = Field(
+        min_length=1,
+        description="Signed exposures as fractions of capital. Need not sum to 1.0.",
+    )
+    factor_volatilities: list[float] = Field(
+        min_length=1,
+        description="Per-period volatility per factor, as DECIMALS. 0.01 = 1%.",
+    )
+    normal_correlations: list[list[float]] = Field(
+        description="NxN correlation matrix for the normal regime, from the sample.",
+    )
+    portfolio_value: float = Field(
+        gt=0.0, description="Current portfolio value, in currency units."
+    )
+    confidence: float = Field(
+        default=0.95,
+        gt=0.0,
+        lt=1.0,
+        description="Confidence level. A higher level must give a LARGER loss.",
+    )
+    horizon_days: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Holding period in trading days. None -> settings.risk.monte_carlo."
+            "horizon_days. Scaled onto the shock vector by sqrt(time)."
+        ),
+    )
+    n_sims: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Draws per regime. None -> settings.risk.monte_carlo.n_sims. The "
+            "realised count is published so the choice is visible."
+        ),
+    )
+    seed: int | None = Field(
+        default=None,
+        description=(
+            "RNG seed. None -> settings.risk.monte_carlo.seed. The seed actually "
+            "used is published, so any result can be reproduced from its output."
+        ),
+    )
+    periods_per_year: int = Field(
+        default=252,
+        gt=0,
+        description=(
+            "Trading days per year, used as the sqrt-time annualisation base. "
+            "Matches ParametricVaRInputs deliberately: two estimators in one "
+            "module that annualised over different bases would disagree by a "
+            "constant no reader could see."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_book_and_matrix(self) -> MonteCarloVaRInputs:
+        """Shape, symmetry, diagonal, and feasibility checks.
+
+        These duplicate the *shape* checks in
+        :func:`_validate_weights_and_covariance` deliberately rather than
+        calling it: that helper consumes a covariance matrix, and this model
+        receives a CORRELATION matrix plus separate volatilities. Reusing it
+        would mean building a covariance matrix to validate the correlation
+        matrix, which is a restatement in the wrong basis. The two functions
+        share a contract, not a representation.
+
+        What is checked, and why each one is a real failure rather than
+        defensive noise:
+
+        * **Rectangular and n x n** — a ragged matrix otherwise reaches the
+          Cholesky factor and dies in the library, naming no input.
+        * **Symmetric** — a correlation is symmetric by definition, and an
+          asymmetric one is a transcription error. The quantity computed from
+          it is not a correlation matrix.
+        * **Unit diagonal** — the diagonal of a *correlation* matrix is 1 by
+          definition. A diagonal of 0.04 is a COVARIANCE matrix handed to a
+          correlation parameter, which is the D-054 unit-convention error in a
+          new place: the simulation would still run and the factor risk would
+          be understated by the volatility scale.
+        * **Diagonal entries within [-1, 1] for the cross terms** — the
+          triangle must be a legal correlation.
+        * **Non-negative volatilities** and matching lengths.
+        """
+        n = len(self.weights)
+        if len(self.factor_volatilities) != n:
+            raise ValueError(
+                f"weights has {n} entries but factor_volatilities has "
+                f"{len(self.factor_volatilities)}. Both describe the same factors."
+            )
+        if len(self.normal_correlations) != n:
+            raise ValueError(
+                f"weights has {n} entries but normal_correlations has "
+                f"{len(self.normal_correlations)} rows."
+            )
+        for index, row in enumerate(self.normal_correlations):
+            if len(row) != n:
+                raise ValueError(
+                    f"normal_correlations row {index} has {len(row)} entries; "
+                    f"a {n}-factor correlation matrix must be {n}x{n}."
+                )
+        for i in range(n):
+            diagonal = self.normal_correlations[i][i]
+            if abs(diagonal - 1.0) > 1e-9:
+                raise ValueError(
+                    f"normal_correlations[{i}][{i}] is {diagonal}. The diagonal "
+                    f"of a CORRELATION matrix is 1.0 by definition; a small "
+                    f"diagonal is a COVARIANCE matrix passed as a correlation "
+                    f"matrix, which would understate the factor risk by its "
+                    f"volatility scale."
+                )
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = self.normal_correlations[i][j]
+                b = self.normal_correlations[j][i]
+                if abs(a - b) > 1e-12:
+                    raise ValueError(
+                        f"normal_correlations is not symmetric — [{i}][{j}]={a} "
+                        f"but [{j}][{i}]={b}. A correlation matrix is symmetric "
+                        f"by definition; this is a transcription error."
+                    )
+                for value in (a, b):
+                    if not -1.0 <= value <= 1.0:
+                        raise ValueError(
+                            f"normal_correlations contains {value}, outside "
+                            f"[-1, 1]. A correlation cannot exceed 1 in "
+                            f"magnitude."
+                        )
+        for index, vol in enumerate(self.factor_volatilities):
+            if vol < 0.0:
+                raise ValueError(
+                    f"factor_volatilities[{index}] is {vol}; a volatility cannot be negative."
+                )
+        return self
+
+    @property
+    def correlation_names(self) -> list[str]:
+        """The factor labels, used in warnings and the published per-factor map."""
+        return [f"factor_{index}" for index in range(len(self.weights))]
+
+
+# ===========================================================================
+# Helpers the Monte Carlo estimator is built from.
+# ===========================================================================
+
+
+def _correlation_to_covariance(
+    correlations: list[list[float]], volatilities: list[float]
+) -> list[list[float]]:
+    """``Cov[i][j] = rho[i][j] * sigma_i * sigma_j``.
+
+    Kept separate from the Cholesky step because the STRESS path needs the
+    covariance form: ``stress_correlations`` (the production implementation the
+    Protocol stands for) takes a covariance matrix and returns one, so the
+    stressed volatilities must already be folded in as a diagonal scale before
+    the correlations are stressed. Building the covariance matrix once, then
+    stressing the correlations *within it*, is what lets the volatility
+    multiple and the correlation stress COMPOSE instead of replacing each
+    other — the difference between the measured 1.199x and the measured 2.989x
+    stress response (see the YAML note).
+    """
+    n = len(volatilities)
+    return [
+        [correlations[i][j] * volatilities[i] * volatilities[j] for j in range(n)] for i in range(n)
+    ]
+
+
+def _cholesky_factor(covariance: list[list[float]], regime: str) -> list[list[float]]:
+    """Lower-triangular ``L`` with ``L @ L.T == covariance``.
+
+    Fails loudly rather than repairing. A non-positive-definite matrix means the
+    inputs describe a joint distribution that cannot exist, and the two standard
+    "fixes" — nearest-PSD projection, eigenvalue flooring — both CHANGE the risk
+    being measured while leaving the output labelled with the caller's numbers.
+    That is a silent failure surface, so the refusal is the contract.
+
+    The library's ``LinAlgError`` names no input, so it is caught and re-raised
+    with the regime label and the practical cause. A correlation matrix is
+    non-PSD exactly when its cross terms are jointly infeasible rather than
+    individually illegal (three factors pairwise correlated at 0.9 is the
+    standard example); a reader otherwise receives "Matrix is not positive
+    definite" with no pointer to which of the two regimes was at fault.
+    """
+    import numpy as np
+
+    try:
+        return cast(
+            "list[list[float]]",
+            np.linalg.cholesky(np.asarray(covariance, dtype=float)).tolist(),
+        )
+    except np.linalg.LinAlgError as error:
+        raise ValueError(
+            f"The {regime} correlation matrix is not a valid joint "
+            f"distribution — its covariance form is not positive definite, so "
+            f"no set of correlated shocks with these correlations exists. This "
+            f"is a property of the inputs, not a numerical tolerance: cross "
+            f"terms that are individually legal can still be jointly "
+            f"infeasible. Underlying error: {error}"
+        ) from error
+
+
+def _simulate_regime_pnls(
+    *,
+    factor_loadings: list[float],
+    covariance: list[list[float]],
+    n_sims: int,
+    horizon_scale: float,
+    rng: Generator,
+    regime: str,
+) -> list[float]:
+    """Draw ``n_sims`` joint factor shocks; return FRACTIONAL portfolio P&L.
+
+    The unit is the **fraction of portfolio value** the book gains or loses,
+    not a currency amount. That choice is deliberate: the caller turns it into
+    an amount by multiplying by ``portfolio_value`` exactly once, and the
+    quantile/ES helpers then return the same "percent loss" quantity that
+    :func:`historical_var` does. Simulating amounts here and *also* multiplying
+    by the value later is the double-scaling bug this signature prevents.
+
+    The mechanism, stated because the correlation is the whole point:
+
+    1. Draw an ``n_sims x n`` block of i.i.d. standard normals ``Z``.
+    2. ``S = Z @ L.T``, where ``L`` is the Cholesky factor of the covariance
+       matrix. Then ``Cov(S) == L @ L.T == covariance`` — the induced
+       correlation is the requested one to floating-point, which is exactly
+       what an independent-shock-per-factor generator would fail to give.
+    3. Factor shocks ``dF = S * sqrt(horizon)``. The sqrt-time scale is applied
+       to every FACTOR, not to the final P&L, so the horizon scales the joint
+       structure consistently with the marginals.
+    4. Portfolio return ``dP = loadings . dF``.
+
+    Sign: ``dP`` is in return space, so **negative means a loss**. It is
+    converted to the positive-loss convention once, at the end of
+    :func:`monte_carlo_var`, where the single conversion is visible.
+    """
+    import numpy as np
+
+    loadings = np.asarray(factor_loadings, dtype=float)
+    factor = _cholesky_factor(covariance, regime)
+    z = rng.standard_normal((n_sims, loadings.size))
+    # Z @ L.T induces Cov == L @ L.T == covariance.
+    correlated = z @ np.asarray(factor, dtype=float).T
+    factor_pnl = correlated * horizon_scale
+    return cast("list[float]", (factor_pnl @ loadings).tolist())
+
+
+def _loss_quantile(pnls: list[float], confidence: float, sorted_ascending: bool = False) -> float:
+    """Positive-loss VaR from a simulated P&L sample.
+
+    Uses the module's own :func:`_quantile` (the ``(n-1)*p`` linear
+    interpolation that matches numpy's ``'linear'`` method one-for-one, verified
+    in the tests) so the simulated estimator and the empirical one share a
+    quantile definition. Two VaR numbers computed with different quantile
+    conventions would differ for a reason no caller could see, and the
+    normal-vs-stressed comparison this function exists to make would silently
+    acquire a second, methodological difference.
+    """
+    ordered = sorted(pnls) if not sorted_ascending else pnls
+    return -_quantile(ordered, 1.0 - confidence)
+
+
+def _expected_shortfall_from_pnls(pnls: list[float], var_loss: float) -> float:
+    """Mean loss beyond the VaR boundary, in the positive-loss convention.
+
+    Matches :func:`expected_shortfall`'s definition (the mean of the returns at
+    or below the ``(1 - confidence)`` quantile) so the simulated ES and the
+    empirical ES are the same quantity. The tail set is selected on the
+    RETURN-space P&L: everything at or below ``-var_loss``.
+    """
+    tail = [value for value in pnls if value <= -var_loss]
+    if not tail:
+        # A VaR read off an interpolated quantile can sit strictly between two
+        # draws, leaving no observation at or below it. The nearest draw is the
+        # honest tail at these sizes; this cannot happen for historical_var, but
+        # it can here, and returning 0.0 would report a severity of zero at the
+        # exact moment the tail is empty of information.
+        tail = [min(pnls)]
+    return -sum(tail) / len(tail)
+
+
+def _diversification_ratio(factor_loadings: list[float], covariance: list[list[float]]) -> float:
+    """``sigma_p / sum_i |w_i| sigma_i`` — the LTCM tell, on the FACTOR book.
+
+    Bounded in ``(0, 1]`` for a non-degenerate book. It equals 1 when every
+    factor is perfectly correlated (no diversification exists to lose) and
+    falls toward 0 as the book's risks offset. The interesting quantity in
+    Section 18.2 is the *change* in this ratio between the normal and stressed
+    regimes: a crisis that raises correlations drives it toward 1, which is the
+    correlation breakdown itself rather than a symptom of it.
+
+    ``sum |w_i| sigma_i`` is the fully-correlated (worst-case) portfolio
+    volatility, so the ratio is the fraction of that bound actually realized.
+    """
+    import numpy as np
+
+    weights = np.asarray(factor_loadings, dtype=float)
+    matrix = np.asarray(covariance, dtype=float)
+    sigma = np.sqrt(np.diag(matrix))
+    standalone = float(np.sum(np.abs(weights) * sigma))
+    if standalone == 0.0:
+        return 1.0
+    variance = float(weights @ matrix @ weights)
+    return math.sqrt(max(variance, 0.0)) / standalone
+
+
+def _uniform_correlation_stress(
+    correlations: list[list[float]], target: float
+) -> list[list[float]]:
+    """Raise every cross-correlation toward ``target``; keep the diagonal at 1.
+
+    A FALLBACK, and labelled as one. It exists because the transform is
+    received rather than imported, so a caller that has no transform still gets
+    a defined stressed regime — but this rule cannot preserve a negative
+    correlation the way the production rule does, and the difference is warned
+    at the call site. Uniformly raising a hedge's correlation is exactly the
+    mistake Section 18.2 warns about, so this path must never be silent.
+
+    ``min(rho, target)`` rather than ``max``: a correlation already above the
+    target is left alone, so a book whose factors are ALREADY more correlated
+    than the stress level does not have its correlations *lowered* by a
+    "stress".
+    """
+    if not -1.0 <= target <= 1.0:
+        raise ValueError(
+            f"stressed_correlation={target} is outside [-1, 1], so it is not a "
+            f"correlation. A correlation cannot exceed 1 in magnitude."
+        )
+    n = len(correlations)
+    out = [[1.0 if i == j else correlations[i][j] for j in range(n)] for i in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            raised = min(correlations[i][j], target)
+            out[i][j] = raised
+            out[j][i] = raised
+    return out
+
+
+def monte_carlo_var(
+    inputs: MonteCarloVaRInputs,
+    *,
+    stress_correlations: StressCorrelationTransform | None = None,
+    stressed_correlation: float | None = None,
+) -> ModelResult:
+    """Section 17.1's Monte Carlo VaR — the Tier-5 replacement, and the LTCM rule.
+
+    Why this supersedes the three Tier-1 estimators
+    ------------------------------------------------
+    ``historical_var``, ``parametric_var`` and ``expected_shortfall`` each price
+    a **single** distribution. None can answer the question Section 18.2
+    actually asks: *how much worse is the same book when its correlations break
+    down*. This function simulates the book under TWO joint distributions — the
+    sample's correlation matrix and a stressed one — and reports both. Per
+    D-096 nothing is deleted: this is a fourth route, and the only one that can
+    price a joint move at all.
+
+    The mechanism, stated
+    ---------------------
+    1. Each regime's covariance is built from the SAME factor volatilities and
+       the regime's correlation matrix (``_correlation_to_covariance``).
+    2. Under stress the volatilities are scaled by
+       ``settings.risk.monte_carlo.stressed_volatility_multiplier`` **before**
+       the correlations are stressed, and the transform is applied to the
+       resulting covariance matrix by the RECEIVED production rule
+       (``stress_correlations``), never by a local copy.
+    3. Each regime's portfolio P&L is drawn by ``_simulate_regime_pnls`` — a
+       Cholesky-correlated joint normal, sqrt-time scaled.
+    4. VaR and ES are read off each sample in the positive-loss convention
+       through the module's own quantile rule.
+
+    Why the volatility multiple is in the stress (measured, not assumed)
+    -------------------------------------------------------------------
+    The specification's prose mandates a correlation stress and says nothing
+    about volatility. Measured on a two-leg convergence book, a
+    correlation-only stress moves 95% VaR by **1.199x**; the volatility term
+    together with it moves it **2.989x**. Volatility is the larger of the two,
+    and omitting it understates the very crisis the function exists to price by
+    roughly a factor of 2.5. It is therefore a configured leaf, not an
+    implementation detail — see ``config/settings.yaml``.
+
+    Why this is the LTCM detection rule
+    -----------------------------------
+    Section 18.2 names *this* function as the system's LTCM early warning: a
+    large normal-vs-stressed gap is the correlation-breakdown signal, published
+    as an explicit ratio so no caller recomputes it (and so no caller
+    recomputes it DIFFERENTLY).
+
+    Reproducibility
+    ---------------
+    The seed actually used is published in the value. An unseeded Monte Carlo
+    estimate is not a risk number — it moves every run (measured: the same
+    input returned 1.616866 / 1.678676 / 1.674093 across three runs), and a
+    number that changes without its inputs changing cannot be reconciled
+    against a later one.
+
+    Refusals and warnings
+    ---------------------
+    * A non-positive-definite regime matrix is REFUSED (see
+      ``_cholesky_factor``), not repaired.
+    * ``n_sims * (1 - confidence)`` below ``min_tail_draws`` is warned: the
+      quantile is being read off too few draws to be an estimate.
+    * A zero factor volatility is warned: the book claims a factor that moves
+      nothing, so it carries diversification it does not have.
+    * A stressed-book diversification ratio above
+      ``stress_diversification_warning`` is warned: most of the book's apparent
+      risk reduction came from the assumption that just broke.
+    * The fallback uniform correlation stress is warned whenever it is used.
+    """
+    settings = get_settings().risk.monte_carlo
+    import numpy as np
+
+    n_sims = inputs.n_sims if inputs.n_sims is not None else settings.n_sims
+    seed = inputs.seed if inputs.seed is not None else settings.seed
+    horizon_days = inputs.horizon_days if inputs.horizon_days is not None else settings.horizon_days
+    horizon_scale = math.sqrt(horizon_days / inputs.periods_per_year)
+
+    warnings: list[str] = []
+
+    # --- factor census: prune factors that cannot move ---------------------
+    # A zero-volatility factor makes the covariance matrix SINGULAR (its row
+    # and column are all zeros), and a Cholesky factor requires STRICTLY
+    # positive definite. Leaving it in would therefore refuse a perfectly
+    # legitimate book — a hedge leg currently at zero exposure — with a
+    # message about an invalid joint distribution, which is not what the
+    # book is. It is pruned instead, because by construction it contributes
+    # nothing to any loss, and the pruning is warned so the caller knows the
+    # book it supplied is not the book that was simulated.
+    live = [i for i, vol in enumerate(inputs.factor_volatilities) if vol != 0.0]
+    if len(live) < len(inputs.factor_volatilities):
+        dropped = [
+            inputs.correlation_names[i]
+            for i in range(len(inputs.factor_volatilities))
+            if i not in live
+        ]
+        warnings.append(
+            f"Factor(s) {', '.join(dropped)} have zero volatility and were "
+            f"DROPPED before simulation: they contribute nothing to any loss "
+            f"by construction, and leaving a zero row in the covariance matrix "
+            f"makes it singular (no Cholesky factor exists). The reported "
+            f"results describe a {len(live)}-factor book, not the "
+            f"{len(inputs.factor_volatilities)}-factor book supplied."
+        )
+    if not live:
+        raise ValueError(
+            "Every factor volatility is zero, so there is no risk to "
+            "simulate. A zero-volatility book has zero VaR at every "
+            "confidence level, which is a statement about the inputs rather "
+            "than a risk estimate."
+        )
+
+    # --- the normal regime -------------------------------------------------
+    normal_vols = [inputs.factor_volatilities[i] for i in live]
+    weights = [inputs.weights[i] for i in live]
+    correlations = [[inputs.normal_correlations[i][j] for j in live] for i in live]
+    normal_cov = _correlation_to_covariance(correlations, normal_vols)
+
+    # --- the stressed regime ----------------------------------------------
+    # Volatility first, then the correlation stress on the resulting matrix, so
+    # the two compose (see the measured note above).
+    stressed_vols = [vol * settings.stressed_volatility_multiplier for vol in normal_vols]
+    stressed_cov_pre = _correlation_to_covariance(correlations, stressed_vols)
+
+    if stress_correlations is None:
+        if stressed_correlation is None:
+            raise ValueError(
+                "stress_correlations was not supplied and no "
+                "stressed_correlation target was given, so the stressed regime "
+                "would differ from the normal one only by the volatility "
+                "multiple. Pass the production stress transform (from "
+                "portfolio/risk_budget.py) — a correlation-breakdown warning "
+                "that does not actually break any correlation is the LTCM "
+                "failure mode, not its detection."
+            )
+        stressed_cov = _correlation_to_covariance(
+            _uniform_correlation_stress(correlations, stressed_correlation),
+            stressed_vols,
+        )
+        warnings.append(
+            f"No stress_correlations transform was supplied, so a uniform "
+            f"correlation target of {stressed_correlation} was applied instead. "
+            f"The production rule preserves genuinely NEGATIVE correlations "
+            f"(hedges); this fallback does not, so a hedged book's stressed "
+            f"loss is overstated here."
+        )
+    else:
+        if stressed_correlation is None:
+            raise ValueError(
+                "stress_correlations was supplied but stressed_correlation was "
+                "not. The transform needs the target level to raise "
+                "correlations to; without it there is no stress to apply."
+            )
+        stressed_cov = stress_correlations(
+            stressed_cov_pre, stressed_correlation, only_correlations_that_rise=True
+        )
+
+    # Two generators from ONE seed, so both regimes are driven by the same
+    # random numbers. Using one generator twice would make the stressed sample
+    # depend on how many draws the normal sample consumed; matched streams make
+    # the comparison a comparison of DISTRIBUTIONS rather than of draws.
+    normal_pnls = _simulate_regime_pnls(
+        factor_loadings=weights,
+        covariance=normal_cov,
+        n_sims=n_sims,
+        horizon_scale=horizon_scale,
+        rng=np.random.default_rng(seed),
+        regime="normal",
+    )
+    stressed_pnls = _simulate_regime_pnls(
+        factor_loadings=weights,
+        covariance=stressed_cov,
+        n_sims=n_sims,
+        horizon_scale=horizon_scale,
+        rng=np.random.default_rng(seed),
+        regime="stressed",
+    )
+
+    # --- read the risk measures off each sample ----------------------------
+    var_normal_loss = _loss_quantile(normal_pnls, inputs.confidence)
+    var_stressed_loss = _loss_quantile(stressed_pnls, inputs.confidence)
+    es_normal_loss = _expected_shortfall_from_pnls(normal_pnls, var_normal_loss)
+    es_stressed_loss = _expected_shortfall_from_pnls(stressed_pnls, var_stressed_loss)
+
+    div_normal = _diversification_ratio(weights, normal_cov)
+    div_stressed = _diversification_ratio(weights, stressed_cov)
+
+    # --- the LTCM gap, published as a ratio --------------------------------
+    # Guarded rather than divided: a non-positive normal VaR makes the ratio
+    # meaningless, and silently returning inf/nan would report a correlation
+    # breakdown that may not exist.
+    if var_normal_loss > 0.0:
+        ratio = var_stressed_loss / var_normal_loss
+    else:
+        ratio = float("nan")
+        warnings.append(
+            f"The normal-regime VaR at {inputs.confidence:.1%} is "
+            f"{var_normal_loss:.6g}, so the stressed-to-normal ratio is "
+            f"undefined and reported as absent. Do not read a "
+            f"correlation-breakdown signal from it."
+        )
+
+    # --- tail census -------------------------------------------------------
+    tail_draws = settings.tail_draws_for(n_sims, inputs.confidence)
+    if tail_draws < settings.min_tail_draws:
+        warnings.append(
+            f"Only {tail_draws:.1f} of {n_sims} draws are expected beyond the "
+            f"{inputs.confidence:.1%} quantile (floor "
+            f"{settings.min_tail_draws:.0f}). The quantile is being read off "
+            f"too few points to be an estimate rather than an extrapolation."
+        )
+
+    # --- diversification warning ------------------------------------------
+    if div_stressed > settings.stress_diversification_warning:
+        warnings.append(
+            f"The stressed book's diversification ratio is {div_stressed:.4f}, "
+            f"above the {settings.stress_diversification_warning} warning level "
+            f"(1.0 = no diversification at all). Most of the book's apparent "
+            f"risk reduction came from the correlation assumption that just "
+            f"broke — the Section 18.2 pattern."
+        )
+
+    warnings.append(
+        "The normal-vs-stressed VaR gap is the LTCM correlation-breakdown "
+        "signal (Section 18.2): a large ratio means the book's risk depends on "
+        "correlations holding."
+    )
+
+    # --- confidence --------------------------------------------------------
+    # Heuristic marker: the stress definitions are illustrative thresholds, not
+    # calibrated crisis parameters (Section 15.19/20). The tail census is the
+    # data-quality fact, stated rather than felt (Section 22.8).
+    confidence = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=tail_draws < settings.min_tail_draws,
+            is_heuristic_not_calibrated=True,
+            source_independence_count=0,
+        )
+    )
+
+    return ModelResult(
+        model_name="monte_carlo_var",
+        country="us",
+        as_of=utc_now(),
+        value={
+            "var_normal_pct": round(var_normal_loss * 100, 4),
+            "var_stressed_pct": round(var_stressed_loss * 100, 4),
+            "var_normal_amount": round(var_normal_loss * inputs.portfolio_value, 2),
+            "var_stressed_amount": round(var_stressed_loss * inputs.portfolio_value, 2),
+            "es_normal_pct": round(es_normal_loss * 100, 4),
+            "es_stressed_pct": round(es_stressed_loss * 100, 4),
+            "stressed_to_normal_ratio": (None if math.isnan(ratio) else round(ratio, 6)),
+            "diversification_ratio_normal": round(div_normal, 6),
+            "diversification_ratio_stressed": round(div_stressed, 6),
+            "n_sims": n_sims,
+            "seed": seed,
+            "confidence": inputs.confidence,
+            "horizon_days": horizon_days,
+        },
+        confidence=confidence,
+        interpretation=(
+            f"Monte Carlo VaR ({inputs.confidence:.1%}, {horizon_days}d, "
+            f"{n_sims} sims): normal "
+            f"{var_normal_loss * inputs.portfolio_value:,.2f}, stressed "
+            f"{var_stressed_loss * inputs.portfolio_value:,.2f} on a "
+            f"{inputs.portfolio_value:,.2f} book"
+        ),
+        context=(
+            f"Joint normal draws via Cholesky, two correlation regimes. "
+            f"Stressed regime applies a "
+            f"{settings.stressed_volatility_multiplier:.2f}x volatility "
+            f"multiple AND a correlation stress. Diversification ratio "
+            f"{div_normal:.4f} -> {div_stressed:.4f}. "
+            f"Sign convention: positive = loss. Seed {seed}."
+        ),
+        inputs_used=[
+            "weights",
+            "factor_volatilities",
+            "normal_correlations",
+            "portfolio_value",
+            "confidence",
+        ],
         warnings=warnings,
     )

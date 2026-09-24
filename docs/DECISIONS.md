@@ -17377,3 +17377,222 @@ mutants · 0 failures · OK**.
 * **The 8-restart label-switch search did not reproduce the hazard on live data.**
   The invariance rests on the unit test's permutation argument, which is exhaustive
   by construction; the live probe is evidence of the search, not of the switch.
+
+---
+
+## D-106 — Module 17/18's `monte_carlo_var`: a correlation gap, a unit the docstring got backwards, and the live check that found it
+
+**Date:** 2026-09-24. **Spec:** §17.1 (AGENTS.md:3680–3696, the outline) and
+§18.2 (AGENTS.md:3878, which NAMES this function as the LTCM detection rule).
+**Module 17/18**, `src/macro_engine/models/risk.py` (788 → **1492** lines).
+**Tier 5 = 8/23.** It is the Tier-5 **REPLACEMENT** for the three Tier-1
+estimators in the same module — `historical_var`, `parametric_var`,
+`expected_shortfall` (§21.3; D-096's reconciliation — Phase 5+ builds the
+sophisticated version and **deletes nothing**, so all three still ship and are
+still read by the thesis risk axis). §17.1's outline is
+`monte_carlo_var(scenario_generator, n_sims=10_000, confidence=0.95) -> dict`,
+returning **both** a normal and a stressed-correlation VaR and a note that
+"a large gap between them is the system's LTCM-pattern early warning".
+
+### 1. THE MECHANISM — the joint draw is the point, and the outline does not implement it
+
+§17.1 says *"scenario_generator draws correlated shocks across the portfolio's
+risk factors … NOT independent single-variable shocks"*, and hands the whole
+problem to a caller-supplied callable. Implemented as shipped, the correlation
+is the caller's private business and the function cannot promise it. This
+increment **takes the correlated draw inside the function**:
+`MonteCarloVaRInputs` carries `weights`, `factor_volatilities`,
+`normal_correlations`, `portfolio_value`, and the two regimes are drawn as
+
+```
+Z ~ N(0, I)              (n_sims x n_factors, ONE stream)
+S = Z @ L.T              (L = Cholesky(covariance))
+factor_shock = S * sqrt(horizon_days / periods_per_year)
+portfolio_pnl = factor_shock @ loadings        (fraction of value)
+```
+
+so `Cov(S) == L @ L.T == covariance` to floating point, and the induced
+correlation **is** the requested one. The two regimes share **one** RNG stream
+(`np.random.default_rng(seed)` for both), so the normal-vs-stressed gap is a
+comparison of *distributions* rather than of *draws* — a difference that is
+invisible in the ratio at small `n` and material at large `n`
+(mutation **M6c** exists for it; see §5).
+
+The **stress transform is not inlined.** The stressed matrix is produced by the
+function the project already ships for the purpose —
+`portfolio/risk_budget.py`'s `stress_correlations` — reached through a
+`StressCorrelationTransform` **Protocol** (D-046/D-058's dependency inversion:
+`models/` may not import `portfolio/`). So the correlation stress is the SAME
+one the thesis risk axis applies, not a second implementation that could drift.
+
+The **stressed regime multiplies the volatilities first, then stresses the
+correlations**: `stressed_vols = [v * multiple for v in vols]`, then the
+transform replaces the off-diagonals. Order matters — the transform preserves
+the diagonal, so applying it before the vol multiple would scale differently.
+
+### 2. THE UNIT WAS WRONG IN THE FIRST DRAFT, AND ONLY THE LIVE CHECK SAW IT
+
+This is the increment's sharpest finding, and it is the reason §21.0 exists.
+
+`horizon_scale = sqrt(horizon_days / periods_per_year)` is applied to the
+**factor** shocks, so `factor_volatilities` are **ANNUALISED** decimals
+(`0.15` = 15%/yr), the same convention as `ParametricVaRInputs.vol_annualized`.
+The first draft's class docstring said the opposite — *"per-period DECIMALS
+(`0.01` = 1% per day), **NOT annualised**"* — and the field description repeated
+it ("Per-period volatility per factor … 0.01 = 1%").
+
+**No unit test could see the contradiction.** Every test supplies annualised
+numbers (`_S1 = 0.20`) and cross-checks against `parametric_var`, which
+annualises on the SAME assumption — two routes agreeing with each other and
+with the code while the **stated** unit and the **implemented** unit disagree.
+
+The **live check** reads real FRED series and builds `factor_volatilities` from
+them. Run against a daily-decimal reading of the docstring, the 3-factor book
+(equity ≈ 15%/yr annualised) produced a VaR of **0.0312 %** against an analytic
+**0.4946 %** — a factor of **15.86 ≈ sqrt(252)**, which is the fingerprint. Run
+with the annualised reading, the two agree to **0.0009 pp**. MEASURED 2026-09-24:
+
+| input basis | simulated normal VaR | analytic (`parametric_var`) | gap |
+|---|---|---|---|
+| daily decimal (docstring's claim) | 0.0312 % | 0.4946 % | 0.4634 pp (≈ √252 ×) |
+| annualised decimal (the code) | **0.4956 %** | **0.4947 %** | **0.0009 pp** |
+
+**The docstring and the field description were corrected in this increment.** A
+documented unit that contradicts the code is not a documentation bug — it is a
+**silent unit trap for every future caller**, and the only instrument that could
+see it was a run on real data. The live check's docstring records the episode so
+the next reader knows the check earned its place.
+
+### 3. THE ZERO-VOLATILITY FACTOR — a warning that was DEAD CODE, fixed by pruning
+
+Found by probing the warning path, not by reading. A factor with zero volatility
+makes the covariance matrix **SINGULAR** (its row and column are all zeros), and
+`numpy.linalg.cholesky` **requires strictly positive definite** — it raises
+`LinAlgError` on a singular matrix. So the original "zero-volatility factor"
+WARNING was **unreachable**: the Cholesky call died first, and a legitimate book
+(a cash leg, which the class docstring explicitly permits) was **refused**.
+
+Fixed by **pruning zero-vol factors up front** (with a distinct DROPPED
+warning naming which factors left the book), building the Cholesky on the
+reduced matrix, and **refusing** a book whose factors are ALL zero (nothing to
+simulate). Mutation **M4b** (do not prune) and **M4a** (return 0.0 instead of
+refusing the all-zero book) both exist for this.
+
+### 4. THE SIGN CONVENTION, PUBLISHED AS POSITIVE-LOSS
+
+The simulation works in **return space** (negative = loss). VaR and ES are
+converted once, at the end, to the project's **positive-loss** convention, and
+`_loss_quantile` reads the **lower** tail and negates. Both directions are
+mutation-tested (**M3a** the sign inverted, **M3b** the ES tail selected on the
+wrong side, **M3c** the ES mean sign flipped, **M3d** the wrong tail fraction).
+
+### 5. THE TWO SURVIVORS — both WEAK TESTS, and the second is the reusable lesson
+
+The first sweep was **37/39**. Neither survivor was inert or broken:
+
+* **M6c — the stressed regime drawn from a DIFFERENT stream (`seed + 1`).** The
+  test asserted `|ratio − multiple| < 0.05` at `n = 100 000`, where the two
+  streams **converge**, so a shifted stream was invisible. The fix required
+  understanding *why* matched streams are exact: with an **identity** correlation
+  stress the stressed book differs from the normal one **only** by the scalar
+  volatility multiple, so every stressed draw is exactly `multiple × normal
+  draw` and the quantile of a scaled sample is the scale times the quantile —
+  the ratio is **EXACTLY 2.5**, not approximately. MEASURED: pristine = 2.5 at
+  n = 2 000 / 5 000 / 10 000; `seed + 1` = 2.622 / 2.573 / 2.523. The tight
+  bound (`1e-6` at n = 2 000) is therefore both safe and decisive.
+  **M6c → KILLED.**
+* **C1b — the `seed` config accessor hardcoded to `return int(1)`.** The test
+  read `get_settings().risk.monte_carlo.seed` — the **same accessor** the
+  mutation rewrites — so it compared a mutated reader **against itself** and
+  passed. This is **D-105's MX30 lesson in a new dimension**: *a test that
+  recomputes an identity must compare against a component the mutation does NOT
+  touch.* Fixed by reading the leaf's literal **from `config/settings.yaml` on
+  disk** (a regex over the file), so the mutant and the test no longer share a
+  source. Hand-applied and confirmed: `assert 1 == 20260924`.
+  **C1b → KILLED.**
+
+**Certified close-out run: 39/39 killed, exit 0.** The sweep
+(`scripts/mutation_monte_carlo_var.py`) is the **first over `models/risk.py`** —
+none existed; the Tier-1 estimators there were covered only indirectly. The
+census went **43 → 44**.
+
+### 6. THREE HARNESS FINDINGS, all consequences of this increment
+
+1. **O-127 FIRED AGAIN (the third time), exactly as it predicted.** The new
+   required nested field `RiskSettings.monte_carlo` broke explicit `RiskSettings`
+   constructions in **TWO** test modules — `tests/portfolio/test_risk_budget.py`
+   (which I fixed in the prior session) and **`tests/portfolio/test_risk_parity.py`
+   (`_risk_settings`)**, which the full run then caught. This is the same class
+   O-127 records for `RegimeSettings` at D-105, one settings model over. Both
+   fixed by supplying the shipped block; **the class remains OPEN**, and this is
+   its **fourth** instance across three increments.
+2. **O-128 FIRED — CRLF in the WORKING TREE, invisible to `git`, caught only by
+   `tests/test_source_hygiene.py`.** The two files this increment writes
+   (`tests/models/test_monte_carlo_var.py` and `tests/portfolio/test_risk_budget.py`)
+   were written CRLF by the editor and normalised to LF **in this increment**.
+   O-128's own note said the *two tracked non-source files* were the exposure;
+   this increment shows the class reaches **source** files too, through the
+   editor's newline behaviour, and that the hygiene gate is what catches it.
+3. **ADDING A SWEEP MEANS EDITING THE COUNT IN THREE PLACES, deliberately.**
+   `test_sweep_sidecar_lifecycle.py` (assertion **and** function name) and
+   `test_sweep_health_leftover_predicate.py` (assertion) each pin **44** now.
+   The new sweep also needed the **CANARY1 refusal gate**
+   (`"REFUSING TO CERTIFY: the honesty canary SURVIVED"`), which
+   `sweep_health.py` scans for — without it the sweep was reported
+   **control-less** by `test_every_sweep_declares_a_recognised_control`.
+
+### The thresholds, and how each was derived
+
+Nothing is a round number chosen for looking reasonable. All six live in
+`config/settings.yaml` under `risk.monte_carlo` as `CalibratedValue` leaves:
+
+* `n_sims_value = 100000` — MECHANICAL. §17.1's outline writes `10_000`, and that
+  is **not enough at this project's confidence levels**. MEASURED (standard-normal
+  P&L, 40 independent runs, sampling sd of the 1 % quantile against a true
+  −2.3263): n = 1 000 → sd **0.1069** (4.59 %); 10 000 → **0.0278** (1.19 %);
+  100 000 → **0.0119** (0.51 %). At n = 10 000 a 99 % VaR of 2.33 carries a ±0.03
+  band, larger than the normal-vs-stressed difference for a mildly-correlated
+  book — the comparison the function exists to make would be decided by the
+  draw, not the correlation.
+* `seed_value = 20260924` — MECHANICAL. A published VaR must be reproducible.
+  MEASURED: three **unseeded** runs of one configuration returned
+  **1.616866 / 1.678676 / 1.674093** (a 3.8 % spread); a seeded run is
+  bit-reproducible. Configured rather than hardcoded so a caller can vary it for
+  a sampling-error estimate; the seed actually used is **published**.
+* `min_tail_draws_value = 200.0` — ILLUSTRATIVE, a WARNING floor not a refusal.
+  The quantile is read off ORDER STATISTICS, so at confidence 0.99 only
+  `n_sims/100` draws carry the information (100 at n = 10 000, 10 at n = 1 000).
+  MEASURED: the sd table above puts 200 draws at roughly the 1 % band. The
+  realised tail count is **published** so the warning can be checked against the
+  number it describes.
+* `stressed_volatility_multiplier_value = 2.5` — ILLUSTRATIVE. A crisis raises
+  volatility, not only correlation; §18.2's LTCM is a correlation story but the
+  GFC leg is a vol story. MEASURED on the live 3-factor book: rho-only stress
+  gives a **1.199×** ratio and vol+rho gives **2.989×**, so the multiple is what
+  makes the gap legible.
+* `stress_diversification_warning_value = 0.90` — ILLUSTRATIVE. §18.2 says
+  correlations rise toward 1 in crisis, so a stressed diversification ratio
+  *below* this is the early-warning shape. MEASURED: the ratio runs from
+  **0.721110** (rho = 0) to **0.997597** (rho = 0.99), so 0.90 sits inside the
+  reachable range and the warning can fire.
+* `horizon_days_value = 1` — MECHANICAL. The conventional VaR horizon; the
+  horizon is applied once, to both regimes.
+
+### What this increment does NOT establish
+
+* **The published VaR is not a forecast.** It is a quantile of a drawn
+  distribution under a **stated** covariance, and the covariance is one sample
+  over one window. The tail census and diversification warnings are the
+  disclosures for that.
+* **The configured stress magnitude is a claim about the world, not a wiring
+  fact.** `2.5` is illustrative and the live check **reports** the LTCM
+  inequality rather than establishing the magnitude is right.
+* **§17.4's feedback into thesis validity is not wired.** The function is
+  live-checked and script-reachable; the thesis path does not yet call it, so it
+  joins the **SCRIPT-ONLY Tier 5** set (now 8) rather than the wired set — the
+  same status D-101/D-102/D-105's functions hold.
+* **The `structural` Protocol is exercised only against the one shipped
+  implementation.** A second transform would be needed to prove the Protocol is
+  the seam rather than a coincidence.
+* **No portfolio optimiser, no GARCH, no CVaR-by-optimisation.** Those remain
+  the Phase 5+ items they were.

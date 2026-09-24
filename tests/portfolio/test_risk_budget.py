@@ -1079,6 +1079,12 @@ def test_confidence_names_the_heuristic_marker_rather_than_hiding_it() -> None:
 # the *source* they guard is identical — they exist so this class can be
 # constructed at all. A test that wants to perturb them builds its own settings
 # object, which is exactly what `test_risk_parity.py` does.
+#
+# D-106's `monte_carlo` block is NOT in this dict: it is a nested
+# `MonteCarloSettings`, not a `CalibratedValue`, and widening this dict's
+# annotation to `object` breaks mypy's argument checking on the `**` spread at
+# every call site. It is passed explicitly as `monte_carlo=...` instead — see
+# `_MONTE_CARLO_SHIPPED` below.
 _ENVELOPE_LEAVES: dict[str, CalibratedValue] = {
     "max_position_pct_of_portfolio": CalibratedValue(
         value=0.15, calibration_status="institutional_convention"
@@ -1112,6 +1118,13 @@ _ENVELOPE_LEAVES: dict[str, CalibratedValue] = {
     ),
 }
 
+# D-106's Monte Carlo block (Tier 5, Section 17.1), taken from the SHIPPED
+# settings rather than restated. Restating six illustrative thresholds here
+# would make this fixture a second place they could silently drift, and these
+# tests are about the LADDER, not about Monte Carlo. Passed explicitly at each
+# call site (it is a nested block, not a `_ENVELOPE_LEAVES` leaf).
+_MONTE_CARLO_SHIPPED = get_settings().risk.monte_carlo
+
 
 def test_the_accessor_reads_its_leaves_not_the_shipped_literals() -> None:
     """A test against the shipped value cannot tell a live read from a hardcode.
@@ -1141,6 +1154,7 @@ def test_the_accessor_reads_its_leaves_not_the_shipped_literals() -> None:
                 {"drawdown_pct": 11.0, "risk_reduction_pct": 60.0},
             ],
         },
+        monte_carlo=_MONTE_CARLO_SHIPPED,
         **_ENVELOPE_LEAVES,
     )
     assert [t.drawdown_pct for t in perturbed.drawdown_tiers] == [7.0, 11.0]
@@ -1175,6 +1189,7 @@ def test_the_accessor_sorts_rather_than_returning_file_order() -> None:
                 {"drawdown_pct": 15.0, "risk_reduction_pct": 75.0},
             ]
         },
+        monte_carlo=_MONTE_CARLO_SHIPPED,
         **_ENVELOPE_LEAVES,
     )
     assert [t.drawdown_pct for t in shuffled.drawdown_tiers] == [10.0, 15.0, 20.0]
@@ -1223,6 +1238,7 @@ def test_an_empty_tier_list_configures_a_silent_ladder() -> None:
         ),
         rebalancing_drift=CalibratedValue(value=0.10, calibration_status="mechanical_rule"),
         drawdown_thresholds={"tiers": []},
+        monte_carlo=_MONTE_CARLO_SHIPPED,
         **_ENVELOPE_LEAVES,
     )
     assert empty.drawdown_tiers == []

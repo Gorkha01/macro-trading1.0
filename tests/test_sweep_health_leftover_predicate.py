@@ -811,7 +811,9 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # `missing == []` assertion below still holds without a second edit.
     # 42 -> 43 at D-092 (`mutation_econometrics.py`, Module 18) -- likewise a
     # CANARY1 sweep, so the same holds a third time.
-    assert len(sweeps) == 43, f"expected 43 sweeps, found {len(sweeps)}"
+    # 43 -> 44 at D-106 (`mutation_monte_carlo_var.py`, Module 17/models/risk.py)
+    # -- the first sweep over models/risk.py, and likewise a CANARY1 sweep.
+    assert len(sweeps) == 44, f"expected 44 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "

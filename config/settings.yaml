@@ -1622,6 +1622,157 @@ risk:
       taken, while this bounds how small the resulting notional may be before
       the thesis stops being actionable.
 
+  # --- Section 17.1 — Monte Carlo VaR (the Tier-5 REPLACEMENT) -------------
+  #
+  # Section 17.1's third estimator, and per D-096 the Phase-5 UPGRADE of the
+  # three Tier-1 estimators already shipped in this module: `historical_var`
+  # (empirical quantile), `parametric_var` (normal approximation) and
+  # `expected_shortfall` (the tail mean). It REPLACES none of them — the
+  # comparison between the three is itself the diagnostic — and adds what none
+  # of them can do:
+  #
+  #   * a JOINT distribution. The Tier-1 three each read ONE series. A
+  #     portfolio's loss is a function of several risk factors that move
+  #     TOGETHER, so a single-series quantile cannot price the correlation.
+  #   * a COUNTERFACTUAL correlation. Section 17.1's LTCM requirement is to
+  #     report the SAME book under a normal and a stressed correlation, which
+  #     needs a generator whose correlation is an input rather than a fact of
+  #     the sample.
+  #
+  # Mechanical, not economic, leaves (calibration_status `mechanical_rule`) are
+  # separated from the economic ones below, because they fail differently: a
+  # wrong sample-size rule makes the estimate NOISY and a wrong stress rule
+  # makes it WRONG.
+  monte_carlo:
+    # --- the simulation size and its reproducibility ----------------------
+    n_sims_value:
+      value: 100000
+      calibration_status: mechanical_rule
+      note: >
+        Number of simulated portfolio P&L draws per regime. Section 17.1's
+        outline writes `n_sims: int = 10_000`, and that is NOT enough for this
+        project's published confidence levels.
+
+        MEASURED 2026-09-24, on a standard-normal P&L, 40 independent runs at
+        each size (the 1% quantile's sampling standard deviation, against a
+        true value of -2.3263):
+
+            n =    1 000   sd = 0.1069    ( 4.59% of the estimate )
+            n =   10 000   sd = 0.0278    ( 1.19% )
+            n =  100 000   sd = 0.0119    ( 0.51% )
+
+        At n = 10 000 a 99% VaR of 2.33 carries a +/-0.03 sampling band, which
+        is larger than the difference between the normal and the stressed
+        estimate for a mildly-correlated book -- i.e. the LTCM comparison the
+        function exists to make would be decided by the draw, not by the
+        correlation. 100 000 draws put the band at 0.5%, well below the effect
+        being measured, at a cost of ~40 ms (measured: the full two-regime
+        simulation on a 4-factor book runs in 79 ms at this size).
+
+        This is a MECHANICAL leaf: it is a numerical-accuracy knob, not a claim
+        about the world. It bounds the SAMPLING error and says nothing about
+        model error, which is the larger term and is not reducible by drawing
+        more.
+    seed_value:
+      value: 20260924
+      calibration_status: mechanical_rule
+      note: >
+        The RNG seed for the simulation. VaR is a PUBLISHED risk number and a
+        number that changes on every run is not auditable: measured on this
+        installation, three unseeded runs of the same configuration returned
+        1.616866 / 1.678676 / 1.674093 (a 3.8% spread) where a seeded run is
+        bit-reproducible. The seed is CONFIGURED rather than hardcoded because a
+        caller who wants a sampling-error estimate needs to vary it -- the
+        function accepts an override and publishes the seed it actually used, so
+        a result can always be reproduced from its own output.
+    min_tail_draws_value:
+      value: 200.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The floor on the EXPECTED number of draws beyond the VaR quantile,
+        `n_sims * (1 - confidence)`, below which the estimate is warned about.
+        The quantile is read off the ORDER STATISTICS of the simulated sample,
+        so at confidence 0.99 only `n_sims/100` draws carry the information: at
+        the Section 17.1 default of 10 000 that is 100 draws, and at 1 000 it is
+        10 -- an estimate read off ten points.
+
+        MEASURED 2026-09-24: the 99% quantile's sampling sd at n = 1 000 is
+        0.1069 (4.6% of the estimate), at 10 000 it is 0.0278 (1.2%), at
+        100 000 it is 0.0119 (0.5%). 200 draws is where the band falls to about
+        1%, which is the scale at which the normal-vs-stressed comparison is
+        still legible. This is a WARNING threshold, not a refusal: a caller who
+        lowers `n_sims` deliberately should get the number and the caveat, and
+        the realised tail count is published on every output so the warning can
+        be checked against the number it describes.
+    horizon_days_value:
+      value: 1
+      calibration_status: mechanical_rule
+      note: >
+        Holding-period scale for the simulated returns, in trading days. The
+        factors are simulated at their PER-PERIOD (daily) scale and a k-day
+        horizon scales the whole shock vector by sqrt(k) -- the same
+        square-root-of-time convention `parametric_var` uses, applied to the
+        joint draw rather than to a summary volatility, so the correlation
+        structure is preserved across the horizon.
+
+        sqrt(time) assumes independent returns across periods. That assumption
+        is carried in the warnings rather than buried, because it fails exactly
+        when it matters: serial correlation and mean reversion both break it, in
+        a direction that depends on the sign of the autocorrelation.
+    # --- the stress definition (an ECONOMIC choice) -----------------------
+    stressed_volatility_multiplier_value:
+      value: 2.5
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The multiple applied to every factor's volatility in the STRESSED
+        regime.
+
+        **This leaf exists because a correlation-only stress measurably
+        understates a crisis, and the first design had none.** Measured
+        2026-09-24 on a two-leg convergence book (both legs 1% daily vol, base
+        rho 0.30), 400 000 draws per configuration:
+
+            normal   (rho .30, vol 1.0x)   95% VaR = 1.3380%   99% = 1.8927%
+            rho-only (rho .90, vol 1.0x)   95% VaR = 1.6097%   99% = 2.2719%
+            vol-only (rho .30, vol 2.5x)   95% VaR = 3.3515%   99% = 4.7437%
+            BOTH     (rho .90, vol 2.5x)   95% VaR = 4.0073%   99% = 5.6961%
+
+        A rho-only stress moves 95% VaR by **1.199x**; the volatility term is
+        the larger one and together they move it by **2.989x**. Section 17.1's
+        prose mandates the correlation stress and says nothing about
+        volatility, so a literal reading produces the 1.20x number -- the LTCM
+        lesson applied to a third of its own cause. A crisis raises both.
+
+        2.5 is ILLUSTRATIVE rather than estimated: nothing in the data says
+        2.5x is the right multiple for the next crisis, and the leaf is not a
+        forecast. What the measurement establishes is that the term has to be
+        present at all, and that its omission is worth a factor of ~2.5 in the
+        published stress loss.
+    stress_diversification_warning_value:
+      value: 0.90
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The diversification ratio `sigma_p / (sum_i |w_i| * sigma_i)` above
+        which the STRESSED book has effectively lost its diversification and
+        the LTCM warning escalates.
+
+        The ratio runs 0 (perfect hedges) to 1 (no diversification at all), and
+        it reaches toward 1 exactly as the correlations do -- MEASURED on the
+        two-leg book above: 0.721110 at rho=0, 0.814862 at rho=0.3, 0.898888 at
+        rho=0.6, 0.975705 at rho=0.9, 0.997597 at rho=0.99. It is the LTCM
+        tell in one number: the book's apparent safety was the correlation
+        assumption, and the stress removes it.
+
+        0.90 sits between the normal-regime ratio and the stressed one on this
+        configuration, so it discriminates. Illustrative because the breakpoint
+        is a judgement: nothing says 0.90 is where diversification stops
+        mattering. What is measured is the RANGE it must sit inside to fire at
+        all and not fire always.
+
+  # The paragraph above is the Module 17.1 LTCM requirement stated once, where
+  # a reader changing the stress definition will see it: the function reports
+  # BOTH regimes on every call and the gap between them IS the finding.
+
 kelly:
   # Section 22.6 / Finding #6 — the generalized Kelly solution.
   fractional_divisor:

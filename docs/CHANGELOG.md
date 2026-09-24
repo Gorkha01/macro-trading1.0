@@ -10,6 +10,71 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-106 — `monte_carlo_var`: a correlation gap, and a unit the docstring got backwards
+
+**Added**
+
+- **`monte_carlo_var`** (§17.1/§18.2, Module 17) — the Tier-5 REPLACEMENT for
+  `historical_var` / `parametric_var` / `expected_shortfall` (§21.3, D-096). Phase 5+ builds
+  the sophisticated version and **deletes nothing**, so all three Phase-4 functions still ship.
+  **Tier 5 = 8/23.** It takes the **factor covariance matrix** and a **loading vector**, draws
+  **joint (correlated)** factor shocks through a **Cholesky factor** common to both regimes, and
+  publishes `var_normal_pct`, `var_stressed_pct`, `var_normal_amount`, `var_stressed_amount`,
+  `es_normal_pct`, `es_stressed_pct`, `stressed_to_normal_ratio`, `diversification_ratio_normal`,
+  `diversification_ratio_stressed`, `n_sims`, `seed`, `confidence`, `horizon_days` — the
+  diversification-ratio pair is §18.2's LTCM tell.
+- **`MonteCarloVaRInputs`** and the **`StressCorrelationTransform` Protocol**
+  (`stress_correlations(covariance_matrix, stressed_correlation, *, only_correlations_that_rise=True)`)
+  — the same dependency-inversion seam as D-046/D-058, so `models/` never imports `portfolio/`.
+- **`MonteCarloSettings`** in `config.py` plus a required `risk.monte_carlo` block in
+  `settings.yaml`: six `CalibratedValue` leaves (`n_sims`, `seed`, `min_tail_draws`,
+  `horizon_days`, `stressed_volatility_multiplier`, `stress_diversification_warning`) with
+  `tail_draws_for()` and a validator.
+- **`scripts/live_monte_carlo_check.py`** — fetches real FRED series via `OpenBBClient`
+  (SP500 pct-return, `BAMLH0A0HYM2`, `DGS10`), runs the **production** `stress_correlations`,
+  and asserts the LTCM inequality + an analytic cross-check against `parametric_var`.
+- **`scripts/mutation_monte_carlo_var.py`** — 39 mutations, carrying the CANARY1 refusal gate
+  (O-72's third mechanism).
+
+**Changed**
+
+- **`models/risk.py`: 788 → 1492 lines.**
+- **`tests/models/test_monte_carlo_var.py` — 42 new tests.** The suite goes **3146 → 3191**
+  passed (default marker set), a delta of exactly +45.
+- **The sweep count: 43 → 44**; updated in three test files and made count-agnostic in
+  `tools/sweep_health.py` (**O-129**).
+
+**Fixed**
+
+- **`factor_volatilities`'s documented unit was BACKWARDS.** The class docstring and the field
+  description said **"per-period DECIMALS (0.01 = 1%), NOT annualised"**; the code's
+  `horizon_scale = sqrt(horizon_days / periods_per_year)` proves they are **ANNUALISED**. The
+  **live check found it** — reading them as daily decimals is off by **√252 ≈ 15.86** (daily:
+  **0.0312 %** vs an analytic **0.4946 %**; annualised: **0.4956 %** vs **0.4947 %**, **0.0009 pp**).
+  Corrected in both places.
+- **Zero-volatility factors were not pruned**, making the covariance singular and
+  `_cholesky_factor` raise `LinAlgError`. Fixed by dropping zero-variance factors, with a typed
+  refusal when the remaining set is empty.
+- **A required nested config field broke two explicit `RiskSettings(...)` constructions** across
+  `tests/portfolio/test_risk_budget.py` and `tests/portfolio/test_risk_parity.py` — **O-127**'s
+  4th instance, caught only by the mandatory green-unmutated run.
+- **Two files landed as CRLF in the working tree**, caught by
+  `tests/test_source_hygiene.py::test_no_source_file_contains_a_carriage_return` — **O-128**
+  re-firing inside the owned roots; both normalised to LF.
+
+**Notes**
+
+- **The VaR is a quantile of a DRAWN distribution under a STATED covariance, not a forecast.**
+  The covariance is one sample over one window; the tail census and the diversification warnings
+  are the disclosures for that.
+- **One RNG stream is shared across regimes** (`seed`, default `20260924`), so
+  `stressed_to_normal_ratio` is a **paired** comparison rather than two independent samples —
+  proven by an identity stress whose ratio is *exactly* the volatility multiple.
+- **VaR is published as a positive LOSS magnitude** (`-quantile` of the P&L), stated on every key
+  because the opposite convention is equally common.
+- **The live check PASSED on real FRED data**: normal **0.4956 %**, stressed **1.2390 %**, ratio
+  **2.5000×**, analytic delta **0.0009 pp**.
+
 ### D-105 — `classify_regime_markov_switching`: the regime index is not identified
 
 **Added**

@@ -760,6 +760,12 @@ def _risk_settings(**overrides: object) -> RiskSettings:
         "thesis_demotion_fraction_value": CalibratedValue(
             value=0.03, calibration_status="uncalibrated_illustrative"
         ),
+        # D-106's Monte Carlo block: a nested settings object, not a bare
+        # `CalibratedValue`, so it cannot be written as a literal here with the
+        # rest. Passed through from the shipped tree — this builder is only
+        # rebuilding the leaves the risk-parity accessors read, and the Monte
+        # Carlo leaves are not among them.
+        "monte_carlo": get_settings().risk.monte_carlo,
     }
     leaves.update(overrides)
     return RiskSettings.model_validate(leaves)

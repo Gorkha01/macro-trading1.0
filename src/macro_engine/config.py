@@ -603,6 +603,163 @@ class InstrumentSelectionSettings(BaseModel):
         return int(self.source_independence_count.value)
 
 
+class MonteCarloSettings(BaseModel):
+    """Section 17.1's Monte Carlo VaR (Module 17, Tier 5).
+
+    The Tier-5 REPLACEMENT for the three Tier-1 estimators beside it
+    (:func:`historical_var`, :func:`parametric_var`, :func:`expected_shortfall`
+    in ``models/risk.py``). Per D-096, Phase 5+ builds the sophisticated version
+    and **deletes nothing**, so this block configures an ADDITIONAL route rather
+    than editing one.
+
+    What the additional route buys, and therefore what needs configuring:
+
+    * the **joint** draw — a size and a seed, because the estimate is a
+      simulated one and a published risk number has to be reproducible;
+    * the **horizon**, scaled by sqrt(time) onto the whole shock vector;
+    * the **stress definition**, which is TWO leaves rather than one. A
+      correlation-only stress was the first design and it measurably understates
+      a crisis; the volatility multiple is the larger term and the omission is
+      worth a factor of ~2.5 in the published stress loss. See the YAML note.
+
+    Every leaf is a ``CalibratedValue`` because every one of them is a NUMBER
+    that answers *"is this a fact, a convention, or a placeholder?"* — unlike
+    :class:`MarkovRegimeSettings`, this block has no string or bool selection to
+    carry, so the D-094 exception does not apply here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    n_sims_value: CalibratedValue
+    seed_value: CalibratedValue
+    min_tail_draws_value: CalibratedValue
+    horizon_days_value: CalibratedValue
+    stressed_volatility_multiplier_value: CalibratedValue
+    stress_diversification_warning_value: CalibratedValue
+
+    @property
+    def n_sims(self) -> int:
+        """Simulated portfolio P&L draws per regime.
+
+        100 000, not Section 17.1's 10 000: the 1% quantile's sampling sd is
+        0.0278 at 10 000 against 0.0119 at 100 000 (measured, 40 runs each), so
+        the smaller size cannot resolve the normal-vs-stressed gap it exists to
+        report.
+        """
+        return int(self.n_sims_value.value)
+
+    @property
+    def seed(self) -> int:
+        """The RNG seed. Configured so a published VaR is reproducible."""
+        return int(self.seed_value.value)
+
+    @property
+    def min_tail_draws(self) -> float:
+        """Expected draws beyond the quantile below which the estimate is warned.
+
+        Compared against ``n_sims * (1 - confidence)``. A float because the
+        realised count is fractional for most ``(n_sims, confidence)`` pairs and
+        the comparison should not round before it decides.
+        """
+        return float(self.min_tail_draws_value.value)
+
+    @property
+    def horizon_days(self) -> int:
+        """Holding period in trading days for the default horizon."""
+        return int(self.horizon_days_value.value)
+
+    @property
+    def stressed_volatility_multiplier(self) -> float:
+        """Volatility multiple applied to every factor under the stressed regime.
+
+        **The leaf a correlation-only stress omits.** Measured on a two-leg
+        convergence book: rho-only moves 95% VaR by 1.199x, the volatility term
+        together with it by 2.989x. Must be ``>= 1.0`` — a crisis does not
+        *reduce* volatility, and a multiplier below 1 would model the stressed
+        regime as calmer than the normal one while still labelling it stressed.
+        """
+        return float(self.stressed_volatility_multiplier_value.value)
+
+    @property
+    def stress_diversification_warning(self) -> float:
+        """Diversification ratio above which the stressed book's warning escalates.
+
+        The ratio is ``sigma_p / (sum_i |w_i| * sigma_i)``, in ``(0, 1]`` for a
+        long-only book. A value of 1.0 means no diversification at all, so a
+        threshold of 1.0 fires only on a book that had none to lose. Bounded
+        ``(0, 1]`` for that reason.
+        """
+        return float(self.stress_diversification_warning_value.value)
+
+    def tail_draws_for(self, n_sims: int, confidence: float) -> float:
+        """Expected draws beyond the quantile for a given simulation and level.
+
+        Derived rather than stored: the count depends on BOTH arguments, so a
+        stored copy could only ever be right for one pair. The function
+        publishes the realised count against the configured floor, and this
+        derivation is the same arithmetic the floor is compared against — kept
+        in one place so the floor and the number it judges cannot drift.
+        """
+        return n_sims * (1.0 - confidence)
+
+    @model_validator(mode="after")
+    def _reject_a_stress_that_is_not_a_stress(self) -> MonteCarloSettings:
+        """Refuse a "stress" that cannot be one.
+
+        Three bounds, each closing a way the block could describe a regime that
+        is not a crisis:
+
+        * ``stressed_volatility_multiplier >= 1.0`` — below 1.0 the stressed
+          regime is CALMER than the base one. The output still labels it
+          stressed, and the reported normal-vs-stressed gap would then have the
+          wrong sign for a reason no reader could see.
+        * ``stress_diversification_warning`` in ``(0, 1]`` — the ratio is
+          bounded above by 1 by construction, so a threshold above 1 can never
+          fire (the dead-config class this project has recorded repeatedly), and
+          a non-positive one always fires.
+        * ``min_tail_draws > 0`` and ``horizon_days >= 1`` — a floor of zero
+          warns about nothing, and a horizon of zero simulates a zero-day
+          holding period.
+
+        ``n_sims >= 1`` is enforced by pydantic's ``CalibratedValue`` chain only
+        as a float bound; the function additionally requires enough draws for
+        the quantile to be defined and refuses below that, with the admissible
+        minimum in the message.
+        """
+        if self.stressed_volatility_multiplier < 1.0:
+            raise ValueError(
+                f"risk.monte_carlo.stressed_volatility_multiplier is "
+                f"{self.stressed_volatility_multiplier}. A stressed regime does "
+                f"not reduce volatility; a multiplier below 1.0 makes the "
+                f"stressed book CALMER than the normal one while still "
+                f"labelling it stressed."
+            )
+        if not 0.0 < self.stress_diversification_warning <= 1.0:
+            raise ValueError(
+                f"risk.monte_carlo.stress_diversification_warning is "
+                f"{self.stress_diversification_warning}. The diversification "
+                f"ratio is bounded above by 1.0, so a threshold above it can "
+                f"never fire and a non-positive one always fires."
+            )
+        if self.min_tail_draws <= 0.0:
+            raise ValueError(
+                f"risk.monte_carlo.min_tail_draws is {self.min_tail_draws}. A "
+                f"floor of zero warns about nothing, which makes the tail-count "
+                f"disclosure dead config."
+            )
+        if self.horizon_days < 1:
+            raise ValueError(
+                f"risk.monte_carlo.horizon_days is {self.horizon_days}; a "
+                f"holding period of zero days simulates no risk."
+            )
+        if self.n_sims < 1:
+            raise ValueError(
+                f"risk.monte_carlo.n_sims is {self.n_sims}; at least one draw "
+                f"is required for a distribution to exist."
+            )
+        return self
+
+
 class RiskSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -638,6 +795,13 @@ class RiskSettings(BaseModel):
     # carries a risk-layer finding back into the thesis LIFECYCLE. `_value`-
     # suffixed because the reader is named for the quantity the caller wants.
     thesis_demotion_fraction_value: CalibratedValue
+    # Section 17.1's Monte Carlo VaR — the Tier-5 replacement for the three
+    # Tier-1 estimators already in `models/risk.py`. Nested rather than flat
+    # because the block is a self-contained simulation configuration (a size, a
+    # seed, a horizon, and a two-part stress definition) and grouping it keeps
+    # the flat `risk:` namespace from growing five more ambiguous `_value`
+    # leaves.
+    monte_carlo: MonteCarloSettings
 
     @property
     def vol_target(self) -> float:
