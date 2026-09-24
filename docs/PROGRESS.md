@@ -1,7 +1,7 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-24** (after **D-106 — Module 17/18's `monte_carlo_var`**, the
+Last updated: **2026-09-24** (after **D-106 — Module 17's `monte_carlo_var`**, the
 Tier-5 **REPLACEMENT** for `historical_var` / `parametric_var` / `expected_shortfall`
 (all Tier 1, shipped in Phase 4, all in `models/risk.py`; §17.1/§17.4/§18.2's consumer).
 **Tier 5 = 8/23 by §21.3's list; Module 18 = 5 of 6.** The sharpest finding was a **unit
@@ -5955,7 +5955,7 @@ probing and none by reading.
 
 ---
 
-## D-106 — Module 17/18's `monte_carlo_var` (2026-09-24)
+## D-106 — Module 17's `monte_carlo_var` (2026-09-24)
 
 **Tier 5 = 8/23.** Spec **§17.1** (AGENTS.md:3680–3696) and **§18.2** (3870–3886,
 which NAMES `models/risk.py`'s Monte Carlo VaR as the LTCM detection rule),

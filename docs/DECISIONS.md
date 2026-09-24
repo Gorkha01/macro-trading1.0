@@ -17380,11 +17380,11 @@ mutants · 0 failures · OK**.
 
 ---
 
-## D-106 — Module 17/18's `monte_carlo_var`: a correlation gap, a unit the docstring got backwards, and the live check that found it
+## D-106 — Module 17's `monte_carlo_var`: a correlation gap, a unit the docstring got backwards, and the live check that found it
 
 **Date:** 2026-09-24. **Spec:** §17.1 (AGENTS.md:3680–3696, the outline) and
 §18.2 (AGENTS.md:3878, which NAMES this function as the LTCM detection rule).
-**Module 17/18**, `src/macro_engine/models/risk.py` (788 → **1492** lines).
+**Module 17**, `src/macro_engine/models/risk.py` (788 → **1492** lines).
 **Tier 5 = 8/23.** It is the Tier-5 **REPLACEMENT** for the three Tier-1
 estimators in the same module — `historical_var`, `parametric_var`,
 `expected_shortfall` (§21.3; D-096's reconciliation — Phase 5+ builds the

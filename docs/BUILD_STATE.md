@@ -8799,7 +8799,7 @@ failures · OK** · the live check **PASSED** on real GDP growth.
 
 ---
 
-## D-106 — Module 17/18's `monte_carlo_var` (2026-09-24)
+## D-106 — Module 17's `monte_carlo_var` (2026-09-24)
 
 **Tier 5 = 8/23.** §17.1 (AGENTS.md:3680–3696) and §18.2 (3870–3886, which NAMES
 `models/risk.py`'s Monte Carlo VaR as the LTCM detection rule), `models/risk.py`. The
