@@ -4,7 +4,8 @@
 Last updated: **2026-09-25** (after **D-107 — a CORRECTION increment.** D-106 reported a
 docstring fix it had **not delivered**; the operator asked "have you fixed this?", a direct
 read of `HEAD` showed the prose still contradicted the code by **sqrt(252)**, and the repair
-plus a two-halves regression test were applied. **No new model function; Tier 5 stays 8/23;
+plus a two-halves regression test were applied. **No new model function; Tier 5 = 9/23
+(corrected from 8/23 — `compute_risk_parity_weights` was already done at D-071, Phase 4);
 Module 18 = 5 of 6.** **Three** harness findings: **O-120 re-fired and honestly corrupted the
 tree** (a foreground SIGTERM'd sweep left a mutation applied, which then *manufactured* a false
 survivor in an unrelated test → **O-131**); **pytest's exit code is unreliable here** — the
@@ -6221,9 +6222,25 @@ mutants · 0 failures · OK**.
 
 ### Next
 
-**Tier 5 = 8/23, unchanged.** The next natural item is still
-**`compute_risk_parity_weights`** — the Tier-5 REPLACEMENT for the Phase-4
-inverse-volatility weighting, in `models/risk.py`'s neighbourhood. **Read §17's risk axis and
-PROBE before writing.** And **do not run a >50-mutation sweep in the foreground** — O-120's
-remedy is background-with-sidecar, or an `--only`/`--range` chunking argument the sweep still
-lacks.
+**Tier 5 = 9/23 (corrected — see the note below), unchanged by D-107.** The next
+natural item is **`cip_check`** (Module 8's FX-parity half, §15) — the first of the
+14 Tier-5 functions that do **not** yet exist in `src/`, and the head of §21.3's
+Tier-5 list. **Read §15's Module 8 and PROBE before writing.** And **do not run a
+>50-mutation sweep in the foreground** — O-120's remedy is background-with-sidecar,
+or an `--only`/`--range` chunking argument the sweep still lacks.
+
+> **⚠️ RECORD CORRECTION (2026-09-25, found while answering a status question and
+> verified against the tree).** Every "Next" pointer written at D-105/D-106/D-107
+> named **`compute_risk_parity_weights`** as the outstanding Tier-5 item. **It is not
+> outstanding — it was implemented at D-071, in PHASE 4.** `grep -rn "def
+> compute_risk_parity_weights" src/` returns `risk_budget.py:1767` with a ~10k-char
+> body (a CCD solver + closed-form oracle + stressed re-solve), and D-096's own
+> reconciliation already said so in as many words: *"only
+> `compute_risk_parity_weights` exists (Phase 4, D-071)"*. **The Tier-5 row in §21.3
+> lists it, but it was built as Tier-1/Phase-4 work**, so counting it as "not yet
+> done" double-counts it. **Derived Tier-5 counts (measured against `src/`, not
+> recalled): 23 named · 9 IMPLEMENTED · 14 NOT YET BUILT.** The 9 are
+> `compute_risk_parity_weights` (D-071, Phase 4) · `run_regression` (D-092) ·
+> `test_stationarity` (D-094) · `test_cointegration` (D-097) · `compute_pca` (D-100) ·
+> `kalman_latent_state` (D-101) · `yield_curve_pca` (D-102) ·
+> `classify_regime_markov_switching` (D-105) · `monte_carlo_var` (D-106).
