@@ -1,10 +1,12 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-22** (after **D-094 — Module 18 #2, `test_stationarity`.** Two
-functions of Module 18 are now implemented and the spurious-regression thread D-092
-left open is **closed**: the live check diagnoses it instead of merely illustrating
-it. Tier 5 = **2/20**.)
+Last updated: **2026-09-24** (after **D-103 — a HARNESS increment**, which closed the two
+traps D-101/D-102 recorded: a sweep's exit code now reports its mutation verdict rather
+than the sandbox's delete counter, and the rule that a sweep owns the MACHINE now prints
+where every sweep starts. **Tier 5 = 6/23 by §21.3's list; Module 18 = 5 of 6.** The last
+MODEL function was **D-102 `yield_curve_pca`** (Module 8, §6.6), which makes `compute_pca`
+and `kalman_latent_state` (D-101) the preceding two.)
 Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
 (the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
@@ -5749,3 +5751,32 @@ published string and every loadings key for the forbidden phrases.
   **`_sweep_gate.line_buffer_stdout()`**, called first by `sweep_lifecycle` — one
   `reconfigure` for the whole catalogue. **Two sweeps do not use that helper**
   (`mutation_api_layer.py`, `mutation_regime.py`) and stay exposed: **O-124**.
+
+---
+
+## D-103 — a harness increment (2026-09-24)
+
+**No model function. Tier 5 stays 6/23.** It closes the two traps D-101/D-102 recorded —
+both of which made a *harness* report something other than what it measured.
+
+**Trap 1 (O-122, CLOSED).** `sweep_lifecycle`'s cleanup was a bare `unlink` in a
+`finally`; the bulk-delete counter refuses deletes past 50 per turn, so on a 109-mutation
+run the cleanup raised out of the context manager and the sweep exited **1** after
+printing a clean **108/109**. `remove_sidecars()` now reports the refusal, **returns** the
+paths, and does not raise. **Proven by a test** that reproduces the refusal with a
+directory where the sidecar belongs.
+
+**Trap 2.** The sweep owns the **machine**, not just the file: competing gates measured a
+**10× slowdown** (12 s → 2 min per mutation), and `mypy --strict` on a file that *imports*
+the swept module type-checks the **mutated** source. The rule now **prints** where every
+sweep starts.
+
+**O-124 CLOSED, as a GATE rather than a convention.** The two sweeps that bypass
+`sweep_lifecycle` now call `line_buffer_stdout()` themselves, and `sweep_health` FAILS any
+sweep with neither — because a convention that is only documented is exactly what failed
+the first time. Measured: **0 sweeps** lack it.
+
+**O-117 recurred (third time).** Appending the tests wrote the block twice, so a test name
+was defined twice — **a duplicate name silently DELETES a test**. mypy's `no-redef` caught
+it. **Line-ending mismatches bit three times** in one session: a LF anchor against a CRLF
+file matches nothing, silently.

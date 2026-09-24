@@ -16953,3 +16953,91 @@ is read: one `reconfigure` covers the whole catalogue, including sweeps written 
 **Two sweeps do not use `sweep_lifecycle`** (`mutation_api_layer.py`,
 `mutation_regime.py`) and are therefore still exposed — recorded rather than papered
 over.
+
+---
+
+## D-103 — A harness increment: the sweep's exit code, and the machine it owns
+
+**Date:** 2026-09-24. **No model function** — this closes the two traps D-101 and D-102
+recorded, both of which made a *harness* report something other than what it measured.
+**Tier 5 stays 6/23.**
+
+### Trap 1 — `EXIT=1` from a sweep meant nothing (O-122, now CLOSED)
+
+**The bug was mine and the mechanism was exact.** `sweep_lifecycle`'s cleanup was a bare
+`unlink` inside a `finally`:
+
+```python
+finally:
+    for path in existing:
+        sidecar_for(path).unlink(missing_ok=True)
+```
+
+The sandbox's per-turn bulk-delete counter refuses deletes past a threshold (measured
+`count: 167` against 50), so on a 109-mutation run the cleanup raised **`PermissionError`
+out of the context manager** — and the sweep exited **1** after printing a clean
+**108/109**. **The exit code was a claim about the sandbox, not about the mutation
+catalogue**, and a reader who trusted it would have discarded a certified run.
+
+**The fix is `remove_sidecars()`**: it reports a refused delete loudly, **returns** the
+paths it could not remove, and does not raise. That is not laxness — the sidecar is a
+*recovery aid*, and losing it is survivable, whereas a wrong exit code silently
+invalidates the run's whole record. **The stale sidecar is still a hazard**, so the
+warning names the file, the exact `rm`, and what to check first; it also points at
+`tools/sweep_health.py`, which reports and heals leftovers.
+
+**Proven, not asserted.** The regression test reproduces the refusal with a **directory**
+where the sidecar belongs (`unlink` cannot remove one — the same `OSError` the counter
+produces) and asserts the path is returned rather than raised. A second test drives the
+whole context manager and asserts it **exits**.
+
+### Trap 2 — the sweep owns the MACHINE, not just the file (now stated where it matters)
+
+Measured at D-102: a 90-mutation sweep ran at **~12 s per mutation alone** and at **~2 min
+per mutation** while `ruff`/`mypy`/`pytest` ran concurrently — a **10× slowdown**, turning
+an 18-minute sweep into hours. Worse, `mypy --strict` on a file that **imports** the swept
+module follows the import and type-checks the **mutated** source.
+
+The rule existed only in a skill and a decision record, so **it now prints where every
+sweep starts**: `sweep_lifecycle` opens with a banner naming the measured 10× cost, the
+`mypy` import hazard, and the reason (the loop rewrites its target between runs, so any
+other reader sees a tree that is not the one it thinks it is). A test pins the banner.
+
+### The buffering hole, closed as a GATE rather than a convention (O-124, now CLOSED)
+
+D-102 found **42 of 43 sweeps** had no `flush` anywhere and put the fix in the shared
+`line_buffer_stdout()`. **Two sweeps do not use `sweep_lifecycle`**, so they did not
+inherit it: both now call it first in `main()` — and `mutation_api_layer.py` is **CRLF**
+while its siblings are LF, so its anchors needed `\r\n` and a naive LF anchor matched
+**nothing** (the third time a line-ending mismatch bit this session).
+
+**`tools/sweep_health.py` gained a gate**: a sweep with neither `sweep_lifecycle` nor
+`line_buffer_stdout` is now a **FAILURE**, reported per-sweep *and* in the summary —
+because a convention that is only documented is exactly what failed the first time.
+Measured after the fix: **0 sweeps** lack it. The per-sweep line was also made
+consistent, so it cannot print `[ok]` beside a failure count.
+
+### The O-117 hazard, caught in the act
+
+The first attempt to append the regression tests wrote the block **twice**, and
+`test_the_ownership_banner_is_printed` was defined twice — mypy's `no-redef` caught it,
+and **a duplicate test name silently DELETES a test** (Python binds the last definition),
+so three tests would have vanished while `pytest` reported a healthy count. This is
+O-117's exact signature, and it is the **third** recurrence. `ruff`'s F811 and mypy's
+`no-redef` are the only instruments that see it; **run both over the whole tree.**
+
+### What this does NOT establish
+
+* **The `sweep_health` log-gate has no test of its own.** The gate is exercised by running
+  the tool (measured: **0 sweeps** lack buffering), and the two fixes it protects have three
+  regression tests — but nothing asserts that the GATE **fires** when a sweep regresses, the
+  way `tests/test_sweep_health_readers.py` does for the reader predicates. **Recorded rather
+  than implied**: a gate whose own failure mode is untested is the shape O-107 names.
+* **`CERTIFIED: N/M` was NOT added to the runners.** O-122's first draft suggested it; the
+  non-fatal cleanup makes the exit code honest without it, and each sweep already prints its
+  verdict. Adding it to 43 files would be 43 chances to miss one — the same argument that put
+  `line_buffer_stdout` in the shared helper.
+* **The 10× contention cost is a MEASUREMENT, not a mechanism.** Nothing prevents a
+  concurrent gate; the sweep only says so. A lock file was considered and rejected: the
+  failure it guards against is slow, not corrupting, and a lock that outlives a killed run
+  would block the next sweep — trading a slowdown for a hang.

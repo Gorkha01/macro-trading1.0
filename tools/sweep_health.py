@@ -798,6 +798,8 @@ def main() -> int:
     # is which sweeps have no way to notice. Reported as coverage, never failed:
     # see `_control_markers`. Coverage gaps here are O-72, not failures.
     no_control: list[str] = []
+    # D-103/O-124: sweeps that can lose their whole log to a kill.
+    unbuffered: list[str] = []
     # ``[budget, sweep name, declared mutations]`` for the largest sweep, filled
     # in the loop below. A list rather than three scalars so the closure-free
     # assignment stays local to `main()`.
@@ -889,13 +891,34 @@ def main() -> int:
         if not any(g in gates for g in ("targets", "landings")):
             ungated.append(path.name)
 
-        if problems or own or applied:
+        # O-124 / D-103 -- THE SWEEP-LOG GATE. A sweep that neither uses
+        # `sweep_lifecycle` (which calls `line_buffer_stdout` first) nor calls it
+        # itself BLOCK-BUFFERS its redirected stdout, so a kill destroys the whole
+        # log while the sidecar preserves the tree -- the recovery works and the
+        # EVIDENCE does not. Measured at D-102: 42 of 43 sweeps had no `flush`
+        # anywhere, because the lesson had been applied only to the one sweep that
+        # had already been bitten. This is a FAILURE rather than a coverage gap:
+        # every sweep satisfies it today, so a regression is a real defect, and a
+        # convention that is only documented is exactly what failed the first time.
+        sweep_source = path.read_text(encoding="utf-8")
+        log_gate_tripped = (
+            "sweep_lifecycle" not in sweep_source and "line_buffer_stdout" not in sweep_source
+        )
+        if log_gate_tripped:
+            unbuffered.append(path.name)
+            failures.append(
+                f"{path.name}: no sweep_lifecycle and no line_buffer_stdout -- its "
+                f"redirected log would be lost to a kill (O-124)"
+            )
+
+        if problems or own or applied or log_gate_tripped:
             for p in own:
                 failures.append(f"{path.name}: own-targets: {p}")
             if applied:
                 failures.append(f"{path.name}: {applied} mutation(s) STILL APPLIED")
             print(
-                f"  [FAIL]    {path.name:42} {len(problems) + len(own)} problem(s), "
+                f"  [FAIL]    {path.name:42} "
+                f"{len(problems) + len(own) + int(log_gate_tripped)} problem(s), "
                 f"{applied} leftover(s), {unverifiable} unverifiable"
             )
             for p in problems + own:
@@ -931,6 +954,14 @@ def main() -> int:
             print(f"  NO CONTROL -> {item}")
     else:
         print("  (every sweep can distinguish a strong suite from a broken baseline)")
+    print(f"sweeps with NO log buffering (O-124): {len(unbuffered)}")
+    if unbuffered:
+        print("  (a redirected sweep block-buffers stdout, so a kill leaves a")
+        print("   ZERO-BYTE log while the sidecar preserves the tree.)")
+        for item in unbuffered:
+            print(f"  NO BUFFERING -> {item}")
+    else:
+        print("  (every sweep keeps its log through a kill)")
     print(f"leftover mutations:        {len(leftovers)}")
     budget_value, budget_sweep, budget_declared = largest_budget
     print(

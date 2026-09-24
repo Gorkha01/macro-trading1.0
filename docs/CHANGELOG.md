@@ -10,6 +10,53 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-103 — a harness increment: the sweep's exit code, and the machine it owns
+
+**Fixed**
+
+- **`EXIT=1` from a mutation sweep no longer means nothing (O-122, CLOSED).**
+  `sweep_lifecycle`'s cleanup was a bare `unlink` inside a `finally`; the sandbox's
+  per-turn bulk-delete counter refuses deletes past a threshold (measured `count: 167`
+  against 50), so on a 109-mutation run the cleanup raised `PermissionError` **out of the
+  context manager** and the sweep exited **1** after printing a clean **108/109**. The
+  new `remove_sidecars()` reports a refused delete loudly, **returns** the paths, and
+  does not raise — the exit code now reports the mutation verdict and nothing else.
+- **Two sweeps could still lose their whole log (O-124, CLOSED).**
+  `mutation_api_layer.py` and `mutation_regime.py` do not use `sweep_lifecycle`, so they
+  did not inherit `line_buffer_stdout()`. Both now call it first in `main()`.
+  **`mutation_api_layer.py` is CRLF** while its siblings are LF, so its anchors needed
+  `\r\n` and a naive LF anchor matched nothing.
+
+**Added**
+
+- **`tools/sweep_health.py` gained a gate**: a sweep with neither `sweep_lifecycle` nor
+  `line_buffer_stdout` is a **FAILURE**, reported per-sweep *and* in the summary, because
+  a convention that is only documented is exactly what failed the first time. Measured:
+  **0 sweeps** lack it. The per-sweep line was also made consistent, so it can no longer
+  print `[ok]` beside a failure count.
+- **`sweep_lifecycle` now opens with an ownership banner** naming the measured cost of
+  running gates alongside a sweep: **10× slower** (12 s → 2 min per mutation), plus the
+  `mypy --strict` hazard where a file that *imports* the swept module type-checks the
+  **mutated** source. The rule existed only in a skill and a decision record.
+- Three regression tests in `tests/test_sweep_sidecar_lifecycle.py`, including one that
+  reproduces the refused delete with a **directory** where the sidecar belongs.
+
+**Findings**
+
+- **The O-117 hazard recurred (third time), caught in the act.** Appending the regression
+  tests wrote the block **twice**, so `test_the_ownership_banner_is_printed` was defined
+  twice — and a duplicate test name **silently DELETES a test**, so three tests would have
+  vanished while `pytest` reported a healthy count. mypy's `no-redef` caught it;
+  `ruff`'s F811 is the other instrument. **Run both over the whole tree.**
+- **Line-ending mismatches bit three times in one session.** A LF anchor against a CRLF
+  file matches **nothing**, silently — the same class as a typo'd anchor, and it is why
+  `mutation_api_layer.py`'s first edit appeared to succeed while changing nothing.
+
+**Documented**
+
+- `docs/DECISIONS.md` **D-103**; `docs/OPEN_ISSUES.md` **O-122** and **O-124** both
+  **CLOSED**.
+
 ### D-102 — Module 8's `yield_curve_pca`; the maturity order IS the analysis; a general sweep-log hole
 
 **Added**

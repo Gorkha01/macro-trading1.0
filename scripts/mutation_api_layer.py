@@ -110,6 +110,7 @@ from pathlib import Path
 # honesty control as killed.
 from _sweep_gate import (
     install_signal_restore,
+    line_buffer_stdout,
     record_pristine,
     restore_from_sidecar,
 )
@@ -1570,6 +1571,10 @@ def apply_and_test(mutation: Mutation) -> Result:
 
 
 def main() -> int:
+    # FIRST: a kill from here on must leave a log behind. This sweep does
+    # not use `sweep_lifecycle`, so it does not inherit that helper's
+    # buffering -- O-124, closed by calling it explicitly.
+    line_buffer_stdout()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--group", help="run only this mutation group, e.g. M1")
     parser.add_argument(

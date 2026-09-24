@@ -8688,3 +8688,20 @@ covers the two that bypass it).
 run exited 1 on a sweep that had **completed at 108/109**: the sandbox's per-turn
 bulk-delete counter refused the sweep's **own sidecar cleanup**, leaving a stale
 sidecar. Read the certification block and check the tree independently.
+
+**D-103 (2026-09-24) — a harness increment, no model function (Tier 5 stays 6/23).**
+
+* **`EXIT=1` from a sweep now means what it says (O-122, CLOSED).** The cleanup was a bare
+  `unlink` inside `sweep_lifecycle`'s `finally`; the sandbox's per-turn bulk-delete counter
+  refuses deletes past 50, so on a 109-mutation run the cleanup raised **out of the context
+  manager** and the sweep exited **1** after printing a clean **108/109**. `remove_sidecars()`
+  reports the refusal, returns the paths, and does not raise. Tested with a directory where
+  the sidecar belongs.
+* **The sweep owns the MACHINE.** Competing gates measured a **10× slowdown** (12 s → 2 min
+  per mutation), and `mypy --strict` on a file that *imports* the swept module type-checks the
+  **mutated** source. The banner now prints at every sweep's start.
+* **`sweep_health` gained a GATE (O-124, CLOSED):** a sweep with neither `sweep_lifecycle` nor
+  `line_buffer_stdout` is a FAILURE. Measured: **0 sweeps** lack it.
+* **O-117 recurred** — a duplicated append defined a test name twice, and a duplicate name
+  **silently DELETES a test**. mypy `no-redef` caught it. **A LF anchor against a CRLF file
+  matches nothing, silently** — it bit three times in one session.

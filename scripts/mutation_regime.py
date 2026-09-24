@@ -42,6 +42,7 @@ from _sweep_gate import (
     check_targets,
     format_problems,
     install_signal_restore,
+    line_buffer_stdout,
     record_pristine,
     restore_from_sidecar,
     sidecar_for,
@@ -578,6 +579,10 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
 
 
 def main() -> int:
+    # FIRST: a kill from here on must leave a log behind. This sweep does
+    # not use `sweep_lifecycle`, so it does not inherit that helper's
+    # buffering -- O-124, closed by calling it explicitly.
+    line_buffer_stdout()
     # A truncated pipe (``| head``, ``| grep``) closes stdout and kills this
     # process - measured three times in one session, the last of them in THIS
     # file. Two defences, because the first does not work on Windows:

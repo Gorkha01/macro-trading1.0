@@ -506,3 +506,75 @@ def test_no_sweep_reintroduces_a_bare_restore_finally_without_the_sidecar(path: 
     assert has_sidecar, (
         f"{path.name} relies on a crash-only restore, which cannot survive SIGTERM on win32"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. A REFUSED cleanup must not change the sweep's verdict (O-122, D-103)
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_sidecar_delete_does_not_raise(gate: Any, tmp_path: Path) -> None:
+    """**The O-122 regression test.** A refused delete used to kill the process.
+
+    The cleanup was a bare ``unlink`` inside ``sweep_lifecycle``'s ``finally``.
+    The sandbox's per-turn bulk-delete counter refuses deletes past a threshold
+    (measured `count: 167` against 50), so on a 109-mutation run the cleanup
+    raised ``PermissionError`` **out of the context manager** — and the sweep
+    exited **1** after reporting a clean **108/109**. **The exit code was a claim
+    about the sandbox, not about the mutation catalogue.**
+
+    Reproduced here with a DIRECTORY where the sidecar belongs: ``unlink`` cannot
+    remove it, which is the same ``OSError`` the counter produces. The call must
+    return the refused path rather than raise, so a caller can act on it.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    sidecar = gate.sidecar_for(target)
+    sidecar.mkdir()  # a directory cannot be unlinked
+
+    refused = gate.remove_sidecars([target])
+
+    assert refused == [sidecar], "the refused path must be RETURNED, not swallowed"
+    assert sidecar.is_dir(), "the fixture must still hold the obstruction"
+
+
+def test_the_lifecycle_survives_a_refused_delete(gate: Any, tmp_path: Path) -> None:
+    """The end-to-end form: the context manager must EXIT, not raise.
+
+    `remove_sidecars` returning a list is the unit-level claim; this is the one
+    that matters for the exit code, because an exception raised inside a
+    ``finally`` is what turned a certified run into `EXIT=1`.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    sidecar = gate.sidecar_for(target)
+
+    # A directory would break the HEAL step before the cleanup, so the
+    # obstruction is created only once the block is entered -- which is exactly
+    # the shape of the real failure, where the sidecar was a normal FILE at heal
+    # time and the delete was refused later.
+    with gate.sweep_lifecycle([target]) as originals:
+        assert originals == {target: "PRISTINE = 1\n"}
+        if sidecar.exists():
+            sidecar.unlink()
+        sidecar.mkdir()
+
+    assert sidecar.is_dir(), "the lifecycle exited and left the obstruction"
+
+
+def test_the_ownership_banner_is_printed(gate: Any, tmp_path: Path, capsys: Any) -> None:
+    """Trap 2's fix, pinned: the sweep STATES that it owns the machine.
+
+    Measured 2026-09-24 (D-102): running ``ruff``/``mypy``/``pytest`` alongside a
+    sweep slowed it **10x** (12 s -> 2 min per mutation), and ``mypy --strict``
+    on a file that IMPORTS the swept module type-checks the MUTATED source. The
+    rule existed only in a skill and a decision record; it now prints where the
+    sweep starts, so a reader who never opens either still sees it.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    with gate.sweep_lifecycle([target]):
+        pass
+    printed = capsys.readouterr().out
+    assert "OWNS THE MACHINE" in printed
+    assert "Do NOT run ruff" in printed

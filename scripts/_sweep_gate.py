@@ -100,6 +100,7 @@ __all__ = [
     "install_signal_restore",
     "line_buffer_stdout",
     "record_pristine",
+    "remove_sidecars",
     "restore_from_sidecar",
     "sidecar_for",
     "sweep_lifecycle",
@@ -361,6 +362,54 @@ def restore_from_sidecar(paths: list[Path]) -> list[Path]:
     return restored
 
 
+def remove_sidecars(paths: Iterable[Path]) -> list[Path]:
+    """Delete the sidecars, and NEVER let a refusal change the sweep's verdict.
+
+    **This is O-122's fix, and the bug it closes was mine.** The cleanup used to
+    be a bare ``unlink`` inside ``sweep_lifecycle``'s ``finally``. The sandbox's
+    per-turn bulk-delete counter refuses deletes past a threshold (measured
+    `count: 167` against 50), so on a 109-mutation run the cleanup raised
+    ``PermissionError`` **out of the context manager** — and the sweep exited **1**
+    after reporting a clean **108/109**. **The exit code was a claim about the
+    sandbox, not about the mutation catalogue**, and a reader who trusts it
+    mis-reads a certified run as a failed one.
+
+    So a refused delete is now REPORTED and swallowed. That is not laxness: the
+    sidecar is a *recovery aid*, and its loss is survivable, whereas a wrong exit
+    code silently invalidates the run's whole record.
+
+    **The stale sidecar is still a hazard, so the warning is loud and exact.**
+    A leftover sidecar makes the NEXT run "restore" text that never needed
+    restoring — silently reverting any legitimate edit made in between (the reason
+    step 3 exists at all). The message therefore names the file and the command,
+    and says what to check first. Returns the paths that could NOT be removed, so
+    a caller can act on them rather than parse prose.
+    """
+    refused: list[Path] = []
+    for path in paths:
+        sidecar = sidecar_for(path)
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            refused.append(sidecar)
+            print()
+            print("=" * 74)
+            print(f"WARNING: could not remove the sidecar {sidecar.name}")
+            print(f"  ({type(exc).__name__}: {exc})")
+            print("  This does NOT affect the verdict above -- the sweep's exit")
+            print("  code reports its mutation results, not this cleanup.")
+            print("  IT IS STILL A HAZARD: the next run will 'restore' this file")
+            print("  before doing anything else, silently reverting any edit you")
+            print("  make in between. Before the next run:")
+            print("    1. confirm it matches the live file, then")
+            print(f"       rm '{sidecar}'")
+            print("    2. or run `python tools/sweep_health.py`, which reports")
+            print("       leftovers and can heal them.")
+            print("=" * 74)
+            print()
+    return refused
+
+
 def line_buffer_stdout() -> None:
     """Make this process's stdout line-buffered, so a killed run keeps its log.
 
@@ -439,6 +488,16 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
     existing = [p for p in paths if p.exists()]
 
     dirty = describe_dirty_targets(existing)
+    print("=" * 74)
+    print("THIS SWEEP OWNS THE MACHINE UNTIL IT EXITS.")
+    print("  Do NOT run ruff / mypy / pytest / a live check while it runs.")
+    print("  Measured 2026-09-24 (D-102/D-103): competing gates slow it 10x")
+    print("  (12 s -> 2 min per mutation), and `mypy --strict` on a file that")
+    print("  IMPORTS the swept module type-checks the MUTATED source.")
+    print("  The mutation loop rewrites its target between every run, so any")
+    print("  other reader sees a tree that is not the one it thinks it is.")
+    print("=" * 74)
+    print()
     if dirty:
         # Reported, not silent, and NOT a refusal: an increment that edits a file
         # and then sweeps it is the normal case here.
@@ -464,8 +523,10 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
             print()
         yield originals
     finally:
-        for path in existing:
-            sidecar_for(path).unlink(missing_ok=True)
+        # Non-fatal on purpose -- see `remove_sidecars` for the measured reason
+        # (O-122): a refused delete used to raise out of this `finally` and turn a
+        # clean 108/109 into EXIT=1.
+        remove_sidecars(existing)
 
 
 def check_targets(
