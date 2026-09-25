@@ -24,6 +24,25 @@ from macro_engine.config import RegistrySeries
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
 from macro_engine.data_layer.snapshot_builder import fetch_curve
 
+#: The point-in-time cutoff these fixtures are written against.
+#:
+#: **The four tests below used to leave `as_of` unset, which made the cutoff the
+#: WALL CLOCK while the fixture dates were hardcoded to 2026-09-20.** That is a
+#: time bomb, not a test: `test_the_curve_reads_the_latest_realised_row_not_the_
+#: last_row` plants its "projection" at `today + 5 days`, and on 2026-09-25 that
+#: row became TODAY — no longer in the future, so the filter correctly kept it and
+#: the test failed against untouched code (measured: it fails on a clean tree with
+#: every edit of the increment stashed). The other two fixture sets carry the same
+#: bomb at `+10` and `+100` days, so they would have detonated on 2026-09-30 and
+#: 2026-12-29.
+#:
+#: Passing `as_of` explicitly makes the cutoff a property of the FIXTURE rather
+#: than of the day the suite runs, which is what these tests always meant: their
+#: whole subject is the relationship between a date and a cutoff. The production
+#: default is untouched — `fetch_curve` still falls back to `utc_now()` when the
+#: caller supplies nothing, which is the behaviour the live path depends on.
+_FIXTURE_AS_OF = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+
 
 class _StubClient(OpenBBClient):
     """Serves a fixed frame per symbol, so a forward-dated point can be planted.
@@ -83,14 +102,14 @@ def test_a_forward_dated_tenor_is_not_adopted_as_a_realised_yield() -> None:
     with a deliberately different value (9.99) so the two are distinguishable
     in the output rather than merely by date.
     """
-    today = datetime(2026, 9, 20, 12, 0, tzinfo=UTC).date()
+    today = _FIXTURE_AS_OF.date()
     realised = today - timedelta(days=3)
     projection = today + timedelta(days=100)
 
     client = _StubClient(
         {"DGS2": _frame([(realised, 4.00), (projection, 9.99)])},
     )
-    curve = fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}))
+    curve = fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}), as_of=_FIXTURE_AS_OF)
 
     assert curve.tenors["2yr"] == pytest.approx(4.00), (
         "the curve adopted a forward-dated point as a realised yield; "
@@ -106,7 +125,7 @@ def test_a_tenor_that_is_entirely_forward_dated_is_refused_not_forecast() -> Non
     series that exists but has no realised observation is a hard stop, not an
     empty default. Falling back to the projection would fabricate a yield.
     """
-    today = datetime(2026, 9, 20, 12, 0, tzinfo=UTC).date()
+    today = _FIXTURE_AS_OF.date()
     client = _StubClient(
         {
             "DGS2": _frame(
@@ -119,7 +138,7 @@ def test_a_tenor_that_is_entirely_forward_dated_is_refused_not_forecast() -> Non
     )
 
     with pytest.raises(OpenBBFetchError, match="every point is"):
-        fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}))
+        fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}), as_of=_FIXTURE_AS_OF)
 
 
 def test_the_curve_reads_the_latest_realised_row_not_the_last_row() -> None:
@@ -129,7 +148,7 @@ def test_the_curve_reads_the_latest_realised_row_not_the_last_row() -> None:
     realised date. Reading `iloc[-1]` and reading "the latest realised" are
     different operations, and only the second is correct.
     """
-    today = datetime(2026, 9, 20, 12, 0, tzinfo=UTC).date()
+    today = _FIXTURE_AS_OF.date()
     client = _StubClient(
         {
             "DGS2": _frame(
@@ -142,7 +161,7 @@ def test_the_curve_reads_the_latest_realised_row_not_the_last_row() -> None:
         }
     )
 
-    curve = fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}))
+    curve = fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2"}), as_of=_FIXTURE_AS_OF)
 
     assert curve.tenors["2yr"] == pytest.approx(4.25)
     assert curve.as_of == today - timedelta(days=1)
@@ -154,7 +173,7 @@ def test_a_fully_realised_curve_is_unchanged_by_the_filter() -> None:
     A guard that alters the ordinary case is a new defect. This pins that the
     filter is inert on clean data.
     """
-    today = datetime(2026, 9, 20, 12, 0, tzinfo=UTC).date()
+    today = _FIXTURE_AS_OF.date()
     client = _StubClient(
         {
             "DGS2": _frame([(today - timedelta(days=3), 4.00)]),
@@ -162,7 +181,12 @@ def test_a_fully_realised_curve_is_unchanged_by_the_filter() -> None:
         }
     )
 
-    curve = fetch_curve(client, "treasury_curve", _entry({"2yr": "DGS2", "10yr": "DGS10"}))
+    curve = fetch_curve(
+        client,
+        "treasury_curve",
+        _entry({"2yr": "DGS2", "10yr": "DGS10"}),
+        as_of=_FIXTURE_AS_OF,
+    )
 
     assert curve.tenors == {"2yr": pytest.approx(4.00), "10yr": pytest.approx(4.50)}
     assert curve.as_of == today - timedelta(days=3)

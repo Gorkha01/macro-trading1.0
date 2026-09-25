@@ -9024,3 +9024,111 @@ full suite (--junitxml)                        ->  see the D-107 gate block; re-
 tool file. **The standing rule (skill 5cy):** when asked "is X tested", the answer is a measurement
 of **execution**; the project already owns the strongest naming-independent instrument — **the
 mutation sweep** — and a name-grep must never stand in for it in a report.
+
+---
+
+## D-108 — Module 9's `cip_check`, the first FX function (2026-09-25) — **PHASE 5, Tier 5 = 10/23**
+
+**The first increment whose target file did not exist and had to be created.**
+`src/macro_engine/models/fx_carry.py` is new; `carry_score` and `dollar_smile_regime`
+join it later. Section 6.7 (`AGENTS.md:1008–1075`) carries **full reference
+implementations** for all three, so this is a stub to UPGRADE — the exception to
+§15.20-F's "prose only, no callable signatures".
+
+### FLAG 1 — the spec DOES give a signature (read at the line, not assumed)
+
+`AGENTS.md:1013` = `def cip_check(inputs: CIPInputs) -> ModelResult:`, with
+`CIPInputs` at `AGENTS.md:1007` (`spot`, `forward`, `i_domestic`, `i_foreign`).
+**Nothing had to be derived for the signature.**
+
+### FLAG 2 — the probe, and the units it settled
+
+| question | measured answer |
+| --- | --- |
+| percent or decimal? | **PERCENT, annualised** (`DTB3` = `4.04` ⇒ 4.04 %/yr) |
+| annual, or the forward's tenor? | **ANNUAL** — the function converts to the period itself |
+| quote convention? | **not fixed by the market** — `EURUSD` 1.137527, `USDEUR` 0.879100, reciprocal to 1e-6 |
+| which sign = funding stress? | **DERIVED**: positive ⇒ domestic funding is the scarce side |
+
+**The forward is BLOCKED.** 443 OpenBB routes, **none** matching
+`forward`/`swap`/`basis`; `obb.currency` exposes only `price`/`search`/`snapshots`;
+`6E=F`/`6J=F`/`6B=F` return `EmptyDataError`. The model takes `forward` as an
+input so it ships, but the **market's own CIP deviation cannot be measured here**.
+Recorded as `fx_forward_rate` in `config/series_registry.yaml`.
+
+### The sign, derived with a hand-computed case
+
+`F = S(1+i_d)/(1+i_f)` by no-arbitrage. Inverting it into a synthetic domestic
+funding rate `i_d_synthetic = (F/S)(1+i_f) - 1` gives the **exact** identity
+`basis_period = (1 + i_d_period) * dev_fraction`, so **the sign of the deviation
+IS the sign of the synthetic-minus-actual funding spread**. Hand case
+`S=1.10, F=1.11, i_d=4 %, i_f=2 %, 90d ACT/360`: `deviation = +0.409541 %`,
+`basis = +165.4545 bp`, `notable`/`domestic` — all reproduced by the shipped code.
+`F = S` gives `-200.0 bp`/`foreign`, so the rule is not one-sided.
+
+### What was upgraded, what was disclosed
+
+Upgraded: annualised inputs → period rates by simple interest (refused beyond one
+money-market year), an explicit day-count `Literal`, an explicit **quote-convention
+input** (the branch preventing the silent sign inversion), `compute_confidence()`
+in place of the stub's hardcoded `0.7` (**shipped 0.50 vs the spec's 0.7**), and a
+published **cross-currency basis in bp**. Disclosed in `limitations`, not dropped:
+bid/ask and settlement/value dates — neither measurable without a forward source.
+
+### The live check (PASS)
+
+Real spot (`EURUSD` 1.137527 yfinance vs `DEXUSEU` 1.146400 FRED, 0.78 % apart
+across a week) and real 3m rates (`DTB3` 4.04 %/yr, `IR3TIB01EZM156N` 2.0277 %/yr).
+**The falsifiable prediction holds**: the US leg is 2.01 pp higher, so USD must be
+at a forward discount — implied EUR/USD forward 1.143221 is **above** spot by
+**+0.5005 %**, against a period differential of +0.5031 %, smaller by exactly
+`1/(1 + i_f t) = 0.994956`. Fed the parity-implied forward the function returns
+`+0.000000 %` / `+0.0000 bp` / `none`; the real reciprocal pair gives an identical
+deviation through the `foreign_per_domestic` branch; oracle shocks of
+`-0.25 %`/`+0.25 %`/`+1.00 %` reproduce the closed form **exactly** with the
+funding side flipping correctly. **Plausibility: the identity is right; the
+market's own deviation is NOT measured (no forward source).** The euro-area leg is
+MONTHLY (2026-01-01), so the two rates are not date-matched — a defect in the
+CHECK, not the model.
+
+### A wall-clock time bomb detonated today, and it was not mine
+
+The first full-suite run returned **1 failed**:
+`tests/data_layer/test_curve_point_in_time.py::test_the_curve_reads_the_latest_realised_row_not_the_last_row`.
+**Proved pre-existing first** (all edits stashed; it still failed on the pristine
+tree). The fixture hardcodes `today = 2026-09-20` and plants its projection at
+`+5 days` = **2026-09-25**, while `fetch_curve` uses
+`cutoff = (as_of or utc_now()).date()`. On 2026-09-25 the projection stopped being
+in the future, so the filter **correctly** kept it. **Three of the four tests in
+that file carry the same bomb** (`+5`/`+10`/`+100` days → 2026-09-25, 2026-09-30,
+2026-12-29). **O-116's class** (D-090). Fixed by passing the fixture's own
+`as_of=_FIXTURE_AS_OF` to all four calls — the production `utc_now()` fallback is
+untouched — and **mutation-proved** (`cutoff = date.max` kills 3 of 4; file
+restored byte-exact; green again). **O-134**; the CLASS stays open.
+
+### A second observation: a sidecar was present before a sweep started
+
+Twice the sweep began with a `.sweepbackup` on disk while the tree was otherwise
+clean and no asynchronous writer existed. `sweep_lifecycle` **healed both files
+before `check_targets`**, which then reported **0 problems**, and the run
+certified 45/45; the healed content was verified **semantically**, not by trusting
+the heal. Most probable cause (a **hypothesis**, not reproduced under control):
+the agent harness re-executing a long foreground command after a kill. The
+**close-out run was itself killed**; both files compared **byte-for-byte identical**
+to their sidecars, the sidecars removed by hand, semantic check **PRISTINE**.
+
+### Gates (measured 2026-09-25, never carried forward)
+
+```
+ruff format --check src tests tools scripts   ->  256 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 256 source files
+reachability_audit.py --check-baseline        ->  PASS 58/58, no regressions
+full suite (--junitxml)                       ->  3261 collected / 3260 passed / 0 failed / 1 skipped
+mutation_fx_carry.py                          ->  45/45 killed, exit 0 (reproducible)
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**256 == 256** (D-035; **252 → 256**, the four new files). **Delta against D-107's
+3192 = exactly +68** = 65 new `cip_check` tests + 3 new parametrized-over-sweeps
+cases. **The census moved 44 → 45** in three places (two test files + a test name).

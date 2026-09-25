@@ -3927,6 +3927,53 @@ econometrics:
   kalman_optimizer: "nm"
 
 # ---------------------------------------------------------------------------
+# Module 9 — FX Carry / Parity (Section 6.7). Section 6.7's reference
+# implementation hardcodes the stress threshold as `0.1` and the confidence as
+# `0.7`. Section 21 keeps every threshold out of the function body, so the
+# threshold lives here; the hardcoded confidence is replaced by
+# `compute_confidence()` outright (Section 22.8 — no model may hardcode it).
+#
+# ⚠️ THE UNIT OF THESE LEAVES IS THE FORWARD DEVIATION, NOT THE BASIS. Section
+# 6.7's quantity is `(F - F_implied) / F_implied * 100` — a PERCENTAGE
+# deviation of the OBSERVED forward from the PARITY-IMPLIED one. The
+# cross-currency BASIS the FX market quotes is a different, annualised rate
+# quantity. The two are related exactly by
+#     basis_period = (1 + i_domestic_period) * deviation_fraction,
+# so at a 3-month tenor (91/360) a 0.1% forward deviation is roughly a 40bp
+# annualised basis. Writing a basis figure into these leaves would silently
+# rescale every verdict by the tenor, which is why the names say `_pct` and the
+# relation is spelled out here rather than left to a reader.
+# ---------------------------------------------------------------------------
+fx_carry:
+  notable_deviation_pct:
+    value: 0.1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      |deviation_pct| above this is reported as NOTABLE — the forward is
+      departing from covered parity by more than an execution-cost margin.
+      Section 6.7 supplies this value as a literal (`abs(deviation_pct) > 0.1`)
+      and it is retained verbatim so the shipped behaviour matches the
+      specification, but it is NOT calibrated: it is the specification's own
+      illustration and is priced into the confidence penalty as such. A real
+      calibration would measure the distribution of daily CIP deviations on the
+      pair and tenor of interest and set the threshold at an execution-cost
+      quantile, which needs a forward series this installation cannot reach (see
+      the `fx_forward_rate` block in series_registry.yaml).
+  extreme_deviation_pct:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      |deviation_pct| above this is reported as EXTREME — a funding dislocation
+      of the kind the 2008 and March-2020 episodes produced. Chosen as five
+      times `notable_deviation_pct`, which at a 3-month tenor is roughly a 200bp
+      annualised basis: the width the EUR/USD 3-month cross-currency basis
+      reached at the peak of those episodes, and an order of magnitude beyond
+      the pre-2008 norm of a few basis points. It is a placeholder awaiting the
+      same calibration as the leaf above, not a measured quantile, and the
+      severity label it produces is a REPORTING band — never a probability and
+      never a trade instruction.
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

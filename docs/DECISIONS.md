@@ -17817,3 +17817,264 @@ exactly the set recorded before, but now pinned for the right reason. The sweep 
   applies to `pytest` too, above). Nothing in this increment gates that.
 * **No new Module-17 function.** `compute_risk_parity_weights` remains the next
   Tier-5 item.
+
+---
+
+## D-108 — Module 9's `cip_check`: the first FX function, the sign DERIVED rather than recalled, and a wall-clock time bomb that detonated the day it was found
+
+**Date:** 2026-09-25. **A new model function. Tier 5 = 10/23.** `cip_check`
+(Section 6.7, Module 9 — FX) is implemented in a file that **did not exist
+before this increment**, `src/macro_engine/models/fx_carry.py`, which
+`carry_score` and `dollar_smile_regime` will later join. Section 6.7 carries a
+**full reference implementation** of all three, so this was a stub to UPGRADE,
+not a function to invent from prose — the exception §15.20's block F does not
+have.
+
+### The two flags the brief asked to be settled, settled
+
+**FLAG 1 — does the spec give a callable signature? YES, for this function.**
+Read, not assumed: `AGENTS.md:1013` is `def cip_check(inputs: CIPInputs) -> ModelResult:`,
+inside the §6.7 block at lines 1008–1075, with `CIPInputs` declared at
+`AGENTS.md:1007` (`spot`, `forward`, `i_domestic`, `i_foreign`). **No signature
+had to be derived from the parity identity.** The brief's caution was right in
+general — §15.20's block F does specify prose-only — and it does not apply here.
+Recorded because "the spec gave me a signature" is itself a claim about the
+authority, and it was checked at the line.
+
+**FLAG 2 — the PROBE, and the units it settled.** This is a parity check, so a
+unit or quote-convention error produces a plausible percentage meaning the
+opposite of the truth. Everything below was measured on the live installation
+before a line of the function was written:
+
+| question | measured answer | source |
+| --- | --- | --- |
+| Are `i_domestic`/`i_foreign` percent or decimal? | **PERCENT, annualised** — `DTB3` = `4.04` means 4.04 %/yr; `IR3TIB01EZM156N` = `2.0277` | FRED via the project's `OpenBBClient` |
+| Annual, or the forward's own tenor? | **ANNUAL** — FRED publishes money-market rates annualised. The model therefore converts to the period rate itself rather than trusting the caller to have done it | `DTB3`, `DGS3MO`, `ECBDFR` all annualised |
+| What is the FX quote convention? | **Not fixed by the market.** `EURUSD` is USD-per-EUR (domestic-per-foreign for a USD caller) while `USDJPY` is JPY-per-USD (foreign-per-domestic). Measured live: `EURUSD` = 1.137527, `USDEUR` = 0.879100, reciprocal to 1e-6 | yfinance via `currency.price.historical` |
+| Which sign of the deviation means funding stress? | **DERIVED, not recalled** — see below | hand-computed case, then confirmed live |
+
+**The forward is BLOCKED, and it is recorded as a block.** No route on this
+installation returns FX forward points: the OpenBB route inventory walks to
+**443** routes with **none** matching `forward`/`swap`/`basis`, `obb.currency`
+exposes only `price`/`search`/`snapshots`, and the CME FX futures tickers
+(`6E=F`, `6J=F`, `6B=F`) return `EmptyDataError` through yfinance. The model is
+**not** blocked — it takes `forward` as an input — but the live check cannot
+feed it a market forward, so the market's own CIP deviation **cannot be
+measured here**. Recorded as a `blocked:` entry (`fx_forward_rate`) in
+`config/series_registry.yaml` on the day it was found, per the D-047 lesson
+(an unrecorded block is the one nothing can re-probe).
+
+### The parity identity, and the sign — derived, with a hand-computed case
+
+Take one unit of DOMESTIC currency. The **direct** route lends it at `i_d` and
+holds `(1 + i_d)`. The **synthetic** route buys foreign at spot `S` (`1/S`
+foreign), lends at `i_f` (`(1 + i_f)/S` foreign) and sells the proceeds forward
+at `F` (`F(1 + i_f)/S` domestic). Both are riskless once the forward is dealt,
+so no-arbitrage forces `F = S(1 + i_d)/(1 + i_f)` — the specification's formula,
+and the reason the rates must be the **period** rates over the forward's own
+tenor.
+
+The **sign** comes from inverting the identity into a *synthetic domestic
+funding rate*: `i_d_synthetic = (F/S)(1 + i_f) - 1`, the rate a domestic borrower
+pays by synthesizing the loan through the swap. Substituting
+`F = F_implied(1 + dev)` gives the **exact identity**
+
+    basis_period = i_d_synthetic - i_d = (1 + i_d_period) * dev_fraction
+
+so **the sign of the deviation IS the sign of the synthetic-minus-actual funding
+spread**. Positive ⇒ it costs MORE to synthesize domestic funding through the FX
+swap than to borrow domestic directly ⇒ the domestic currency is the scarce side
+of the swap ⇒ **domestic-currency funding stress**. Negative ⇒ the foreign
+currency is the scarce side. The relation is exact, not an approximation, and it
+is the load-bearing cross-check in the test suite: it ties the deviation
+(computed from the ratio `F/F_implied`) to the basis (computed from the
+synthetic rate), so a mutation breaking either route cannot satisfy it.
+
+**Hand-computed case, checked against the shipped code.** `S = 1.10`, `F = 1.11`,
+`i_d = 4 %/yr`, `i_f = 2 %/yr`, 90 days ACT/360:
+
+| quantity | by hand | shipped |
+| --- | --- | --- |
+| `i_domestic_period` | `0.04 x 90/360 = 0.010` | `0.010` |
+| `i_foreign_period` | `0.02 x 90/360 = 0.005` | `0.005` |
+| `F_implied` | `1.10 x 1.010/1.005 = 1.10547264` | `1.10547264` |
+| `deviation_pct` | `(1.11 - 1.10547264)/1.10547264 x 100 = +0.409541` | `+0.409541` |
+| `i_d_synthetic` | `(1.11/1.10) x 1.005 - 1 = 0.01413636` | `0.01413636` |
+| `basis_bp_annualized` | `(0.01413636 - 0.010) x (360/90) x 1e4 = +165.4545` | `+165.4545` |
+| label | `F > F_implied` ⇒ `notable`, `domestic` | `notable`, `domestic` |
+
+**A second hand case fixes the OTHER sign**: `F = 1.10 = S` gives
+`i_d_synthetic = 0.005 < i_d = 0.010`, hence `basis = -200.0 bp` and
+`stressed_currency = foreign`. Both directions are asserted, so the sign rule is
+not one-sided (D-045a's discipline).
+
+### What the sophisticated version adds, and what it deliberately does not
+
+The specification's stub is the simplest possible form — it divides the rates
+raw, has no day-count, no annualisation, and hardcodes `confidence=0.7`. Every
+one of those was restored:
+
+* **Annualisation.** Inputs are ANNUALISED DECIMALS; the function converts to
+  the forward's own period by **simple interest** at `tenor_days / basis_days`,
+  the money-market convention. The basis is an explicit `Literal`
+  (`actual_360` / `actual_365`), and the conversion is **refused beyond one
+  money-market year** rather than approximated, because simple interest stops
+  being exact there and a compounded figure computed with a simple formula is a
+  wrong number that looks right.
+* **The quote convention is an INPUT**, because the market is not consistent
+  (`EURUSD` vs `USDJPY`). A `foreign_per_domestic` quote is inverted once,
+  before the identity, so the published deviation is always in
+  domestic-per-foreign space and is comparable across callers. **This is the
+  branch that prevents the silent sign inversion**, and it is proved on live
+  data by feeding the real reciprocal pair.
+* **`confidence` is `compute_confidence()`**, never a literal (§22.8). The bands
+  are `uncalibrated_illustrative`, so the heuristic penalty applies — the
+  shipped value is **0.50**, against the specification's **0.7**.
+* **A cross-currency basis is published alongside the deviation**, annualised in
+  bp — the quantity the FX market actually quotes, and the one the exact
+  identity above pins to the deviation.
+* **Bid/ask and settlement/value dates are NOT modelled — they are DISCLOSED**
+  in `limitations`, not silently dropped. They are not measurable on this
+  installation (no forward source at all), so implementing them would be a
+  fixture-only feature with no live check behind it. The brief's instruction was
+  to decide and to not silently drop one; this is the decision and its reason.
+
+### The increment
+
+* **Config.** A new `fx_carry:` block (`notable_deviation_pct` = 0.1 — the
+  specification's own literal, retained verbatim — and `extreme_deviation_pct` =
+  0.5) plus `FxCarrySettings`, whose validator refuses a band pair that cannot
+  express its own three-way vocabulary (`notable <= 0` makes `"none"`
+  unreachable; `extreme <= notable` makes `"notable"` dead vocabulary, D-037's
+  class). The YAML note spells out that **the unit is the FORWARD DEVIATION, not
+  the basis** — at a 3-month tenor a 0.1 % forward deviation is roughly a 40 bp
+  annualised basis, and writing a basis figure into these leaves would rescale
+  every verdict by the tenor.
+* **Guards, all at construction** (domain guards, D-078's rule): non-finite
+  values (`nan` fails every comparison, so a `<=` guard never fires for it;
+  `inf` PASSES `> 0` and needs the explicit finiteness test), non-positive
+  exchange rates, a **period** rate at or below `-100 %` (checked on the period
+  rate, not the annualised one — the conversion is what makes it reachable), and
+  a tenor beyond one money-market year.
+* **Tests — 65, all hand-verified.** Both quote conventions on the same
+  economic swap; the exact basis identity between two published keys; the
+  boundary fixtures **exact by construction** (spot 1.0, both rates 0, forward
+  `1.0625 = 2**-4` gives a deviation of exactly `6.25 %`, so a `>` → `>=` change
+  is observable at both bands); symmetry-breaking config tests for both
+  thresholds; every guard with an explicit negative control; the `get_args`
+  two-halves tests for all four `Literal`s; and a confidence assertion by its
+  discriminating property, which must DIFFER from the specification's `0.7`.
+* **Sweep — `scripts/mutation_fx_carry.py`, 45 mutations, `45/45 killed`,
+  exit 0, reproducible twice.** Groups: the parity identity (M1), the
+  annualisation (M2), the sign (M3), the quote convention (M4), the bands (M5),
+  the guards (M6), the warnings (M7), the published value and confidence (M8),
+  and the config accessors and settings validators (C1). The selection was run
+  **GREEN-UNMUTATED first** (129 passed), and CANARY1 is killed.
+* **Live check — `scripts/live_cip_check.py`, PASS.** Real spot (`EURUSD`
+  1.137527 via yfinance, cross-checked against `DEXUSEU` 1.146400 via FRED,
+  0.78 % apart across a week) and real 3-month rates (`DTB3` 4.04 %/yr,
+  `IR3TIB01EZM156N` 2.0277 %/yr). **The falsifiable prediction holds**: the US
+  leg is 2.01 pp higher, so the higher-yielding currency (USD) must be at a
+  forward discount — and the implied EUR/USD forward (1.143221) sits **above**
+  spot, a premium of **+0.5005 %**, against a period interest differential of
+  +0.5031 %, smaller by exactly `1/(1 + i_f t) = 0.994956` as the algebra
+  requires. Feeding the function the parity-implied forward returns
+  `deviation = +0.000000 %`, `basis = +0.0000 bp`, `severity = none`; the real
+  reciprocal pair gives an identical deviation through the
+  `foreign_per_domestic` branch; and oracle shocks of `-0.25 %`, `+0.25 %` and
+  `+1.00 %` reproduce the closed-form deviation AND basis **exactly**, with the
+  funding side flipping to `foreign` below parity and `domestic` above.
+* **Reachability.** `cip_check` classifies as **SCRIPT-ONLY — Tier 5** (only its
+  live check calls it), so the Tier 1-4 baseline stays **58 = 58**. It states
+  what it supersedes (**nothing named** — Phase 0-4 had no parity check) and
+  what it feeds (Module 9's funding-stress read; script-only until a forward
+  source exists) in `decision_relevance`.
+
+### A wall-clock time bomb detonated today, and it was not mine
+
+The first full-suite run after the increment came back **1 failed**:
+`tests/data_layer/test_curve_point_in_time.py::test_the_curve_reads_the_latest_realised_row_not_the_last_row`.
+**It was proved pre-existing before anything was changed**: every edit of this
+increment was stashed (`git stash push -- <5 tracked files>`) and the test **still
+failed on the pristine tree**.
+
+**The mechanism is arithmetic.** The test hardcodes
+`today = datetime(2026, 9, 20, ...).date()` and plants its "projection" row at
+`today + 5 days` = **2026-09-25**, while `fetch_curve` computes
+`cutoff = (as_of or utc_now()).date()` — the **WALL CLOCK**, because the test
+never passes `as_of`. On 2026-09-25 the "projection" stopped being in the future,
+so the filter **correctly** kept it and the assertion saw 9.99 instead of 4.25.
+**Three of that file's four tests carry the same bomb** (`+5`, `+10`, `+100`
+days), so they would have detonated on 2026-09-25, 2026-09-30 and 2026-12-29.
+D-107 measured this suite green earlier on 2026-09-25, i.e. **the bomb went off
+between that measurement and this one.**
+
+**This is O-116's class exactly** (a test whose verdict decays with the calendar),
+which D-090 closed for `test_routes.py` — and the fix here is the same shape: control
+the INPUT time, never weaken the assertion. All four `fetch_curve` calls now pass
+`as_of=_FIXTURE_AS_OF` (the fixture's own hardcoded instant), so the cutoff is a
+property of the FIXTURE rather than of the day the suite runs. The production
+default is untouched: `fetch_curve` still falls back to `utc_now()`.
+**The fix was mutation-proved** — setting `cutoff = date.max` kills **3 of the 4**
+tests, then the file was restored byte-exact (`git diff` empty) and re-ran green.
+Recorded as **O-134**.
+
+**Why this was fixed inside the increment rather than reported and left:** a red
+suite blocks the gate set, and the standing protocol requires the gates to pass
+before the increment closes. The fix is 5 lines of test fixture, it preserves
+every assertion's intent, and it is proven to still have teeth. It is called out
+here, and in the commit message, as **outside the increment's subject matter**.
+
+### A second harness observation: a sidecar was present before a sweep started
+
+Twice, `scripts/mutation_fx_carry.py` began with a `.sweepbackup` **already on
+disk** (`config.py`, `fx_carry.py`) while the tree was otherwise clean and no
+asynchronous writer could be found (measured: two `find` runs 3 s apart with no
+sweep showed nothing). The sweep's own `sweep_lifecycle` **healed both files
+before `check_targets`** — the order lesson 5co exists for — `check_targets`
+then reported **0 problems**, and the run certified 45/45. The healed content was
+verified **semantically**, not by trusting the heal: the hand-computed case
+returns the exact expected deviation, basis and labels.
+
+**Most probable cause, stated as a hypothesis rather than a finding:** the agent
+harness re-executing a long foreground command after a kill, so the visible
+execution's PRE-state carries the killed execution's sidecar. **The mechanism was
+not reproduced under control**, so it is recorded as an observation. What it
+does establish is that **the sidecar is doing its job on a kill** — O-131's
+defence, working, on a sweep written this increment.
+
+**And the close-out run was itself killed.** The third (close-out) sweep was cut
+off mid-flight, leaving a sidecar. Both files were then compared against their
+sidecars **byte-for-byte**: **identical** — the kill landed after a restore, so
+no mutation was ever left applied. The sidecars were removed by hand and the
+semantic check re-run: **PRISTINE**.
+
+### Certified gates (measured, never carried forward)
+
+`ruff format --check` **256 files** = `mypy --strict` **256 source files** (D-035;
+**252 → 256**, the four new files) · `ruff check` clean · **3260 passed /
+1 skipped / 0 failed** via **`--junitxml`** (the exit code is not the verdict) ·
+**delta against D-107's 3192 = exactly +68** = 65 new `cip_check` tests + 3 new
+parametrized-over-sweeps cases (one per sweep-census test) · reachability
+**PASS 58/58**, no regressions · `mutation_fx_carry.py` **45/45, exit 0** ·
+`sweep_health.py` **LAST** → **45 sweeps · 0 leftovers · 0 mutant shapes · 0
+committed mutants · 0 failures · 0 sweeps with no gate/control/buffering · OK** ·
+both shape greps print **nothing**.
+
+**Ten files changed:** `src/macro_engine/models/fx_carry.py` (new) ·
+`src/macro_engine/config.py` · `config/settings.yaml` ·
+`config/series_registry.yaml` · `tests/models/test_cip_check.py` (new) ·
+`scripts/mutation_fx_carry.py` (new) · `scripts/live_cip_check.py` (new) ·
+`tests/test_sweep_sidecar_lifecycle.py` · `tests/test_sweep_health_leftover_predicate.py` ·
+`tests/data_layer/test_curve_point_in_time.py` (the wall-clock fix, outside the
+increment's subject).
+
+### Next
+
+**Tier 5 = 10/23.** Module 9's remaining two are `carry_score` and
+`dollar_smile_regime` — **both specified at `AGENTS.md:1027`/`1047` with
+reference implementations**, so they are stubs to upgrade in the file this
+increment created. `carry_score` is the natural next: it needs a
+`rate_differential` and a `realized_vol_annualized`, both of which the live
+check's fetch path already produces, and its specification carries the same
+`confidence=0.5` literal and the same absent tail-risk disclosure.

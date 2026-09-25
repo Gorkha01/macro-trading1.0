@@ -5094,6 +5094,88 @@ class EconometricsSettings(BaseModel):
         return self
 
 
+class FxCarrySettings(BaseModel):
+    """Module 9's covered-interest-parity stress bands (Section 6.7).
+
+    Section 6.7's reference implementation decides ``"notable — possible
+    funding stress"`` from a **literal** ``0.1`` inside the function body, which
+    Section 21 forbids. The threshold is the one thing in that function a policy
+    owner would ever want to move, so it lives here.
+
+    **The unit is the FORWARD DEVIATION, not the basis.** Section 6.7's quantity
+    is ``(F - F_implied) / F_implied * 100`` — a percentage deviation of the
+    observed forward from the parity-implied one. The FX market's
+    cross-currency basis is an ANNUALISED RATE and is a different number: the
+    two are related exactly by ``basis_period = (1 + i_domestic_period) *
+    deviation_fraction``, so at a 3-month tenor a 0.1% forward deviation is
+    about a 40bp annualised basis. A basis figure written into these leaves
+    would rescale every verdict by the tenor, silently.
+
+    Naming note: the YAML keys are ``notable_deviation_pct`` and
+    ``extreme_deviation_pct`` and the accessors are ``notable_threshold_pct``
+    and ``extreme_threshold_pct``. The split is deliberate — a field and a
+    property may not share a name in this codebase (the D-035 collision guard in
+    ``tests/test_infrastructure.py``), and the accessor names say *threshold*
+    because that is what the model consumes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    notable_deviation_pct: CalibratedValue
+    extreme_deviation_pct: CalibratedValue
+
+    @property
+    def notable_threshold_pct(self) -> float:
+        """``|deviation_pct|`` above which the deviation is reported NOTABLE.
+
+        Consumed directly by :func:`~macro_engine.models.fx_carry.cip_check`.
+        """
+        return float(self.notable_deviation_pct.value)
+
+    @property
+    def extreme_threshold_pct(self) -> float:
+        """``|deviation_pct|`` above which the deviation is reported EXTREME.
+
+        Strictly greater than :attr:`notable_threshold_pct` — the band between
+        the two is the only way ``"notable"`` can be produced, so a leaf that
+        did not exceed the notable threshold would make the middle band
+        unreachable and collapse a three-way vocabulary into two.
+        """
+        return float(self.extreme_deviation_pct.value)
+
+    @model_validator(mode="after")
+    def _order_the_stress_bands(self) -> FxCarrySettings:
+        """Refuse a band pair that cannot express its own three-way vocabulary.
+
+        Both bounds are real failure modes rather than defensive noise:
+
+        * ``notable <= 0`` makes every non-zero deviation "notable", so the
+          ``"none"`` band is unreachable and a floating-point round-trip on a
+          parity-exact forward would be reported as a funding event.
+        * ``extreme <= notable`` makes the ``"notable"`` band empty — the
+          severity would jump straight from ``"none"`` to ``"extreme"``, and the
+          middle label the function can emit would be dead vocabulary (D-037's
+          class).
+        """
+        notable = self.notable_threshold_pct
+        extreme = self.extreme_threshold_pct
+        if notable <= 0.0:
+            raise ValueError(
+                f"fx_carry.notable_deviation_pct is {notable}. A non-positive "
+                f"threshold makes every deviation notable, so the 'none' band "
+                f"becomes unreachable and a parity-exact forward is reported as "
+                f"a funding event."
+            )
+        if extreme <= notable:
+            raise ValueError(
+                f"fx_carry.extreme_deviation_pct ({extreme}) must exceed "
+                f"fx_carry.notable_deviation_pct ({notable}). Otherwise the "
+                f"'notable' band is empty and its label is unreachable — the "
+                f"severity would jump from 'none' to 'extreme'."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5134,6 +5216,7 @@ class Settings(BaseModel):
     validation: ValidationSettings
     confidence: ConfidenceSettings
     econometrics: EconometricsSettings
+    fx_carry: FxCarrySettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

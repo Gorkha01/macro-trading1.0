@@ -1742,11 +1742,20 @@ builds the sophisticated version of each deferred item and deletes nothing). It 
 **Same shape as D-105:** a Phase-4 SIMPLE version exists and the Phase-5 version
 replaces it without deleting anything.
 
-**Next = `cip_check`** — Module 8's FX-parity half, the head of §21.3's Tier-5 list, and
-the first of the **14** Tier-5 functions that do **not** yet exist in `src/` (they need
-**creating**, not un-stubbing). `compute_risk_parity_weights` was previously named here as
-"the next function" — **it is not outstanding: it shipped at D-071, in Phase 4** (see the
-correction below). The same "ask what it replaces" rule applies.
+**Next = `cip_check`** — **Module 9's** FX-parity function, the head of §21.3's Tier-5
+list, and the first of the **14** Tier-5 functions that do **not** yet exist in `src/`
+(they need **creating**, not un-stubbing). `compute_risk_parity_weights` was previously
+named here as "the next function" — **it is not outstanding: it shipped at D-071, in
+Phase 4** (see the correction below). The same "ask what it replaces" rule applies.
+
+> **⚠️ CORRECTED 2026-09-25 (D-108): this row said "Module 8's FX-parity half", and the
+> module number was WRONG.** Resolved at the line, not from memory: `AGENTS.md:1002` is
+> `### 6.7 FX Carry / Parity Models (Module 9)`. **Module 8 is Yield Curve / Credit**
+> (§6.6, `AGENTS.md:964`), which is where `yield_curve_pca` and the breakeven live. The
+> two modules are adjacent in §6, which is the likely origin of the slip — and the
+> `models/` file name confirms it: `fx_carry.py` is Module 9's file, exactly as
+> `yield_curve.py` is Module 8's. **A module number is a citation, and a citation is a
+> claim** — the same discipline that resolved §15.20-F at D-095.
 
 **One row was also WRONG about its module.** `yield_curve_pca` was recorded against
 Module 18; §21.1's table puts it in **Module 8** (Yield Curve/Credit) and it lives in
@@ -2014,3 +2023,53 @@ which kills against live code and is naming-independent. **A `def` line always r
 uncovered** under the tracer — the `def` STATEMENT runs at import — so subtract it before
 judging a gap, and read a **defensive guard** whose condition is false on every legitimate
 call as **correctly** uncovered rather than as a hole.
+
+---
+
+## D-108 — Module 9's `cip_check` (`models/fx_carry.py`, a NEW file) (2026-09-25)
+
+**Tier 5 = 10/23.** Module 18 is untouched at 5 of 6.
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `cip_check` | **9 — FX Carry / Parity** | `models/fx_carry.py` (**created here**) | `AGENTS.md:1013` (§6.7) | **nothing named** — Phase 0–4 had no parity check at all | **IMPLEMENTED** (D-108) |
+
+**An eleventh mapping rule — a module number is a citation, and a citation is a claim.**
+The row above is the first in this file to be *created* rather than *corrected*, and the
+correction it carries is its own: the previous "Next" pointer called `cip_check`
+**"Module 8's FX-parity half"**, and Module 8 is **Yield Curve / Credit** (§6.6,
+`AGENTS.md:964`). The authority says `### 6.7 FX Carry / Parity Models (Module 9)`
+(`AGENTS.md:1002`) — resolved with `grep -n` at D-108, not recalled. **The same discipline
+that resolved §15.20-F at D-095 and `yield_curve_pca`'s module at D-100.** Two adjacent §6
+sections is all it takes for a module number to drift by one, and the drift is invisible
+because both readings name a real module.
+
+**A twelfth mapping rule — a mapping can be a FILE that does not exist, and the mapping is
+what creates it.** Every other Tier-5 row maps a function to an existing module, so the
+mapping's question was *"which file does this belong in?"* — a filing decision. Here the
+answer was `models/fx_carry.py`, which **did not exist**, so the mapping was not a filing
+decision but a **creation**: the file, its config block, its tests, its sweep and its live
+check were all produced by the same increment that recorded the row. **The consequence for
+this table:** a Tier-5 row whose file is absent is not a gap in the mapping — it is the
+mapping's *most informative* state, because the module number and the file name are the
+only two facts available before the work starts, and a wrong module number (see above) is
+invisible until someone resolves the section. `carry_score` and `dollar_smile_regime` are
+now rows against the **same file**, so the next two increments test a different property:
+whether a mapping that was correct for one function survives a second function landing
+beside it (D-055/D-060's anchor-ambiguity class).
+
+**The supersession map, updated (D-096):** `classify_regime_rule_based` →
+`classify_regime_markov_switching` (D-105) · `historical_var` / `parametric_var` /
+`expected_shortfall` → `monte_carlo_var` (D-106) · **`cip_check` supersedes NOTHING NAMED**
+— it is new capability, and the honest answer to "what does this replace?" is *"no function;
+it is the first FX function in the project"* · `realized_vol_simple` → GARCH
+(outstanding) · the inverse-volatility weighting → `compute_risk_parity_weights`
+(**shipped at D-071, Phase 4 — not outstanding**). **Ask what each entry replaces, never
+grep the list for a keyword.**
+
+**Reachability mapping.** `cip_check` classifies as **SCRIPT-ONLY — Tier 5** (its only
+caller is `scripts/live_cip_check.py`), so the Tier 1-4 unreachable baseline stays
+**58 = 58**. Its `decision_relevance` names the intended consumer (Module 9's
+funding-stress read for a carry or dollar view) and states plainly that it is script-only
+until a forward source exists — the same honest gap D-107 recorded for a different
+function.

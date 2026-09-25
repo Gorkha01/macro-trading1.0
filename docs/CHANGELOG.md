@@ -10,6 +10,71 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-108 — Module 9's `cip_check`, the first FX function (Tier 5 = 10/23)
+
+Covered interest parity and its deviations, in a **new** module
+(`src/macro_engine/models/fx_carry.py` — the file did not exist before this
+increment). `carry_score` and `dollar_smile_regime` will join it later. Section
+6.7 (`AGENTS.md:1008–1075`) carries reference implementations for all three, so
+this was a stub to upgrade, not a function to invent.
+
+**Added**
+
+- **`src/macro_engine/models/fx_carry.py`** — `CIPInputs` (annualised decimal
+  rates, an explicit day-count `Literal`, an explicit **quote-convention**
+  input, and domain guards for non-finite values, non-positive rates, a period
+  rate at or below `-100 %`, and a tenor beyond one money-market year) and
+  `cip_check`, which publishes the deviation, the parity-implied forward, the
+  period rates, the **synthetic domestic funding rate** and the annualised
+  **cross-currency basis** in bp.
+- **`tests/models/test_cip_check.py`** — 65 hand-verified tests, every guard with
+  an explicit negative control, both bands' boundaries **exact by construction**,
+  and the `get_args` two-halves tests for all four `Literal`s.
+- **`scripts/mutation_fx_carry.py`** — 45 mutations over the parity identity, the
+  annualisation, the sign, the quote convention, the bands, the guards, the
+  warnings, the published value and the config accessors. **45/45 killed.**
+- **`scripts/live_cip_check.py`** — real spot and real 3-month rates, the
+  falsifiable direction prediction, the reciprocal-pair quote-convention check
+  and oracle shocks against the closed form.
+- A `fx_carry:` settings block and `FxCarrySettings`, whose validator refuses a
+  band pair that cannot express its own three-way vocabulary.
+
+**Changed**
+
+- `cip_check` **supersedes nothing** — Phase 0–4 had no parity check at all. It
+  is the first FX function in the project, and the honest answer to "what does
+  this replace?" is "no function".
+- The specification's hardcoded `confidence=0.7` is replaced by
+  `compute_confidence()`; the shipped value is **0.50** because both bands are
+  `uncalibrated_illustrative`.
+- The sweep census moved **44 → 45** in two test files plus a test name.
+
+**Fixed**
+
+- **A wall-clock time bomb that detonated the day it was found** (O-134).
+  `tests/data_layer/test_curve_point_in_time.py` hardcoded `today = 2026-09-20`
+  and planted its "projection" at `+5 days` = **2026-09-25**, while `fetch_curve`
+  used `cutoff = (as_of or utc_now()).date()`. On 2026-09-25 the projection
+  stopped being in the future, so the filter **correctly** kept it and the test
+  failed against untouched code. **Proved pre-existing** by stashing every edit of
+  the increment and re-running. Three of the file's four tests carry the same
+  bomb (`+5`/`+10`/`+100` days). Fixed by passing the fixture's own `as_of`, and
+  **mutation-proved** (`cutoff = date.max` kills 3 of 4). This is O-116's class,
+  which D-090 closed for `test_routes.py`.
+
+**Measured**
+
+- Gates: `ruff format --check` **256** == `mypy --strict` **256** · **3260
+  passed / 1 skipped / 0 failed** via `--junitxml` · reachability **PASS 58/58** ·
+  `mutation_fx_carry.py` **45/45** · `sweep_health.py` **45 sweeps, 0 failures**.
+- Live: US 3m 4.04 %/yr vs euro-area 3m 2.0277 %/yr ⇒ the implied EUR/USD forward
+  is **above** spot by **+0.5005 %**, matching the period interest differential of
+  +0.5031 % to the exact factor `1/(1 + i_f t)`.
+- **Blocked:** no OpenBB route returns FX forward points (443 routes, none
+  matching `forward`/`swap`/`basis`; CME FX futures tickers return
+  `EmptyDataError`), so the market's own CIP deviation is **not** measured.
+  Recorded as `fx_forward_rate` in `config/series_registry.yaml`.
+
 ### O-133 — a NAME-GREP is not a COVERAGE PROXY (measurement correction; no model change)
 
 Prompted by a direct challenge to the nine-function Tier-5 IMPLEMENTED table

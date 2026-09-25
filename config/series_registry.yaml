@@ -1259,6 +1259,38 @@ blocked:
       cannot be caught.
     opened_in: OPEN_ISSUES.md
 
+  - field: fx_forward_rate
+    reason: >
+      No route on this installation returns FX FORWARD points, so Module 9's
+      `cip_check` cannot be validated against a real market forward. The model
+      itself is not blocked — it takes `forward` as an INPUT — but the live
+      check is, and the market's own CIP deviation therefore cannot be measured
+      here.
+
+      MEASURED 2026-09-25 (D-108), three independent probes rather than one:
+      (1) the OpenBB route inventory walks to 443 routes and NONE matches
+      `forward` / `swap` / `basis` under `currency` or `fixedincome` —
+      `obb.currency` exposes only `price`, `search` and `snapshots`;
+      (2) the CME FX futures tickers `6E=F`, `6J=F` and `6B=F` all return
+      `EmptyDataError` through the yfinance provider, so an exchange-traded
+      proxy is unavailable too; (3) FRED's spot family (`DEXUSEU`, `DEXJPUS`,
+      …) is a SPOT series — the H.10 release carries no forwards.
+
+      This is an UNRECORDED-BLOCK risk of exactly the D-047 class: the
+      specification's Section 6.7 reference implementation takes a `forward`
+      argument and never says where one comes from, so without this entry there
+      would be nothing to re-probe. An entry can be re-probed on a schedule; a
+      paragraph cannot.
+
+      What would lift it: any provider that publishes FX forward points or a
+      cross-currency basis (a licensed source, or CME settlement data via a
+      credentialed provider such as `fmp`/`polygon`, both of which currently
+      fail on MISSING CREDENTIALS rather than on a missing product — a config
+      gap, not a dead end, exactly as the `release_calendar` note above found
+      for the calendar). Re-probe with the credentialed providers before
+      concluding the product is unreachable.
+    opened_in: OPEN_ISSUES.md
+
 # ---------------------------------------------------------------------------
 # release_calendar — Section 6 point-in-time provenance
 # ---------------------------------------------------------------------------
