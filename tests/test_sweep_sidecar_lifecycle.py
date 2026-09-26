@@ -549,6 +549,77 @@ def test_a_refused_sidecar_delete_does_not_raise(gate: Any, tmp_path: Path) -> N
     assert sidecar.is_dir(), "the fixture must still hold the obstruction"
 
 
+def test_a_refused_delete_that_raises_systemexit_does_not_escape(
+    gate: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """**The O-140 regression test: the hook raises ``SystemExit``, not ``OSError``.**
+
+    O-122 fixed the ``OSError``/``PermissionError`` form (a ``finally`` that
+    raised turned a certified run into ``EXIT=1``). But the sandbox's safe-delete
+    hook does **not** raise ``OSError``: it raises **``SystemExit(1)``**, which is
+    a ``BaseException`` and therefore sailed straight past the ``except OSError``
+    guard and out of the context manager. **Measured 2026-09-26 (D-114): seven
+    suite tests failed under full-suite ordering for exactly this reason** — the
+    bulk-delete counter accumulates across a full run, the hook fires during the
+    sweep's own cleanup, and the sweep subprocess exits **1** where it should have
+    exited **3** (the canary refusal). Each file passed in isolation because an
+    isolated file never reaches the counter's threshold.
+
+    A directory cannot produce ``SystemExit``, so this injects it directly on the
+    ``Path`` class the helper will call. **The load-bearing assertion is
+    ``SystemExit not in the result``** — the call must RETURN the refused path, the
+    same as the ``OSError`` case, so the sweep's real exit code (its mutation
+    verdict) survives its own cleanup.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    sidecar = gate.sidecar_for(target)
+    sidecar.write_text("PRISTINE = 1\n", encoding="utf-8")
+
+    real_unlink = type(sidecar).unlink
+
+    def fake_unlink(self: Any, *args: Any, **kwargs: Any) -> None:
+        if self == sidecar:
+            # The sandbox hook's real shape: a SystemExit, NOT an OSError.
+            raise SystemExit(1)
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(sidecar), "unlink", fake_unlink, raising=True)
+
+    refused = gate.remove_sidecars([target])
+
+    assert refused == [sidecar], "a SystemExit refusal must be RETURNED, not escape"
+    assert sidecar.exists(), "the obstruction must still be present"
+
+
+def test_the_lifecycle_survives_a_systemexit_delete_refusal(
+    gate: Any, tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The end-to-end form of O-140: the context manager must EXIT, not raise.
+
+    Mirrors ``test_the_lifecycle_survives_a_refused_delete`` one level up — the
+    bug was not in ``remove_sidecars`` alone but in the fact that its exception
+    escaped ``sweep_lifecycle``'s ``finally``, after the block had already decided
+    its return value.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    sidecar = gate.sidecar_for(target)
+    real_unlink = type(sidecar).unlink
+
+    def fake_unlink(self: Any, *args: Any, **kwargs: Any) -> None:
+        if self == sidecar:
+            raise SystemExit(1)
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(sidecar), "unlink", fake_unlink, raising=True)
+
+    with gate.sweep_lifecycle([target]) as originals:
+        assert originals == {target: "PRISTINE = 1\n"}
+
+    assert sidecar.exists(), "the lifecycle exited and left the obstruction"
+
+
 def test_the_lifecycle_survives_a_refused_delete(gate: Any, tmp_path: Path) -> None:
     """The end-to-end form: the context manager must EXIT, not raise.
 

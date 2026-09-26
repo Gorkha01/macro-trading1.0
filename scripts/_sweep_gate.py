@@ -362,7 +362,18 @@ def restore_from_sidecar(paths: list[Path]) -> list[Path]:
         if not sidecar.exists():
             continue
         path.write_text(sidecar.read_text(encoding="utf-8"), encoding="utf-8", newline="")
-        sidecar.unlink()
+        try:
+            sidecar.unlink()
+        except (OSError, SystemExit) as exc:  # O-140: the hook raises SystemExit, not OSError
+            print()
+            print("=" * 74)
+            print(f"WARNING: restored {path.name} but could not remove its sidecar")
+            print(f"  ({type(exc).__name__}: {exc})")
+            print(f"  The sidecar {sidecar.name} is a LEFTOVER and MUST be removed")
+            print("  before the next sweep, or the next run will 'restore' it and")
+            print("  silently revert whatever lands in between.")
+            print("=" * 74)
+            print()
         restored.append(path)
     return restored
 
@@ -395,7 +406,7 @@ def remove_sidecars(paths: Iterable[Path]) -> list[Path]:
         sidecar = sidecar_for(path)
         try:
             sidecar.unlink(missing_ok=True)
-        except OSError as exc:
+        except (OSError, SystemExit) as exc:
             refused.append(sidecar)
             print()
             print("=" * 74)

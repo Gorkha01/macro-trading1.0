@@ -1191,8 +1191,23 @@ blocked:
     opened_in: OPEN_ISSUES.md
 
   - field: ppp_implied_rate
-    reason: OECD publishes PPP conversion factors; no clean free API. Manual entry only.
-    opened_in: OPEN_ISSUES.md
+    reason: |
+      HELD MANUAL, but NOT because no source exists -- the 2026-09-27 re-probe
+      (docs/PLAN_ppp_source.md) found one. In OpenBB: 0 of 278 paths expose PPP.
+      In FRED: PPP-derived series exist (e.g. MEXPPPSH) but the conventional
+      conversion-factor IDs (PPPTTL, PA.NUS.PPP, PPPGDP) are EMPTY. In the
+      WORLD BANK REST API: REACHABLE -- indicator PA.NUS.PPP ("PPP conversion
+      factor, GDP (LCU per international $)") returns 36 annual points for
+      member countries (DEU 0.709983 @ 2025, FRA 0.677618, GBR 0.677133), and
+      exactly 1 for the USA. NOTE: the EMU AGGREGATE is empty (0 points), so a
+      "USD per EUR at PPP" leg must be a member state or a constructed
+      aggregate -- a decision, not a constant. The route is the same "direct,
+      not OpenBB" one Section 21.1 already uses for current_account_pct_gdp.
+      D-114's live check declared 0.72, within 1.4% of DEU's 2025 value, so the
+      MODEL's number is sound -- what was wrong is the CLAIM below ("no clean
+      free API"), which is D-043's FALSE-BLOCK class. Wired or not is the next
+      increment's scope decision (Plan A in the plan doc).
+    opened_in: docs/PLAN_ppp_source.md
 
   - field: supercore_direction
     reason: >
