@@ -10,7 +10,86 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
-### D-110 — the D-109 findings, triaged (no new function; Tier 5 = 11/23 unchanged)
+### D-111 — Module 9's `dollar_smile_regime`, completing Module 9 (Tier 5 = 12/23)
+
+The third and final §6.7 FX function. **A three-way threshold classifier**, so the
+increment was about **branch reachability and threshold units** rather than
+arithmetic — and the reference implementation the specification carries made it a
+**stub to UPGRADE** (D-096), not a function to invent. It **supersedes nothing
+named** and now **feeds** `carry_score` and **pairs with** `cip_check`.
+
+**Added**
+
+- **`dollar_smile_regime`** in `src/macro_engine/models/fx_carry.py` — **Module 9 is
+  now 3 of 3, COMPLETE.** Publishes `side`, `is_neutral_input`, the three
+  republished inputs, the three booleans, and the two thresholds, so the branch
+  that fired can be reconstructed from the output alone. `unit` names it a
+  **category**; `direction` is deliberately unset with the reason stated.
+- **`DollarSmileInputs`** / **`DollarSmileSide`**, and a `_validate_domain` guard
+  that refuses a **non-finite** input — because the probe measured that a bare
+  `nan` reaches the **middle** label and a bare `+inf` reaches the **left** one, so
+  an unguarded classifier answers a missing value with a regime claim (D-078's
+  class in a classifier).
+- **Two config leaves**: `fx_carry.dollar_smile_vix_threshold` (`25.0`,
+  `uncalibrated_illustrative`, **INDEX POINTS**) and
+  `fx_carry.dollar_smile_sign_boundary` (`0.0`, `institutional_convention`, ONE
+  leaf serving both `> 0` comparisons per D-053), plus accessors and a
+  non-positive-gate refusal in `FxCarrySettings`.
+- **`tests/models/test_dollar_smile_regime.py`** — 49 defs → **68 collected**,
+  hand-verified, with negative controls, boundary fixtures built by **addition**
+  with their exactness asserted, and the reachability enumeration pinned.
+- **`scripts/live_dollar_smile_check.py`** — fetches real `VIXCLS`, declares the two
+  inputs it cannot fetch, and asserts the unit, the gate, the leaf-following, the
+  zero case, the reachable set and the computed confidence.
+- **`S1a`–`S8b` and `C3a`–`C3h`** in `scripts/mutation_fx_carry.py` — the sweep goes
+  **71 → 114 mutations**, covering every branch (incl. `>=`, `or`, reversed, and the
+  **branch order**) and every guard.
+
+**Changed**
+
+- **`confidence=0.4` is gone** → `compute_confidence(...)` reading **both**
+  thresholds; **measured live at 0.5**. The specification's standing caveat moved
+  from prose to **`limitations`** (8 entries), the move D-109 made for the
+  "steamroller" sentence.
+- **The zero case is its OWN decision**: the boundary is **kept at the spec's
+  `> 0`**, the **middle limb owns it**, and `is_neutral_input` + a warning publish
+  that the label came from a **neutral** input rather than a negative one — a
+  surprise series prints exactly `0.0` on a consensus release (D-040's class).
+- **`--timeout` 300 → 600** in `pyproject.toml`. The value was killing a **correct**
+  test: the slow agreement test now measures **349.78 s**, up from the 162 s the
+  bound was derived against, because the catalogue grew to 45 sweeps and
+  `mutation_fx_carry.py` to 114 mutations. It was invisible because `not slow`
+  hides the only test that probes the bound. Stale comments corrected.
+- **`mutation_fx_carry.py`'s `K6g` anchor widened** — the new function made
+  `source_family=EvidenceSourceFamily.MARKET_FX,` AMBIGUOUS, and `str.replace`
+  would have mutated `carry_score` while reporting a kill.
+
+**Fixed**
+
+- **`S7k` survived the first sweep and the fix is instructive**: the base-rate test
+  asserted the **sentence**, not the **numbers**, so a transposition of
+  `57.85 %` / `6.74 %` passed. Now reads the published shares (formatted from the
+  named constant), asserts they are distinct, and pins the measured order —
+  **proved by applying `S7k` alone and watching it go RED**, then restoring
+  byte-identical and reaching **114/114**.
+- **O-127's class, SEVENTH firing**: two new required settings fields broke the
+  fixtures in `test_cip_check.py` and `test_carry_score.py` (caught by the
+  GREEN-UNMUTATED run), **and** exposed a bare `pytest.raises(ValidationError)`
+  with no `match=` that had been **passing for the wrong reason**. Fixed with
+  `match="carry_vol_floor"` (the YAML leaf name) and a complete-construction
+  helper.
+
+**Recorded, not fixed** — **O-137**: six `docs`/`tools` prose sites still say
+"40 sweeps"/"42 sweeps" while the tree has held **45**; measured **pre-existing**
+and deliberately left to its own increment.
+
+**Gates** (sequential, `sweep_health.py` LAST): ruff format --check **260** · ruff
+check clean · mypy --strict **260** (D-035) · reachability `--check-baseline`
+**PASS (58 = 58)** · **3375 tests / 0 failed / 1 skipped** (JUnit) · the slow test
+**explicitly re-run, PASS 221.31 s** · `mutation_fx_carry` **114/114** ·
+**45 sweeps, 0 leftovers, 0 shapes, 0 failures, OK**.
+
+
 
 Prompted by the operator asking whether the items in D-109's close-out report had
 been fixed where required. Two required a fix, one required a **correction to a

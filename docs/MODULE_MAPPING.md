@@ -2134,6 +2134,76 @@ differential or an FX realised volatility.
 
 ---
 
+## D-111 — Module 9's `dollar_smile_regime`, and Module 9 CLOSED (same file, third function) (2026-09-26)
+
+**Tier 5 = 12/23. Module 9 = 3 of 3 — COMPLETE.** Module 18 is untouched at 5 of 6.
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `dollar_smile_regime` | **9 — FX Carry / Parity** | `models/fx_carry.py` (**exists** — created D-108, extended D-109) | `AGENTS.md:1047` (§6.7) | **nothing named** — Phase 0–4 had no regime-conditioning model for the dollar | **IMPLEMENTED** (D-111) |
+
+**A fifteenth mapping rule — the mapping's own ANCHOR SET is the part that decays,
+and on the THIRD function it breaks a DIFFERENT anchor than the second did.**
+D-109's thirteenth rule said the file and module number are the cheap half while
+the anchors are the half that decays. This row confirms it a third time, with a
+new failure signature: the new function declares the same
+``source_family=EvidenceSourceFamily.MARKET_FX,`` line as `carry_score`, so
+`K6g` went **AMBIGUOUS (2 occurrences)** on the first `sweep_health.py` run. The
+danger is not the refusal — **it is what `str.replace` does if the refusal is
+ignored**: it rewrites the **first** occurrence, i.e. `carry_score`'s, **landing
+the mutation on the wrong function while reporting a kill**, which is the worst
+possible output because it looks like health (D-048/D-055). **The fix is to widen
+the anchor, never to delete the mutation** — and here two candidate widenings
+**both went ABSENT**, because an `assumptions=[...]` block sits between
+`inputs_used` and `source_family`; the anchor had to reach `carry_score`'s own
+last assumptions string. **The mapping lesson: an anchor's uniqueness is a
+property of the WHOLE FILE, so it is re-established only by re-running the file's
+sweep — and a new function is the event that most reliably destroys it.**
+
+**A sixteenth mapping rule — a function whose INPUTS are not all reachable maps to
+a live check that must DECLARE what it cannot fetch, and the mapping's honesty is
+the declaration.** `dollar_smile_regime` has three inputs and **only one is
+reachable**: `vix_level` (`VIXCLS`, real daily levels) is fetched, while
+`us_growth_surprise` needs a **consensus forecast this installation cannot reach**
+— the same block `series_registry.yaml` already records for `inflation_surprise`
+(*a nowcast is not a consensus*) — and `us_vs_row_rate_diff` is declared for the
+same reason. So the live check is a **WIRING check, not a regime call**, and it
+prints that sentence rather than leaving the reader to infer it. **This is the
+complement of D-108's `cip_check`**, whose forward was also unreachable but which
+had to **construct** a parity-implied substitute: there the mapping hid a
+substitution, here it hides a **declared parameter** — and the rule is the same in
+both cases: *a live check that cannot fetch an input must say so, and must print
+the inputs beside the label so a reader can see which branch fired and why*
+(D-094).
+
+**The supersession map, updated (D-096):** `classify_regime_rule_based` →
+`classify_regime_markov_switching` (D-105) · `historical_var` / `parametric_var` /
+`expected_shortfall` → `monte_carlo_var` (D-106) · `cip_check` supersedes
+**nothing named** (D-108) · `carry_score` supersedes **nothing named** (D-109) ·
+**`dollar_smile_regime` supersedes nothing named** — Phase 0–4 had no
+regime-conditioning model for the dollar either · `realized_vol_simple` → GARCH
+(outstanding, and the cross-check partner for `carry_score`'s live volatility) ·
+the inverse-volatility weighting → `compute_risk_parity_weights` (**shipped at
+D-071, Phase 4 — not outstanding**). **Ask what each entry replaces, never grep
+the list for a keyword.** **What D-111 FEEDS, which is the other half of the
+mapping:** it **conditions** `carry_score`'s read (a carry earned on the smile's
+LEFT limb is the safe-haven-driven, reversal-prone version; the same carry on the
+RIGHT limb is the durable one) and it **pairs with** `cip_check`'s funding-stress
+reading, since a left-limb classification and a notable CIP deviation are two
+independent descriptions of the same risk-off state. Both are stated in
+`decision_relevance`.
+
+**Reachability mapping.** `dollar_smile_regime` also classifies as
+**SCRIPT-ONLY — Tier 5** (its only caller is
+`scripts/live_dollar_smile_check.py`), so the Tier 1-4 unreachable baseline stays
+**58 = 58** (`--check-baseline` PASS) and the **Tier-5 script-only set grows 11 →
+12**. **The module is now closed: all three §6.7 FX functions are IMPLEMENTED and
+all three are script-only**, which is the honest state — no snapshot field carries
+an FX forward, a rate differential, or a consensus growth surprise, so none of the
+three has a pipeline consumer yet.
+
+---
+
 ## D-110 — no new mapping; a mapping rule about RECOMMENDED GATES (2026-09-26)
 
 **Tier 5 is unchanged at 11/23.** No function was added, moved, or promoted, and

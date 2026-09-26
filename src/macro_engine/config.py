@@ -5124,6 +5124,8 @@ class FxCarrySettings(BaseModel):
     notable_deviation_pct: CalibratedValue
     extreme_deviation_pct: CalibratedValue
     carry_vol_floor: CalibratedValue
+    dollar_smile_vix_threshold: CalibratedValue
+    dollar_smile_sign_boundary: CalibratedValue
 
     @property
     def volatility_floor(self) -> float:
@@ -5156,6 +5158,43 @@ class FxCarrySettings(BaseModel):
         unreachable and collapse a three-way vocabulary into two.
         """
         return float(self.extreme_deviation_pct.value)
+
+    @property
+    def dollar_smile_vix_level(self) -> float:
+        """The VIX INDEX LEVEL above which the dollar smile's LEFT side is reported.
+
+        Consumed directly by
+        :func:`~macro_engine.models.fx_carry.dollar_smile_regime`. The unit is
+        the **index's own points** — VIX is quoted in annualised percentage
+        points, so `25` means roughly 25 %/yr implied. It is *not* a decimal and
+        *not* a percent: a volatility estimator in this project publishes a
+        decimal (`realized_vol_simple` publishes percent), and writing either
+        here would move the gate to a level the index has not printed.
+
+        Must be strictly positive. A non-positive level makes every VIX reading
+        "left", so the right and middle sides of the smile become unreachable
+        and a three-way vocabulary collapses to one.
+        """
+        return float(self.dollar_smile_vix_threshold.value)
+
+    @property
+    def dollar_smile_sign_boundary_value(self) -> float:
+        """The boundary above which a signed input counts as US-outperformance.
+
+        Both of :func:`~macro_engine.models.fx_carry.dollar_smile_regime`'s sign
+        tests compare against this one leaf, because Section 6.7 writes two
+        literals that are the **same zero**. It ships at exactly zero, which is
+        the specification's own boundary — the zero case therefore falls to the
+        middle "synchronized global growth" label rather than to the right one,
+        and the model publishes ``neutral_input_present`` so that a reader can
+        see which of the two the middle label was reached by.
+
+        The name carries ``_value`` because the field and the property may not
+        share a name in this codebase (the D-035 collision guard), and the
+        accessor says ``boundary`` rather than ``threshold`` because the model's
+        own vocabulary is the sign boundary.
+        """
+        return float(self.dollar_smile_sign_boundary.value)
 
     @model_validator(mode="after")
     def _order_the_stress_bands(self) -> FxCarrySettings:
@@ -5194,6 +5233,14 @@ class FxCarrySettings(BaseModel):
                 f"value divides by zero at exactly zero and flips the sign of "
                 f"every score below it — a negative-volatility denominator would "
                 f"make a positive carry look like a negative one."
+            )
+        if self.dollar_smile_vix_level <= 0.0:
+            raise ValueError(
+                f"fx_carry.dollar_smile_vix_threshold is "
+                f"{self.dollar_smile_vix_level}. A VIX index level at or below "
+                f"zero makes EVERY reading 'left', so the right and middle sides "
+                f"of the dollar smile become unreachable and the three-way "
+                f"vocabulary collapses to one label (D-037's class)."
             )
         return self
 

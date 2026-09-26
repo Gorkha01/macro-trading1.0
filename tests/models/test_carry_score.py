@@ -352,22 +352,52 @@ def test_the_confidence_helper_reads_the_floor_leaf_specifically(
     assert _carry_floor_is_calibrated() is False
 
 
+def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
+    """A COMPLETE ``FxCarrySettings``, so a guard test exercises its own guard.
+
+    Complete on purpose, and this is D-109's lesson firing again at D-110: these
+    tests previously built the model with only the fields each one cared about,
+    which means adding a REQUIRED field made every bare construction raise for a
+    *missing field* instead — the same exception type as the rejection under
+    test. The negative control was the only test that noticed, which is the whole
+    argument for having one. Every field the settings model requires is listed
+    here, so a future required field breaks THIS helper (loudly, in one place)
+    rather than silently turning a guard test into a tautology.
+    """
+    base: dict[str, CalibratedValue] = {
+        "notable_deviation_pct": CalibratedValue(value=0.1, calibration_status="conventional"),
+        "extreme_deviation_pct": CalibratedValue(value=0.5, calibration_status="conventional"),
+        "carry_vol_floor": CalibratedValue(value=0.1, calibration_status="conventional"),
+        "dollar_smile_vix_threshold": CalibratedValue(
+            value=25.0, calibration_status="uncalibrated_illustrative"
+        ),
+        "dollar_smile_sign_boundary": CalibratedValue(
+            value=0.0, calibration_status="institutional_convention"
+        ),
+    }
+    base.update(overrides)
+    return FxCarrySettings(**base)
+
+
 def test_the_settings_validator_refuses_a_non_positive_floor() -> None:
-    """A non-positive denominator floor divides by zero and flips every sign."""
-    with pytest.raises(ValidationError):
-        FxCarrySettings(
-            notable_deviation_pct=CalibratedValue(value=0.1, calibration_status="conventional"),
-            extreme_deviation_pct=CalibratedValue(value=0.5, calibration_status="conventional"),
-            carry_vol_floor=CalibratedValue(value=0.0, calibration_status="conventional"),
+    """A non-positive denominator floor divides by zero and flips every sign.
+
+    ``match=`` is load-bearing (O-127): without it this test passed for the
+    wrong reason from D-110 onward, when two newly-required ``dollar_smile_*``
+    fields made every bare construction raise a *missing-field* error. A missing
+    required field and a rejected floor are the same exception TYPE, so a bare
+    ``pytest.raises`` cannot tell them apart.
+    """
+    with pytest.raises(ValidationError, match="carry_vol_floor"):
+        _fx_carry_settings(
+            carry_vol_floor=CalibratedValue(value=0.0, calibration_status="conventional")
         )
 
 
 def test_the_settings_validator_accepts_a_positive_floor() -> None:
     """The negative control: an ordinary floor must construct."""
-    settings = FxCarrySettings(
-        notable_deviation_pct=CalibratedValue(value=0.1, calibration_status="conventional"),
-        extreme_deviation_pct=CalibratedValue(value=0.5, calibration_status="conventional"),
-        carry_vol_floor=CalibratedValue(value=0.1, calibration_status="conventional"),
+    settings = _fx_carry_settings(
+        carry_vol_floor=CalibratedValue(value=0.1, calibration_status="conventional")
     )
     assert settings.volatility_floor == 0.1
 

@@ -1,23 +1,45 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-26** (after **D-110 — a TRIAGE increment, no new function.** The
-operator read D-109's close-out report and asked *"have you fixed below if required?"*, so
-every item was re-examined: **two required a fix, one required a CORRECTION to a record, two
-were measured and judged NOT defects.** **O-135 CLOSED** — `_is_applied` reported a LEFTOVER
-on a CLEAN tree when a mutation's anchor AND its replacement text were both absent, and the
-remedy it printed (`git checkout --`) has already cost this project 97 lines; fixed in **both**
-deliberately-duplicated copies, with **two tests x two copies** and a mutation proof.
-**O-127's LONG-RECOMMENDED GATE WAS MEASURED AND WITHDRAWN** — *"assert every settings model
-is constructible from its own `model_dump()`"* cannot see a fixture missing a required field,
-so it would have **certified the class as closed while closing nothing** (D-087.23's class in a
-recommendation, and worse than no gate because it manufactures assurance). The live check's
-**foreign-leg defect became a MEASUREMENT** (both reachable legs give `long_domestic`; the
-score moves +0.2052 -> +0.1580). Two items were measured and judged NOT defects: the
-volatility floor's value (the **silent path** was the defect and it is closed) and O-136 (a
-`value`-container inconsistency Section 22.9 permits). **Tier 5 = 11/23; Module 18 = 5 of 6.**
-**Gates: ruff format --check 258 · mypy 258 · 3307 collected / 3306 passed / 0 failed / 1
-skipped (default set, JUnit) · mutation_fx_carry 71/71 · 45 sweeps OK.**)
+Last updated: **2026-09-26** (after **D-111 — Module 9's `dollar_smile_regime`, THE THIRD AND
+FINAL FUNCTION: Module 9 = 3 of 3, COMPLETE. Tier 5 = 12/23.** A **three-way threshold
+classifier**, so the increment was about **branch reachability and threshold units** rather
+than arithmetic. **The reachable set was MEASURED before any code was written** — a 3 025-point
+enumeration gives **left 57.85 % · middle 35.40 % · right 6.74 %**, confirming the set is
+exactly three limbs and that **the left gate does NOT starve the branches behind it** (the
+VIX input is a continuous level, not a flag — which is the structural difference from D-050's
+case it resembles). **Three literals became config leaves with their units named**: the VIX
+gate `25.0` (`uncalibrated_illustrative`, **INDEX POINTS**) and the sign boundary `0.0`
+(`institutional_convention`, ONE leaf serving both `> 0` comparisons per D-053). **The zero
+case is its OWN decision**: the boundary is KEPT at the spec's `> 0`, the **middle limb owns
+it**, and `is_neutral_input` + a warning publish that the label came from a NEUTRAL input
+rather than a negative one (D-040's class). **`confidence=0.4` is gone** → computed, measured
+live at **0.5**; the spec's standing caveat moved to `limitations` (8 entries); `direction` is
+deliberately unset with the reason stated. **The mechanical hazard fired exactly as predicted**
+— `K6g` went AMBIGUOUS on the first `sweep_health.py` run, and `str.replace` would have landed
+the mutation on `carry_score` while reporting a kill; fixed by widening the anchor (D-055/5cp),
+with **every new anchor verified to occur exactly once** before being written down. **The sweep
+grew 71 → 114 mutations and found ONE real survivor, `S7k`** — the base-rate test asserted the
+sentence, not the numbers, so a transposition of `57.85 %`/`6.74 %` passed; fixed by reading
+the published shares, **proved by applying `S7k` alone and watching it go RED**, then 114/114.
+**And `--timeout=300` was KILLING a correct test** — the slow agreement test measures
+**349.78 s** and was invisible because `not slow` hides it from every default run; raised to
+**600**. **O-127's class fired a SEVENTH time** (two new required settings fields broke two
+other files' fixtures — caught by the GREEN-UNMUTATED run), *and* exposed a bare
+`pytest.raises(ValidationError)` with no `match=` that had been passing for the wrong reason.
+**Live check: only ONE of three inputs is real** — VIXCLS `14.21` @ 2026-09-22 is fetched, the
+surprise is BLOCKED (no consensus) and declared; the check PASSES and prints that it is a
+**wiring check, not a regime call**. **Gates: ruff format --check 260 · mypy 260 · reachability
+--check-baseline PASS (58 = 58) · 3375 collected / 0 failed / 1 skipped (JUnit) · the slow test
+re-run explicitly PASS 221.31 s · mutation_fx_carry 114/114 · 45 sweeps OK.**)
+Previous update: **D-110 — a TRIAGE increment, no new function** (Tier 5 = 11/23; the operator
+read D-109's close-out and asked *"have you fixed below if required?"*, so every item was
+re-examined: **O-135 CLOSED** — `_is_applied` reported a LEFTOVER on a CLEAN tree and its
+printed remedy was `git checkout --`, which has cost this project 97 lines; **O-127's
+LONG-RECOMMENDED GATE WAS MEASURED AND WITHDRAWN** — a `model_dump()` round-trip cannot see a
+fixture missing a required field, so it would have certified the class closed while closing
+nothing; the live check's **foreign-leg defect became a MEASUREMENT** (both reachable legs give
+`long_domestic`; +0.2052 -> +0.1580).
 Previous update: **D-109 — Module 9's `carry_score`** (Tier 5 = 11/23; the stub's
 `max(vol, 0.1)` floor is a literal with **no unit** -> `fx_carry.carry_vol_floor`, and **when
 it binds the ESTIMAND CHANGES**, so `volatility_floor_binding` is published and warned — and it

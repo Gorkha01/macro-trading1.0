@@ -1,11 +1,14 @@
-"""Mutation sweep for Section 6.7's Module 9 — ``cip_check`` and ``carry_score``.
+"""Mutation sweep for Section 6.7's Module 9 — ``cip_check``, ``carry_score``
+and ``dollar_smile_regime``.
 
-**Two functions, one module, one sweep** (D-109). The labels are partitioned by
-function: **``M1``-``M8`` and ``C1`` are ``cip_check``'s** (D-108), and
-**``K1``-``K6`` and ``C2`` are ``carry_score``'s** (D-109). One sweep rather than
-two because the two functions share a file and a config block, and a second
-sweep over the same file would double the places a future edit must be mirrored
-— `mutation_econometrics.py` covers five functions in one module the same way.
+**Three functions, one module, one sweep** (D-109, extended at D-110). The
+labels are partitioned by function: **``M1``-``M8`` and ``C1`` are
+``cip_check``'s** (D-108), **``K1``-``K6`` and ``C2`` are ``carry_score``'s**
+(D-109), and **``S1``-``S8`` and ``C3`` are ``dollar_smile_regime``'s** (D-110).
+One sweep rather than three because the functions share a file and a config
+block, and a further sweep over the same file would multiply the places a
+future edit must be mirrored — `mutation_econometrics.py` covers five functions
+in one module the same way.
 
 **⚠️ This file is the VICTIM whenever a function is added to ``fx_carry.py``,
 not the culprit.** Adding ``carry_score`` made two of the anchors below fail
@@ -73,6 +76,28 @@ function's own structure, because a mutation that does not correspond to a
   confidence.
 * **C2** hardcodes the floor accessor or points the calibration helper at the
   wrong leaf.
+
+* **``dollar_smile_regime`` — ``S1``-``S8``, ``C3``:**
+* **S1** breaks the VIX GATE — the left limb's entire definition. ``S1a`` makes
+  it inclusive, ``S1b`` reverses it, ``S1c`` makes the limb unreachable, ``S1d``
+  conflates the two thresholds.
+* **S2** breaks the BOTH-POSITIVE test — the right limb. ``S2a`` weakens the
+  conjunction to a disjunction, ``S2b``/``S2c`` drop one input, ``S2d`` makes it
+  inclusive (which would give the zero case to the right limb), ``S2e`` reverses
+  the signs.
+* **S3** breaks the BRANCH ORDER — Section 6.7's most-severe-first rule. Testing
+  the growth branch first relabels every high-VIX strong-data reading.
+* **S4** breaks the NEUTRAL-INPUT derivation — the two-cause middle label.
+* **S5** breaks the finiteness GUARD. ``S5a`` removes it (the probe measured
+  ``nan`` → middle and ``+inf`` → left), ``S5b`` guards only one field, ``S5c``
+  inverts it.
+* **S6** breaks the WARNINGS — each branch, and the right limb's deliberate
+  silence.
+* **S7** breaks the PUBLISHED VALUE — the label, the flags, the republished
+  inputs, the two thresholds, and the base rates.
+* **S8** breaks the unit and the confidence.
+* **C3** hardcodes or cross-wires the two config accessors, and points the
+  calibration helper at one leaf, the other, or a CIP band.
 
 A survivor is one of three things (D-031): a weak test, an **inert** mutation, or
 a **broken** mutation. The runner heals before it measures — an interrupted run
@@ -206,7 +231,20 @@ _CARRY_BINDING_KEY = '            "volatility_floor_binding": floor_binds,'
 _CARRY_OUTCOME_KEY = '            "carry_outcome": outcome,'
 _CARRY_UNIT = '        unit="dimensionless (annualised carry per unit of annualised volatility)",'
 _CARRY_DIRECTION = "        direction=outcome,"
-_CARRY_SOURCE_FAMILY = "        source_family=EvidenceSourceFamily.MARKET_FX,"
+# WIDENED at D-110: the bare `source_family=EvidenceSourceFamily.MARKET_FX,` line
+# became AMBIGUOUS when `dollar_smile_regime` — this module's third function —
+# declared the same source family. `str.replace` would have rewritten the FIRST
+# occurrence, i.e. `carry_score`'s, so the mutation would have landed on the
+# wrong function while reporting a kill: the worst possible output, because it
+# looks like health (D-048/D-055). The narrowing is `carry_score`'s own
+# assumptions block — its second entry names the money-market construction of
+# the differential, which `dollar_smile_regime` has no equivalent of.
+_CARRY_SOURCE_FAMILY = (
+    "`realized_vol_annualized` is the realised volatility of that pair's "
+    '"\n            "return series over a window the caller chose, annualised '
+    'by the same "\n            "convention as the differential.",\n        ],\n'
+    "        source_family=EvidenceSourceFamily.MARKET_FX,"
+)
 _CARRY_HEURISTIC_FLAG = (
     "                is_heuristic_not_calibrated=not _carry_floor_is_calibrated(),"
 )
@@ -225,6 +263,70 @@ _NOTABLE_PROP = "        return float(self.notable_deviation_pct.value)"
 _EXTREME_PROP = "        return float(self.extreme_deviation_pct.value)"
 _ORDER_VALIDATOR = "        if extreme <= notable:"
 _POSITIVE_VALIDATOR = "        if notable <= 0.0:"
+
+# --------------------------------------------------------------------------
+# S1-S8: dollar_smile_regime (this module's THIRD function, D-110).
+#
+# The labels continue the scheme rather than restarting: `M*` belongs to
+# `cip_check`, `K*` to `carry_score`, so `dollar_smile_regime` takes `S*` (for
+# **S**mile) and the config side takes `C3`. A re-used prefix would make two
+# different mutants share a label, and the kill log is read by a human who has
+# no other way to tell them apart.
+# --------------------------------------------------------------------------
+
+# The gate and the both-positive test. Both are byte-verbatim, single-occurrence
+# lines — verified before being written here, because a branch anchor that
+# resolves to zero sites makes the mutant a `pattern-not-found` SURVIVOR that
+# looks like a weak test (D-031).
+_DS_VIX_GATE = "    if vix_level > vix_threshold:"
+_DS_BOTH_POSITIVE = (
+    "    if us_growth_surprise > sign_boundary and us_vs_row_rate_diff > sign_boundary:"
+)
+_DS_NEUTRAL_RETURN = "    return us_growth_surprise == 0.0 or us_vs_row_rate_diff == 0.0"
+
+# The finiteness guard. WIDENED past the bare `if not math.isfinite(value):`
+# line for the same reason M6a and K4a are widened: three input models in this
+# module open a validator with that line, so the bare line is AMBIGUOUS (3
+# occurrences). The `for name in (...)` line above it is unique to
+# `DollarSmileInputs`.
+_DS_FINITE_GUARD = (
+    '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
+    "            value = getattr(self, name)\n"
+    "            if not math.isfinite(value):"
+)
+
+# The warnings. `if side == "left":\n        warnings.append(` is unique; so is
+# the middle-branch guard, which carries `and _dollar_smile_is_neutral(...)`.
+_DS_WARN_LEFT = '    if side == "left":\n        warnings.append('
+_DS_WARN_MIDDLE = '    elif side == "middle" and _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):'
+
+# The published value and the contract.
+_DS_SIDE_KEY = '            "side": side,'
+_DS_NEUTRAL_KEY = '            "is_neutral_input": is_neutral,'
+_DS_VIX_KEY = '            "vix_level": round(vix_level, 6),'
+_DS_GROWTH_KEY = '            "us_growth_surprise": round(growth, 6),'
+_DS_RATEDIFF_KEY = '            "us_vs_row_rate_diff": round(rate_diff, 6),'
+_DS_VIX_ABOVE_KEY = '            "vix_above_threshold": vix_above,'
+_DS_GROWTH_ABOVE_KEY = '            "growth_above_boundary": growth_above,'
+_DS_RATE_ABOVE_KEY = '            "rate_above_boundary": rate_above,'
+_DS_VIX_THRESH_KEY = '            "vix_threshold": vix_threshold,'
+_DS_SIGN_BOUNDARY_KEY = '            "sign_boundary": sign_boundary,'
+_DS_UNIT = "        unit=\"categorical (dollar smile limb: 'left' | 'right' | 'middle')\","
+_DS_HEURISTIC_FLAG = (
+    "                is_heuristic_not_calibrated=not _dollar_smile_thresholds_are_calibrated(),"
+)
+# The base rates. A mutated share must move the published limitation text.
+_DS_BASE_RATES = '    "left": 1750 / 3025,\n    "right": 204 / 3025,\n    "middle": 1071 / 3025,'
+
+# The config side.
+_DS_CALIBRATED_READ = (
+    '    return settings.is_calibrated("fx_carry.dollar_smile_vix_threshold") and settings.is_calibrated(\n'
+    '        "fx_carry.dollar_smile_sign_boundary"\n'
+    "    )"
+)
+_DS_VIX_PROP = "        return float(self.dollar_smile_vix_threshold.value)"
+_DS_BOUNDARY_PROP = "        return float(self.dollar_smile_sign_boundary.value)"
+_DS_VIX_VALIDATOR = "        if self.dollar_smile_vix_level <= 0.0:"
 
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
@@ -680,6 +782,292 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         _CARRY_CALIBRATED_READ,
         '    return settings.is_calibrated("fx_carry.notable_deviation_pct")',
     ),
+    # --- S1: the VIX gate ------------------------------------------------
+    # The gate is the left limb's whole definition. Each of these produces a
+    # confident label for a real input, which is what makes a classifier's
+    # branch a decision rather than an implementation detail.
+    (
+        "S1a the gate becomes inclusive (a VIX exactly ON 25 is classified left)",
+        SRC,
+        _DS_VIX_GATE,
+        "    if vix_level >= vix_threshold:",
+    ),
+    (
+        "S1b the gate's inequality is reversed (high VIX becomes the middle limb)",
+        SRC,
+        _DS_VIX_GATE,
+        "    if vix_level < vix_threshold:",
+    ),
+    (
+        "S1c the left limb is unreachable (the gate can never fire)",
+        SRC,
+        _DS_VIX_GATE,
+        "    if False:",
+    ),
+    (
+        "S1d the VIX gate reads the sign boundary (the two thresholds are conflated)",
+        SRC,
+        _DS_VIX_GATE,
+        "    if vix_level > sign_boundary:",
+    ),
+    # --- S2: the both-positive test (the right limb) ----------------------
+    (
+        "S2a the conjunction becomes a disjunction (either input alone suffices)",
+        SRC,
+        _DS_BOTH_POSITIVE,
+        "    if us_growth_surprise > sign_boundary or us_vs_row_rate_diff > sign_boundary:",
+    ),
+    (
+        "S2b only the growth input is tested (the rate sign is ignored)",
+        SRC,
+        _DS_BOTH_POSITIVE,
+        "    if us_growth_surprise > sign_boundary:",
+    ),
+    (
+        "S2c only the rate input is tested (the growth sign is ignored)",
+        SRC,
+        _DS_BOTH_POSITIVE,
+        "    if us_vs_row_rate_diff > sign_boundary:",
+    ),
+    (
+        "S2d the boundaries become inclusive (a signed input AT zero reaches right)",
+        SRC,
+        _DS_BOTH_POSITIVE,
+        "    if us_growth_surprise >= sign_boundary and us_vs_row_rate_diff >= sign_boundary:",
+    ),
+    (
+        "S2e the BOTH inputs reverse sign (negative surprises reach the right limb)",
+        SRC,
+        _DS_BOTH_POSITIVE,
+        "    if us_growth_surprise < sign_boundary and us_vs_row_rate_diff < sign_boundary:",
+    ),
+    # --- S3: the branch ORDER (most-severe-first) ------------------------
+    # Section 6.7 requires the crisis reading to win when both gates would fire.
+    # Swapping the two tests relabels every high-VIX strong-data reading from
+    # left to right — the exact silent relabelling the docstring warns about.
+    (
+        "S3a the left gate is tested SECOND (a high VIX with strong data becomes right)",
+        SRC,
+        '    if vix_level > vix_threshold:\n        return "left"\n'
+        "    if us_growth_surprise > sign_boundary and us_vs_row_rate_diff > sign_boundary:\n"
+        '        return "right"',
+        "    if us_growth_surprise > sign_boundary and us_vs_row_rate_diff > sign_boundary:\n"
+        '        return "right"\n'
+        '    if vix_level > vix_threshold:\n        return "left"',
+    ),
+    # --- S4: the neutral-input derivation --------------------------------
+    (
+        "S4a the neutral test uses AND (it can never fire, since a both-zero input"
+        " is not both-positive either) — collapses a two-cause label into one",
+        SRC,
+        _DS_NEUTRAL_RETURN,
+        "    return us_growth_surprise == 0.0 and us_vs_row_rate_diff == 0.0",
+    ),
+    (
+        "S4b the neutral test reads the VIX instead of the signed inputs",
+        SRC,
+        _DS_NEUTRAL_RETURN,
+        "    return vix_level == 0.0",
+    ),
+    (
+        "S4c the neutral test is disabled (the middle limb's neutral cause is lost)",
+        SRC,
+        _DS_NEUTRAL_RETURN,
+        "    return False",
+    ),
+    (
+        "S4d the neutral test is unconditional (every middle label claims neutrality)",
+        SRC,
+        _DS_NEUTRAL_RETURN,
+        "    return True",
+    ),
+    (
+        "S4e the neutral test uses a tolerance band instead of exact zero",
+        SRC,
+        _DS_NEUTRAL_RETURN,
+        "    return abs(us_growth_surprise) < 1e-6 or abs(us_vs_row_rate_diff) < 1e-6",
+    ),
+    # --- S5: the guards --------------------------------------------------
+    (
+        "S5a the finiteness guard removed (nan reaches the label, per the probe)",
+        SRC,
+        _DS_FINITE_GUARD,
+        '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
+        "            value = getattr(self, name)\n"
+        "            if False:",
+    ),
+    (
+        "S5b the finiteness guard tests only the VIX (two fields unguarded)",
+        SRC,
+        _DS_FINITE_GUARD,
+        '        for name in ("vix_level",):\n'
+        "            value = getattr(self, name)\n"
+        "            if not math.isfinite(value):",
+    ),
+    (
+        "S5c the finiteness guard is inverted (every finite input is refused)",
+        SRC,
+        _DS_FINITE_GUARD,
+        '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
+        "            value = getattr(self, name)\n"
+        "            if math.isfinite(value):",
+    ),
+    # --- S6: the warnings ------------------------------------------------
+    (
+        "S6a the left-limb warning never fires",
+        SRC,
+        _DS_WARN_LEFT,
+        "    if False:\n        warnings.append(",
+    ),
+    (
+        "S6b the middle-neutral warning never fires",
+        SRC,
+        _DS_WARN_MIDDLE,
+        '    elif side == "middle":',
+    ),
+    (
+        "S6c the middle warning fires on EVERY middle label (neutrality unstated)",
+        SRC,
+        _DS_WARN_MIDDLE,
+        '    elif side == "middle" and not _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):',
+    ),
+    (
+        "S6d the right limb emits noise (its own name is its reason, so this is"
+        " a warning that says nothing)",
+        SRC,
+        '    if side == "left":\n        warnings.append(',
+        '    if side == "left" or side == "right":\n        warnings.append(',
+    ),
+    # --- S7: the published value ------------------------------------------
+    (
+        "S7a the published side is a constant",
+        SRC,
+        _DS_SIDE_KEY,
+        '            "side": "middle",',
+    ),
+    (
+        "S7b the neutral flag is published as a constant",
+        SRC,
+        _DS_NEUTRAL_KEY,
+        '            "is_neutral_input": False,',
+    ),
+    (
+        "S7c the published VIX is the sign boundary (inputs conflated in the output)",
+        SRC,
+        _DS_VIX_KEY,
+        '            "vix_level": round(sign_boundary, 6),',
+    ),
+    (
+        "S7d the published growth surprise is the rate differential",
+        SRC,
+        _DS_GROWTH_KEY,
+        '            "us_growth_surprise": round(rate_diff, 6),',
+    ),
+    (
+        "S7e the published rate differential is the growth surprise",
+        SRC,
+        _DS_RATEDIFF_KEY,
+        '            "us_vs_row_rate_diff": round(growth, 6),',
+    ),
+    (
+        "S7f the published vix_above flag is the rate comparison",
+        SRC,
+        _DS_VIX_ABOVE_KEY,
+        '            "vix_above_threshold": rate_above,',
+    ),
+    (
+        "S7g the published growth_above flag is the rate comparison",
+        SRC,
+        _DS_GROWTH_ABOVE_KEY,
+        '            "growth_above_boundary": rate_above,',
+    ),
+    (
+        "S7h the published rate_above flag is the growth comparison",
+        SRC,
+        _DS_RATE_ABOVE_KEY,
+        '            "rate_above_boundary": growth_above,',
+    ),
+    (
+        "S7i the published vix_threshold is the sign boundary (label not re-derivable)",
+        SRC,
+        _DS_VIX_THRESH_KEY,
+        '            "vix_threshold": sign_boundary,',
+    ),
+    (
+        "S7j the published sign_boundary is the VIX gate (label not re-derivable)",
+        SRC,
+        _DS_SIGN_BOUNDARY_KEY,
+        '            "sign_boundary": vix_threshold,',
+    ),
+    (
+        "S7k the published base rates are transposed (left and right swapped)",
+        SRC,
+        _DS_BASE_RATES,
+        '    "left": 204 / 3025,\n    "right": 1750 / 3025,\n    "middle": 1071 / 3025,',
+    ),
+    # --- S8: the contract and the confidence ------------------------------
+    (
+        "S8a the unit is misdeclared as a percent",
+        SRC,
+        _DS_UNIT,
+        '        unit="percent",',
+    ),
+    (
+        "S8b the confidence drops the heuristic penalty",
+        SRC,
+        _DS_HEURISTIC_FLAG,
+        "                is_heuristic_not_calibrated=False,",
+    ),
+    # --- C3: the dollar-smile config accessors and validator --------------
+    (
+        "C3a the VIX-gate accessor is a hardcoded literal",
+        CONFIG,
+        _DS_VIX_PROP,
+        "        return 25.0",
+    ),
+    (
+        "C3b the VIX-gate accessor returns the sign boundary leaf instead",
+        CONFIG,
+        _DS_VIX_PROP,
+        "        return float(self.dollar_smile_sign_boundary.value)",
+    ),
+    (
+        "C3c the sign-boundary accessor returns the VIX gate leaf instead",
+        CONFIG,
+        _DS_BOUNDARY_PROP,
+        "        return float(self.dollar_smile_vix_threshold.value)",
+    ),
+    (
+        "C3d the calibration helper reports calibrated unconditionally",
+        SRC,
+        _DS_CALIBRATED_READ,
+        "    return True",
+    ),
+    (
+        "C3e the calibration helper reads ONLY the VIX gate (the sign boundary's"
+        " placeholder stops costing confidence)",
+        SRC,
+        _DS_CALIBRATED_READ,
+        '    return settings.is_calibrated("fx_carry.dollar_smile_vix_threshold")',
+    ),
+    (
+        "C3f the calibration helper reads ONLY the sign boundary",
+        SRC,
+        _DS_CALIBRATED_READ,
+        '    return settings.is_calibrated("fx_carry.dollar_smile_sign_boundary")',
+    ),
+    (
+        "C3g the calibration helper reads a CIP band instead",
+        SRC,
+        _DS_CALIBRATED_READ,
+        '    return settings.is_calibrated("fx_carry.notable_deviation_pct")',
+    ),
+    (
+        "C3h the non-positive VIX-gate validator removed",
+        CONFIG,
+        _DS_VIX_VALIDATOR,
+        "        if False:",
+    ),
 ]
 
 
@@ -691,6 +1079,7 @@ def run_tests() -> bool:
             "pytest",
             "tests/models/test_cip_check.py",
             "tests/models/test_carry_score.py",
+            "tests/models/test_dollar_smile_regime.py",
             "tests/test_infrastructure.py",
             "-q",
             "--no-header",
@@ -754,7 +1143,9 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     total = len(_MUTATIONS)
     killed = total - len(survivors)
     print(
-        f"MUTATION SWEEP — fx_carry (cip_check + carry_score): {killed}/{total} killed", flush=True
+        f"MUTATION SWEEP — fx_carry (cip_check + carry_score + dollar_smile_regime): "
+        f"{killed}/{total} killed",
+        flush=True,
     )
     print("=" * 74)
     if survivors:

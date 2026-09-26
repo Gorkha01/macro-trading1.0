@@ -357,12 +357,18 @@ def test_the_two_copies_agree_on_the_real_catalogue() -> None:
 
     Skipped when ``git`` is unavailable, since the ground truth depends on it.
 
-    **Marked ``slow``, measured at ~174s** — it must ``exec`` all 40 sweeps (each
-    imports the engine) to obtain the real catalogue. The three fast structural
-    guards above it catch the same regression class at ~0.01s each; this one is the
-    exhaustive backstop, so deselect it with ``-m "not slow"`` on a tight loop, not
-    by deleting it.
+    **Marked ``slow``, re-measured at D-110 to ~350 s** — it must ``exec`` all 45
+    sweeps (each imports the engine) to obtain the real catalogue. The three fast
+    structural guards above it catch the same regression class at ~0.01s each;
+    this one is the exhaustive backstop, so deselect it with ``-m "not slow"`` on
+    a tight loop, not by deleting it.
     """
+    # D-110: this test outgrew `--timeout=300`. The catalogue grew to 45 sweeps
+    # AND `mutation_fx_carry.py` grew from 71 to 114 mutations, so the per-test
+    # budget in `pyproject.toml` was raised to 600 s against a measured 349.78 s.
+    # A bound below the real worst case kills a CORRECT test, which is why the
+    # measurement is recorded here next to the marker that hides this test from a
+    # default run.
     # `git` is a fixed absolute-free argv with no shell and no user input, so the
     # partial-path and untrusted-input warnings do not apply here.
     if (

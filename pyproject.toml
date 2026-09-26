@@ -204,12 +204,22 @@ pythonpath = ["src", "tools"]
 # still hang forever. There is now a per-test limit.
 #
 # `--timeout=300` is DERIVED, not chosen: the slowest legitimate offline test
-# measures **162 s** (`test_the_two_copies_agree_on_the_real_catalogue`, which
-# loads all 42 sweeps), so 300 s clears the worst real case by ~1.9x and still
-# catches the pathological hang (measured >40 min). A timeout BELOW the real
-# worst case is worse than none: it kills a correct test, and on `win32` the kill
-# leaves no `finally` — file-based protection (the sweep sidecars) is the only
-# thing that survives, which is why the bound and the sidecars are complements.
+# measures **349.78 s** (`test_the_two_copies_agree_on_the_real_catalogue`, which
+# loads all 45 sweeps and execs each one), so 300 s NO LONGER clears it and this
+# bound is now **600 s** — ~1.7x the measured worst case, still catching the
+# pathological hang (measured >40 min). A timeout BELOW the real worst case is
+# worse than none: it kills a correct test, and on `win32` the kill leaves no
+# `finally` — file-based protection (the sweep sidecars) is the only thing that
+# survives, which is why the bound and the sidecars are complements.
+#
+# **D-110 raised this from 300 to 600, and the reason is worth keeping.** The
+# prior value was derived from a **162 s** measurement against 42 sweeps. Both
+# numbers moved: the catalogue grew to 45 sweeps, and `mutation_fx_carry.py`
+# itself grew from 71 to 114 mutations, so the agreement test now execs a larger
+# module per sweep. Measured at D-110 with `--timeout=900`: **349.78 s, PASS**.
+# The 300 s bound was therefore killing a correct test — the exact failure mode
+# the paragraph above warns about — and it was found because the slow marker was
+# run EXPLICITLY rather than assumed to be covered by the default set.
 #
 # `--timeout-method` is left at the default (`signal` where SIGALRM exists,
 # `thread` on win32). It MUST NOT be pinned to `signal`: on this platform that
@@ -219,13 +229,15 @@ pythonpath = ["src", "tools"]
 # checked between tests and cannot interrupt one, so it is a backstop for "many
 # tests each under the per-test limit" rather than a substitute for it. Measured
 # offline total: ~323 s; the full `-m live` path is the unbounded one this caps.
-addopts = "-ra --strict-markers --strict-config -m 'not live and not slow' --timeout=300 --session-timeout=5400"
+# It still clears 5400 s with the raised per-test bound: the slow test is the
+# only one near the limit and it is deselected by default.
+addopts = "-ra --strict-markers --strict-config -m 'not live and not slow' --timeout=600 --session-timeout=5400"
 markers = [
     "live: hits a real external data source; excluded from default CI runs",
     "offline: no network access required",
     "golden: hand-verified expected-value test (Section 21.2 Step 4)",
     "warning_path: proves a ModelResult.warnings condition actually fires (Section 21.2 Step 5)",
-    "slow: loads all 42 mutation sweeps (~4 min); correctness is unaffected by deselection",
+    "slow: loads all 45 mutation sweeps (~6 min); correctness is unaffected by deselection",
 ]
 
 [dependency-groups]

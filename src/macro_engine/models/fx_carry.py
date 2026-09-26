@@ -1,10 +1,11 @@
 """Module 9 — FX Carry / Parity: covered interest parity and its deviations.
 
-Section 6.7 gives this module three functions. This file implements two of them,
-:func:`cip_check` (D-108) and :func:`carry_score` (D-109); ``dollar_smile_regime``
-will join them here. Section 6.7 also supplies a **reference implementation** for
-each — so these are stubs to UPGRADE, not functions to invent — and the reference
-implementation of :func:`cip_check` is the simplest possible form::
+Section 6.7 gives this module three functions, and all three now live here:
+:func:`cip_check` (D-108), :func:`carry_score` (D-109) and
+:func:`dollar_smile_regime` (D-110), which completes Module 9. Section 6.7 also
+supplies a **reference implementation** for each — so these are stubs to
+UPGRADE, not functions to invent — and the reference implementation of
+:func:`cip_check` is the simplest possible form::
 
     implied_forward = spot * (1 + i_domestic) / (1 + i_foreign)
     deviation_pct   = (forward - implied_forward) / implied_forward * 100
@@ -109,11 +110,14 @@ __all__ = [
     "CarryOutcome",
     "CarryScoreInputs",
     "DayCountBasis",
+    "DollarSmileInputs",
+    "DollarSmileSide",
     "FundingStressSide",
     "QuoteConvention",
     "StressSeverity",
     "carry_score",
     "cip_check",
+    "dollar_smile_regime",
 ]
 
 #: Money-market day-count bases, and the number of days each defines a year as.
@@ -148,6 +152,47 @@ StressSeverity = Literal["none", "notable", "extreme"]
 #: financed abroad. ``"flat"`` is an exactly zero differential, where there is
 #: no carry to earn in either direction and the score is exactly zero.
 CarryOutcome = Literal["long_domestic", "long_foreign", "flat"]
+
+#: Which side of the **dollar smile** the inputs place the currency on.
+#:
+#: The smile is the U-shaped empirical relation between global risk appetite and
+#: the dollar: USD strengthens at BOTH extremes and is weakest in the middle.
+#: ``"left"`` is the risk-off/crisis limb (safe-haven demand), ``"right"`` is the
+#: US-outperformance limb (a durable, rate/growth-driven bid), and ``"middle"``
+#: is synchronized global growth, where diversification flows out of the dollar
+#: dominate and it is typically weak. The three members are NOT ordered by
+#: severity despite the model testing them most-severe-first: the left and right
+#: limbs are both "USD strong" and are distinguished by WHY, which is what makes
+#: the left limb reversal-prone and the right limb durable.
+DollarSmileSide = Literal["left", "right", "middle"]
+
+#: The label mix :func:`_dollar_smile_side` produces over the enumeration that
+#: proves every branch reachable, as DECLARED CONSTANTS rather than values
+#: recomputed at call time.
+#:
+#: **They are published because a classifier whose modal output is one label
+#: reports construction rather than economics** (D-029/D-047), and this one is
+#: close to that: on a uniform grid over the whole plausible domain the middle
+#: limb is reached on about a third of the space and the right limb on well under
+#: a tenth, because "both signed inputs strictly positive" is a much smaller
+#: region than "either is not". A reader who sees only the label cannot tell that
+#: from a finding.
+#:
+#: The enumeration is the 3 025-point grid the live check re-runs: ``vix_level``
+#: at every 0.5 from 0 to 60 (121 points) crossed with both signed inputs drawn
+#: from ``{-1.0, -1e-9, 0.0, +1e-9, +1.0}`` (25 points each). It is a
+#: deliberate over-representation of near-zero inputs, which is the region the
+#: zero-case decision is about; a coarser sign-only grid would hide it.
+#:
+#: **A share over an ENUMERABLE space is not a base rate over history**, and the
+#: two can disagree in either direction (D-050 measured the same confusion
+#: running the other way). These are properties of the partition and of the grid,
+#: not occurrence frequencies, and the model says so in ``limitations``.
+_DOLLAR_SMILE_BASE_RATES: dict[str, float] = {
+    "left": 1750 / 3025,
+    "right": 204 / 3025,
+    "middle": 1071 / 3025,
+}
 
 
 class CIPInputs(BaseModel):
@@ -318,6 +363,29 @@ def _cip_bands_are_calibrated() -> bool:
     """
     settings = get_settings()
     return settings.is_calibrated("fx_carry.notable_deviation_pct")
+
+
+def _dollar_smile_thresholds_are_calibrated() -> bool:
+    """Whether the TWO leaves :func:`dollar_smile_regime` leans on are calibrated.
+
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
+    caller). **Both** leaves cost confidence, because both are judgements rather
+    than measurements: the VIX gate decides which limb a crisis reading lands on,
+    and the sign boundary decides whether an input establishes US
+    outperformance. A calibration of either alone would still leave the label
+    resting on a placeholder, so this helper reads both and reports calibrated
+    only when neither is a placeholder.
+
+    Deliberately separate from :func:`_cip_bands_are_calibrated` and
+    :func:`_carry_floor_is_calibrated`, for the reason the first of those
+    docstrings gives: a generic ``_thresholds_are_calibrated`` would let a
+    future calibration of one function's leaf silently change another's
+    confidence.
+    """
+    settings = get_settings()
+    return settings.is_calibrated("fx_carry.dollar_smile_vix_threshold") and settings.is_calibrated(
+        "fx_carry.dollar_smile_sign_boundary"
+    )
 
 
 def _carry_floor_is_calibrated() -> bool:
@@ -972,6 +1040,475 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
             "against one produced without it. They divide by different quantities, "
             "so the difference is an artefact of the floor rather than a "
             "difference in attractiveness.",
+        ],
+    )
+
+
+class DollarSmileInputs(BaseModel):
+    """The three signed/level inputs Section 6.7's dollar-smile classifier reads.
+
+    **Every field's UNIT is stated here, because the same three bare floats can
+    be read several ways and two of the readings move a threshold without
+    raising:**
+
+    * ``vix_level`` is a **VIX INDEX LEVEL**, in the index's own points. CBOE's
+      VIX is quoted in annualised percentage points, so a reading of ``25`` means
+      roughly 25 %/yr implied. It is **not** a decimal and **not** a percent
+      fraction: a caller wiring in a volatility estimator from this project gets
+      a *decimal* from ``models/risk.py``'s ``realized_vol_simple`` (which in
+      fact publishes **percent**, a third unit), and any of those spellings puts
+      the reading on the wrong side of every plausible gate.
+    * ``us_growth_surprise`` is a **signed surprise**, in the growth series' own
+      percentage points — the actual less the consensus, so **exactly zero is
+      the genuinely neutral value** and is reached whenever a release lands on
+      consensus. A **nowcast is not a consensus** (see the ``inflation_surprise``
+      entry in ``config/series_registry.yaml``), so this is a caller-supplied
+      quantity on this installation, not something the model fetches.
+    * ``us_vs_row_rate_diff`` is a **signed rate differential** in the caller's
+      rate unit, date-matched to the surprise above. Only its SIGN is consumed.
+
+    Two refusals, both closing a way a confident label could be produced from an
+    input that carries no information. **Non-finite is the important one, and the
+    probe measured why**: with the specification's bare comparisons, ``nan``
+    fails ``> threshold`` and falls through to the **middle** label — a
+    confident "synchronized global growth" claim produced by a missing value —
+    while ``+inf`` passes ``> threshold`` and is reported as a full-blown
+    **left** crisis. Neither raises, and both look exactly like an ordinary
+    classification (D-078's class, in a classifier rather than an arithmetic
+    function).
+
+    There is deliberately **no** guard on the sign of any input: a negative
+    ``us_growth_surprise`` is the ordinary "US disappointed" reading, not a
+    defect.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    vix_level: float = Field(
+        description=(
+            "The VIX INDEX LEVEL in the index's own points (25 means roughly "
+            "25 %/yr implied). NOT a decimal, NOT a percent fraction."
+        ),
+    )
+    us_growth_surprise: float = Field(
+        description=(
+            "US growth surprise in the growth series' own percentage points: "
+            "actual less consensus. Exactly 0.0 is the neutral value."
+        ),
+    )
+    us_vs_row_rate_diff: float = Field(
+        description=(
+            "US less rest-of-world money-market rate differential, in the "
+            "caller's rate unit, date-matched to the surprise. Only the sign "
+            "is consumed."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_domain(self) -> DollarSmileInputs:
+        """Refuse a non-finite input, because it produces a confident LABEL.
+
+        One branch, and it is the branch the probe justified: a bare ``nan``
+        reaches the middle label and a bare ``inf`` reaches the left one, so an
+        unguarded classifier answers a missing value with a regime claim. The
+        message names the measured consequence rather than the mere fact, because
+        the consequence is what makes the guard load-bearing.
+
+        No sign or range guard is added: unlike an exchange rate or a
+        volatility, a negative surprise and a negative differential are ordinary
+        readings, and a VIX level far above or below the gate is exactly what the
+        gate exists to classify.
+        """
+        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{name} is {value!r}, which is not finite. This classifier "
+                    f"returns a confident LABEL for any input, so a non-finite "
+                    f"value would be published as a regime claim: nan fails every "
+                    f"'>' comparison and falls through to the middle "
+                    f"'synchronized global growth' label, and +inf passes the VIX "
+                    f"gate and is reported as a full left-limb crisis. Neither "
+                    f"raises on its own (D-078)."
+                )
+        return self
+
+
+def _dollar_smile_side(
+    vix_level: float,
+    us_growth_surprise: float,
+    us_vs_row_rate_diff: float,
+    *,
+    vix_threshold: float,
+    sign_boundary: float,
+) -> DollarSmileSide:
+    """Map the three inputs onto the dollar smile's three limbs.
+
+    The order is Section 6.7's own — **most-severe-first** — and it is load-
+    bearing rather than cosmetic: a crisis reading with strong US data is
+    classified as the left limb, because the safe-haven bid is what is driving
+    the currency and the data is not what the market is trading. Reordering
+    ``_dollar_smile_side`` so the growth branch is tested first would silently
+    relabel every such reading as durable US outperformance.
+
+    Every branch is reachable, and that was **measured rather than assumed**
+    (D-050's hazard, which this classifier's shape is the textbook example of).
+    Enumerating the space on the shipped thresholds:
+
+    ==================  ==============================
+    region              side
+    ==================  ==============================
+    ``vix > 25.0``      ``left`` (all growth/diff signs)
+    ``vix <= 25.0``     ``right`` iff **both** inputs are strictly positive
+    ``vix <= 25.0``     ``middle`` otherwise — including either input at 0.0
+    ==================  ==============================
+
+    **The left gate does NOT make the branches behind it unreachable**, because
+    the VIX input is a continuous level rather than a flag: the space below the
+    gate is the whole ``vix <= 25`` half-plane, and both inner labels are
+    produced inside it. That is the difference between this classifier and the
+    D-050 case it superficially resembles.
+
+    :param sign_boundary: the value each signed input must **strictly exceed**.
+        Ships at ``0.0``, which is the specification's own ``> 0`` and which
+        gives the **zero case to the middle branch** — a neutral input is not
+        evidence of US outperformance.
+    """
+    if vix_level > vix_threshold:
+        return "left"
+    if us_growth_surprise > sign_boundary and us_vs_row_rate_diff > sign_boundary:
+        return "right"
+    return "middle"
+
+
+def _dollar_smile_is_neutral(us_growth_surprise: float, us_vs_row_rate_diff: float) -> bool:
+    """Whether an exactly-neutral signed input is among the middle branch's causes.
+
+    A middle label has two very different causes and a reader cannot tell them
+    apart from the label: the inputs may point *against* US outperformance (a
+    negative surprise, a negative differential), or one of them may be sitting
+    at **exactly zero**, which is the absence of a signal rather than a signal
+    against. The second cause matters because a surprise series prints exactly
+    ``0.0`` whenever a release lands on consensus — it is a value real data
+    takes, not a mathematical edge case (D-040's class).
+
+    Derived from the same expression the classifier uses rather than restated,
+    so the two cannot disagree about which values are neutral: a value is
+    neutral exactly when it fails ``> 0.0`` by equality.
+    """
+    return us_growth_surprise == 0.0 or us_vs_row_rate_diff == 0.0
+
+
+def _dollar_smile_limitations(
+    *,
+    vix_threshold: float,
+    sign_boundary: float,
+    base_rates: dict[str, float],
+) -> list[str]:
+    """What this result cannot tell you, on every call.
+
+    Distinct from ``warnings``, which report a condition of this run. The first
+    entry is Section 6.7's own disclosure — *"the thresholds are qualitative …
+    refine against history before trusting at size"* — and it belongs HERE
+    rather than in ``warnings``: a warning is a condition of *this* run, and that
+    sentence holds on every run. (D-109 made the same move for the specification's
+    "steamroller" sentence.)
+    """
+    return [
+        "THE THRESHOLDS ARE QUALITATIVE AND UNCALIBRATED, and this is the "
+        "limitation that matters most. Section 6.7 says so in its own words — "
+        "'refine thresholds against history before trusting at size' — and both "
+        f"leaves ship as placeholders: the VIX gate {vix_threshold} and the sign "
+        f"boundary {sign_boundary}. The label is a REPORTING category, never a "
+        "probability, and it is priced into this result's confidence.",
+        "The label is a CATEGORY, not a position, a forecast or a magnitude. "
+        "Nothing here sizes anything, and 'right (US outperformance)' does not "
+        "mean the dollar will appreciate — it names which limb of the smile the "
+        "current inputs sit on and what that limb's historical character is.",
+        "There are only THREE limbs and no magnitude within a limb. A VIX of "
+        "25.1 and a VIX of 80 produce the same label and the same interpretation "
+        "text, because the classifier is a partition of the input space rather "
+        "than a function of distance from a boundary.",
+        "The left limb's label asserts that USD strength is 'reversal-prone' and "
+        "the right limb's that it is 'durable'. Both are EMPIRICAL "
+        "regularities about past episodes, not properties of the inputs — no "
+        "data in this result supports either claim, and a limb can persist for "
+        "years in either direction.",
+        "A US growth SURPRISE requires a consensus forecast, and this "
+        "installation cannot reach one — `series_registry.yaml`'s "
+        "`inflation_surprise` entry records the same block, because a nowcast is "
+        "not a consensus. The surprise is therefore a CALLER-SUPPLIED input on "
+        "this build, and this model neither fetches it nor can verify its "
+        "vintage or its definition of consensus.",
+        "The three inputs must be DATE-MATCHED and the two signed ones must be "
+        "on a scale the caller is willing to compare. Only the sign of the "
+        "signed inputs is consumed, so a unit mismatch between them cannot flip "
+        "a label — but a STALE surprise paired with a current VIX can put the "
+        "reading on the wrong limb, and nothing here can detect that.",
+        "One reading, one date. There is no smoothing, no hysteresis and no "
+        "persistence requirement, so a single release printing at exactly "
+        "consensus moves the label to the middle and the next day's print can "
+        "move it back. Section 6.7's model is a snapshot classifier and this "
+        "function does not add the state that would stabilise it.",
+        f"The base rates travel with the result: over this build's enumeration "
+        f"the middle limb is reachable on {base_rates['middle']:.1%} of the "
+        f"space, the left on {base_rates['left']:.1%} and the right on "
+        f"{base_rates['right']:.1%}. A share over an ENUMERABLE space is not a "
+        f"base rate over history — the inputs are correlated in practice and a "
+        f"uniform grid over-represents the mixed combinations the economy "
+        f"rarely produces — so neither number should be read as an occurrence "
+        f"frequency.",
+        "Provenance is the caller's. This model does not fetch and cannot verify "
+        "the observation dates or the construction of the three inputs.",
+    ]
+
+
+def _dollar_smile_warnings(
+    *,
+    side: DollarSmileSide,
+    vix_level: float,
+    us_growth_surprise: float,
+    us_vs_row_rate_diff: float,
+    vix_threshold: float,
+) -> list[str]:
+    """The conditions of THIS run, in severity order.
+
+    Two branches, and each reports something a reader could not recover from the
+    label alone: which branch fired and why (D-094's rule — a classifier's
+    output must travel with the inputs that produced it), and, for the middle
+    limb, whether it was reached by a NEUTRAL input or by an outright negative
+    one. A warning that fired on every ordinary call would be noise, so the
+    right limb emits nothing — it is the one limb whose own name is its reason.
+    """
+    warnings: list[str] = []
+    if side == "left":
+        warnings.append(
+            f"VIX {vix_level:.2f} is above the configured gate {vix_threshold}, so "
+            f"the dollar is classified on the smile's LEFT (risk-off/crisis) limb "
+            f"regardless of the growth surprise "
+            f"({us_growth_surprise:+.4f}) and the rate differential "
+            f"({us_vs_row_rate_diff:+.4f}). USD strength in this state is read as "
+            f"safe-haven demand rather than as US outperformance, which is the "
+            f"part that is reversal-prone — but the growth and rate inputs were "
+            f"NOT what decided the label, so a later VIX fall will reclassify "
+            f"without either of them changing."
+        )
+    elif side == "middle" and _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):
+        warnings.append(
+            f"The middle 'synchronized global growth' label was reached with a "
+            f"NEUTRAL input — growth surprise {us_growth_surprise:+.4f}, rate "
+            f"differential {us_vs_row_rate_diff:+.4f} — because a value at "
+            f"exactly {0.0} does not exceed the sign boundary. Zero is the ABSENCE "
+            f"of a US-outperformance signal, not evidence against one: a release "
+            f"landing on consensus prints exactly this, and the specification's "
+            f"'> 0' test cannot distinguish the two. Do not read this label as "
+            f"the inputs opposing USD strength."
+        )
+    return warnings
+
+
+def dollar_smile_regime(inputs: DollarSmileInputs) -> ModelResult:
+    """Classify the dollar smile's limb from VIX, a growth surprise and a rate gap.
+
+    ``value`` is a ``dict`` carrying the label and every quantity the label was
+    derived from, so the branch that fired can be reconstructed from the output
+    alone — which is the whole discipline for a classifier, because a threshold
+    classifier returns a confident category for **every** input, including the
+    ones it cannot distinguish:
+
+    ``side``
+        ``"left"`` (risk-off/crisis), ``"right"`` (US outperformance) or
+        ``"middle"`` (synchronized global growth).
+    ``is_neutral_input``
+        Whether an exactly-zero signed input is among the middle limb's causes.
+        False whenever the label is not ``"middle"``, and false for a middle
+        limb reached by inputs that point *against* US outperformance — those
+        two causes are different claims and the label cannot hold both.
+    ``vix_above_threshold`` / ``growth_above_boundary`` / ``rate_above_boundary``
+        The three comparisons, published so a reader can see WHICH gate fired
+        without re-deriving it from the inputs and the thresholds.
+    ``vix_threshold`` / ``sign_boundary``
+        The configured leaves the comparisons were made against, so a label can
+        be re-derived from the result after either leaf moves.
+
+    **The input is a model rather than three positional floats, deliberately.**
+    ``vix_level``, a growth surprise and a rate differential are three bare
+    numbers whose units are unrecoverable, and two of the three plausible
+    readings of ``vix_level`` move the gate by 100x without raising anything.
+    Section 6.7 declares them as three function parameters; a unit-contract
+    that no signature can carry belongs in a type that can, and
+    :class:`DollarSmileInputs` is where the four guard branches live.
+
+    **``confidence`` is computed, not hardcoded.** Section 6.7's reference
+    implementation carries ``confidence=0.4`` with a comment; Section 22.8
+    forbids a hardcoded confidence, and the value is derived from the stated
+    fact that both thresholds are uncalibrated placeholders. ``direction`` is
+    left unset on purpose: the label is a **categorical member of a three-way
+    partition**, and no member of it is a direction — ``"left"`` and ``"right"``
+    both describe USD strength and are distinguished by cause, so a
+    ``direction`` field would have to invent an ordering the model does not have.
+
+    The function refuses rather than repairs: a non-finite input is rejected at
+    construction by :class:`DollarSmileInputs`, so a result that exists is a
+    result whose inputs carried information.
+    """
+    settings = get_settings()
+    fx_carry = settings.fx_carry
+    vix_threshold = fx_carry.dollar_smile_vix_level
+    sign_boundary = fx_carry.dollar_smile_sign_boundary_value
+
+    vix_level = inputs.vix_level
+    growth = inputs.us_growth_surprise
+    rate_diff = inputs.us_vs_row_rate_diff
+
+    vix_above = vix_level > vix_threshold
+    growth_above = growth > sign_boundary
+    rate_above = rate_diff > sign_boundary
+
+    side = _dollar_smile_side(
+        vix_level,
+        growth,
+        rate_diff,
+        vix_threshold=vix_threshold,
+        sign_boundary=sign_boundary,
+    )
+    # `is_neutral_input` is only meaningful on the middle limb: on either of the
+    # other two the label is not the middle one, and a zero input had no say.
+    is_neutral = side == "middle" and _dollar_smile_is_neutral(growth, rate_diff)
+
+    if side == "left":
+        side_phrase = (
+            "left — risk-off/crisis: USD strength likely safe-haven driven and reversal-prone"
+        )
+    elif side == "right":
+        side_phrase = (
+            "right — US outperformance: USD strength likely durable and rate/growth-driven"
+        )
+    elif is_neutral:
+        side_phrase = (
+            "middle — synchronized global growth: USD likely weak, but a signed "
+            "input is exactly neutral, so this limb was NOT chosen on evidence "
+            "against US outperformance"
+        )
+    else:
+        side_phrase = (
+            "middle — synchronized global growth: USD likely weak, diversification flows dominate"
+        )
+
+    if side == "left":
+        because = f"VIX {vix_level:.2f} above the {vix_threshold} gate"
+    elif side == "right":
+        because = (
+            f"VIX {vix_level:.2f} at or below the {vix_threshold} gate with BOTH "
+            f"signed inputs above {sign_boundary}"
+        )
+    elif is_neutral:
+        because = (
+            f"VIX {vix_level:.2f} at or below the {vix_threshold} gate and a "
+            f"signed input at exactly {sign_boundary}"
+        )
+    else:
+        because = (
+            f"VIX {vix_level:.2f} at or below the {vix_threshold} gate and the "
+            f"signed inputs not both above {sign_boundary}"
+        )
+
+    return ModelResult(
+        model_name="dollar_smile_regime",
+        country="us",
+        as_of=utc_now(),
+        value={
+            "side": side,
+            "is_neutral_input": is_neutral,
+            "vix_level": round(vix_level, 6),
+            "us_growth_surprise": round(growth, 6),
+            "us_vs_row_rate_diff": round(rate_diff, 6),
+            "vix_above_threshold": vix_above,
+            "growth_above_boundary": growth_above,
+            "rate_above_boundary": rate_above,
+            "vix_threshold": vix_threshold,
+            "sign_boundary": sign_boundary,
+        },
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                is_heuristic_not_calibrated=not _dollar_smile_thresholds_are_calibrated(),
+                source_independence_count=0,
+                depends_on_unobservable=False,
+            )
+        ),
+        unit="categorical (dollar smile limb: 'left' | 'right' | 'middle')",
+        interpretation=f"Dollar smile {side}: {side_phrase} — {because}.",
+        context=(
+            f"VIX index level {vix_level:.2f} against a gate of {vix_threshold} "
+            f"(strictly greater is the left limb, so a reading of exactly "
+            f"{vix_threshold} is not left). US growth surprise "
+            f"{growth:+.6f} and US-less-rest-of-world rate differential "
+            f"{rate_diff:+.6f} against a sign boundary of {sign_boundary} "
+            f"(strictly greater is required, so a signed input of exactly "
+            f"{sign_boundary} does not establish US outperformance and the zero "
+            f"case therefore belongs to the middle limb). Branch tests: "
+            f"vix_above={vix_above}, growth_above={growth_above}, "
+            f"rate_above={rate_above}. Section 6.7's smile: USD strengthens at "
+            f"both extremes of global risk appetite and is weakest in the middle."
+        ),
+        inputs_used=[
+            "vix_level",
+            "us_growth_surprise",
+            "us_vs_row_rate_diff",
+        ],
+        assumptions=[
+            "`vix_level` is a VIX INDEX LEVEL in the index's own points (25 means "
+            "roughly 25 %/yr implied) — not a decimal and not a percent fraction.",
+            "`us_growth_surprise` is a signed surprise in the growth series' own "
+            "percentage points (actual less consensus), so exactly 0.0 is its "
+            "neutral value.",
+            "`us_vs_row_rate_diff` is a signed US-less-rest-of-world rate "
+            "differential in the caller's rate unit, date-matched to the surprise "
+            "above. Only its sign is consumed.",
+            "The three inputs describe the SAME date, and the state they describe "
+            "is stationary over the horizon the label is used for — no smoothing "
+            "or persistence rule is applied.",
+        ],
+        source_family=EvidenceSourceFamily.MARKET_FX,
+        warnings=_dollar_smile_warnings(
+            side=side,
+            vix_level=vix_level,
+            us_growth_surprise=growth,
+            us_vs_row_rate_diff=rate_diff,
+            vix_threshold=vix_threshold,
+        ),
+        limitations=_dollar_smile_limitations(
+            vix_threshold=vix_threshold,
+            sign_boundary=sign_boundary,
+            base_rates=_DOLLAR_SMILE_BASE_RATES,
+        ),
+        decision_relevance=(
+            "Module 9's regime-conditioning read, and the third and final "
+            "function of Module 9. It supersedes NOTHING named — Phases 0-4 built "
+            "no regime-conditioning model for the dollar — and it now FEEDS two "
+            "existing results: it conditions the carry read `carry_score` "
+            "produces, because a carry earned on the smile's LEFT limb is the "
+            "safe-haven-driven, reversal-prone version while the same carry on "
+            "the RIGHT limb is the durable one; and it pairs with `cip_check`'s "
+            "funding-stress reading, since a left-limb classification and a "
+            "notable CIP deviation are two independent descriptions of the same "
+            "risk-off state. Script-only today: the growth surprise needs a "
+            "consensus forecast this installation cannot reach, so the caller "
+            "supplies it and the live check is the only consumer."
+        ),
+        decision_prohibition=[
+            "Do NOT read the label as a trade or a forecast. It names which limb "
+            "of an empirical relation the inputs sit on; it says nothing about "
+            "when or whether the dollar moves, and 'right (US outperformance)' is "
+            "not a long-dollar recommendation.",
+            "Do NOT size on the limb. The thresholds are uncalibrated "
+            "placeholders, the partition has no magnitude within a limb, and a "
+            "reversal-prone limb can persist for years.",
+            "Do NOT treat a middle label as evidence against USD strength when "
+            "`is_neutral_input` is true. That label was reached because an input "
+            "sat exactly at zero — the absence of a signal — and the "
+            "specification's '> 0' test cannot tell that apart from a negative "
+            "reading.",
         ],
     )
 

@@ -9318,3 +9318,201 @@ sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shap
 **258 == 258** (D-035). **Delta against D-109's 3303 = exactly +4** = **two new
 tests × two copies**. **The sweep census is UNCHANGED at 45** — no sweep was
 added; the predicate inside every sweep's gate was corrected.
+
+---
+
+## D-111 — Module 9's `dollar_smile_regime`, completing Module 9 (2026-09-26) — **PHASE 5, Tier 5 = 12/23**
+
+**`dollar_smile_regime`** · Module **9 — FX Carry / Parity** ·
+`src/macro_engine/models/fx_carry.py` (**exists** — created D-108, extended D-109) ·
+`AGENTS.md:1047` (§6.7) · **supersedes NOTHING named** — Phase 0–4 built no
+regime-conditioning model for the dollar · **IMPLEMENTED (D-111)**.
+**Module 9 is now 3 of 3 — COMPLETE.**
+
+### What it is, and why the increment is not arithmetic
+
+A **three-way threshold classifier**: a `vix_level` gate (`> 25` → left limb), then a
+conjunction on two signed inputs (both `> 0` → right limb), else the middle limb. The
+specification's reference implementation is complete, so this is a **stub to UPGRADE**
+(D-096). **The failure mode to design against is not a crash — it is a label that LOOKS
+complete**: a threshold classifier returns a confident category for **every** input,
+including ones it cannot distinguish, and the `else` branch is where an unenumerated case
+lands. So the increment's work is **branch reachability** (D-050) and **threshold units**.
+
+### 1. The reachable set, MEASURED before any implementation code
+
+`.probe/dollar_smile_probe.py`, 3 025 points (`vix ∈ [0, 60]` step 0.5 × both signs from
+`{-1.0, -1e-9, 0.0, +1e-9, +1.0}`):
+
+```
+left   1750  57.85 %      middle   1071  35.40 %      right   204   6.74 %
+```
+
+**Exactly three limbs, and the left gate does NOT starve the branches behind it.** The
+reason is structural: `vix_level` is a **continuous level, not a flag**, so the region
+below the gate is the whole `vix <= 25` half-plane and **both** inner labels are produced
+inside it. **That is the difference between this classifier and the D-050 case it
+superficially resembles**, and both the classification and the reachability tests pin it.
+**The base rates travel with every result, labelled a property of the ENUMERATION rather
+than of history** (D-029/D-047 — a classifier whose modal output is one label reports
+construction, not economics).
+
+### 2. The three literals → config leaves, units named
+
+| literal | leaf | value | status | unit |
+|---|---|---|---|---|
+| `vix_level > 25` | `dollar_smile_vix_threshold` | `25.0` | `uncalibrated_illustrative` | **VIX INDEX LEVEL** (index points) |
+| `us_growth_surprise > 0` | `dollar_smile_sign_boundary` | `0.0` | `institutional_convention` | the inputs' own signed unit |
+| `us_vs_row_rate_diff > 0` | *(same leaf)* | `0.0` | `institutional_convention` | the inputs' own signed unit |
+
+**ONE leaf serves both `> 0` comparisons**: the zero is the *same zero* in both places, and
+two leaves would be two values that must always be equal — **D-053's** *"a parameter defined
+only relative to another"*. **`vix_level` gets D-108's `notable_deviation_pct` treatment**:
+spec value kept, unit named, **uncalibrated** status recorded, priced into
+`compute_confidence()`. The input model documents **three plausible readings** of the same
+bare float (`25` points · `0.25` decimal · `0.0025` percent fraction) and a caller wiring in
+`models/risk.py` gets a **fourth** (that function publishes **percent**); any of them moves
+the gate **100× without raising**.
+
+### 3. The zero case is its OWN decision
+
+**D-040's class** — *a neutral branch a continuous series really does take*. A surprise
+series prints **exactly `0.0`** when a release lands on consensus, and the spec's `> 0`
+sends it to `else`, reporting *"synchronized global growth"* for an input carrying **no
+positive US-outperformance signal**. **Three candidate readings were considered and the
+reasoning is the deliverable:**
+
+* a small positive **dead-band** — **REJECTED**: its width would have to be **measured**,
+  and nothing here can measure it (inventing one is the very defect being fixed);
+* give the zero case to the **right** limb — **REJECTED**: it asserts US outperformance from
+  an input carrying none;
+* **KEPT: the spec's `> 0`, the MIDDLE limb owns the zero case, and `is_neutral_input` is
+  published** — plus a **warning** — so a reader can tell the middle limb's two very
+  different causes apart (inputs pointing *against* US outperformance vs an input at
+  **exactly zero**, i.e. the *absence* of a signal).
+
+`_dollar_smile_is_neutral` is **derived from the same expression the classifier uses**
+(`== 0.0`, the exact failure mode of `> 0` by equality), so the two cannot disagree.
+
+### 4. `confidence = 0.4` gone; the standing caveat moved to `limitations`
+
+Computed per §22.8 from `is_heuristic_not_calibrated=not _dollar_smile_thresholds_are_calibrated()`
+— which reads **BOTH** leaves, because calibrating one alone still leaves the label on a
+placeholder. **Measured live: 0.5**, against the retired `0.4`. The spec's *"the thresholds
+are qualitative … refine against history before trusting at size"* holds on **every** run, so
+it belongs in **`limitations`** (8 entries) — the move D-109 made for the "steamroller"
+sentence. **`unit` names it a CATEGORY**: `"categorical (dollar smile limb: 'left' | 'right' |
+'middle')"`. **`direction` is deliberately UNSET, with the reason stated**: no member of a
+three-way partition is a direction — `"left"` and `"right"` *both* describe USD strength and
+are distinguished by **cause** — and a test pins `direction is None` on all three limbs.
+
+### 5. The mechanical hazard fired exactly as predicted
+
+`check_targets` refused on the **first** `sweep_health.py` run after the module edit: **`K6g`
+AMBIGUOUS (2 occurrences)** — the new function declares the same
+`source_family=EvidenceSourceFamily.MARKET_FX,` line as `carry_score`, and `str.replace`
+would have rewritten the **first** occurrence, i.e. `carry_score`'s, **landing the mutation
+on the wrong function while reporting a kill**. **Fixed by widening the anchor (D-055/D-060,
+skill 5cp), never by deleting the mutation.** Two candidate widenings were tried and **both
+went ABSENT (0 occurrences)** — an `assumptions=[...]` block sits between `inputs_used` and
+`source_family`, so neither is adjacent. **Every new anchor was verified to occur EXACTLY
+ONCE** by counting programmatically, because a branch anchor resolving to zero sites makes
+its mutant a `pattern-not-found` **SURVIVOR** that reads as a weak test (D-031).
+
+### 6. The sweep: 71 → 114 mutations, ONE real survivor, found and fixed
+
+`S1a`–`S8b` (the function) and `C3a`–`C3h` (the config) cover **every branch and every
+guard**: the VIX gate (incl. `>=` and reversed), the conjunction (incl. `or` and `>=`), the
+**branch ORDER** (Section 6.7's most-severe-first rule — reordering silently relabels every
+high-VIX strong-data reading), the neutral derivation (incl. an `abs() < 1e-6` band), the
+finiteness guard, the warnings, the published value (incl. transposed base rates), the unit,
+the confidence, and the config accessors.
+
+**One survivor — `S7k`, the published base rates transposed.** Triaged per D-031: **a weak
+test.** The transposition swaps the published `57.85 %` and `6.74 %`, and the test asserted
+only the **sentence skeleton** — **it never read the numbers**. **Fixed by reading the
+published shares**, formatted from the named constant with the model's own `:.1%` (so the
+assertion **moves with the constant**), asserting the three are **distinct**, and pinning
+**the order the enumeration produced** — which the first draft of the fix got **wrong**
+(claimed `middle > left`; measured `left 57.85 % > middle 35.40 % > right 6.74 %`, since a
+high VIX is reachable over a wide band while the right limb needs **both** inputs positive).
+**Proved by applying `S7k` alone and watching the suite go RED (1 failed / 58 passed)**, then
+restoring **byte-identical** and re-running: **114/114 killed.**
+
+### 7. `--timeout=300` was killing a CORRECT test
+
+The default marker set is `-m "not live and not slow"`, so the **one** slow test — which
+`exec`s every sweep to obtain the real catalogue — is **excluded from every default gate
+run**. That is correct by design and is exactly why this survived: it began **exceeding the
+300 s per-test bound**. **Measured: PASSES in 349.78 s** (221.31 s warm). The bound was
+derived from a **162 s** measurement against **42** sweeps; both inputs moved (catalogue →
+**45** sweeps; `mutation_fx_carry.py` → **114** mutations), so the test now `exec`s a larger
+module per sweep. **Raised to `--timeout=600`** (~1.7× the measured worst case). **A bound
+below the real worst case kills a correct test, and it is invisible for exactly as long as
+the test is marked away from the default run** — so the measurement is recorded **next to
+the marker that hides it**, and the checklist item is: **run the slow marker explicitly when
+you grow a sweep.**
+
+### 8. O-127's class fired a SEVENTH time — and exposed a live instance
+
+Two **new required fields** on `FxCarrySettings` broke the fixtures in `test_cip_check.py`
+and `test_carry_score.py`. **The GREEN-UNMUTATED selection run caught it** (3 failed / 236
+passed) — which is what that mandatory step is for. **It also exposed a bare
+`pytest.raises(ValidationError)` with no `match=`** in
+`test_the_settings_validator_refuses_a_non_positive_floor`, which had been **passing for the
+wrong reason** since the fields became required (a *missing-field* error is the same
+exception **type** as a *rejected floor*). Fixed with **`match="carry_vol_floor"`** — the
+**YAML leaf** name the validator message carries, **not** `volatility_floor` the property
+name, verified against source rather than assumed — plus a **complete-construction helper**
+in `test_carry_score.py` mirroring `test_cip_check.py`'s.
+
+### 9. The live check: only ONE of three inputs is real, and it says so
+
+`scripts/live_dollar_smile_check.py`. **`VIXCLS` is fetched; `us_growth_surprise` needs a
+CONSENSUS and is BLOCKED** (the same block `series_registry.yaml` records for
+`inflation_surprise` — *a nowcast is not a consensus*), so the signed inputs are **declared**.
+
+```
+VIXCLS  n=9279  last 14.2100 index points  @ 2026-09-22     [unit OK]
+vix_level 14.21 + surprise +1.0 + rate_diff +0.5  ->  side 'right'   (confidence 0.5)
+the exactly-neutral input -> side 'middle'  is_neutral_input=True  neutral warning=True
+gate moved to 1025.0 -> published threshold follows, side moves as the leaf implies
+reachable set on the live level: {left, middle, right} — all three
+confidence published 0.5 == recomputed 0.5   (the retired literal was 0.4)
+PASS
+```
+
+**Plausibility assessment:** 14.21 is a genuinely **quiet** reading and the classifier
+correctly does **not** invoke the left (crisis) limb — a low VIX with neither input showing
+US *under*performance is not a crisis state, which matches §6.7's shape. **Disclosed, not
+hidden:** real historical low-VIX readings are the **left arm of the true U-shaped smile** and
+the **shipped one-sided gate cannot produce that** — a limitation of the **gate**, published
+in the function's own limitations. **And the check prints what it cannot have:** two of its
+three inputs are declared, so *"a label produced from one real input and two declared ones is
+a wiring check, not a regime call."*
+
+### 10. Found and NOT fixed, recorded rather than silently expanded into
+
+* **`docs`/`tools` prose still says "40 sweeps"/"42 sweeps"** in 6 places. **Measured
+  pre-existing** (`git show HEAD:…` carries them) while the tree has held **45**. A
+  one-function increment must not expand into a docs sweep → recorded as **O-137**.
+* **O-129** (the literal sweep count in tests) was **not** triggered: `mutation_fx_carry.py`
+  was **extended**, not added, so the census is unchanged at **45**.
+
+### Gates (measured 2026-09-26, never carried forward — `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  260 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 260 source files
+reachability_audit.py --check-baseline        ->  PASS — baseline 58 = measured 58, no regressions
+full suite (--junitxml)                       ->  3375 tests / 0 failures / 0 errors / 1 skipped
+slow two-copies-agree test (explicit)         ->  1 passed in 221.31 s
+mutation_fx_carry.py                          ->  114/114 killed   (was 71)
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**260 == 260** (D-035). **Delta against D-110's 3307 collected = +68** = the new
+`test_dollar_smile_regime.py` (49 defs → 68 collected). **Reachability:**
+`dollar_smile_regime` is **SCRIPT-ONLY — Tier 5** (its only caller is the live check), so the
+Tier 1-4 baseline is untouched and the **Tier-5 script-only count moves 11 → 12**.

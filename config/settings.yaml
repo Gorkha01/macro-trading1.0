@@ -3998,7 +3998,73 @@ fx_carry:
       10 %/yr is a placeholder, not a measured quantile: calibrating it means
       measuring the realised-vol distribution of the pairs the score will be
       used on, which needs a cross-sectional panel this build does not fetch.
+  dollar_smile_vix_threshold:
+    value: 25.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The VIX INDEX LEVEL above which `dollar_smile_regime` reports the LEFT
+      side of the dollar smile — risk-off / crisis, where USD strength is read as
+      safe-haven driven and therefore reversal-prone (Section 6.7's literal
+      `vix_level > 25`). Retained verbatim so the shipped behaviour matches the
+      specification.
 
+      ⚠️ THE UNIT IS A VIX INDEX LEVEL, in the index's own points — the same
+      quantity `settings.fci` consumes for its market-volatility leg. It is NOT
+      a percent, NOT a decimal, and NOT an annualised volatility: VIX is quoted
+      in annualised percentage points, so a reading of 25 means roughly 25 %/yr
+      implied. Writing 0.25 here (the decimal a vol estimator publishes) would
+      move the gate to a level the index has not printed since 1990 and the
+      "left" branch would never fire.
+
+      ⚠️ THE COMPARISON IS STRICTLY GREATER, and that is a decision rather than a
+      transcription. A reading of exactly 25 is the largest value reported as
+      NOT left, matching Section 6.7's own `>`. Section 6.7 also describes the
+      threshold as qualitative and says to refine it against history before
+      trusting it at size — that standing caveat is published in the model's
+      `limitations`, not its warnings, because it holds on every call.
+
+      25 is the specification's own illustration, NOT a measured quantile.
+      Calibrating it means measuring the VIX distribution conditional on
+      subsequent dollar direction over the pairs of interest, which needs a
+      labelled history this build does not assemble.
+  dollar_smile_sign_boundary:
+    value: 0.0
+    calibration_status: institutional_convention
+    note: >
+      The boundary that separates the RIGHT side of the dollar smile — US
+      outperformance, USD strength read as durable and rate/growth-driven — from
+      the MIDDLE, synchronized-global-growth side.
+
+      ⚠️ THE UNIT IS THE INPUTS' OWN UNIT, and that is the point: Section 6.7
+      writes two literals, `us_growth_surprise > 0` and `us_vs_row_rate_diff > 0`,
+      and BOTH compare against zero. One leaf serves both because the zero is the
+      SAME zero in both places — it is the point at which a signed quantity stops
+      being positive. Keeping two leaves would create two values that must always
+      be equal, which is the D-053 "a parameter defined only relative to another"
+      defect.
+
+      ⚠️ THE INPUTS MUST BE DATE-MATCHED AND ON ONE SCALE. Both `us_growth_surprise`
+      and `us_vs_row_rate_diff` are published here as the caller's own signed
+      quantities (a surprise in percentage points of growth, a rate gap in the
+      caller's rate unit) and the ONLY thing this leaf asserts about them is
+      where their sign changes. Because the sign is scale-free, mixing units
+      across the two inputs cannot flip a label — but it can still make the
+      comparison meaningless in the reader's eye, so the model names both units
+      and refuses a non-finite value.
+
+      ⚠️ THE EXACTLY-ZERO CASE IS DELIBERATELY *NOT* RIGHT. With Section 6.7's
+      `> 0` an exactly-zero surprise or an exactly-zero rate gap falls through to
+      the middle label, and the model reports "synchronized global growth" for an
+      input that carries NO positive US-outperformance signal. Zero is the
+      NEUTRAL value of a signed surprise, and a neutral input classified as a
+      positive regime claim is the D-040 class (a neutral branch a continuous
+      series does take — a surprise series prints exactly 0.0 whenever a release
+      lands on consensus). The boundary is therefore kept strictly at the
+      specification's `> 0`, the middle branch OWNS the zero case, and the model
+      publishes `neutral_input_present` so a reader can see that the middle label
+      was reached by a NEUTRAL input rather than by an outright negative one.
+      Recording a different boundary (say a small positive band) would require a
+      measured dead-band width, which nothing here can supply.
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the

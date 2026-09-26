@@ -580,11 +580,20 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
     exception type. **Only the negative control failed**, which is the whole
     argument for having one. See the ``match=`` arguments below for the second
     half of the fix.
+
+    **D-110 fired the identical trap a second time**: two more required fields
+    (``dollar_smile_vix_threshold``, ``dollar_smile_sign_boundary``) were added
+    to the same settings model, and this helper went stale again. The lesson is
+    that "complete on purpose" has to be maintained against the model, not
+    asserted once — which is why every field below is spelled out and why a
+    third occurrence should be met by reading the model rather than by guessing.
     """
     base: dict[str, CalibratedValue] = {
         "notable_deviation_pct": _cal(0.1),
         "extreme_deviation_pct": _cal(0.5),
         "carry_vol_floor": _cal(0.1),
+        "dollar_smile_vix_threshold": _cal(25.0),
+        "dollar_smile_sign_boundary": _cal(0.0),
     }
     base.update(overrides)
     return FxCarrySettings(**base)

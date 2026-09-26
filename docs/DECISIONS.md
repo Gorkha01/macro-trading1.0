@@ -18509,3 +18509,316 @@ this increment has just demonstrated how far one can drift.
 Module 9's last function and completes the module — a **threshold classifier**,
 so its increment is about **branch reachability and threshold units** (D-050's
 inert-by-composition hazard, and the `> 0` zero-case defect).
+
+---
+
+## D-111 — Module 9's `dollar_smile_regime`: the third function, a MEASURED reachable set, three thresholds lifted with their units, and a `--timeout` that was killing a correct test
+
+**Date:** 2026-09-26. **Tier 5 = 12/23. Module 9 = 3 of 3 — COMPLETE.**
+Target: `src/macro_engine/models/fx_carry.py` (created D-108, extended D-109),
+`AGENTS.md:1047` (§6.7). The specification carries a **full reference
+implementation**, so this is a **stub to UPGRADE** (D-096), not a function to
+invent. It **supersedes NOTHING named** — Phases 0–4 built no
+regime-conditioning model for the dollar — and it now **feeds** `carry_score`
+(durable vs reversal-prone carry) and **pairs with** `cip_check` (two independent
+descriptions of the same risk-off state). Both recorded in `decision_relevance`.
+
+### 1. The reachable set was MEASURED, not assumed — and the D-050 hazard did NOT fire
+
+This is a **three-way threshold classifier** whose stub is
+most-severe-first (`if vix > 25` → `elif growth > 0 and rate_diff > 0` → `else`),
+which is the exact shape D-050 found can leave the branches **behind the first
+gate** unreachable. So an enumeration probe was written and run **before any
+implementation code** (`.probe/dollar_smile_probe.py`), sweeping
+`vix ∈ [0, 60]` step 0.5 cross both signs drawn from
+`{-1.0, -1e-9, 0.0, +1e-9, +1.0}` — **3 025 points**:
+
+```
+left   1750  57.85 %      right   204   6.74 %      middle   1071  35.40 %
+```
+
+**The reachable set is exactly three limbs, and the left gate does NOT starve the
+branches behind it.** The reason is structural and is why this classifier is
+*not* the D-050 case it superficially resembles: `vix_level` is a **continuous
+level**, not a flag, so the region below the gate is the whole `vix <= 25`
+half-plane and both inner labels are produced inside it. **That measurement is
+published in the classifier's own docstring**, and the enumerating reachability
+tests assert it.
+
+**The base rates travel with every result** (D-029/D-047: a classifier whose
+modal output is one label reports construction, not economics). They are
+published in `_dollar_smile_limitations` **with their population**, explicitly
+labelled a property of the **enumeration** rather than of history — a uniform grid
+over-represents mixed combinations the economy rarely produces, and the text says
+so.
+
+### 2. The three literals became config leaves, with their UNITS named
+
+| literal | leaf | value | status | unit |
+|---|---|---|---|---|
+| `vix_level > 25` | `fx_carry.dollar_smile_vix_threshold` | `25.0` | `uncalibrated_illustrative` | **VIX INDEX LEVEL** (index points) |
+| `us_growth_surprise > 0` | `fx_carry.dollar_smile_sign_boundary` | `0.0` | `institutional_convention` | the **inputs' own** signed unit |
+| `us_vs_row_rate_diff > 0` | *(the same leaf)* | `0.0` | `institutional_convention` | the **inputs' own** signed unit |
+
+**ONE leaf serves both `> 0` comparisons, and that is deliberate** — the zero is
+the *same zero* in both places (the point at which a signed quantity stops being
+positive). Two leaves would be two values that must always be equal, which is
+D-053's *"a parameter defined only relative to another"* defect. The boundary is
+therefore a **single** leaf and keeps the specification's `> 0` — see §3.
+
+**`vix_level` needed the same treatment D-108 gave `notable_deviation_pct`**: the
+spec's value kept, its unit named, its **uncalibrated** status recorded, and the
+fact **priced into `compute_confidence()`**. This matters more here than in most
+functions: the input model documents **three plausible readings** of the same bare
+float (`25` index points · `0.25` a decimal · `0.0025` a percent fraction) and a
+caller wiring in `models/risk.py`'s volatility gets a **fourth** spelling, since
+that function publishes **percent** — and any of them moves the gate by 100×
+**without raising**.
+
+### 3. The zero case: the boundary is KEPT at `> 0`, and the zero case is its OWN decision
+
+This is **D-040's class** — *a neutral branch a continuous series really does
+take*. A surprise series prints **exactly `0.0`** whenever a release lands on
+consensus, and the spec's `> 0` sends it to `else`, i.e. reports
+*"synchronized global growth"* for an input carrying **no positive
+US-outperformance signal**. **A neutral input classified as a positive regime
+claim.**
+
+**The decision taken — and each of the three candidate readings is recorded,
+because the reasoning is the deliverable:**
+
+* Moving the boundary to a small **positive dead-band** was **rejected**: the
+  width would have to be **measured**, and nothing on this installation can
+  measure it. Inventing one would be an unbacked literal — the exact defect being
+  fixed.
+* Sending the zero case to the **right** limb was **rejected**: it would assert US
+  outperformance from an input that carries none.
+* **Kept: the spec's `> 0`, the MIDDLE limb OWNS the zero case, and the model
+  PUBLISHES `is_neutral_input`** so a reader can distinguish the middle limb's two
+  very different causes — inputs pointing *against* US outperformance, versus an
+  input sitting at **exactly zero** (the *absence* of a signal). The distinction
+  travels in a **warning** as well as the field, because a reader cannot recover
+  it from the label.
+
+**The middle limb's own docstring records both causes**, and
+`_dollar_smile_is_neutral` is **derived from the same expression the classifier
+uses** (`== 0.0`, the exact failure mode of `> 0` by equality) rather than
+restated, so the two cannot disagree about which values are neutral.
+
+### 4. `confidence = 0.4` is gone, and the standing caveat moved to `limitations`
+
+`compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=not
+_dollar_smile_thresholds_are_calibrated(), source_independence_count=0,
+depends_on_unobservable=False))` per §22.8 — **computed, never hardcoded**.
+`_dollar_smile_thresholds_are_calibrated()` reads **BOTH** leaves: a calibration
+of either alone still leaves the label resting on a placeholder. **Measured live:
+0.5**, against the retired literal `0.4`.
+
+The specification's standing caveat — *"the thresholds are qualitative … refine
+against history before trusting at size"* — is a condition of **every** run, not
+of *this* run, so it belongs in **`limitations`**, which is the move D-109 made
+for the "steamroller" sentence. **8 limitations** are published on every call.
+
+**`unit` says it is a CATEGORY**, in the tree's existing spelling —
+`"categorical (dollar smile limb: 'left' | 'right' | 'middle')"`.
+
+**`direction` is deliberately UNSET, and the reason is stated rather than left
+implicit:** the label is a categorical member of a three-way partition, and **no
+member of it is a direction** — `"left"` and `"right"` *both* describe USD
+strength and are distinguished by **cause**, so a `direction` field would have to
+invent an ordering the model does not have. A test pins `direction is None` on
+all three limbs.
+
+### 5. The mechanical hazard fired EXACTLY as predicted — and the gate caught it
+
+The prompt warned that adding the **third** function to a swept module would break
+`mutation_fx_carry.py`'s anchors. **It did, on the first `sweep_health.py` run
+after the module edit: `check_targets` refused, `K6g` AMBIGUOUS (2 occurrences)** —
+the new function declares the same
+`source_family=EvidenceSourceFamily.MARKET_FX,` line as `carry_score`, and
+`str.replace` would have rewritten the **first** occurrence, i.e. `carry_score`'s,
+**landing the mutation on the wrong function while reporting a kill** — the worst
+possible output, because it looks like health (D-048/D-055).
+
+**The fix is D-055/D-060's remedy — widen the anchor, never delete the mutation**
+(skill 5cp). Two candidate widenings were tried and **both went ABSENT (0
+occurrences)**, which is itself informative: an `assumptions=[...]` block sits
+between `inputs_used` and `source_family`, so `direction=outcome,` and the
+`inputs_used` block are not adjacent to the target line. The anchor finally used
+is `carry_score`'s **own last assumptions string** followed by the `],\n
+source_family=…` transition — unique to `carry_score`.
+
+**Every candidate anchor for the new S-block was verified to occur EXACTLY ONCE
+before it was written down**, by counting occurrences programmatically rather than
+by eye. A branch anchor that resolves to zero sites makes its mutant a
+`pattern-not-found` **SURVIVOR** that reads as a weak test (D-031).
+
+### 6. The mutation sweep: 114 mutations, and ONE real survivor found and fixed
+
+The sweep grew **71 → 114 mutations** (`S1a`–`S8b` for the function, `C3a`–`C3h`
+for the config), covering **every branch and every guard** — the VIX gate (4 ways
+incl. `>=` and reversed), the both-positive conjunction (5 ways incl. `or` and
+`>=`), the **branch ORDER** (which is Section 6.7's most-severe-first rule and
+would silently relabel every high-VIX strong-data reading), the neutral
+derivation (5 ways incl. an `abs() < 1e-6` tolerance band), the finiteness guard
+(3 ways), the warnings (4 ways), the published value (11 ways incl. transposed
+base rates), the unit, the confidence, and the config accessors.
+
+**One survivor: `S7k — the published base rates are transposed`.** Triaged per
+D-031 (a weak test, an inert mutation, or a broken one): **a weak test.** The
+transposition swaps the published `57.85 %` and `6.74 %`, and the test asserted
+only the **sentence skeleton** (`"middle limb is reachable on"`, `"not a base
+rate over history"`) — **it never read the numbers.** A base-rate test that does
+not read the rate is a test of the scaffolding.
+
+**Fixed by strengthening the test, and the strengthening is itself instructive:**
+it now formats all three expected shares from the named constant with the model's
+own `:.1%` (so the assertion **moves with the constant** and does not have to be
+retyped), asserts the three are **distinct**, and pins **the order the
+enumeration actually produced** — which the first draft of the fix got **wrong**
+(asserted `middle > left`; measured `left 57.85 % > middle 35.40 % > right
+6.74 %`, because a high VIX is reachable over a wide band while the right limb
+needs **both** signed inputs positive and is therefore the rarest). **Proved by
+applying `S7k` alone and watching the suite go RED** — 1 failed, 58 passed — then
+restoring the file **byte-identical** and re-running the full sweep:
+**114/114 killed.**
+
+### 7. `--timeout=300` was KILLING a correct test, and the slow marker is why it was invisible
+
+The default marker set is `-m "not live and not slow"` (D-087), so the **one**
+slow test — `test_the_two_copies_agree_on_the_real_catalogue`, which `exec`s every
+sweep to obtain the real catalogue — is **excluded from every default gate run**.
+That is correct by design and it is also why this defect survived: the test began
+**exceeding the 300 s per-test bound**, and nothing in the default set could see
+it.
+
+**Measured:** the test **PASSES in 349.78 s** (and 221.31 s on a warmer cache).
+The bound was derived from a **162 s** measurement against **42** sweeps; both
+inputs moved — the catalogue grew to **45** sweeps and `mutation_fx_carry.py`
+itself grew **71 → 114** mutations, so the test now `exec`s a larger module per
+sweep. **Raised to `--timeout=600`** (~1.7× the measured worst case; the
+pathological hang is still >40 min away). The stale comments in `pyproject.toml`
+and in the test were corrected, and the replacement comments record **why the
+number moved** rather than only what it is. `--session-timeout=5400` still clears
+comfortably, since this test is deselected by default.
+
+**This is the increment's most transferable finding: a bound below the real worst
+case kills a CORRECT test, and it is invisible for exactly as long as the test is
+marked away from the default run.** The measurement is recorded next to the marker
+that hides it.
+
+### 8. O-127's class fired a SEVENTH time, in the guard tests as well as the fixtures
+
+Adding **two required fields** to `FxCarrySettings` broke the fixtures in
+**`test_cip_check.py`** and **`test_carry_score.py`** — the same class D-109
+recorded, one increment later and in a second file. The **GREEN-UNMUTATED
+selection run caught it** (3 failed / 236 passed), which is precisely what that
+mandatory step is for.
+
+**And it exposed a live instance of O-127 itself:**
+`test_the_settings_validator_refuses_a_non_positive_floor` asserted
+`pytest.raises(ValidationError)` with **no `match=`**, so from the moment the new
+fields were required it was **passing for the wrong reason** — a *missing-field*
+error is the same exception **type** as a *rejected floor*. **Fixed with
+`match="carry_vol_floor"`** (the YAML leaf name, which is what the validator
+message carries — **not** `volatility_floor`, the property name; verified against
+the source rather than assumed) and a **complete-construction helper** added to
+`test_carry_score.py`, mirroring the one `test_cip_check.py` already had, with a
+docstring recording that this is the **second** firing of the same trap and that
+"complete on purpose" must be **maintained against the model**, not asserted once.
+
+### 9. The live check: only ONE of the three inputs is real, and it says so
+
+`scripts/live_dollar_smile_check.py`. **`VIXCLS` is reachable and is fetched;
+`us_growth_surprise` needs a CONSENSUS and is BLOCKED** (the same block
+`series_registry.yaml` already records for `inflation_surprise` — *a nowcast is
+not a consensus*), so it is **driven as a declared parameter**, and the
+`us_vs_row_rate_diff` likewise rather than being wired to a second provider's
+rate.
+
+**Measured on real data:** VIXCLS **14.21 index points @ 2026-09-22**. Below the
+25 gate, so the label came from the declared signed inputs — `right` with both
+positive, `middle` otherwise. The check asserts the unit (index points), the gate
+comparison, that the **published threshold follows the leaf** (raising the leaf to
+1025.0 moves both the published threshold and the label), the zero case
+(`middle` + `is_neutral_input=True` + the neutrality warning), the **full
+reachable set** on the live level, and that the confidence equals a fresh
+`compute_confidence` call (**0.5**, not the retired `0.4`). **It PASSES.**
+
+**The plausibility assessment, written down:** 14.21 is a genuinely **quiet**
+reading, and the classifier correctly does **not** invoke the left (crisis) limb —
+a low VIX with neither input showing US *under*performance is not a crisis state,
+which matches §6.7's shape. **The honest caveat, stated in the script:** real
+historical low-VIX readings are the **left arm of the true U-shaped smile**, and
+the **shipped one-sided gate cannot produce that** — a **disclosed limitation** of
+the gate, not a wiring defect, and it is published in the function's own
+limitations as well.
+
+**The check does not claim what it cannot have.** It prints that two of its three
+inputs are declared, so *"a label produced from one real input and two declared
+ones is a wiring check, not a regime call"* — and it prints that sentence rather
+than leaving the reader to infer it.
+
+### 10. Two things found and NOT fixed, recorded rather than silently expanded into
+
+* **`docs/`/`tools/` prose still says "40 sweeps" / "42 sweeps"** in
+  `tests/test_sweep_health_leftover_predicate.py` (4 places) and
+  `tools/sweep_health.py` (2). **Measured: this drift predates this increment** —
+  the strings are present at `HEAD` while the tree has held **45** sweeps for
+  several increments. It is a *citation that drifted*, and it is **out of scope
+  for a one-function increment**; it is recorded as an open issue rather than
+  fixed here, because a docs sweep of that size is its own increment.
+* **The `test_there_are_forty_three_sweeps_to_cover`-style literal count** (O-129)
+  remains OPEN and was **not** triggered by this increment, because
+  `mutation_fx_carry.py` was **extended**, not added — the sweep **census** is
+  unchanged at **45**.
+
+### Gates (all SEQUENTIALLY, `sweep_health.py` LAST)
+
+```
+ruff format --check  ->  260 files already formatted
+ruff check           ->  All checks passed!
+mypy --strict        ->  Success: no issues found in 260 source files   [260 = 260, D-035]
+reachability --check-baseline  ->  PASS — the unreachable set is exactly the baseline
+                                   (baseline 58 = measured 58; no regressions)
+pytest (default set, JUnit XML) ->  3375 tests / 0 failures / 0 errors / 1 skipped  [GREEN]
+  (+68 from the new dollar_smile file; + 1 slow test re-run explicitly: PASS in 221.31 s)
+mutation_fx_carry.py ->  114/114 killed   (was 71; S1a-S8b + C3a-C3h added)
+sweep_health.py      ->  45 sweeps · 0 leftovers · 0 shapes · 0 committed mutants · 0 failures · OK
+```
+
+**Reachability:** `dollar_smile_regime` classifies as **SCRIPT-ONLY — Tier 5**
+(its only caller is `scripts/live_dollar_smile_check.py`), so the Tier 1-4
+baseline is untouched and the Tier-5 script-only count moves **11 → 12**.
+
+### The lesson this increment adds
+
+**Two of them, and both are about INSTRUMENTS rather than about this function:**
+
+1. **A test that does not read the value it is named after is scaffolding.** `S7k`
+   survived because the base-rate test asserted the sentence, not the rates —
+   and the fix was to make the test derive its expectation **from the same
+   constant the model publishes from**, so the two cannot drift apart. The
+   generalization: *when a number is published, the test must read the number.*
+2. **A per-test timeout is a CLAIM about the worst legitimate case, and it decays
+   as the catalogue grows.** Ours was derived from a measurement, which was
+   correct, and it still went wrong — because the thing it measured grew. **And
+   it was invisible because the slow marker hides the very test that probes the
+   bound.** The generalization: *a bound derived from a measurement must record
+   the measurement beside it, and the thing that consumes the bound must be run
+   when the measurement's inputs change* — which here means: **run the slow marker
+   explicitly when you grow a sweep.**
+
+### Next
+
+**Tier 5 = 12/23. Module 9 = 3 of 3 — COMPLETE.** The next Tier-5 name is
+**`uip_expected_move`** (§6.7's next entry, `AGENTS.md:1060`-ish — **resolve the
+line with `grep -n`, because a citation is a claim**). It is **NOT a stub** in the
+Tier-5 sense of §6.7's FX block: the specification's FX section lists it, so
+**expect to create the file or extend `fx_carry.py` depending on what the section
+actually says at that line**. `uip_expected_move` is the **uncovered-interest-
+parity expected move**, which is the **forward-looking sibling of `cip_check`'s
+realised deviation** — so the first thing to establish is whether it is a
+*different* function or the same relation read forward, and to state that in
+`decision_relevance` before writing any arithmetic. **Re-derive the remaining 11
+names from `src/`; do not recall the list.**
