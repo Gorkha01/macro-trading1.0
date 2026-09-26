@@ -6595,3 +6595,113 @@ hazard in its purest form**: a three-way classifier whose first branch may
 consume every input that would reach the second. **Enumerate the reachable set
 rather than assuming it**, and expect the `vix_level > 25` literal to need a
 config leaf with its unit named.
+
+---
+
+## D-110 — the D-109 findings, triaged (2026-09-26)
+
+**No new model function. Tier 5 = 11/23, unchanged.** Prompted by the operator
+reading D-109's close-out report and asking **"have you fixed below if
+required?"** Every item in that report was re-examined; the answer for each is
+recorded rather than left to inference. **Two required a fix, one required a
+CORRECTION to a record, and two were measured and judged not to be defects.**
+
+### 1. O-135 — FIXED, mutation-proved
+
+`_is_applied` returned **True** when a mutation's anchor AND its replacement text
+were both absent → **a leftover reported on a clean tree**. Measured before
+touching anything. Fixed with the entry's own proposal
+(``if text.count(new) == 0: return False``), applied to **BOTH** copies
+(`scripts/_sweep_gate.py` and `tools/sweep_health.py` — deliberately duplicated
+because `tools/` and `scripts/` are not packages).
+
+**Two tests, each parametrized over both copies:** the false positive (a file
+containing NEITHER string — the post-rename state), and **its negative control**
+(the same shape with the replacement PRESENT, which must still be reported; a
+predicate "fixed" by returning `False` more often would satisfy the first and
+stop catching real leftovers).
+
+**Mutation-proved:** reverting the fix fails **2 of the 4** new cases; restored
+byte-exact. **End-to-end message verified**, because the sentence is the point:
+
+```
+BOTH ABSENT      -> target ABSENT in fx_carry.py (0 occurrences)
+GENUINE LEFTOVER -> MUTATION STILL APPLIED ... (replacement present AT THE EDIT SITE ...)
+```
+
+The `slow` two-copies-agree test (**229 s**, against `git HEAD` as ground truth)
+was run **explicitly** and passes. **`sweep_health.py` after: OK, 45 sweeps,
+0 leftovers, 0 committed mutants.**
+
+### 2. O-127 — the RECOMMENDED GATE was measured and WITHDRAWN
+
+**The most consequential finding here**, because it is about a remedy cited
+**three times** (D-105, D-106's re-fire, the standing list) as *"the suggested
+gate"* and *"now overdue"*. The recommendation: assert every settings model is
+*"constructible from its own `model_dump()`"*.
+
+**Measured, and it is blind to exactly the defect it was proposed for:**
+`model_dump()` of a valid instance round-trips **whether or not a test fixture
+elsewhere omits the new field** — the breakage lives in the FIXTURES. The gate
+would have passed on a healthy tree and on a broken one alike, and would have
+**certified the class as closed while closing nothing** — **D-087.23's class
+applied to a recommendation, and worse than no gate because it manufactures false
+assurance.** Corrected **in place** in O-127's row and D-106's re-fire paragraph,
+not deleted.
+
+**What actually contains the class, all already mandatory:** (i) the
+**GREEN-UNMUTATED** run — it caught D-105's collection error and D-109's four
+broken constructions; (ii) **`match=`** on every guard test; (iii) **a negative
+control per guard** — at D-109 the three `pytest.raises` tests **passed** and only
+the control failed.
+
+### 3. The live check's foreign-leg defect — disclosure → MEASUREMENT
+
+D-109 disclosed that the euro-area leg is monthly and eight months stale. **A
+prose disclosure is weaker than a measurement, and this one was avoidable.** No
+euro-area rate here is both current and of the right tenor, so the check now runs
+the function under **both** and asserts the read is robust:
+
+```
+3m interbank (right TENOR, stale)           @ 2026-01-01  -> +0.205227 (long_domestic)
+ECB deposit facility (current, POLICY rate) @ 2026-09-25  -> +0.158000 (long_domestic)
+agree on direction; differ by 0.0472
+```
+
+**The DIRECTION is robust; the LEVEL is not.** A carry view that flips when you
+swap the foreign leg is not a view — this one does not flip, and the check now
+proves it rather than hoping it.
+
+### 4. Measured and judged NOT to be defects
+
+* **The volatility floor's VALUE stays at the specification's 0.1.** The operator
+  quoted the live finding (it caps the score from 0.4503 to 0.2052) and asked
+  whether it needed fixing. **The silent path was the defect and it is closed** —
+  `volatility_floor_binding` is published and warned, verified live. The value is
+  the spec's literal, retained as D-108 retained `notable_deviation_pct`;
+  **substituting a different number would be typing an unevidenced figure into
+  config** (§21.1; D-043/D-047's three-time defect). What IS new: its magnitude is
+  recorded as uncalibrated, its effect is measured live, and the calibration task
+  is named in the YAML note.
+* **O-136 stays recorded, not fixed.** `realized_vol_simple` publishes a bare
+  `float`, `carry_score` a `dict`, and **§22.9 permits both**. Changing a shipped
+  Tier-1 model's return container to satisfy a consistency preference is a
+  behaviour change with no defect behind it; `as_float` already handles both
+  shapes. **Not every inconsistency is an incorrectness.**
+
+### Gate baseline after D-110 (measured 2026-09-26, via JUnit)
+
+ruff check clean · **`ruff format --check` 258 files** · **`mypy --strict` no
+issues in 258 files** · **3307 collected / 3306 passed / 0 failed / 1 skipped** ·
+**delta against D-109's 3303 = exactly +4** = **two new tests × two copies** ·
+`reachability_audit.py --check-baseline` **PASS 58/58** · the `slow`
+two-copies-agree test run explicitly (**229 s**) and passing ·
+**`sweep_health.py` LAST** → **45 sweeps · 0 leftovers · 0 mutant shapes · 0
+committed mutants · 0 failures · OK**.
+
+### Next
+
+**Tier 5 = 11/23, unchanged.** `dollar_smile_regime` (`AGENTS.md:1047`) completes
+Module 9 — a **threshold classifier**, so its increment is about **branch
+reachability and threshold units** (D-050's inert-by-composition hazard, and the
+`> 0` zero-case defect).

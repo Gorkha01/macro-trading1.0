@@ -207,6 +207,67 @@ def test_a_deletion_is_never_reported_as_a_leftover(
 
 
 @pytest.mark.parametrize("module_fixture", _BOTH_MODULES)
+def test_a_vanished_anchor_with_a_vanished_replacement_is_not_a_leftover(
+    module_fixture: str, request: pytest.FixtureRequest
+) -> None:
+    """O-135: neither the anchor NOR the replacement is present — that is DRIFT.
+
+    **The case that reported a leftover on a clean tree.** Measured at D-109:
+    renaming a private helper in a swept module made one mutation's anchor and its
+    replacement text both vanish, and `check_targets` printed ``MUTATION STILL
+    APPLIED ... (replacement present AT THE EDIT SITE)`` — a sentence whose own
+    parenthetical was false. `tools/sweep_health.py` reported **0 leftovers, 0
+    committed mutants** at the same moment.
+
+    **Why it matters:** the printed remedy is *"restore the file before
+    sweeping"*, and the natural restore is ``git checkout --``, which discards
+    uncommitted work — the D-086.8 incident, 97 lines. Correct answer: **not
+    applied**, i.e. report the anchor as ABSENT rather than as a mutant.
+
+    The fixture is a file in which NEITHER string occurs, which is exactly the
+    post-rename state of a swept module.
+    """
+    module: Any = request.getfixturevalue(module_fixture)
+    text = "def f():\n    return 1\n"
+    old = "A_LINE_THAT_WAS_RENAMED_AWAY"
+    new = "THE_REPLACEMENT_THE_SWEEP_WOULD_HAVE_WRITTEN"
+    assert old not in text and new not in text, "the fixture must contain neither string"
+    for label, predicate in _predicates(module):
+        assert predicate(text, old, new) is False, (
+            f"{label}: reported a leftover when BOTH the anchor and its replacement "
+            "are absent — this is O-135, and the remedy it prints (`git checkout --`) "
+            "destroys uncommitted work"
+        )
+
+
+@pytest.mark.parametrize("module_fixture", _BOTH_MODULES)
+def test_the_both_absent_fix_did_not_blind_the_true_positive(
+    module_fixture: str, request: pytest.FixtureRequest
+) -> None:
+    """The negative control for the O-135 fix, and it is the load-bearing half.
+
+    A predicate "fixed" by returning ``False`` more often would satisfy the test
+    above and stop detecting real leftovers — the failure direction that lets a
+    mutant survive into a commit. So the same shape is built with the replacement
+    PRESENT and must be reported.
+
+    The two fixtures differ in exactly one thing: whether the sweep's replacement
+    text was written. That is the discriminator, so nothing else can explain a
+    difference in the verdict.
+    """
+    module: Any = request.getfixturevalue(module_fixture)
+    old = "A_LINE_THAT_WAS_RENAMED_AWAY"
+    new = "THE_REPLACEMENT_THE_SWEEP_WOULD_HAVE_WRITTEN"
+    mutated = f"def f():\n    {new}\n"
+    assert old not in mutated and new in mutated
+    for label, predicate in _predicates(module):
+        assert predicate(mutated, old, new) is True, (
+            f"{label}: MISSED a genuine leftover after the O-135 fix — the fix must "
+            "narrow the false positive, never the true one"
+        )
+
+
+@pytest.mark.parametrize("module_fixture", _BOTH_MODULES)
 def test_a_mutation_that_is_not_idempotent_is_still_detected(
     module_fixture: str, request: pytest.FixtureRequest
 ) -> None:

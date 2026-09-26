@@ -60,15 +60,23 @@ What this check establishes
    arithmetic. **When it binds the score is carry-over-the-floor**, and that is
    the honest reading of the published number.
 
+6. **The choice of FOREIGN LEG is measured, not hidden.** No euro-area rate on
+   this installation is both current and of the right tenor: the 3-month
+   interbank fixing has the right TENOR but is MONTHLY and stale, and the ECB
+   deposit facility rate is current but a POLICY rate. The check therefore runs
+   the function under **both** and asserts the read is robust to the choice —
+   same sign, same direction label. **The first version of this check used one
+   leg and disclosed the mismatch in prose; a disclosure is weaker than a
+   measurement**, which is why this section exists.
+
 What this check CANNOT validate
 -------------------------------
 The score's central limitation is untestable here: **a symmetric realised
 volatility cannot see the crash risk that makes the carry trade dangerous**, so
-nothing in this script establishes that a high score is a good trade. The
-euro-area leg is a MONTHLY series whose last observation is stale, so the two
-rates are not date-matched — a defect in this CHECK, not in the model. And the
-volatility window is a choice: the check reports two of them rather than
-pretending one is right.
+nothing in this script establishes that a high score is a good trade. And the
+volatility window is a choice — the check reports two of them rather than
+pretending one is right. **What it no longer merely discloses is the foreign
+leg**, which section (4b) measures across both reachable rates.
 """
 
 from __future__ import annotations
@@ -196,6 +204,7 @@ def main() -> int:
             "DEXUSEU": ("fred", "economy.fred_series"),
             "DTB3": ("fred", "economy.fred_series"),
             "IR3TIB01EZM156N": ("fred", "economy.fred_series"),
+            "ECBDFR": ("fred", "economy.fred_series"),
         }
     )
 
@@ -214,7 +223,7 @@ def main() -> int:
     print()
     print("  unit guard — money-market rates must read as ANNUALISED PERCENT:")
     low, high = _RATE_PCT_BAND
-    for label in ("DTB3", "IR3TIB01EZM156N"):
+    for label in ("DTB3", "IR3TIB01EZM156N", "ECBDFR"):
         value, date = _last(raw[label])
         status = "OK" if low < value < high else "OUT-OF-BAND"
         print(f"    {label:<18} {value:8.4f} %/yr  [{status}]  @ {date}")
@@ -342,6 +351,51 @@ def main() -> int:
     for note in result.warnings:
         print(f"    warning: {note}")
 
+    # --- (4b) the foreign leg is a CHOICE, so MEASURE its effect ----------
+    #
+    # **This section exists because the first version of this check had a defect
+    # it could only disclose.** The euro-area leg is a 3-MONTH INTERBANK rate —
+    # the right TENOR for a 3-month carry — but it is MONTHLY and its last
+    # observation is months old. The only CURRENT euro-area rate reachable is the
+    # ECB deposit facility rate, which is a POLICY rate: current, but the wrong
+    # tenor. **Neither is right, and picking one while printing "live" would be
+    # the misleading choice.** So the check runs the function under BOTH and
+    # asserts the READ is robust to the choice — same sign, same direction label.
+    # A carry view that flips when you swap the foreign leg is not a view.
+    print()
+    print("  the foreign leg is a CHOICE — the same score under both reachable legs:")
+    euribor_pct, euribor_date = _last(raw["IR3TIB01EZM156N"])
+    ecb_pct, ecb_date = _last(raw["ECBDFR"])
+    legs: tuple[tuple[str, str, float], ...] = (
+        ("3m interbank (right TENOR, stale)", euribor_date, euribor_pct / 100.0),
+        ("ECB deposit facility (current, POLICY rate)", ecb_date, ecb_pct / 100.0),
+    )
+    leg_scores: list[tuple[str, float, str]] = []
+    for leg_label, leg_date, i_foreign_leg in legs:
+        leg_result = carry_score(
+            CarryScoreInputs(
+                rate_differential_annualized=i_domestic - i_foreign_leg,
+                realized_vol_annualized=vol_decimal,
+            )
+        )
+        leg_scores.append(
+            (leg_label, _number(leg_result, "score"), _label(leg_result, "carry_outcome"))
+        )
+        print(
+            f"    {leg_label:<44} @ {leg_date}  -> {leg_scores[-1][1]:+.6f} ({leg_scores[-1][2]})"
+        )
+    labels = {entry[2] for entry in leg_scores}
+    spread = abs(leg_scores[0][1] - leg_scores[1][1])
+    print(f"    the two legs agree on the direction ({labels}) and differ by {spread:.4f}")
+    if len(labels) != 1:
+        failures.append(
+            f"the carry DIRECTION flips with the choice of foreign leg: "
+            f"{leg_scores[0][2]} against {leg_scores[1][2]} — a carry view that "
+            f"depends on which euro-area rate you pick is not a view"
+        )
+    if any(entry[1] > 0 for entry in leg_scores) != all(entry[1] > 0 for entry in leg_scores):
+        failures.append("the score's SIGN flips with the choice of foreign leg")
+
     # --- (5) the identities, on live numbers ------------------------------
     if abs(score - differential / denominator) > 1e-6:
         failures.append(
@@ -410,9 +464,11 @@ def main() -> int:
         "the result's limitations rather than in its warnings."
     )
     print(
-        f"    the euro-area leg is MONTHLY and last observed "
-        f"{_last(raw['IR3TIB01EZM156N'])[1]}, so the two rates are not date-matched — a "
-        f"defect in this CHECK, not in the model"
+        f"    the euro-area leg is MONTHLY and last observed {euribor_date}, so the two "
+        f"rates are not date-matched — a defect in this CHECK, not in the model. Section "
+        f"(4b) MEASURES what it costs: the read is robust to the leg choice, but the score "
+        f"moves by {spread:.4f} between the two reachable rates, so the LEVEL should be "
+        f"read as indicative and the DIRECTION as the finding"
     )
     print(
         f"    the volatility window is a CHOICE: {_WINDOWS[0]}d and {_WINDOWS[-1]}d are both "

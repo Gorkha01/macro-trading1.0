@@ -18279,3 +18279,194 @@ the threshold literals**, which is D-050's inert-by-composition hazard in its
 purest form: a three-way classifier whose first branch may consume every input
 that would reach the second. Expect to enumerate the reachable set rather than
 assume it.
+
+---
+
+## D-110 — the D-109 findings, triaged: O-135 fixed, a RECOMMENDED GATE measured and withdrawn, and a check's disclosure turned into a measurement
+
+**Date:** 2026-09-26. **No new model function. Tier 5 = 11/23, unchanged.** This
+increment exists because the operator read D-109's close-out report and asked
+**"have you fixed below if required?"** — so every item in that report was
+re-examined, and the answer for each is recorded here rather than left to the
+reader's inference. **Two items required a fix, one required a CORRECTION to a
+record, and two were measured and judged not to be defects.**
+
+### 1. O-135 — FIXED (and the fix is mutation-proved)
+
+`_is_applied` returned **True** whenever a mutation's anchor AND its replacement
+text were both absent, reporting a **leftover on a clean tree**. Measured before
+touching anything:
+
+```
+old absent : True
+new absent : True
+_is_applied -> True    (True = reported as a LEFTOVER)
+```
+
+**The fix is the entry's own proposal** — ``if text.count(new) == 0: return
+False`` — and it is the deletion case's reasoning one step further: **a genuine
+leftover cannot have ``new`` absent**, because the sweep writes the exact bytes
+and nothing between the write and the scan reformats source. So an absent
+replacement means the anchor **drifted**, and the honest report is *"anchor
+absent"*, not *"mutant still applied"*.
+
+**Applied to BOTH copies**, because the predicate is deliberately duplicated —
+`tools/` and `scripts/` are not packages, so `mypy --strict` cannot import across
+them, and `test_both_copies_of_the_discriminator_exist` pins the duplication.
+The `slow` test that compares the two copies against `git HEAD` as ground truth
+(**229 s**) was run explicitly and passes.
+
+**Two tests, parametrized over both copies:**
+
+* **the false positive** — a file containing NEITHER string, which is exactly the
+  post-rename state of a swept module;
+* **its negative control** — the same shape with the replacement **present**,
+  which must still be reported. This is the load-bearing half: a predicate
+  "fixed" by returning ``False`` more often would satisfy the first and stop
+  catching real leftovers, and that failure direction is the one that lets a
+  mutant survive into a commit.
+
+**Mutation-proved:** reverting the fix fails **2 of the 4** new cases; restored
+byte-exact and green again. **And the end-to-end message was verified**, because
+the point of the fix is the sentence the operator reads:
+
+```
+BOTH ABSENT      -> M8h ...: target ABSENT in fx_carry.py (0 occurrences)
+GENUINE LEFTOVER -> K1a ...: MUTATION STILL APPLIED ... (replacement present AT THE EDIT SITE ...)
+```
+
+**Why this was fixed now and not at D-109:** D-109 declined it because
+`_sweep_gate.py` is shared by all 45 sweeps and deserved its own increment. That
+reasoning was right, and this IS that increment — prompted by the operator's
+question rather than by a schedule. **`sweep_health.py` re-run afterwards:
+`SWEEP HEALTH: OK`, 45 sweeps, 0 leftovers, 0 committed mutants.**
+
+### 2. O-127 — the RECOMMENDED GATE does not work, and that is now measured
+
+This is the most consequential finding in this increment, because it is about a
+remedy that has been **cited three times** (D-105's entry, D-106's re-fire, and
+the standing list) as *"the suggested gate"* and *"now overdue"*.
+
+**The recommendation:** `tests/test_infrastructure.py` should *"assert that every
+settings model is constructible from its own ``model_dump()``"*, which would
+*"convert a recurring, sweep-corrupting surprise into a single test failure at
+the moment it is introduced."*
+
+**Measured, and it does not:**
+
+```
+model_dump() round-trip:                       PASSES   <- even though fixtures are broken
+fixture missing carry_vol_floor:               ValidationError  <- the real failure
+```
+
+A valid instance round-trips through `model_dump()` → `model_validate` **whether
+or not a test fixture elsewhere omits the new field**, because `model_dump()` of
+an instance always carries every field. **The breakage lives in the FIXTURES, and
+a round-trip of a healthy instance cannot see them.** The gate would have been
+built in good faith, would have passed on a healthy tree and on a broken one
+alike, and would have **certified the class as closed while closing nothing** —
+**D-087.23's class (a wrong instruction in the record) applied to a
+recommendation**, and worse than no gate because it converts a recurring surprise
+into a false assurance.
+
+**The record is corrected in place, not deleted** (O-127's row and D-106's
+re-fire paragraph now carry the withdrawal and the measurement), because the
+audit trail has to show that the recommendation was made, was believed, and was
+wrong.
+
+**What actually contains the class — all of it already mandatory:**
+
+1. **Run the sweep's selection GREEN-UNMUTATED first.** This is what caught
+   D-105's collection error and D-109's four broken constructions.
+2. **Every guard test carries `match=`** on the field it is testing, so an
+   unrelated `ValidationError` cannot satisfy it (D-109).
+3. **A negative control per guard.** At D-109 the three `pytest.raises` guard
+   tests **passed** and only the control failed.
+
+A *working* gate would have to walk the test tree with `ast`, find explicit
+`ModelName(...)` calls, and require each to cover the model's required fields.
+That is feasible but it needs a `**splat` escape hatch — which weakens it — and
+nobody has measured whether it would find the sites. **Recorded as an open design
+question, not as a fix**, because building an unmeasured gate is how this entry
+came to exist.
+
+### 3. The live check's foreign-leg defect — a DISCLOSURE turned into a MEASUREMENT
+
+D-109's report said: *"the euro-area leg is MONTHLY and last observed 2026-01-01,
+so the two rates are not date-matched — a defect in this CHECK, not in the
+model."* **A prose disclosure is weaker than a measurement, and this one was
+avoidable.**
+
+No euro-area rate on this installation is both current and of the right tenor:
+the 3-month interbank fixing has the right **tenor** but is monthly and eight
+months stale, and the ECB deposit facility rate is **current** but a policy rate.
+**Neither is right, so the check now runs the function under BOTH** and asserts
+the read is robust to the choice — same sign, same direction label. Measured:
+
+```
+3m interbank (right TENOR, stale)           @ 2026-01-01  -> +0.205227 (long_domestic)
+ECB deposit facility (current, POLICY rate) @ 2026-09-25  -> +0.158000 (long_domestic)
+the two legs agree on the direction and differ by 0.0472
+```
+
+**So the DIRECTION is robust and the LEVEL is not** — the score moves by 0.047
+between two defensible choices of foreign leg. That is now a printed measurement
+and an assertion rather than a footnote, and the plausibility assessment says the
+level should be read as indicative while the direction is the finding. **A carry
+view that flips when you swap the foreign leg is not a view**; this one does not
+flip, and the check proves it rather than hoping it.
+
+### 4. Two items measured and judged NOT to be defects
+
+**The volatility floor's VALUE stays at the specification's 0.1.** The operator
+quoted D-109's finding that the floor binds on live EURUSD and caps the score
+from 0.4503 to 0.2052, and asked whether it needed fixing. **The silent path was
+the defect, and it is closed** — `volatility_floor_binding` is published on every
+result and a warning fires when it binds, both verified live. The **value** is the
+specification's own literal, retained for the same reason D-108 retained
+`notable_deviation_pct`, and **substituting a different number would be typing an
+unevidenced figure into config**, which §21.1 forbids and which D-043/D-047 record
+as a three-time defect. What is now true and was not before: its magnitude is
+recorded as **uncalibrated**, its effect is **measured on live data**, and the
+calibration task is named in the YAML note (*"measure the realised-vol
+distribution of the pairs the score will be used on, which needs a
+cross-sectional panel this build does not fetch"*). **A live, disclosed,
+uncalibrated threshold is a legitimate state in this project; an undisclosed one
+was not.**
+
+**O-136 (the `value`-container inconsistency) stays recorded, not fixed.**
+`realized_vol_simple` publishes a bare `float` and `carry_score` a `dict`, and
+§22.9 **permits both** — the union is the outer contract and each model documents
+its own narrower type. Changing a shipped Tier-1 model's return container to
+satisfy a consistency preference is a behaviour change with no defect behind it,
+and the hazard is already mitigated: `tests/helpers.py::as_float` handles both
+shapes, and the entry names the trap. **Not every inconsistency is an
+incorrectness**, and this one has no wrong number in it.
+
+### Certified gates (measured, never carried forward)
+
+`ruff format --check` **258 files** = `mypy --strict` **258 source files** ·
+`ruff check` clean · **3307 collected / 3306 passed / 0 failed / 1 skipped** via
+`--junitxml` · **delta against D-109's 3303 = exactly +4** = **two new tests × two
+copies** (the false positive and its negative control, each parametrized over
+`tools/sweep_health.py` and `scripts/_sweep_gate.py`) · reachability **PASS
+58/58** · `sweep_health.py` **LAST** → **45 sweeps · 0 leftovers · 0 mutant
+shapes · 0 committed mutants · 0 failures · OK** · the `slow` two-copies-agree
+test run **explicitly** (**229 s**, since the default marker set excludes `slow`)
+and passing.
+
+**The first draft of this paragraph hedged the count** — *"exactly +1 … plus its
+negative control (+2) … minus nothing"* — which is a gate row that is not a
+measurement. It was replaced with the measured figure above. **A gate row is a
+claim (O-88), and a claim with arithmetic in it is measured or it is not made.**
+
+**Five files changed:** `scripts/_sweep_gate.py` · `tools/sweep_health.py` ·
+`tests/test_sweep_health_leftover_predicate.py` · `scripts/live_carry_score_check.py` ·
+the records.
+
+### Next
+
+**Tier 5 = 11/23, unchanged.** `dollar_smile_regime` (`AGENTS.md:1047`) is
+Module 9's last function and completes the module — a **threshold classifier**,
+so its increment is about **branch reachability and threshold units** (D-050's
+inert-by-composition hazard, and the `> 0` zero-case defect).

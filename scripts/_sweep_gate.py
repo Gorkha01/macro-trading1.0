@@ -629,10 +629,35 @@ def _is_applied(text: str, old: str, new: str) -> bool:
     A deletion mutation (``new`` empty) is **not** our call: it cannot be verified
     this way, and D-062 requires such entries be reported *unverifiable*, never as
     leftovers — so it returns ``False`` rather than manufacturing a finding.
+
+    **And neither is a mutation whose REPLACEMENT is absent (O-135, D-110).** The
+    count-stability test below answers "would re-applying this mutation change
+    this file?" — and when ``old`` and ``new`` are **both** absent, re-applying
+    changes nothing, so it answered **yes, this is a leftover** on a **clean
+    tree**. Measured 2026-09-26 at D-109: renaming a private helper in a swept
+    module made one mutation's anchor AND its replacement text both vanish, and
+    `check_targets` reported ``MUTATION STILL APPLIED`` while `sweep_health.py`
+    simultaneously reported **0 leftovers, 0 committed mutants**.
+
+    **Why that is dangerous rather than cosmetic:** the message it prints tells
+    the operator to *"restore the file before sweeping"*, and the natural restore
+    is ``git checkout --`` — which silently discards uncommitted work, and which
+    cost this project **97 lines** at D-086.8. **A gate whose remedy destroys work
+    is worse than a gate that reports nothing.**
+
+    The reasoning is the deletion case's, one step further: **a genuine leftover
+    cannot have ``new`` absent**, because the sweep writes the exact bytes and
+    nothing between the write and the scan reformats source. So an absent
+    replacement means the anchor has DRIFTED (or a tool rewrote the site), and
+    the honest report is *"anchor absent"* — not *"mutant still applied"*.
     """
     if not new.strip():
         return False
     if text.count(old) != 0:
+        return False
+    if text.count(new) == 0:
+        # Both absent: the anchor drifted (or a rename moved it) and the
+        # replacement was never written here. NOT a leftover — see the docstring.
         return False
     return text.replace(old, new, 1).count(new) == text.count(new)
 

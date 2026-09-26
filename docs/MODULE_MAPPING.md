@@ -2131,3 +2131,50 @@ unreachable baseline stays **58 = 58** and the Tier-5 script-only set grows from
 read, paired with `cip_check`'s funding-stress read and the dollar-smile regime —
 and states that it is script-only because no snapshot field carries a rate
 differential or an FX realised volatility.
+
+---
+
+## D-110 — no new mapping; a mapping rule about RECOMMENDED GATES (2026-09-26)
+
+**Tier 5 is unchanged at 11/23.** No function was added, moved, or promoted, and
+**the sweep census is unchanged at 45** — this increment corrected the leftover
+predicate *inside* every sweep's gate rather than adding one.
+
+**A fifteenth mapping rule — a SUGGESTED GATE is a claim about what a gate would
+CATCH, and an unmeasured one maps nothing.** This file and `OPEN_ISSUES.md`
+carried, for three sessions, the recommendation that `tests/test_infrastructure.py`
+should *"assert that every settings model is constructible from its own
+`model_dump()`"* — offered as the remedy for the O-127 class, which has fired
+**five times** (D-048, D-105 ×2, D-106, D-109). **Measured at D-110: it does not
+work.** A valid `FxCarrySettings` round-trips through `model_dump()` →
+`model_validate` **whether or not a test fixture elsewhere omits the new field**,
+because `model_dump()` of an instance always carries every field. The breakage
+lives in the **fixtures**, and a round-trip of a healthy instance cannot see them.
+
+**Why this belongs in a mapping file.** A suggested gate is a claim of the form
+*"this check would map the defect class to a failure"* — which is exactly the kind
+of claim this file exists to keep honest. The proposed gate would have passed on a
+healthy tree and on a broken one alike, so it would have mapped the class to
+**nothing** while being cited as its remedy. **That is D-087.23's class — a wrong
+instruction in the record — applied to a recommendation**, and it is worse than an
+absent gate, because an absent gate is visibly absent whereas a false one
+manufactures assurance. **The rule: a recommended gate is verified the way a
+mutation is — by making it fire on the defect it names.** Until someone builds it
+and watches it fail, it is a hypothesis with a citation count.
+
+**The correct containment, and it is already mandatory** (so the class is
+contained without the withdrawn gate): (i) **run the sweep's selection
+GREEN-UNMUTATED first** — this is what caught D-105's collection error and D-109's
+four broken constructions; (ii) **every guard test carries `match=`** on the field
+it tests, so an unrelated `ValidationError` cannot satisfy it; (iii) **a negative
+control per guard** — at D-109 the three `pytest.raises` guard tests **passed**
+and only the control failed, which is the whole argument for having one.
+
+**And the companion rule, from the same increment: a DISCLOSURE is not a
+MEASUREMENT.** D-109's live check disclosed in prose that its euro-area leg is
+monthly and stale — a real defect in the check, described honestly and left
+unmeasured. D-110 turned it into a measurement: the check now runs the function
+under **both** reachable foreign legs and asserts the read is robust to the choice
+(`+0.205227` vs `+0.158000`, both `long_domestic`). **The direction is robust and
+the level is not**, and that difference is now a printed number rather than a
+sentence. **A caveat that can be converted into an assertion should be.**

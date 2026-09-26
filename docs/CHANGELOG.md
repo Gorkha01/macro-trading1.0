@@ -10,6 +10,69 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-110 — the D-109 findings, triaged (no new function; Tier 5 = 11/23 unchanged)
+
+Prompted by the operator asking whether the items in D-109's close-out report had
+been fixed where required. Two required a fix, one required a **correction to a
+record**, and two were measured and judged not to be defects.
+
+**Fixed**
+
+- **O-135 — `check_targets` reported a leftover mutation on a CLEAN tree.** When a
+  mutation's anchor *and* its replacement text are both absent, `_is_applied`
+  returned `True`, and the message it printed told the operator to *"restore the
+  file"* — whose natural form, `git checkout --`, has already cost this project
+  **97 lines** (D-086.8). Fixed with the entry's own proposal, applied to **both**
+  deliberately-duplicated copies (`scripts/_sweep_gate.py`, `tools/sweep_health.py`),
+  with **two tests × two copies**: the false positive and **its negative control**
+  (the same shape with the replacement present, which must still be reported).
+  **Mutation-proved** (reverting fails 2 of 4; restored byte-exact), and the
+  end-to-end message verified: the D-109 shape now prints `target ABSENT`, while a
+  genuine leftover still prints `MUTATION STILL APPLIED`.
+
+**Changed**
+
+- **`scripts/live_carry_score_check.py` no longer merely DISCLOSES its
+  foreign-leg defect — it MEASURES it.** No euro-area rate on this installation is
+  both current and of the right tenor, so the check now runs the function under
+  **both** reachable legs and asserts the read is robust to the choice. Measured:
+  `+0.205227 (long_domestic)` on the stale 3-month interbank rate against
+  `+0.158000 (long_domestic)` on the current ECB deposit facility rate — **the
+  direction is robust, the level is not.** A carry view that flips when you swap
+  the foreign leg is not a view; this one does not flip, and the check proves it.
+
+**Corrected**
+
+- **O-127's recommended gate was measured and WITHDRAWN.** The remedy cited three
+  times — *"assert every settings model is constructible from its own
+  `model_dump()`"* — **does not work**: a valid instance round-trips whether or not
+  a test fixture omits the new field, because `model_dump()` always carries every
+  field. The breakage lives in the **fixtures**. The gate would have passed on a
+  healthy tree and a broken one alike and **certified the class as closed while
+  closing nothing** — **D-087.23's class in a recommendation, and worse than no
+  gate because it manufactures false assurance.** Corrected in place in O-127's row
+  and D-106's re-fire paragraph, with the measurement. What contains the class is
+  already mandatory: the green-unmutated run, `match=` on every guard test, and a
+  negative control per guard.
+
+**Measured and judged NOT defects**
+
+- **The volatility floor's value stays at the specification's `0.1`.** The silent
+  path was the defect and it is closed (flag published, warning fired, verified
+  live). Substituting a different number would be typing an unevidenced figure into
+  config (§21.1; D-043/D-047). Its magnitude is now recorded as uncalibrated, its
+  effect measured live, and the calibration task named in the YAML note.
+- **O-136 stays recorded, not fixed.** `realized_vol_simple` publishes a bare
+  `float`, `carry_score` a `dict`, and §22.9 permits both. Changing a shipped
+  Tier-1 model's return container is a behaviour change with no defect behind it.
+  Not every inconsistency is an incorrectness.
+
+**Gates:** `ruff format --check` **258** == `mypy --strict` **258** · **3307
+collected / 3306 passed / 0 failed / 1 skipped** via `--junitxml` (delta **+4** =
+two new tests × two copies) · reachability **PASS 58/58** · the `slow`
+two-copies-agree test run explicitly (229 s) and passing · `sweep_health.py`
+**45 sweeps, 0 failures, 0 leftovers, 0 committed mutants**.
+
 ### D-109 — Module 9's `carry_score`, and a floor that changes the estimand (Tier 5 = 11/23)
 
 The carry trade's Sharpe-like ratio, in the module D-108 created. `carry_score`

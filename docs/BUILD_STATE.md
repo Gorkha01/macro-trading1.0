@@ -9234,3 +9234,87 @@ sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shap
 3261 = exactly +42** — the new test file's collected count. **The sweep census is
 UNCHANGED at 45**: this increment **extended an existing sweep** rather than
 adding one, which is why no parametrized-over-sweeps case moved.
+
+---
+
+## D-110 — the D-109 findings, triaged (2026-09-26) — **no new function, Tier 5 = 11/23 unchanged**
+
+Prompted by the operator asking **"have you fixed below if required?"** about
+D-109's close-out report. **Two items required a fix, one required a CORRECTION to
+a record, two were measured and judged not to be defects.**
+
+### 1. O-135 — FIXED (mutation-proved)
+
+`_is_applied` returned **True** when a mutation's anchor AND its replacement were
+both absent → **a leftover reported on a CLEAN tree**, with a printed remedy
+(`git checkout --`) that has already cost this project 97 lines (D-086.8).
+**Measured first**, then fixed with the entry's own proposal
+(``if text.count(new) == 0: return False``), applied to **BOTH** copies
+(`scripts/_sweep_gate.py` + `tools/sweep_health.py`; they are deliberately
+duplicated because `tools/` and `scripts/` are not packages).
+
+**Two tests × two copies:** the false positive, and **its negative control** (the
+same shape with the replacement PRESENT, which must still be reported — a fix that
+returned `False` more often would satisfy the first and stop catching real
+leftovers). **Mutation-proved:** reverting fails **2 of 4**; restored byte-exact.
+**End-to-end:** the D-109 shape now prints `target ABSENT … (0 occurrences)` while
+a genuine leftover still prints `MUTATION STILL APPLIED`. The `slow`
+two-copies-agree test (**229 s**, ground truth = `git HEAD`) was run explicitly
+and passes. `sweep_health.py` after: **OK**.
+
+### 2. O-127 — the RECOMMENDED GATE was measured and WITHDRAWN
+
+The remedy cited **three times** (D-105, D-106, the standing list) — *"assert every
+settings model is constructible from its own `model_dump()`"* — **does not work.**
+A valid instance round-trips whether or not a test fixture omits the new field,
+because `model_dump()` always carries every field; **the breakage lives in the
+FIXTURES.** The gate would have passed on a healthy tree and a broken one alike and
+**certified the class as closed while closing nothing** — **D-087.23's class in a
+recommendation, worse than no gate because it manufactures false assurance.**
+Corrected in place in O-127's row and D-106's re-fire paragraph.
+
+**What contains the class, all already mandatory:** the **GREEN-UNMUTATED** run ·
+**`match=`** on every guard test · **a negative control per guard** (at D-109 the
+three `pytest.raises` tests **passed** and only the control failed).
+
+### 3. The live check's foreign-leg defect — disclosure → MEASUREMENT
+
+No euro-area rate here is both current and of the right tenor, so the check now
+runs the function under **both** and asserts the read is robust:
+
+```
+3m interbank (right TENOR, stale)           @ 2026-01-01  -> +0.205227 (long_domestic)
+ECB deposit facility (current, POLICY rate) @ 2026-09-25  -> +0.158000 (long_domestic)
+agree on direction; differ by 0.0472
+```
+
+**The DIRECTION is robust; the LEVEL is not** — now a printed measurement and an
+assertion rather than a footnote.
+
+### 4. Measured and judged NOT defects
+
+* **The volatility floor's VALUE stays at the spec's 0.1.** The silent path was
+  the defect and it is closed (flag + warning, verified live). Substituting a
+  different number would be **typing an unevidenced figure into config** (§21.1;
+  D-043/D-047). New: its magnitude is recorded as uncalibrated, its effect is
+  measured live, and the calibration task is named in the YAML note.
+* **O-136 stays recorded.** `realized_vol_simple` publishes a bare `float`,
+  `carry_score` a `dict`, and **§22.9 permits both**. Changing a shipped Tier-1
+  model's return container is a behaviour change with no defect behind it.
+  **Not every inconsistency is an incorrectness.**
+
+### Gates (measured 2026-09-26, never carried forward)
+
+```
+ruff format --check src tests tools scripts   ->  258 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 258 source files
+reachability_audit.py --check-baseline        ->  PASS 58/58, no regressions
+full suite (--junitxml)                       ->  3307 collected / 3306 passed / 0 failed / 1 skipped
+slow two-copies-agree test (explicit)         ->  1 passed in 229 s
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**258 == 258** (D-035). **Delta against D-109's 3303 = exactly +4** = **two new
+tests × two copies**. **The sweep census is UNCHANGED at 45** — no sweep was
+added; the predicate inside every sweep's gate was corrected.
