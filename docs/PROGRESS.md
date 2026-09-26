@@ -1,7 +1,43 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-26** (after **D-111 — Module 9's `dollar_smile_regime`, THE THIRD AND
+Last updated: **2026-09-26** (after **D-112 — Module 9's `uip_expected_move`, THE FOURTH
+FUNCTION: Module 9 = 4 of 4. Tier 5 = 13/23.** The **supersession question was the first
+deliverable**, answered before any arithmetic: **a DIFFERENT function from `cip_check`
+(one predicts an expected spot move from two rates; the other measures a traded forward's
+deviation), but the SAME parity family read forward** — the bridge is the exact identity
+**UIP's one-year move == CIP's forward premium `(i_d - i_f)/(1 + i_f)`** (verified **3.217822 %**
+both ways on the spec's rates, a **3.2 bp** second-order gap from the spec's `i_d - i_f`).
+**`confidence=0.15` is a model-specific config CAP, NOT `compute_confidence()`** — the
+increment's central design decision: UIP's *inputs* are observable and its *arithmetic* exact,
+so no reliability factor is impaired; what is nearly worthless is that the **hypothesis fails
+empirically**, and `compute_confidence()` has no factor for "the method is known to be false."
+New leaf `fx_carry.uip_reliability_cap` = **0.15**, deliberately **below every other Module 9
+confidence** (asserted, not noted), following the `policy_rules.py` precedent. **BOTH forms
+published** — the exact ratio and the spec's first-order `(i_d - i_f) t` side by side, so the
+approximation's size is VISIBLE (a first-draft test demanded sub-bp at a 4 pp differential and
+FAILED at **3.96 bp**; fixed to bound the derived term). **The horizon scaling is a HYPERBOLA,
+not linear** — two first-draft tests demanding exact proportionality FAILED (ratio **3.9703**
+vs 4.0), fixed with the `rel=1e-2` bound plus a `ratio < tenor/90` curvature guard. **THE
+MECHANICAL HAZARD FIRED EXACTLY AS PREDICTED, WITH THE PREDICTED VICTIM**: `uip_expected_move`
+reuses `cip_check`'s conventions BY DESIGN, so **SEVEN old `cip_check` anchors went AMBIGUOUS**
+(`M2a`–`M2d`, `M6c`, `M6d`, `M8b`) — caught by `check_targets` before any mutant ran, fixed by
+**widening each anchor with a cip-only neighbour, never deleting a mutation**, each widening
+**byte-verified** (`count == 1`) after two failed attempts at the 22-line-identical guard.
+**O-138 OPENED:** `--check-targets` prints its verdict **and then RUNS**, so the "safe"
+pre-flight SIGTERM'd the sweep mid-mutation and left **`M4a`'s residue** on disk (repaired from
+the sidecar; `git status` could not tell it from an edit — O-131 exactly). **O-127's class fired
+AGAIN** (three `_fx_carry_settings` helpers went stale, exactly as `test_cip_check.py`
+predicted — caught by the GREEN-UNMUTATED run). **The live check runs END TO END** (UIP consults
+no forward, so both inputs are reachable and nothing is constructed) and **MEASURES the CIP
+bridge** on live rates — **and it FAILED on its first run with the defect in the CHECK, not the
+model**: section (5) compared a bare ratio deviation to a rate (`i_f`), a unit mismatch, and
+re-derived as a **fraction of the longer move** the live shortfall is **`0.015131`** against the
+`i_f` bound **`0.020277`** — inside it, as the exact algebra promises. **D-109's lesson again.
+Gates: ruff format --check 262 == mypy 262 · reachability --check-baseline PASS (58 = 58) ·
+3429 collected / 0 failed / 1 skipped (JUnit) · mutation_fx_carry 143/143 (was 114) · live check
+PASS · 45 sweeps OK.**)
+Previous update: **D-111 — Module 9's `dollar_smile_regime`, THE THIRD AND
 FINAL FUNCTION: Module 9 = 3 of 3, COMPLETE. Tier 5 = 12/23.** A **three-way threshold
 classifier**, so the increment was about **branch reachability and threshold units** rather
 than arithmetic. **The reachable set was MEASURED before any code was written** — a 3 025-point

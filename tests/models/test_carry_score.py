@@ -363,6 +363,9 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
     argument for having one. Every field the settings model requires is listed
     here, so a future required field breaks THIS helper (loudly, in one place)
     rather than silently turning a guard test into a tautology.
+
+    D-112 is that future: ``uip_reliability_cap`` was added and this helper
+    broke here, in one place, exactly as designed.
     """
     base: dict[str, CalibratedValue] = {
         "notable_deviation_pct": CalibratedValue(value=0.1, calibration_status="conventional"),
@@ -373,6 +376,9 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
         ),
         "dollar_smile_sign_boundary": CalibratedValue(
             value=0.0, calibration_status="institutional_convention"
+        ),
+        "uip_reliability_cap": CalibratedValue(
+            value=0.15, calibration_status="uncalibrated_illustrative"
         ),
     }
     base.update(overrides)

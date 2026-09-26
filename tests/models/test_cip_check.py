@@ -587,6 +587,14 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
     that "complete on purpose" has to be maintained against the model, not
     asserted once — which is why every field below is spelled out and why a
     third occurrence should be met by reading the model rather than by guessing.
+
+    **D-112 fired it a THIRD time**, exactly as the sentence above predicted:
+    ``uip_reliability_cap`` was added and this helper went stale again. The
+    prediction was right and the helper was still fixed by editing rather than by
+    generating — so the standing conclusion is that this helper is a
+    **maintenance point**, and the remedy at the fourth occurrence is to build it
+    from the model's own fields (``FxCarrySettings.model_fields``) rather than to
+    hand-list them a fourth time.
     """
     base: dict[str, CalibratedValue] = {
         "notable_deviation_pct": _cal(0.1),
@@ -594,6 +602,7 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
         "carry_vol_floor": _cal(0.1),
         "dollar_smile_vix_threshold": _cal(25.0),
         "dollar_smile_sign_boundary": _cal(0.0),
+        "uip_reliability_cap": _cal(0.15),
     }
     base.update(overrides)
     return FxCarrySettings(**base)

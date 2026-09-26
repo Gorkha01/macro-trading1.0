@@ -18822,3 +18822,269 @@ realised deviation** — so the first thing to establish is whether it is a
 *different* function or the same relation read forward, and to state that in
 `decision_relevance` before writing any arithmetic. **Re-derive the remaining 11
 names from `src/`; do not recall the list.**
+
+---
+
+## D-112 — Module 9's `uip_expected_move`: the SUPERSESSION question answered first, a confidence that is a CAP rather than a derived factor, and the seven old `cip_check` anchors the new function broke
+
+**Date:** 2026-09-26. **Tier 5 = 13/23. Module 9 = 4 of 4.** Target:
+`src/macro_engine/models/fx_carry.py` (created D-108, extended D-109/D-111),
+**`AGENTS.md:4861`** (§20.9 — **resolved with `grep -n`; a citation is a claim**).
+This is the increment whose *first deliverable was a sentence*, not a number.
+
+### 1. The supersession question was answered BEFORE any arithmetic — and the answer is "different function, same parity family read forward"
+
+The prompt asked, and D-111's own "Next" asked, *whether `uip_expected_move` is a
+different function from `cip_check` or the same parity relation read forward.* The
+question is real: both read the **same two rates**, both rest on the **same
+no-arbitrage family**, and §20.9's name sits beside CIP in the theory. So it was
+settled first, and the answer is **both, in a precise sense**:
+
+* `cip_check` takes a **TRADED FORWARD** as an input and measures how far that
+  observed price has departed from the parity-implied one. Its output is a
+  **DEVIATION** — a measurement of a live dislocation. The forward is *data*.
+* `uip_expected_move` consults **no forward at all**. It takes only the two rates
+  and converts the parity relation into a statement about the **EXPECTED FUTURE
+  SPOT**. Its output is a **PREDICTION** — the benchmark a carry trade bets
+  against. The forward is *absent*.
+
+They are **different functions** (one measures a price, the other predicts one)
+but the **same parity family**, and the bridge is exact: CIP rearranged gives the
+forward premium `F/S - 1 = (i_d - i_f)/(1 + i_f)`, and UIP asserts the expected
+spot change **equals that premium**. So UIP is CIP's forward premium **read as a
+forecast**, and the empirical fact that spot does not move that way **is the
+forward-premium puzzle** — i.e. exactly the failure this model exists to make
+explicit. **Superseding would require the two to answer the same question, and
+they do not.** The bridge is *testable*, and both the unit tests and the live
+check assert it numerically: at `i_d = 4.25 %`, `i_f = 1.00 %`, both the one-year
+expected move and CIP's forward premium are **3.217822 %** (the specification's
+first-order `i_d - i_f` = 3.25 %, a **3.2 bp** second-order gap — see §4).
+
+**"Supersedes NOTHING and is not superseded"** is therefore printed in
+`decision_relevance`, exactly as D-111's "Next" instructed, **before** the
+arithmetic was written.
+
+### 2. `confidence` is a model-specific CAP, NOT `compute_confidence()` — and the distinction is the whole design decision
+
+§22.8 forbids a bare `confidence=0.15` literal and requires the value be
+**computed from stated factors**. The obvious remedy is `compute_confidence()`
+with `is_heuristic_not_calibrated` or a reliability input set. **This function
+deliberately does not do that, and the reason is the increment's central idea:**
+
+> **UIP's inputs are observable and its arithmetic is exact, so NO reliability
+> factor is impaired. What makes it nearly worthless is that the HYPOTHESIS
+> fails empirically — and `compute_confidence()` has no factor for "the method is
+> known to be false."**
+
+Driving the standard factors to their *worst* values would still produce a
+number that means "the data quality is poor", which is **false** — the data is
+fine. So the honest encoding is a **model-specific cap**: a new config leaf
+`fx_carry.uip_reliability_cap`, value **0.15** (`uncalibrated_illustrative`),
+read through `uip_reliability_value`, with the leaf's note stating it is a
+**reliability CEILING, not a `compute_confidence()` penalty**.
+
+**The precedent is in the tree, not invented here:** `policy_rules.py`
+(lines ~700–810) already carries a model-specific config-leaf confidence
+(`policy.market_implied.term_premium_available_confidence_value`) for a case
+where the two branches are *"deliberately different qualities, not two settings
+of one factor."* UIP is the second instance of that pattern, and §2 of this entry
+is the justification for treating it as a pattern rather than an exception.
+
+**The cap is deliberately BELOW every other Module 9 confidence** — and that is
+asserted, not merely noted: a test pins `0.15 < cip_check`'s and
+`< carry_score`'s, and the **live check** re-derives the comparison on real
+numbers, so a future edit that quietly raised the cap would fail a gate rather
+than pass silently.
+
+### 3. The value shape: BOTH forms published, and the first-order form's size made VISIBLE
+
+`value` carries the **exact** `expected_move_pct`
+(`((1 + i_d t)/(1 + i_f t) - 1) * 100`) **and** the specification's **first-order**
+`expected_move_simple_pct` (`(i_d - i_f) t * 100`) side by side — deliberately,
+so the approximation's size is *visible* rather than *asserted*. The two differ by
+a **second-order** term: the exact premium is the differential **discounted by
+`1/(1 + i_f t)`**, so the simple form **overstates** it, with a leading gap of
+`i_f * (i_d - i_f)`. At the G10 differentials this increment sees it is a
+fraction of a basis point and cannot change the sign, **but it is a real
+second-order error and the function does not correct it** — recorded in the
+limitations rather than hidden.
+
+**A test in the first draft asserted sub-basis-point agreement at a 4 pp
+differential and FAILED** (`0.0396 < 0.01` was false): the real gap there is
+**3.96 bp**. Fixed by bounding against the **derived** term `i_f * (i_d - i_f) *
+100` with a 10× margin, plus a new `test_the_gap_is_second_order_in_the_foreign_rate`
+— i.e. the test now measures the *mechanism*, not a number copied from prose.
+
+### 4. The horizon conversion is the money-market one, and it is a HYPERBOLA — so "linear in t" is false and the first tests said otherwise
+
+Annualised decimals → period via `tenor_days / basis_days`, the same convention
+`cip_check` and `carry_score` use, so a benchmark is comparable with a carry over
+the **same tenor**. Tenors beyond one money-market year are **refused** (simple
+interest is exact only to a year; a compounded figure computed with a simple
+formula is a wrong number that looks right).
+
+**But the exact ratio is a hyperbola in `t`, so horizon scaling is only
+APPROXIMATELY linear, and two tests written on the assumption of exact
+proportionality FAILED:** the 180-day and 360-day cases returned a ratio of
+**3.9703** against a demanded **4.0**, and a 90-day guard compared a fixture
+against *itself* (`1.0 < 1.0`). Fixed by asserting the scaling at `rel=1e-2` and
+adding a **guard that the longer horizon's per-unit move is the SMALLER one**
+(`ratio < tenor/90` for `t > 90`) — which is the falsifiable content of "the
+premium is discounted", rather than a tolerance that hides the curvature.
+
+### 5. The live check runs END TO END — because UIP consults no forward
+
+`scripts/live_uip_expected_move_check.py`. Unlike `cip_check` (whose forward is
+unreachable, forcing an oracle pattern), `uip_expected_move` consumes **two
+money-market rates and nothing else**, both reachable — so **nothing is
+constructed** and the function runs on live data. **Measured:** US 3 m `DTB3`
+and euro-area 3 m `IR3TIB01EZM156N`, converted percent → decimal, fed in; the
+published move reconciles against a hand-recomputed exact ratio and the
+first-order form; the direction label follows the published sign; the horizon
+scaling is checked against the **hyperbola's** permitted shortfall.
+
+**The bridge to CIP is a MEASUREMENT, not a docstring claim:** the check
+recomputes CIP's forward premium `(i_d - i_f)/(1 + i_f)` from the live rates and
+asserts UIP's one-year move equals it; **and** it feeds `cip_check` the
+parity-implied forward and asserts the reported deviation is **~0**. **This is the
+section that would fail if the two functions ever drifted apart.**
+
+**The check does not claim what it cannot have:** the expected spot move is
+**unobservable**, so nothing there establishes that the benchmark predicts
+anything — that is the model's own standing caveat, and the reason for the cap.
+The euro-area leg is **MONTHLY and stale** (a defect in the *check*, not the
+model), so section (8) **measures** the leg's effect — running the function under
+both reachable euro-area rates and asserting the **direction** is robust to the
+choice rather than merely disclosing the mismatch.
+
+### 6. THE INCREMENT'S MECHANICAL HAZARD: adding a function to a SWEPT module broke SEVEN of the OLD `cip_check` anchors
+
+The prompt predicted this (D-055/D-060) and it fired **exactly as predicted, with
+the predicted victim**: `uip_expected_move` **reuses `cip_check`'s conventions BY
+DESIGN** — the same guard shapes, the same error text, the same published keys —
+so four lines that the sweep's `M2`/`M6`/`M8` mutations anchored on became
+**byte-identical in two places**. `check_targets` reported **7 AMBIGUOUS
+problems** (`M2a`–`M2d`, `M6c`, `M6d`, `M8b`) **before any mutant ran** — the gate
+did its job.
+
+**Fixed by widening each old anchor with a `cip_check`-only neighbour, NEVER by
+deleting a mutation** (the D-055/D-060 remedy):
+* `M2` (`_PERIOD_SCALE`/`_I_D_PERIOD`/`_I_F_PERIOD`) — widened with the
+  `cip_check`-only `# THE QUOTE CONVENTION.` line and the
+  `"synthetic_domestic_funding_rate_period"` following key.
+* `M6c`/`M6d` (`_TENOR_GUARD`/`_PERIOD_RATE_GUARD`) — widened with the
+  `cip_check`-only **exchange-rate positivity loop** (`for name in ("spot",
+  "forward")`), which `UIPInputs` has no reason to carry.
+
+**And a widening must be verified byte-for-byte, which cost two extra cycles:**
+the first `M6d` widening went **ABSENT** (my anchor said `the exchange rate` where
+`cip_check` says `the parity ratio`), and after correcting *that* it was still
+**AMBIGUOUS** — because the guard block, *including its closing `return self`*, is
+byte-identical in both functions for **22 consecutive lines**. Only the
+exchange-rate loop above it discriminates. **The lesson: an anchor "widen" is a
+claim about bytes, and the only way to know the span is unique is to measure
+`src.count(anchor) == 1` before trusting `check_targets`.**
+
+### 7. O-138 — `--check-targets` prints its verdict and then RUNS, so the pre-flight killed the sweep mid-mutation and left a MUTANT on disk
+
+**A NEW open issue, and the exact O-131 residue hazard reached through the mode
+that is supposed to be the SAFE one.** After the last anchor was fixed,
+`--check-targets` printed `143 mutations, 0 problem(s)` — **and then began
+executing the mutations**, because the flag suppresses the *refusal*, not the
+*run*. It exceeded the foreground cap and was **SIGTERM'd** (win32 leaves the
+child alive). **Measured consequence:** `fx_carry.py` was left holding **`M4a`'s
+residue** (`"normalized_to": "foreign_per_domestic"` vs `HEAD`'s
+`"domestic_per_foreign"`), with both `.sweepbackup` sidecars still on disk.
+**`git status --short` could not tell the mutant from a legitimate edit** — both
+show as ` M` — which is O-131's point exactly; the diff against `HEAD` exposed it
+and the sidecar repaired it (one line restored, sidecars removed). **Recorded as
+O-138** with a suggested fix: make `--check-targets` **exit after printing**
+without mutating, and have the `DIRTY TARGET (O-61)` banner **refuse** rather
+than inform.
+
+### 8. O-127's class fired AGAIN — the third `_fx_carry_settings` helper went stale, exactly as `test_cip_check.py` had PREDICTED
+
+Adding the required `uip_reliability_cap` to `FxCarrySettings` broke **three**
+`_fx_carry_settings` helpers (`test_cip_check.py`, `test_carry_score.py`,
+`test_dollar_smile_regime.py`) — **the mechanical break D-109 anticipated and
+wrote into the docstring.** All three fixed by adding the field, with the notes
+recording that the helper is now a **maintenance point** and that a fourth
+occurrence should build from `FxCarrySettings.model_fields` rather than hand-list
+seven leaves. **The GREEN-UNMUTATED selection run caught all three**, which is
+what that mandatory step is for.
+
+### Note: what did NOT fire
+
+**D-050's inert-by-composition hazard did NOT fire** — and `uip_expected_move` is
+**not** the three-way classifier D-111's `dollar_smile_regime` was, so no
+reachability enumeration was needed. The **direction** is a **three-way
+`Literal`** (`domestic_depreciation` / `domestic_appreciation` / `flat`), and it
+**is** published and asserted — but the `flat` limb is reachable by an exact tie
+(the same class as D-040, which is *fine* here because the function publishes the
+condition as a **warning** rather than pretending a zero move is a small one).
+
+### 9. FOUR real survivors in the new U-segment — each a genuine test gap, and one an EQUIVALENT MUTANT retargeted rather than "fixed"
+
+The first full sweep came back **139 killed / 4 survived**, and all four were in
+the **new** UIP mutations — the increment's own segment. Triaged per D-031:
+
+| survivor | verdict | cause | fix |
+|---|---|---|---|
+| `U2c` — `differential_period = differential_annualized` (scaling dropped) | **weak test** | `test_the_period_rates_are_published_and_consistent` asserted the two period **LEGS** but never the **differential**, so a differential that mixed units went unseen | assert `differential_period` AND that it is strictly smaller than the annualised one at a non-unit tenor |
+| `U2d` — `basis_days = 360` hardcoded | **weak test** | **every** fixture used `actual_360`, where a hardcoded 360 is indistinguishable from the read value | a new `actual_365` fixture, asserting the two bases give DIFFERENT period rates |
+| `U3c` — `expected_move_simple_pct = differential_annualized * 100.0` (scaling dropped) | **weak test** | the default fixture is a **one-year** tenor, where `period_scale == 1` and the dropped scaling is invisible | a new **quarter** fixture, where the simple form must be 4× smaller than the annual figure |
+| `U4a` — direction from `differential_annualized` instead of `expected_move_pct` | **EQUIVALENT MUTANT** | the two quantities have the **same sign for every admissible input** (`period_scale > 0` always, and the exact ratio is monotone in the differential), so the mutation changes nothing | **retargeted** to `_uip_direction(-expected_move_pct)` (which IS detectable), with the equivalence recorded in the sweep's comment |
+
+**U4a is the instructive one, and it is a class the project has not recorded
+before: a mutation that is EQUIVALENT BY CONSTRUCTION reports a survivor that is
+*not* a weak test.** The three weak tests were fixed by adding assertions. U4a
+could not be — no input distinguishes it from the shipped code — so per D-031 it
+was **retargeted to a detectable mutation** (negating the move) and the
+equivalence written down, because *deleting* it would drop a guard against a
+future change (if the exact ratio were ever replaced with a non-monotone
+expression, the shipped form and U4a's would diverge). **All four were proved
+killed by applying each mutation ALONE:** U2c → 2 failed, U2d → 1 failed,
+U3c → 1 failed, U4a → 3 failed. The full sweep then returned **143/143 killed**.
+
+### 10. Gates (measured 2026-09-26 — `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  262 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 262 source files
+reachability_audit.py --check-baseline        ->  PASS — baseline 58 = measured 58, no regressions
+full suite (--junitxml)                       ->  3429 tests / 0 failures / 0 errors / 1 skipped
+mutation_fx_carry.py                          ->  143/143 killed   (was 114)
+live_uip_expected_move_check.py               ->  PASS
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**262 == 262** (D-035). **+54 against D-111's 3375 = the new `test_uip_expected_move.py`.**
+Reachability: `uip_expected_move` is **SCRIPT-ONLY — Tier 5**, so the Tier 1-4 baseline is
+untouched and the **Tier-5 script-only count moves 12 → 13**.
+
+**Two late gate failures, both in the NEW files, both fixed rather than waived.** The `--check`
+run refused `scripts/live_uip_expected_move_check.py`'s formatting and flagged
+`test_uip_expected_move.py:635` — `decision_relevance` is `str | None`, so `.lower()` was a
+`union-attr` error; the fix adds an `is not None` assertion, which is also the **stronger** test
+(it proves the field is published at all).
+
+**And a third, the substantive one: the LIVE CHECK FAILED ON ITS FIRST RUN — with the defect in
+the CHECK, not the model.** Section (5) compared a **bare ratio deviation** `(4 − ratio)`
+= `0.059620` against `bound = i_foreign` = `0.020277` and reported **OVER-BOUND**. That is a
+**unit mismatch**: the left side is a dimensionless ratio-deviation, the right a rate. Re-derived
+from the exact algebra with `a = i_d − i_f`, `u = i_f`:
+`4·m(¼) − m(1) = a·u·0.75 / ((1 + u/4)(1 + u))`, which is **strictly below `u`** since the
+denominator exceeds 1. Expressed **as a fraction of the longer move**, the live shortfall is
+**`0.015131`** — inside the `i_f` bound, exactly as the model promises. Section (5) and its
+docstring were corrected to the fraction-of-move form and the check now PASSES. **This is D-109's
+lesson firing again — both sides of a cross-check must share a unit — and it is the second
+consecutive increment where the check, not the code, was the thing that was wrong.**
+
+### Next
+
+**Tier 5 = 13/23.** The next Tier-5 name is **`intervention_capacity`** (§20.9,
+`AGENTS.md:4900`-ish — **resolve the line with `grep -n`, because a citation is a
+claim**), specified **immediately after** `ppp_valuation` in §20.9. §21.3's table
+*"and only that table"* decides when a stub becomes IMPLEMENTED. **Re-derive the
+remaining 10 names from `src/`; do not recall the list.** **NOT mine:** the Tier-5
+review/audit.

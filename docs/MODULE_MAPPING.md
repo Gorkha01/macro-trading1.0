@@ -2204,6 +2204,73 @@ three has a pipeline consumer yet.
 
 ---
 
+## D-112 — Module 9's `uip_expected_move`, and the parity branch CLOSED (same file, fourth function) (2026-09-26)
+
+**Tier 5 = 13/23. Module 9 = 4 of 4.** Module 18 is untouched at 5 of 6. The
+`fx_carry.py` module now carries **four** functions — `cip_check`, `carry_score`,
+`dollar_smile_regime` (§6.7) and `uip_expected_move` — and D-112 says so in the
+module docstring and the sweep's legend (*"four functions, one module, one sweep"*).
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `uip_expected_move` | **9 — FX Carry / Parity** | `models/fx_carry.py` (**exists** — created D-108, extended D-109/D-111) | `AGENTS.md:4861` (§20.9) | **nothing named** — Phase 0–4 had no parity benchmark at all | **IMPLEMENTED** (D-112) |
+
+**A seventeenth mapping rule — the SUPERSESSION answer can be "different function,
+same family" and the mapping's job is to say WHICH relation ties them, because
+that relation is what a future reader will grep for.** `uip_expected_move` reads
+the same two rates as `cip_check` and its name sits beside CIP in the theory, so
+the *mapping* question and the *supersession* question are the same question.
+Answered: **different functions (one measures a traded forward's deviation; the
+other predicts an expected spot move and consults no forward), same parity family
+read forward** — and the tie is the **exact identity** `UIP's one-year expected
+move == CIP's forward premium (i_d - i_f)/(1 + i_f)`. **That identity is the
+mapping's actual content:** it is *tested* on hand-derived fixtures and *measured*
+on live rates, so the two rows in this table are known to describe one relation
+rather than asserted to. **The rule: when two mapped functions share a family,
+map the IDENTITY that connects them, not just the two rows** — otherwise a future
+increment can change one side and the table will still "look right."
+
+**An eighteenth mapping rule — a live check whose inputs are ALL reachable is a
+STRONGER mapping than one that must construct an input, and the strength should be
+recorded.** D-108's `cip_check` could not reach a forward and **constructed** a
+parity-implied substitute; D-111's `dollar_smile_regime` could reach one of three
+inputs and **declared** the other two. `uip_expected_move` consumes **two
+money-market rates and nothing else**, and **both are reachable** — so its live
+check runs the function **end to end, constructing nothing**, and its only
+declared-or-constructed element is absent. **The mapping records the tier of
+honesty, not just "there is a live check":** end-to-end > declared-parameter >
+constructed-substitute, and a reader consulting this table should be able to see
+which one a row's live check is.
+
+**The supersession map, updated (D-096):** `classify_regime_rule_based` →
+`classify_regime_markov_switching` (D-105) · `historical_var` / `parametric_var` /
+`expected_shortfall` → `monte_carlo_var` (D-106) · `cip_check` supersedes
+**nothing named** (D-108) · `carry_score` supersedes **nothing named** (D-109) ·
+**`dollar_smile_regime` supersedes nothing named** (D-111) · **`uip_expected_move`
+supersedes nothing named** — Phase 0–4 had no parity benchmark, and the function it
+would most plausibly "supersede", `cip_check`, is a **different quantity** (see the
+seventeenth rule) rather than an older version of the same one ·
+`realized_vol_simple` → GARCH (outstanding, and the cross-check partner for
+`carry_score`'s live volatility) · the inverse-volatility weighting →
+`compute_risk_parity_weights` (**shipped at D-071, Phase 4 — not outstanding**).
+**Ask what each entry replaces, never grep the list for a keyword.** **What D-112
+FEEDS, which is the other half of the mapping:** it is the **theoretical foundation
+of `carry_score`, in the negative sense** — `carry_score` measures a carry, and
+`uip_expected_move` publishes the **benchmark that carry is a bet against** (the
+carry premium *is* this benchmark's empirical failure). It also **pairs with**
+`cip_check`: the forward premium `uip_expected_move` predicts the spot to move by
+is the very quantity `cip_check` measures the market's price of. Both are stated
+in `decision_relevance`.
+
+**Reachability mapping.** `uip_expected_move` also classifies as **SCRIPT-ONLY —
+Tier 5** (its only caller is `scripts/live_uip_expected_move_check.py`), so the
+Tier 1-4 unreachable baseline stays **58 = 58** (`--check-baseline` PASS) and the
+**Tier-5 script-only set grows 12 → 13**. As with the other three FX functions, no
+snapshot field carries a foreign money-market rate, so the caller supplies both
+rates and no pipeline consumer exists yet — the honest state.
+
+---
+
 ## D-110 — no new mapping; a mapping rule about RECOMMENDED GATES (2026-09-26)
 
 **Tier 5 is unchanged at 11/23.** No function was added, moved, or promoted, and

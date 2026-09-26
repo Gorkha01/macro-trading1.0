@@ -2,10 +2,14 @@
 
 Section 6.7 gives this module three functions, and all three now live here:
 :func:`cip_check` (D-108), :func:`carry_score` (D-109) and
-:func:`dollar_smile_regime` (D-110), which completes Module 9. Section 6.7 also
-supplies a **reference implementation** for each — so these are stubs to
-UPGRADE, not functions to invent — and the reference implementation of
-:func:`cip_check` is the simplest possible form::
+:func:`dollar_smile_regime` (D-110), which completes Module 9. Section 20.9
+supplies a fourth, :func:`uip_expected_move` (D-112), whose reference
+implementation is the one-line ``i_domestic - i_foreign`` and which is
+deliberately NOT a deviation of the CIP identity — see its own docstring for
+why the two are different functions even though they read the same two rates.
+Section 6.7 also supplies a **reference implementation** for each — so these
+are stubs to UPGRADE, not functions to invent — and the reference
+implementation of :func:`cip_check` is the simplest possible form::
 
     implied_forward = spot * (1 + i_domestic) / (1 + i_foreign)
     deviation_pct   = (forward - implied_forward) / implied_forward * 100
@@ -115,9 +119,11 @@ __all__ = [
     "FundingStressSide",
     "QuoteConvention",
     "StressSeverity",
+    "UIPInputs",
     "carry_score",
     "cip_check",
     "dollar_smile_regime",
+    "uip_expected_move",
 ]
 
 #: Money-market day-count bases, and the number of days each defines a year as.
@@ -1509,6 +1515,455 @@ def dollar_smile_regime(inputs: DollarSmileInputs) -> ModelResult:
             "sat exactly at zero — the absence of a signal — and the "
             "specification's '> 0' test cannot tell that apart from a negative "
             "reading.",
+        ],
+    )
+
+
+#: Which WAY uncovered interest parity predicts the domestic currency moves,
+#: derived from the sign of the interest differential.
+#:
+#: UIP says the HIGHER-yielding currency is expected to DEPRECIATE — the forward
+#: premium is the market's compensation for holding the lower-yielding one. So a
+#: POSITIVE differential (domestic pays more) predicts domestic depreciation, and
+#: a negative one predicts appreciation. ``"flat"`` is an exactly zero
+#: differential, where the parity prediction is no move at all — its own label
+#: rather than being absorbed into either direction, because "the benchmark
+#: expects nothing" is a different statement from "the benchmark expects a small
+#: move".
+#:
+#: The label is derived from the SIGN of the PUBLISHED period expectation rather
+#: than from the differential directly, so the two cannot disagree: the
+#: period scaling is strictly positive (tenor_days >= 1), so
+#: ``sign(expected) == sign(differential)`` always — and deriving from the
+#: published quantity means the label is reproducible from the output alone.
+UIPDirection = Literal["domestic_depreciation", "domestic_appreciation", "flat"]
+
+
+class UIPInputs(BaseModel):
+    """The two money-market rates and the horizon of an uncovered-parity
+    expectation.
+
+    **The unit question is the same one Section 6.7's other FX functions face,
+    and the answer is the same: BOTH RATES ARE ANNUALISED DECIMALS**
+    (``0.04`` = 4 %/yr), which is what every data source publishes. They are
+    converted to the expectation's own horizon internally, by simple interest at
+    ``tenor_days / basis_days`` — the money-market convention
+    :class:`CIPInputs` already uses, and the reason ``tenor_days`` is required
+    rather than defaulted.
+
+    **Why the horizon is required at all, when the specification omits it.** The
+    specification writes ``expected = i_domestic - i_foreign`` and stops there.
+    That is a ONE-YEAR expectation, silently: a differential of 3 % is a 3 %
+    expected depreciation over a year, not over three months. A carry trade
+    expresses a view over its OWN tenor, so the quantity that is comparable to
+    the trade's expected return is the PERIOD expectation, and the conversion is
+    what makes this function's output comparable with :func:`carry_score`'s
+    (both then speak about the same horizon). The specification's bare
+    subtraction is exactly the ``tenor_days == basis_days`` case, so the shipped
+    behaviour at one year matches the reference implementation verbatim.
+
+    Three refusals, each closing a way the arithmetic returns a confident number
+    from an input that has no meaning:
+
+    * **Non-finite** — ``nan`` fails every comparison, so a guard built from
+      comparisons never fires for it and the expectation is published as ``nan``
+      (D-078). ``inf`` passes ``> 0`` and needs the explicit test.
+    * **Period rate at or below -100 %** — the exact expectation is built from
+      ``(1 + i_d t) / (1 + i_f t)``, so a foreign period rate of exactly -100 %
+      divides by zero. Checked on the PERIOD rate rather than the annualised one,
+      because a perfectly ordinary annualised value can convert to an
+      unreachable period value — the conversion is what makes it reachable.
+    * **Tenor beyond the basis** — simple-interest conversion is exact only to one
+      money-market year; beyond it the correct conversion compounds, and this
+      function does not implement that. Refusing is the honest choice: a
+      compounded figure computed with a simple formula is a wrong number that
+      looks right.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    i_domestic_annualized: float = Field(
+        description=(
+            "Domestic money-market rate over the expectation's horizon, "
+            "ANNUALISED DECIMAL (0.04 = 4%/yr). Converted internally to the "
+            "period rate."
+        ),
+    )
+    i_foreign_annualized: float = Field(
+        description=(
+            "Foreign money-market rate over the expectation's horizon, "
+            "ANNUALISED DECIMAL. Must be the same tenor as "
+            "``i_domestic_annualized``."
+        ),
+    )
+    tenor_days: int = Field(
+        ge=1,
+        description=(
+            "The horizon the expectation is stated over, in ACTUAL days. The "
+            "rates are scaled to this horizon, and it must not exceed the "
+            "day-count basis."
+        ),
+    )
+    day_count_basis: DayCountBasis = Field(
+        default="actual_360",
+        description=(
+            "Money-market day-count basis of the two rates: 'actual_360' "
+            "(USD/EUR) or 'actual_365' (GBP and most sovereign markets)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_domain(self) -> UIPInputs:
+        """Refuse an input that is representable but is not a rate quote.
+
+        Each bound is a distinct branch rather than one broad check, because
+        they fail differently:
+
+        * **Non-finite** — ``nan`` fails every comparison, so ``if x <= 0`` never
+          fires for it and ``nan`` travels into the published expectation;
+          ``inf`` passes ``> 0`` and needs the explicit finiteness test (D-078).
+        * **Tenor beyond the basis** — simple interest is exact only to one
+          money-market year; a longer tenor needs compounding, which this
+          function does not implement.
+        * **Period rate at or below -100 %** — ``1 + i_f t`` at or below zero
+          makes the exact ratio divide by zero or invert sign. Checked on the
+          PERIOD rate, because the annualised value can be an ordinary number
+          while the period value is not.
+        """
+        for name in ("i_domestic_annualized", "i_foreign_annualized"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{name} is {value!r}, which is not finite. A non-finite input "
+                    f"cannot be converted to a period rate: every comparison a "
+                    f"plausibility check is made of returns False for nan, so it "
+                    f"would reach the arithmetic and produce a non-finite "
+                    f"expectation that looks like an answer (D-078)."
+                )
+
+        basis_days = _BASIS_DAYS[self.day_count_basis]
+        if self.tenor_days > basis_days:
+            raise ValueError(
+                f"tenor_days is {self.tenor_days} against a "
+                f"{self.day_count_basis} year of {basis_days} days. Simple-interest "
+                f"conversion is exact only up to one money-market year; a longer "
+                f"tenor needs compounding, which this function does not implement. "
+                f"Refusing rather than returning a number computed with the wrong "
+                f"convention."
+            )
+
+        scale = self.tenor_days / basis_days
+        for name in ("i_domestic_annualized", "i_foreign_annualized"):
+            period = getattr(self, name) * scale
+            if 1.0 + period <= 0.0:
+                raise ValueError(
+                    f"{name} is {getattr(self, name)} annualised, which is "
+                    f"{period} over {self.tenor_days} days on "
+                    f"{self.day_count_basis}. A period rate at or below -100% makes "
+                    f"the parity ratio divide by zero or invert its sign."
+                )
+        return self
+
+
+def _uip_direction(expected_move_pct: float) -> UIPDirection:
+    """Which way UIP predicts the domestic currency moves, from the expectation.
+
+    Derived from the SIGN of the published period expectation rather than from
+    the raw differential, so the label and the number cannot disagree — the
+    period scaling is strictly positive (``tenor_days >= 1``), so the two signs
+    are identical, and deriving from the published quantity keeps the label
+    reproducible from the output alone.
+
+    UIP's content is that the HIGHER-yielding currency is expected to
+    **depreciate**: the forward premium compensates the holder of the lower-
+    yielding currency for the expected loss. So a positive expectation (domestic
+    pays more, expected to weaken) is ``"domestic_depreciation"``.
+    """
+    if expected_move_pct > 0.0:
+        return "domestic_depreciation"
+    if expected_move_pct < 0.0:
+        return "domestic_appreciation"
+    return "flat"
+
+
+def _uip_limitations() -> list[str]:
+    """What this result cannot tell you, on every call.
+
+    Distinct from ``warnings``, which report a condition of this run. The first
+    entry is the specification's own standing caveat — *"Do NOT use as a point
+    forecast. Its empirical failure is the carry premium"* — moved here from the
+    specification's ``warnings`` list for the reason D-109 and D-111 give: it
+    holds on every call, so it is a limitation and not a condition of this run.
+    """
+    return [
+        "THE MODEL IS KNOWN TO FAIL EMPIRICALLY, and this is the limitation that "
+        "matters most — it is what the function IS, not a caveat on it. UIP is "
+        "rejected by the data: the higher-yielding currency historically does NOT "
+        "depreciate by the interest differential (the forward-premium puzzle), "
+        "and the carry trade's entire edge is the gap between this benchmark and "
+        "realised returns. The number published here is the BENCHMARK THAT FAILS, "
+        "and it must never be read as a forecast.",
+        "It is a first-order approximation of a parity condition. The exact "
+        "statement is that the expected spot change equals the forward premium, "
+        "``(1 + i_d t) / (1 + i_f t) - 1``, which differs from "
+        "``i_d - i_f`` by a term of order ``i_f * (i_d - i_f)``. At the "
+        "differentials a G10 carry trade actually runs the difference is a "
+        "fraction of a basis point and cannot change the sign, but it is a "
+        "second-order error and this function does not correct it.",
+        "Expected spot changes are UNOBSERVABLE. No data series prints the "
+        "market's expected future spot rate, so UIP is a hypothesis about a "
+        "quantity that cannot be measured — which is the structural reason it "
+        "can fail for decades without being refuted, and the reason its "
+        "confidence is capped far below the other Module 9 models'.",
+        "The horizon conversion is SIMPLE interest over tenor_days / basis_days, "
+        "the money-market convention, and is refused beyond one money-market "
+        "year rather than approximated. The expectation is therefore "
+        "horizon-scaled exactly as the money-market rates are, which is what "
+        "makes it comparable with a carry computed over the same tenor.",
+        "No forward rate is consulted, and this is deliberate. UIP is a "
+        "statement about the EXPECTED SPOT move derived from the two rates, not "
+        "the TRADED forward. The traded forward is :func:`cip_check`'s input, and "
+        "comparing the two is a genuine test of the parity condition — but the "
+        "comparison is the caller's to make, and this function does not fetch the "
+        "forward.",
+        "Both rates must be for the SAME horizon and the SAME currency pair, and "
+        "the caller owns provenance. A rate interpolated from neighbouring tenors "
+        "introduces an error this function cannot see and does not correct.",
+        "The independence count is NOT computable from this result. The two rate "
+        "legs come from separate money-market production processes and the "
+        "evidence-family vocabulary names neither separately, so `source_family` "
+        "carries the FX-market tag only and `source_families` is left empty "
+        "rather than asserting a single-family claim.",
+        "Provenance is the caller's. This model does not fetch and cannot verify "
+        "the observation dates of the two rates it was handed.",
+    ]
+
+
+def _uip_warnings(
+    *,
+    direction: UIPDirection,
+    differential_annualized: float,
+    expected_move_pct: float,
+    tenor_days: int,
+) -> list[str]:
+    """The conditions of THIS run.
+
+    One branch, and it is the condition that changes what the published number
+    means rather than merely how large it is: the ``"flat"`` case, where the two
+    rates are equal and the benchmark predicts no move. A reader who saw only the
+    number could read ``0.0000`` as "the benchmark was computed and came out
+    small" rather than "the benchmark is exactly zero because the inputs are
+    equal", and those are different statements.
+
+    Nothing is emitted otherwise. The standing caveat — that the whole model
+    fails empirically — holds on every call and is a ``limitation``, and a
+    warning that fired on every call would be noise.
+    """
+    if direction != "flat":
+        return []
+    return [
+        f"The two money-market rates are equal ({differential_annualized:+.6f} "
+        f"annualised), so the UIP benchmark predicts an EXACTLY zero move over "
+        f"{tenor_days} days. This is the absence of a UIP prediction, not a small "
+        f"one: it says the parity condition has no directional content for this "
+        f"pair at this tenor, and a carry trade funded here would have no "
+        f"benchmark to beat rather than a tiny one."
+    ]
+
+
+def uip_expected_move(inputs: UIPInputs) -> ModelResult:
+    """The uncovered-interest-parity benchmark expected spot move.
+
+    ``value`` is a ``dict`` carrying the expected move and every quantity it was
+    derived from, so each published number can be recomputed from the output
+    alone:
+
+    ``expected_move_pct``
+        The period expected spot change in percent. **Positive means UIP
+        predicts DOMESTIC DEPRECIATION** — the higher-yielding currency weakens,
+        which is the parity condition's content. Computed as
+        ``((1 + i_d t) / (1 + i_f t) - 1) * 100``, the exact ratio; the
+        specification's ``(i_d - i_f) * 100`` is its first-order form and agrees
+        to a fraction of a basis point at G10 differentials.
+    ``expected_move_simple_pct``
+        The specification's own first-order form, ``(i_d - i_f) * t * 100``,
+        published beside the exact one so the approximation's size is visible
+        rather than asserted. The two are equal only when ``i_f t == 0``.
+    ``i_domestic_period`` / ``i_foreign_period``
+        The annualised inputs converted to the expectation's own horizon.
+    ``differential_annualized`` / ``differential_period``
+        The rate gap in both units — the annualised figure the specification
+        works in, and the period figure the expectation actually uses.
+    ``direction``
+        ``"domestic_depreciation"``, ``"domestic_appreciation"`` or ``"flat"``.
+
+    **Why this is a DIFFERENT FUNCTION from :func:`cip_check`, and not the same
+    parity relation read forward — established before the arithmetic was
+    written.** The two read the same two rates and rest on the same no-arbitrage
+    family, so the question is real and this is the answer:
+
+    * :func:`cip_check` takes a **TRADED FORWARD** as an input and measures how
+      far that observed price has departed from the parity-implied one. Its
+      output is a **DEVIATION** — a measurement of a live market dislocation,
+      positive when the domestic currency is the scarce side of the swap. The
+      forward is data.
+    * :func:`uip_expected_move` consults **NO forward at all**. It takes only the
+      two rates and converts the parity relation into a statement about the
+      **EXPECTED FUTURE SPOT** rate. Its output is a **PREDICTION** — the
+      benchmark a carry trade is a bet against.
+
+    They are related, and the relation is exactly the point: CIP rearranged gives
+    the forward premium ``F/S - 1 = (i_d - i_f) / (1 + i_f)``, and UIP asserts
+    the **expected spot change equals that premium**. So UIP is CIP's forward
+    premium read as a forecast of the spot rate — and the empirical fact that
+    spot does NOT move that way is the forward-premium puzzle, i.e. exactly the
+    failure this model exists to make explicit. **One measures a price, the other
+    predicts a price; the identity that ties them is the hypothesis that fails.**
+    Superseding would require the two to answer the same question, and they do
+    not: ``cip_check``'s answer is 'how dislocated is the traded forward today',
+    and this one's is 'what would the spot rate do if parity held'.
+
+    **``confidence`` is a model-specific cap, NOT ``compute_confidence()``.** The
+    standard remedy for a hardcoded confidence is to derive it from stated
+    factors (Section 22.8), and this function deliberately does not: its inputs
+    are observable and its arithmetic is exact, so NO reliability factor is
+    impaired. What makes it nearly worthless is that the **hypothesis fails
+    empirically**, and ``compute_confidence`` has no factor for "the method is
+    known to be false". The value is read from
+    ``fx_carry.uip_reliability_cap`` and is the specification's own deliberately
+    low ``0.15``. See the leaf's note.
+    """
+    settings = get_settings()
+    fx_carry = settings.fx_carry
+    reliability = fx_carry.uip_reliability_value
+
+    basis_days = _BASIS_DAYS[inputs.day_count_basis]
+    period_scale = inputs.tenor_days / basis_days
+    i_domestic_period = inputs.i_domestic_annualized * period_scale
+    i_foreign_period = inputs.i_foreign_annualized * period_scale
+
+    differential_annualized = inputs.i_domestic_annualized - inputs.i_foreign_annualized
+    differential_period = differential_annualized * period_scale
+
+    # The EXACT parity ratio, and the specification's first-order form beside it.
+    # The exact form is published because it is the one that is actually correct
+    # at any differential; the simple form is published because it is the one
+    # Section 6.7 writes, and a reader comparing this output against the
+    # specification must be able to see that the difference is second-order
+    # rather than a defect.
+    exact_ratio = (1.0 + i_domestic_period) / (1.0 + i_foreign_period)
+    expected_move_fraction = exact_ratio - 1.0
+    expected_move_pct = expected_move_fraction * 100.0
+    expected_move_simple_pct = differential_period * 100.0
+
+    direction = _uip_direction(expected_move_pct)
+
+    if direction == "domestic_depreciation":
+        direction_phrase = "the higher-yielding domestic currency is expected to DEPRECIATE"
+    elif direction == "domestic_appreciation":
+        direction_phrase = "the higher-yielding foreign currency is expected to appreciate"
+    else:
+        direction_phrase = "no expected move — the two rates are equal"
+
+    return ModelResult(
+        model_name="uip_expected_move",
+        country="us",
+        as_of=utc_now(),
+        value={
+            "expected_move_pct": round(expected_move_pct, 6),
+            "expected_move_simple_pct": round(expected_move_simple_pct, 6),
+            "i_domestic_annualized": inputs.i_domestic_annualized,
+            "i_foreign_annualized": inputs.i_foreign_annualized,
+            "i_domestic_period": round(i_domestic_period, 8),
+            "i_foreign_period": round(i_foreign_period, 8),
+            "differential_annualized": round(differential_annualized, 8),
+            "differential_period": round(differential_period, 8),
+            "tenor_days": inputs.tenor_days,
+            "day_count_basis": inputs.day_count_basis,
+            "day_count_basis_days": basis_days,
+            "direction": direction,
+        },
+        confidence=reliability,
+        unit="percent (expected spot change over the stated tenor)",
+        direction=direction,
+        interpretation=(
+            f"UIP benchmark: {expected_move_pct:+.4f}% expected spot move over "
+            f"{inputs.tenor_days} days — {direction_phrase}. This is the "
+            f"BENCHMARK A CARRY TRADE BETS AGAINST, not a forecast; UIP fails "
+            f"empirically (the forward-premium puzzle) and that failure is the "
+            f"carry edge."
+        ),
+        context=(
+            f"Domestic {inputs.i_domestic_annualized * 100:+.4f}%/yr and foreign "
+            f"{inputs.i_foreign_annualized * 100:+.4f}%/yr are ANNUALISED "
+            f"DECIMALS, converted to a {inputs.tenor_days}-day horizon on "
+            f"{inputs.day_count_basis}: domestic "
+            f"{i_domestic_period * 100:+.6f}%, foreign "
+            f"{i_foreign_period * 100:+.6f}% over the period. The exact parity "
+            f"ratio (1+i_d t)/(1+i_f t) gives {expected_move_pct:+.6f}%; Section "
+            f"6.7's first-order form (i_d - i_f)*t gives "
+            f"{expected_move_simple_pct:+.6f}%, a difference of "
+            f"{expected_move_simple_pct - expected_move_pct:+.6f}pp — "
+            f"second-order in the differential. Confidence is a model-specific "
+            f"cap ({reliability}), not a computed penalty: this model's inputs "
+            f"are observable and its arithmetic is exact, and what is unreliable "
+            f"is the HYPOTHESIS."
+        ),
+        inputs_used=[
+            "i_domestic_annualized",
+            "i_foreign_annualized",
+            "tenor_days",
+            "day_count_basis",
+        ],
+        assumptions=[
+            "Both rates are ANNUALISED DECIMALS for the SAME currency pair and "
+            "the SAME horizon, and `tenor_days` is that horizon.",
+            "The differential is the MONEY-MARKET differential of the pair's two "
+            "currencies, not a bond-yield or policy-rate differential — UIP is "
+            "stated on money-market rates.",
+            "Interest accrues as simple interest over tenor_days / basis_days, "
+            "the money-market convention, which the input model enforces as a "
+            "bound rather than approximating.",
+            "The parity condition ties the expected spot change to the interest "
+            "differential — the hypothesis this benchmark states and the one the "
+            "forward-premium puzzle rejects.",
+        ],
+        source_family=EvidenceSourceFamily.MARKET_FX,
+        warnings=_uip_warnings(
+            direction=direction,
+            differential_annualized=differential_annualized,
+            expected_move_pct=expected_move_pct,
+            tenor_days=inputs.tenor_days,
+        ),
+        limitations=_uip_limitations(),
+        decision_relevance=(
+            "Module 9's parity benchmark, and the theoretical foundation of the "
+            "carry trade — but in the NEGATIVE sense: it exists so a carry view "
+            "can be stated explicitly as a bet AGAINST it. It reads the same two "
+            "rates as `cip_check` and computes a DIFFERENT quantity: `cip_check` "
+            "measures a traded forward's deviation from parity (a dislocation), "
+            "while this predicts the expected spot move (a benchmark). It "
+            "therefore supersedes NOTHING and is not superseded; it pairs with "
+            "`carry_score`, whose whole content is that this benchmark's failure "
+            "is the carry premium, and with `cip_check`, since the forward "
+            "premium this model predicts is the very quantity `cip_check` "
+            "measures the market's price of. Script-only today: no snapshot field "
+            "carries a foreign money-market rate, so the caller supplies both "
+            "rates and the live check is the only consumer until one does."
+        ),
+        decision_prohibition=[
+            "Do NOT use this as a point forecast. UIP fails empirically; the "
+            "number is the benchmark a carry trade bets against, and reading it "
+            "as a prediction of the spot rate inverts the model's entire purpose "
+            "(Section 6.7).",
+            "Do NOT size on the expected move. It carries no uncertainty band, no "
+            "horizon beyond the stated tenor, and no adjustment for the "
+            "well-documented failure — a position sized to it would be sized to a "
+            "hypothesis the data reject.",
+            "Do NOT read the confidence as comparable with `cip_check`'s or "
+            "`carry_score`'s. It is deliberately far lower because the METHOD is "
+            "discredited rather than the data; the two facts are not on one "
+            "scale.",
         ],
     )
 

@@ -9516,3 +9516,116 @@ sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shap
 `test_dollar_smile_regime.py` (49 defs → 68 collected). **Reachability:**
 `dollar_smile_regime` is **SCRIPT-ONLY — Tier 5** (its only caller is the live check), so the
 Tier 1-4 baseline is untouched and the **Tier-5 script-only count moves 11 → 12**.
+
+---
+
+## D-112 — Module 9's `uip_expected_move`, closing the parity branch (2026-09-26) — **PHASE 5, Tier 5 = 13/23**
+
+`uip_expected_move` joins `cip_check`, `carry_score` and `dollar_smile_regime` in
+`src/macro_engine/models/fx_carry.py` — the file D-108 created and D-109/D-111 extended.
+**Module 9 is 4 of 4.** Spec **`AGENTS.md:4861`** (§20.9), **resolved with `grep -n`** — a
+citation is a claim.
+
+### 1. The supersession question was the FIRST deliverable, not a by-product
+
+`uip_expected_move` and `cip_check` read the **same two rates** and rest on the **same
+no-arbitrage family**, so "different function or the same relation read forward?" is a real
+question and it was answered **before** any arithmetic was written:
+
+* `cip_check` consumes a **TRADED FORWARD** and publishes a **DEVIATION** (a dislocation).
+* `uip_expected_move` consults **no forward** and publishes a **PREDICTION** (the expected
+  spot move — the benchmark a carry trade bets against).
+
+**Different functions, same parity family**, tied by the **exact identity**
+
+```
+UIP's one-year expected move  ==  CIP's forward premium  ==  (i_d - i_f) / (1 + i_f)
+```
+
+Verified numerically at `i_d = 4.25 %`, `i_f = 1.00 %`: **3.217822 %** both ways; the
+spec's first-order `i_d - i_f` = 3.25 %, a **3.2 bp** second-order gap. "Supersedes NOTHING
+and is not superseded" is printed in `decision_relevance`.
+
+### 2. `confidence` is a model-specific CAP — the increment's central design decision
+
+§22.8 forbids a bare literal. The standard remedy is `compute_confidence()`, and this
+function **deliberately does not use it**: UIP's inputs are observable and its arithmetic is
+exact, so **no reliability factor is impaired**; what is nearly worthless is that the
+**hypothesis fails empirically**, and `compute_confidence()` has no factor for *"the method
+is known to be false."* So the value is a **reliability CEILING** read from a new leaf
+`fx_carry.uip_reliability_cap` (**0.15**, `uncalibrated_illustrative`) — following the
+`policy_rules.py` precedent for a model-specific config-leaf confidence. The cap sits **below
+every other Module 9 confidence**, and that is **asserted** (a test and the live check).
+
+| literal | leaf | value | status | meaning |
+|---|---|---|---|---|
+| `confidence = 0.15` | `fx_carry.uip_reliability_cap` | `0.15` | `uncalibrated_illustrative` | a reliability **CEILING**, NOT a `compute_confidence()` penalty |
+
+### 3. Both forms published; the horizon conversion is a HYPERBOLA
+
+`value` carries the **exact** `expected_move_pct` **and** the spec's first-order
+`expected_move_simple_pct` side by side, so the approximation's size is **visible**. The
+horizon conversion is the money-market convention (`tenor_days / basis_days`, refused beyond
+one year), and **the exact ratio is a hyperbola in `t`**, so scaling is only *approximately*
+linear — asserted with a `rel=1e-2` bound plus a curvature guard, **not** exact proportionality.
+
+### 4. THE MECHANICAL HAZARD fired exactly as predicted, with the predicted victim
+
+`uip_expected_move` **reuses `cip_check`'s conventions BY DESIGN**, so **seven OLD `cip_check`
+anchors went AMBIGUOUS** (`M2a`–`M2d`, `M6c`, `M6d`, `M8b`) — `check_targets` caught all
+seven **before any mutant ran**. Fixed by **widening each anchor with a cip-only neighbour,
+never deleting a mutation** (D-055/D-060), each widening **byte-verified** after two failed
+attempts (the guard block is byte-identical across **22 lines**; only the exchange-rate
+positivity loop above it discriminates).
+
+### 5. O-138 opened
+
+`--check-targets` prints its verdict **and then RUNS**, so the "safe" pre-flight was
+SIGTERM'd mid-mutation and left **`M4a`'s residue** on disk (`"normalized_to":
+"foreign_per_domestic"` vs `HEAD`'s `"domestic_per_foreign"`) with both sidecars present.
+`git status --short` could **not** tell the mutant from an edit — O-131's point exactly; the
+diff against `HEAD` exposed it and the sidecar repaired it.
+
+### 6. O-127's class fired again
+
+Adding the required `uip_reliability_cap` broke **three** `_fx_carry_settings` helpers
+(`test_cip_check.py`, `test_carry_score.py`, `test_dollar_smile_regime.py`) — the mechanical
+break `test_cip_check.py` had already predicted. Caught by the GREEN-UNMUTATED run.
+
+### Gates (measured 2026-09-26, never carried forward — `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  262 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 262 source files
+reachability_audit.py --check-baseline        ->  PASS — baseline 58 = measured 58, no regressions
+full suite (--junitxml)                       ->  3429 tests / 0 failures / 0 errors / 1 skipped
+mutation_fx_carry.py                          ->  143/143 killed   (was 114)
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**262 == 262** (D-035). **Delta against D-111's 3375 collected = +54** = the new
+`test_uip_expected_move.py`. **Reachability:** `uip_expected_move` is **SCRIPT-ONLY —
+Tier 5** (its only caller is `scripts/live_uip_expected_move_check.py`), so the Tier 1-4
+baseline is untouched and the **Tier-5 script-only count moves 12 → 13**.
+
+**Two late gate failures, both in the new files, both fixed rather than waived.** (i) The
+`--check` run refused `scripts/live_uip_expected_move_check.py` (unformatted) and flagged
+`tests/models/test_uip_expected_move.py:635` — `decision_relevance` is `str | None`, so
+`.lower()` was a `union-attr` error; the fix adds an `is not None` assertion, which is also
+the **stronger** test (it proves the field is published). (ii) The first full-suite run
+counted **3429**, not the pre-written 3427 — the two extra are the `test_the_day_count_basis_
+selects_the_scaling_map` / `test_the_simple_form_carries_the_tenor_scaling` additions, so the
+doc was corrected to the **measurement**. **The counts in this block are the re-run values;
+the pre-written figures were superseded.**
+
+**The live check FAILED on its first run — and the defect was in the CHECK, not the model.**
+Section (5) compared a **bare ratio deviation** `(4 − ratio)` = `0.059620` against `bound =
+i_foreign` = `0.020277`, reporting OVER-BOUND. That is a **unit mismatch**: the left side is a
+dimensionless ratio-deviation, the right side a rate. Re-derived from the exact algebra with
+`a = i_d − i_f`, `u = i_f`: `4·m(¼) − m(1) = a·u·0.75 / ((1 + u/4)(1 + u))`, which is strictly
+below `u` because the denominator exceeds 1. Expressed **as a fraction of the longer move**,
+the live shortfall is **`0.015131`** — inside the `i_f` bound, as the model promises. Section
+(5) and its docstring were corrected to the fraction-of-move form, and the check now PASSES.
+**This is D-109's lesson firing again: a cross-check's two sides must share a unit** — and it
+is why the check is run rather than assumed.

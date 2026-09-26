@@ -1,11 +1,12 @@
-"""Mutation sweep for Section 6.7's Module 9 — ``cip_check``, ``carry_score``
-and ``dollar_smile_regime``.
+"""Mutation sweep for Section 6.7's and 20.9's Module 9 — ``cip_check``,
+``carry_score``, ``dollar_smile_regime`` and ``uip_expected_move``.
 
-**Three functions, one module, one sweep** (D-109, extended at D-110). The
-labels are partitioned by function: **``M1``-``M8`` and ``C1`` are
+**Four functions, one module, one sweep** (D-109, extended at D-110 and D-112).
+The labels are partitioned by function: **``M1``-``M8`` and ``C1`` are
 ``cip_check``'s** (D-108), **``K1``-``K6`` and ``C2`` are ``carry_score``'s**
-(D-109), and **``S1``-``S8`` and ``C3`` are ``dollar_smile_regime``'s** (D-110).
-One sweep rather than three because the functions share a file and a config
+(D-109), **``S1``-``S8`` and ``C3`` are ``dollar_smile_regime``'s** (D-110), and
+**``U1``-``U8`` and ``C4`` are ``uip_expected_move``'s** (D-112).
+One sweep rather than four because the functions share a file and a config
 block, and a further sweep over the same file would multiply the places a
 future edit must be mirrored — `mutation_econometrics.py` covers five functions
 in one module the same way.
@@ -99,6 +100,27 @@ function's own structure, because a mutation that does not correspond to a
 * **C3** hardcodes or cross-wires the two config accessors, and points the
   calibration helper at one leaf, the other, or a CIP band.
 
+* **``uip_expected_move`` — ``U1``-``U8``, ``C4``:**
+* **U1** breaks the PARITY RATIO — the whole point of the estimator. ``U1a``
+  swaps the two rates, ``U1b`` substitutes the specification's linear form for
+  the exact ratio, ``U1c`` multiplies where it should divide, ``U1d`` inverts
+  the fraction.
+* **U2** breaks the ANNUALISATION and the HORIZON — the quantity the
+  specification omits. ``U2a`` drops the tenor scaling (the D-106 class),
+  ``U2b`` inverts it, ``U2c`` mixes an annualised gap with a period move,
+  ``U2d`` reads the wrong basis.
+* **U3** breaks the PUBLISHED COMPANION — ``U3a`` publishes a fraction where a
+  percent is promised, ``U3b`` conflates the exact form with the
+  specification's first-order one, ``U3c`` drops the scaling from the simple
+  form too.
+* **U4** breaks the DIRECTION — the sign rule and the ``flat`` label.
+* **U5** breaks the GUARDS — the finiteness, tenor and period-rate refusals.
+* **U6** breaks the WARNING — the flat branch, in both directions.
+* **U7** breaks the PUBLISHED VALUE — the move, the simple form, the direction.
+* **U8** breaks the unit and the confidence (the hardcoded-literal revert).
+* **C4** hardcodes or cross-wires the reliability accessor, stops reading the
+  leaf, and removes the range validator.
+
 A survivor is one of three things (D-031): a weak test, an **inert** mutation, or
 a **broken** mutation. The runner heals before it measures — an interrupted run
 leaves the mutated file on disk, and a naive re-run would adopt it as the
@@ -128,9 +150,33 @@ _IMPLIED_FORWARD = (
 # M2: the annualisation.
 # --------------------------------------------------------------------------
 
-_PERIOD_SCALE = "    period_scale = inputs.tenor_days / basis_days"
-_I_D_PERIOD = "    i_domestic_period = inputs.i_domestic_annualized * period_scale"
-_I_F_PERIOD = "    i_foreign_period = inputs.i_foreign_annualized * period_scale"
+# WIDENED at D-112. These four lines became AMBIGUOUS when `uip_expected_move`
+# adopted the SAME money-market preamble BY DESIGN — it is the point of D-112
+# that the two functions agree on units and horizon scaling, so `basis_days`,
+# `period_scale` and the two period rates are byte-identical in both. The
+# discriminator is what FOLLOWS: `cip_check` next enters its quote-convention
+# block (`inverted = inputs.quote == ...`), which `uip_expected_move` has no
+# equivalent of, while UIP next computes `differential_annualized`. Anchoring on
+# the last of the four identical lines PLUS the following unique line resolves
+# each to exactly one site — the D-055/D-060 remedy, never a deletion.
+_PERIOD_SCALE = (
+    "    period_scale = inputs.tenor_days / basis_days\n"
+    "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+    "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+    "\n"
+    "    # THE QUOTE CONVENTION."
+)
+_I_D_PERIOD = (
+    "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+    "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+    "\n"
+    "    # THE QUOTE CONVENTION."
+)
+_I_F_PERIOD = (
+    "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+    "\n"
+    "    # THE QUOTE CONVENTION."
+)
 _BASIS_BP = "    basis_bp_annualized = basis_period / period_scale * 10_000.0"
 _BASIS_DAYS_LINE = '_BASIS_DAYS: dict[str, int] = {"actual_360": 360, "actual_365": 365}'
 
@@ -177,8 +223,63 @@ _FINITE_GUARD = (
     "            if not math.isfinite(value):"
 )
 _POSITIVE_GUARD = "            if value <= 0.0:"
-_TENOR_GUARD = "        if self.tenor_days > basis_days:"
-_PERIOD_RATE_GUARD = "            if 1.0 + period <= 0.0:"
+# WIDENED at D-112 for the same reason the M2 anchors above were: `UIPInputs`
+# carries byte-identical tenor and period-rate guards, so the bare lines are
+# AMBIGUOUS. `cip_check`'s guards are distinguished by the exchange-rate
+# positivity check that sits between them and precedes the tenor guard — a block
+# `UIPInputs` has no equivalent of, because it has no exchange rate at all.
+_TENOR_GUARD = (
+    '        for name in ("spot", "forward"):\n'
+    "            value = getattr(self, name)\n"
+    "            if value <= 0.0:\n"
+    "                raise ValueError(\n"
+    '                    f"{name} is {value}; an exchange rate must be strictly "\n'
+    '                    f"positive. A non-positive rate would sign-flip the parity "\n'
+    '                    f"ratio while still returning a number."\n'
+    "                )\n"
+    "\n"
+    "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
+    "        if self.tenor_days > basis_days:"
+)
+# WIDENED at D-112 (D-055/D-060). `uip_expected_move` reuses `cip_check`'s
+# guard conventions BY DESIGN — the tenor guard, the period-rate guard and
+# their error text are byte-identical between the two functions, because the
+# two consume the same money-market-rate domain. Only the branch BELOW the
+# finiteness loop distinguishes them: `cip_check` additionally screens the two
+# EXCHANGE RATES for strict positivity, and `uip_expected_move` has no
+# exchange rate to screen. Prepending that cip-only loop makes the span unique
+# while leaving the mutated line untouched.
+_PERIOD_RATE_GUARD = (
+    '        for name in ("spot", "forward"):\n'
+    "            value = getattr(self, name)\n"
+    "            if value <= 0.0:\n"
+    "                raise ValueError(\n"
+    '                    f"{name} is {value}; an exchange rate must be strictly "\n'
+    '                    f"positive. A non-positive rate would sign-flip the parity "\n'
+    '                    f"ratio while still returning a number."\n'
+    "                )\n"
+    "\n"
+    "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
+    "        if self.tenor_days > basis_days:\n"
+    "            raise ValueError(\n"
+    '                f"tenor_days is {self.tenor_days} against a "\n'
+    '                f"{self.day_count_basis} year of {basis_days} days. Simple-interest "\n'
+    '                f"conversion is exact only up to one money-market year; a longer "\n'
+    '                f"tenor needs compounding, which this function does not implement. "\n'
+    '                f"Refusing rather than returning a number computed with the wrong "\n'
+    '                f"convention."\n'
+    "            )\n"
+    "\n"
+    "        scale = self.tenor_days / basis_days\n"
+    '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
+    "            period = getattr(self, name) * scale\n"
+    "            if 1.0 + period <= 0.0:\n"
+    "                raise ValueError(\n"
+    '                    f"{name} is {getattr(self, name)} annualised, which is "\n'
+    '                    f"{period} over {self.tenor_days} days on "\n'
+    '                    f"{self.day_count_basis}. A period rate at or below -100% makes "\n'
+    '                    f"the parity ratio divide by zero or invert its sign."'
+)
 
 # --------------------------------------------------------------------------
 # M7: the warnings.
@@ -192,7 +293,17 @@ _WARN_NOTABLE = '    elif severity == "notable":'
 # --------------------------------------------------------------------------
 
 _DEVIATION_KEY = '            "deviation_pct": round(deviation_pct, 6),'
-_I_D_PERIOD_KEY = '            "i_domestic_period": round(i_domestic_period, 8),'
+# WIDENED at D-112 (D-055/D-060). `uip_expected_move` publishes the SAME
+# `i_domestic_period` key with the SAME spelling — deliberately, so the two
+# functions' outputs are directly comparable — which made the bare one-line
+# anchor AMBIGUOUS. The discriminator is the line that FOLLOWS it in the
+# published dict: `cip_check` follows `i_domestic_period` with its synthetic
+# funding rate, `uip_expected_move` with its annualised differential.
+_I_D_PERIOD_KEY = (
+    '            "i_domestic_period": round(i_domestic_period, 8),\n'
+    '            "i_foreign_period": round(i_foreign_period, 8),\n'
+    '            "synthetic_domestic_funding_rate_period": round(synthetic_domestic_period, 8),'
+)
 _BASIS_KEY = '            "domestic_funding_basis_bp_annualized": round(basis_bp_annualized, 4),'
 _SEVERITY_KEY = '            "severity": severity,'
 _SIDE_KEY = '            "stressed_currency": side,'
@@ -327,6 +438,121 @@ _DS_CALIBRATED_READ = (
 _DS_VIX_PROP = "        return float(self.dollar_smile_vix_threshold.value)"
 _DS_BOUNDARY_PROP = "        return float(self.dollar_smile_sign_boundary.value)"
 _DS_VIX_VALIDATOR = "        if self.dollar_smile_vix_level <= 0.0:"
+
+# --------------------------------------------------------------------------
+# U1-U8 and C4: uip_expected_move (this module's FOURTH function, D-112).
+#
+# The labels continue the scheme: `M*` is cip_check's, `K*` is carry_score's,
+# `S*` (Smile) is dollar_smile_regime's, so `uip_expected_move` takes `U*` and
+# the config side takes `C4`. A re-used prefix would make two mutants share a
+# label, and the kill log is read by a human with no other way to tell them
+# apart.
+#
+# ⚠️ THE ANCHORS ARE THE HARD PART OF THIS SEGMENT, because `uip_expected_move`
+# reuses `cip_check`'s money-market conventions BY DESIGN — the whole point is
+# that the two functions agree on units and horizon scaling. Four of its lines
+# are therefore BYTE-IDENTICAL to lines in `cip_check` and resolve to 2 sites:
+#
+#   * `basis_days = _BASIS_DAYS[...]` / `scale = self.tenor_days / ...`
+#   * the tenor guard `if self.tenor_days > basis_days:`
+#   * the period guard `if 1.0 + period <= 0.0:` and its message
+#   * `return "flat"`
+#
+# Each is WIDENED to a span containing a line only `uip_expected_move` has —
+# the finite guard's own message ("...produce a non-finite expectation that
+# looks like an answer"), which `cip_check` words differently. A bare anchor
+# here would be AMBIGUOUS and `check_targets` would refuse it, which is the
+# gate working (D-055/D-060); the widening is the FIX, never a deletion.
+# --------------------------------------------------------------------------
+
+# The whole computational core, from the basis lookup to the two period rates.
+# Unique because the loop that follows it assigns `differential_annualized`,
+# which only this function does.
+_UIP_PREAMBLE = (
+    "    basis_days = _BASIS_DAYS[inputs.day_count_basis]\n"
+    "    period_scale = inputs.tenor_days / basis_days\n"
+    "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+    "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+    "\n"
+    "    differential_annualized = "
+    "inputs.i_domestic_annualized - inputs.i_foreign_annualized"
+)
+_UIP_DIFF_PERIOD = "    differential_period = differential_annualized * period_scale"
+_UIP_EXACT_RATIO = "    exact_ratio = (1.0 + i_domestic_period) / (1.0 + i_foreign_period)"
+_UIP_FRACTION = "    expected_move_fraction = exact_ratio - 1.0"
+_UIP_PCT = "    expected_move_pct = expected_move_fraction * 100.0"
+_UIP_SIMPLE_PCT = "    expected_move_simple_pct = differential_period * 100.0"
+_UIP_DIRECTION_CALL = "    direction = _uip_direction(expected_move_pct)"
+_UIP_SIGN_AND_APPREC = (
+    "    if expected_move_pct > 0.0:\n"
+    '        return "domestic_depreciation"\n'
+    "    if expected_move_pct < 0.0:\n"
+    '        return "domestic_appreciation"'
+)
+_UIP_FLAT_RETURN = (
+    '    if expected_move_pct < 0.0:\n        return "domestic_appreciation"\n    return "flat"'
+)
+
+# The finiteness guard, widened with the message only UIPInputs carries.
+_UIP_FINITE_GUARD = (
+    '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
+    "            value = getattr(self, name)\n"
+    "            if not math.isfinite(value):\n"
+    "                raise ValueError(\n"
+    '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
+    '                    f"cannot be converted to a period rate: every comparison a "\n'
+    '                    f"plausibility check is made of returns False for nan, so it "\n'
+    '                    f"would reach the arithmetic and produce a non-finite "\n'
+    '                    f"expectation that looks like an answer (D-078)."'
+)
+
+# The tenor guard, widened from the same UIP-only message down through the
+# guard line.
+_UIP_TENOR_GUARD = (
+    '                    f"expectation that looks like an answer (D-078)."\n'
+    "                )\n"
+    "\n"
+    "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
+    "        if self.tenor_days > basis_days:"
+)
+
+# The period guard, widened further so it stays unique: the message is identical
+# to cip_check's, so the span must begin at the UIP-only finiteness text.
+_UIP_PERIOD_GUARD = (
+    '                    f"expectation that looks like an answer (D-078)."\n'
+    "                )\n"
+    "\n"
+    "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
+    "        if self.tenor_days > basis_days:\n"
+    "            raise ValueError(\n"
+    '                f"tenor_days is {self.tenor_days} against a "\n'
+    '                f"{self.day_count_basis} year of {basis_days} days. Simple-interest "\n'
+    '                f"conversion is exact only up to one money-market year; a longer "\n'
+    '                f"tenor needs compounding, which this function does not implement. "\n'
+    '                f"Refusing rather than returning a number computed with the wrong "\n'
+    '                f"convention."\n'
+    "            )\n"
+    "\n"
+    "        scale = self.tenor_days / basis_days\n"
+    '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
+    "            period = getattr(self, name) * scale\n"
+    "            if 1.0 + period <= 0.0:\n"
+)
+
+# The warnings guard: `direction != "flat"` is unique to this function.
+_UIP_WARN_GUARD = '    if direction != "flat":\n        return []'
+
+# The published value and the contract.
+_UIP_MOVE_KEY = '        "expected_move_pct": round(expected_move_pct, 6),'
+_UIP_SIMPLE_KEY = '        "expected_move_simple_pct": round(expected_move_simple_pct, 6),'
+_UIP_DIRECTION_KEY = '        "direction": direction,'
+_UIP_UNIT = '        unit="percent (expected spot change over the stated tenor)",'
+_UIP_CONFIDENCE = "        confidence=reliability,"
+
+# The config side.
+_UIP_RELIABILITY_READ = "    reliability = fx_carry.uip_reliability_value"
+_UIP_PROP = "        return float(self.uip_reliability_cap.value)"
+_UIP_VALIDATOR = "        if not 0.0 <= self.uip_reliability_value <= 1.0:"
 
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
@@ -1068,6 +1294,247 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         _DS_VIX_VALIDATOR,
         "        if False:",
     ),
+    # --- U1: the parity ratio (the whole point of the estimator) ----------
+    (
+        "U1a the two rates are swapped in the parity ratio",
+        SRC,
+        _UIP_EXACT_RATIO,
+        "    exact_ratio = (1.0 + i_foreign_period) / (1.0 + i_domestic_period)",
+    ),
+    (
+        "U1b the ratio is a sum instead of a ratio",
+        SRC,
+        _UIP_EXACT_RATIO,
+        "    exact_ratio = 1.0 + i_domestic_period - i_foreign_period",
+    ),
+    (
+        "U1c the ratio divides where it should multiply",
+        SRC,
+        _UIP_EXACT_RATIO,
+        "    exact_ratio = (1.0 + i_domestic_period) * (1.0 + i_foreign_period)",
+    ),
+    (
+        "U1d the fraction inverts the ratio (reads it as a rate times a ratio)",
+        SRC,
+        _UIP_FRACTION,
+        "    expected_move_fraction = exact_ratio + 1.0",
+    ),
+    # --- U2: the annualisation and the horizon ----------------------------
+    (
+        "U2a the tenor scaling is dropped entirely (the D-106 class)",
+        SRC,
+        _UIP_PREAMBLE,
+        "    basis_days = _BASIS_DAYS[inputs.day_count_basis]\n"
+        "    period_scale = 1.0\n"
+        "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+        "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+        "\n"
+        "    differential_annualized = "
+        "inputs.i_domestic_annualized - inputs.i_foreign_annualized",
+    ),
+    (
+        "U2b the tenor scaling is inverted",
+        SRC,
+        _UIP_PREAMBLE,
+        "    basis_days = _BASIS_DAYS[inputs.day_count_basis]\n"
+        "    period_scale = basis_days / inputs.tenor_days\n"
+        "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+        "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+        "\n"
+        "    differential_annualized = "
+        "inputs.i_domestic_annualized - inputs.i_foreign_annualized",
+    ),
+    (
+        "U2c the period differential drops the scaling (mixes an annualised gap "
+        "with a period move)",
+        SRC,
+        _UIP_DIFF_PERIOD,
+        "    differential_period = differential_annualized",
+    ),
+    (
+        "U2d the basis is read from the wrong map",
+        SRC,
+        _UIP_PREAMBLE,
+        "    basis_days = 360\n"
+        "    period_scale = inputs.tenor_days / basis_days\n"
+        "    i_domestic_period = inputs.i_domestic_annualized * period_scale\n"
+        "    i_foreign_period = inputs.i_foreign_annualized * period_scale\n"
+        "\n"
+        "    differential_annualized = "
+        "inputs.i_domestic_annualized - inputs.i_foreign_annualized",
+    ),
+    # --- U3: the published unit and the second-order companion ------------
+    (
+        "U3a the move is published as a FRACTION where a percent is promised",
+        SRC,
+        _UIP_PCT,
+        "    expected_move_pct = expected_move_fraction",
+    ),
+    (
+        "U3b the specification's first-order form is published as the exact one",
+        SRC,
+        _UIP_SIMPLE_PCT,
+        "    expected_move_simple_pct = expected_move_pct",
+    ),
+    (
+        "U3c the simple form omits the tenor scaling too",
+        SRC,
+        _UIP_SIMPLE_PCT,
+        "    expected_move_simple_pct = differential_annualized * 100.0",
+    ),
+    # --- U4: the direction label ------------------------------------------
+    #
+    # RETARGETED at D-112 (D-031). This mutation was originally
+    # `_uip_direction(differential_annualized)` — "the direction reads the
+    # differential's sign instead of the move's", which was the literal defect the
+    # design warns about. It is an EQUIVALENT MUTANT and cannot be killed:
+    # `differential_annualized` and `expected_move_pct` have the same sign for
+    # EVERY admissible input, because the period scale `tenor_days / basis_days`
+    # is strictly positive (`tenor_days >= 1`) and the exact ratio is monotone in
+    # the differential. A survivor here would have reported a weak test when the
+    # mutation changes nothing, so per D-031 it is replaced by a mutation that IS
+    # detectable — negating the published move, which flips every label — and the
+    # equivalence is recorded rather than the mutation being dropped. The design
+    # guard (derive from the PUBLISHED quantity, not a raw input) is still held by
+    # `test_the_direction_matches_the_sign_of_the_published_move` and by U4b.
+    (
+        "U4a the direction reads the NEGATED move (every label flips)",
+        SRC,
+        _UIP_DIRECTION_CALL,
+        "    direction = _uip_direction(-expected_move_pct)",
+    ),
+    (
+        "U4b the direction sign is reversed",
+        SRC,
+        _UIP_SIGN_AND_APPREC,
+        "    if expected_move_pct < 0.0:\n"
+        '        return "domestic_depreciation"\n'
+        "    if expected_move_pct > 0.0:\n"
+        '        return "domestic_appreciation"',
+    ),
+    (
+        "U4c the flat case is absorbed into appreciation (its own label lost)",
+        SRC,
+        _UIP_FLAT_RETURN,
+        '    if expected_move_pct <= 0.0:\n        return "domestic_appreciation"\n    return "flat"',
+    ),
+    # --- U5: the guards ---------------------------------------------------
+    (
+        "U5a the finiteness guard is removed (nan reaches the arithmetic)",
+        SRC,
+        _UIP_FINITE_GUARD,
+        '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
+        "            value = getattr(self, name)\n"
+        "            if False:\n"
+        "                raise ValueError(\n"
+        '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
+        '                    f"cannot be converted to a period rate: every comparison a "\n'
+        '                    f"plausibility check is made of returns False for nan, so it "\n'
+        '                    f"would reach the arithmetic and produce a non-finite "\n'
+        '                    f"expectation that looks like an answer (D-078)."',
+    ),
+    (
+        "U5b the finiteness guard checks only the domestic rate",
+        SRC,
+        _UIP_FINITE_GUARD,
+        '        for name in ("i_domestic_annualized",):\n'
+        "            value = getattr(self, name)\n"
+        "            if not math.isfinite(value):\n"
+        "                raise ValueError(\n"
+        '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
+        '                    f"cannot be converted to a period rate: every comparison a "\n'
+        '                    f"plausibility check is made of returns False for nan, so it "\n'
+        '                    f"would reach the arithmetic and produce a non-finite "\n'
+        '                    f"expectation that looks like an answer (D-078)."',
+    ),
+    (
+        "U5c the tenor guard is removed (a compounded horizon accepted)",
+        SRC,
+        _UIP_TENOR_GUARD,
+        '                    f"expectation that looks like an answer (D-078)."\n'
+        "                )\n"
+        "\n"
+        "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
+        "        if False:",
+    ),
+    (
+        "U5d the period-rate guard is removed (a -100% foreign period rate divides by zero)",
+        SRC,
+        _UIP_PERIOD_GUARD,
+        _UIP_PERIOD_GUARD.replace(
+            "            if 1.0 + period <= 0.0:\n", "            if False:\n"
+        ),
+    ),
+    # --- U6: the warnings -------------------------------------------------
+    (
+        "U6a the flat warning never fires",
+        SRC,
+        _UIP_WARN_GUARD,
+        "    if False:\n        return []",
+    ),
+    (
+        "U6b the warning fires on EVERY call (the flat guard inverted)",
+        SRC,
+        _UIP_WARN_GUARD,
+        "    if direction == 'flat' or direction != 'flat':\n        return []",
+    ),
+    # --- U7: the published value ------------------------------------------
+    (
+        "U7a the published move is a constant",
+        SRC,
+        _UIP_MOVE_KEY,
+        '        "expected_move_pct": 0.0,',
+    ),
+    (
+        "U7b the published simple form is the sign-form of the exact one (the two conflated)",
+        SRC,
+        _UIP_SIMPLE_KEY,
+        '        "expected_move_simple_pct": round(expected_move_pct, 6),',
+    ),
+    (
+        "U7c the published direction is a constant",
+        SRC,
+        _UIP_DIRECTION_KEY,
+        '        "direction": "flat",',
+    ),
+    # --- U8: the contract and the confidence ------------------------------
+    (
+        "U8a the unit is misdeclared as a fraction",
+        SRC,
+        _UIP_UNIT,
+        '        unit="dimensionless (expected spot change as a fraction)",',
+    ),
+    (
+        "U8b the confidence is a hardcoded literal instead of the config cap",
+        SRC,
+        _UIP_CONFIDENCE,
+        "        confidence=0.15,",
+    ),
+    # --- C4: the UIP config accessor and validator ------------------------
+    (
+        "C4a the reliability accessor is a hardcoded literal",
+        CONFIG,
+        _UIP_PROP,
+        "        return 0.15",
+    ),
+    (
+        "C4b the reliability accessor returns the carry floor leaf instead",
+        CONFIG,
+        _UIP_PROP,
+        "        return float(self.carry_vol_floor.value)",
+    ),
+    (
+        "C4c the reliability leaf is not read at all (the model ignores config)",
+        SRC,
+        _UIP_RELIABILITY_READ,
+        "    reliability = 0.15",
+    ),
+    (
+        "C4d the range validator on the reliability cap removed",
+        CONFIG,
+        _UIP_VALIDATOR,
+        "        if False:",
+    ),
 ]
 
 
@@ -1080,6 +1547,7 @@ def run_tests() -> bool:
             "tests/models/test_cip_check.py",
             "tests/models/test_carry_score.py",
             "tests/models/test_dollar_smile_regime.py",
+            "tests/models/test_uip_expected_move.py",
             "tests/test_infrastructure.py",
             "-q",
             "--no-header",
@@ -1143,7 +1611,8 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     total = len(_MUTATIONS)
     killed = total - len(survivors)
     print(
-        f"MUTATION SWEEP — fx_carry (cip_check + carry_score + dollar_smile_regime): "
+        f"MUTATION SWEEP — fx_carry (cip_check + carry_score + dollar_smile_regime "
+        f"+ uip_expected_move): "
         f"{killed}/{total} killed",
         flush=True,
     )

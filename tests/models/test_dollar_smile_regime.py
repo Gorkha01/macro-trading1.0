@@ -634,6 +634,7 @@ def _fx_carry_settings(**overrides: object) -> FxCarrySettings:
             value=25.0, calibration_status="conventional"
         ),
         "dollar_smile_sign_boundary": CalibratedValue(value=0.0, calibration_status="conventional"),
+        "uip_reliability_cap": CalibratedValue(value=0.15, calibration_status="conventional"),
     }
     base.update(overrides)
     return FxCarrySettings.model_validate(base)

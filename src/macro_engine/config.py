@@ -5117,6 +5117,11 @@ class FxCarrySettings(BaseModel):
     property may not share a name in this codebase (the D-035 collision guard in
     ``tests/test_infrastructure.py``), and the accessor names say *threshold*
     because that is what the model consumes.
+
+    ``uip_reliability_cap`` is the block's one **non-threshold** leaf: it is a
+    confidence, not a boundary, and it lives here because it is the one tunable
+    decision ``uip_expected_move`` makes. See the accessor docstring for why it
+    cannot come from ``compute_confidence()``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -5126,6 +5131,7 @@ class FxCarrySettings(BaseModel):
     carry_vol_floor: CalibratedValue
     dollar_smile_vix_threshold: CalibratedValue
     dollar_smile_sign_boundary: CalibratedValue
+    uip_reliability_cap: CalibratedValue
 
     @property
     def volatility_floor(self) -> float:
@@ -5196,6 +5202,28 @@ class FxCarrySettings(BaseModel):
         """
         return float(self.dollar_smile_sign_boundary.value)
 
+    @property
+    def uip_reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``uip_expected_move`` reports.
+
+        Section 6.7's reference implementation hardcodes ``confidence=0.15``.
+        Section 22.8 forbids a hardcoded confidence, but the standard remedy —
+        ``compute_confidence()`` — is the WRONG remedy here, and the reason is
+        worth stating because it is the opposite of every other Module 9 model:
+        UIP's inputs (money-market rates) are observable and its arithmetic is an
+        exact identity, so no reliability *factor* is impaired. What makes the
+        model nearly worthless is that the **hypothesis itself fails
+        empirically** — the forward-premium puzzle — and
+        :func:`~macro_engine.models.contracts.compute_confidence` has no factor
+        for "the method is known to be false". The value is therefore a
+        model-specific cap, read here, exactly as
+        ``policy.market_implied.*_confidence`` is.
+
+        This is a CEILING the model reports directly, not a number it derives, so
+        the accessor says ``value`` rather than carrying a threshold's vocabulary.
+        """
+        return float(self.uip_reliability_cap.value)
+
     @model_validator(mode="after")
     def _order_the_stress_bands(self) -> FxCarrySettings:
         """Refuse a band pair that cannot express its own three-way vocabulary.
@@ -5241,6 +5269,15 @@ class FxCarrySettings(BaseModel):
                 f"zero makes EVERY reading 'left', so the right and middle sides "
                 f"of the dollar smile become unreachable and the three-way "
                 f"vocabulary collapses to one label (D-037's class)."
+            )
+        if not 0.0 <= self.uip_reliability_value <= 1.0:
+            raise ValueError(
+                f"fx_carry.uip_reliability_cap is {self.uip_reliability_value}. "
+                f"A confidence must lie inside [0, 1] — ModelResult's own field "
+                f"constraint would refuse a value outside it, so a leaf outside "
+                f"the range would raise at the FIRST call rather than at load. "
+                f"Refusing here makes the defect a config error, where it can be "
+                f"seen, rather than a runtime failure of the model."
             )
         return self
 

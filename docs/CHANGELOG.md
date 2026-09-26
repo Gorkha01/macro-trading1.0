@@ -10,6 +10,71 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-112 — Module 9's `uip_expected_move`, the parity benchmark (Tier 5 = 13/23)
+
+The fourth §6.7/§20.9 FX function, and **Module 9's parity branch is now complete**.
+**The supersession question was answered BEFORE any arithmetic** — a different
+function from `cip_check`, but the same parity family read forward.
+
+**Added**
+
+- **`uip_expected_move`** in `src/macro_engine/models/fx_carry.py` — the
+  uncovered-interest-parity benchmark expected spot move. Consults **no forward**;
+  takes only the two money-market rates and predicts the expected spot move.
+  Publishes the exact move, the specification's first-order form beside it, both
+  rates in both units, both differentials, the tenor, and the direction — so every
+  published number can be recomputed from the output alone.
+- **`UIPInputs`** / **`UIPDirection`**, with a `_validate_domain` guard refusing a
+  **non-finite** input (D-078 — a bare `nan` fails every comparison and would reach
+  the arithmetic), a tenor beyond one money-market year, and a period rate at or
+  below `-100 %`.
+- **`fx_carry.uip_reliability_cap`** (`config/settings.yaml`, `FxCarrySettings`) —
+  value **0.15** (`uncalibrated_illustrative`), read through `uip_reliability_value`.
+  A **reliability CEILING, not a `compute_confidence()` penalty** — the block's one
+  non-threshold leaf.
+
+**Changed**
+
+- **`scripts/mutation_fx_carry.py`** — the sweep grew **114 → 143** mutations, with a
+  new **U-segment** (29 mutations) and a **C4-segment** (4) covering the new leaf. The
+  module docstring now reads *"four functions, one module, one sweep."*
+- **Seven OLD `cip_check` anchors were WIDENED** (`M2a`–`M2d`, `M6c`, `M6d`, `M8b`) —
+  `uip_expected_move` reuses `cip_check`'s conventions **by design**, so the lines
+  those mutations anchored on became byte-identical in two places. Widened with
+  cip-only neighbours, **never by deleting a mutation** (D-055/D-060).
+- **Three `_fx_carry_settings` helpers** gained the new required field
+  (`test_cip_check.py`, `test_carry_score.py`, `test_dollar_smile_regime.py`) — the
+  mechanical break `test_cip_check.py` had already predicted.
+
+**Decided**
+
+- **`confidence` is a model-specific cap, not `compute_confidence()`.** UIP's inputs
+  are observable and its arithmetic exact, so no reliability factor is impaired; what
+  is nearly worthless is that the **hypothesis fails empirically**, and
+  `compute_confidence()` has no factor for *"the method is known to be false."* The
+  leaf follows the `policy_rules.py` precedent for a model-specific config-leaf
+  confidence. The cap sits **below every other Module 9 confidence**, asserted.
+- **The bridge to `cip_check` is an asserted identity, not a prose claim:** UIP's
+  one-year expected move **==** CIP's forward premium `(i_d - i_f)/(1 + i_f)`. Tested
+  on hand-derived fixtures and **measured on live rates** in the new live check.
+- **O-138 opened:** `--check-targets` prints its verdict and **then runs**, so the
+  "safe" pre-flight killed the sweep mid-mutation and left a mutant on disk — the
+  O-131 residue hazard reached through the mode meant to be safe.
+
+**Gates (measured 2026-09-26 — `sweep_health.py` LAST):** `ruff format --check` **262** ==
+`mypy --strict` **262** (D-035) · reachability **PASS — 58 = 58, no regressions** · full suite
+(`--junitxml`) **3429 tests / 0 failures / 0 errors / 1 skipped** · `mutation_fx_carry.py`
+**143/143 killed** (was 114) · live check **PASS** · `sweep_health.py` **OK — 45 sweeps ·
+0 leftovers · 0 shapes · 0 committed mutants · 0 failures**.
+
+**Two defects caught by the gates and fixed, not waived.** The `--check` run refused the new
+live script's formatting and flagged `test_uip_expected_move.py:635` (`decision_relevance` is
+`str | None`) — fixed with an `is not None` assertion that is also the stronger test. And the
+**live check FAILED on first run with a defect in the CHECK, not the model**: section (5)
+compared a bare ratio deviation to a rate (`i_f`), a unit mismatch; re-derived as a fraction of
+the longer move, the live shortfall is **0.015131** against the `i_f` bound **0.020277** — inside
+it, as the model promises. D-109's lesson again: **both sides of a cross-check must share a unit.**
+
 ### D-111 — Module 9's `dollar_smile_regime`, completing Module 9 (Tier 5 = 12/23)
 
 The third and final §6.7 FX function. **A three-way threshold classifier**, so the

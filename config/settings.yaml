@@ -4065,6 +4065,42 @@ fx_carry:
       was reached by a NEUTRAL input rather than by an outright negative one.
       Recording a different boundary (say a small positive band) would require a
       measured dead-band width, which nothing here can supply.
+  uip_reliability_cap:
+    value: 0.15
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `uip_expected_move` reports, replacing Section
+      6.7's hardcoded `confidence=0.15`. Retained verbatim so the shipped
+      behaviour matches the specification.
+
+      ⚠️ THIS IS NOT A `compute_confidence()` PENALTY, AND THE DISTINCTION IS THE
+      WHOLE DECISION. Every other model in Module 9 derives its confidence from
+      stated factors — calibration status, observability, source independence —
+      because its INPUTS are what is doubtful. UIP is the opposite case and the
+      only one of its kind in this project: its inputs are the most reliable
+      quantity in macro (money-market rates, observable to the basis point, and
+      the SAME two the CIP identity is verified against), its arithmetic is an
+      exact textbook identity, and the MODEL IS STILL WORTH ALMOST NOTHING —
+      because UIP is a hypothesis that FAILS EMPIRICALLY. Section 6.7 says so in
+      its own words: "this FAILS empirically (forward premium puzzle)". The
+      penalty is a fact about the METHOD's track record, not about the data, and
+      `compute_confidence()` has no factor for "the hypothesis itself is known to
+      be false" — so the value is a model-specific cap read here, exactly as
+      `policy.market_implied.*_confidence` is.
+
+      ⚠️ 0.15 IS DELIBERATELY BELOW EVERY OTHER MODULE 9 CONFIDENCE, and that is
+      the point rather than an inconsistency. `cip_check` and `carry_score`
+      report around 0.5 because they MEASURE something (a live forward, a
+      realised volatility); `uip_expected_move` reports a BENCHMARK whose failure
+      is the other models' edge. A reader who saw a mid-range confidence here
+      would reasonably treat the UIP number as a forecast, which Section 6.7
+      explicitly forbids ("Do NOT use as a point forecast").
+
+      ⚠️ THE VALUE IS A CEILING, NOT A COMPUTED RESULT, and it is NOT calibrated:
+      calibrating it means measuring how well the UIP benchmark predicts realised
+      spot moves against the carry alternative, which needs an FX panel this
+      build does not fetch. It is the specification's own illustration and is
+      priced into every result it produces.
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
