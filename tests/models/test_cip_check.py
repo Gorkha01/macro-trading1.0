@@ -39,7 +39,7 @@ from macro_engine.models.fx_carry import (
     FundingStressSide,
     QuoteConvention,
     StressSeverity,
-    _thresholds_are_calibrated,
+    _cip_bands_are_calibrated,
     cip_check,
 )
 from tests.helpers import as_float, as_str
@@ -549,7 +549,7 @@ def test_the_confidence_helper_reads_the_notable_leaf_specifically(
     monkeypatch.setattr(
         fx.notable_deviation_pct, "calibration_status", "conventional", raising=False
     )
-    assert _thresholds_are_calibrated() is True
+    assert _cip_bands_are_calibrated() is True
 
     monkeypatch.setattr(
         fx.notable_deviation_pct, "calibration_status", "uncalibrated_illustrative", raising=False
@@ -557,7 +557,7 @@ def test_the_confidence_helper_reads_the_notable_leaf_specifically(
     monkeypatch.setattr(
         fx.extreme_deviation_pct, "calibration_status", "conventional", raising=False
     )
-    assert _thresholds_are_calibrated() is False
+    assert _cip_bands_are_calibrated() is False
 
 
 # ---------------------------------------------------------------------------
@@ -569,23 +569,49 @@ def _cal(value: float) -> CalibratedValue:
     return CalibratedValue(value=value, calibration_status="conventional")
 
 
+def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
+    """A complete ``FxCarrySettings``, so a guard test exercises its own guard.
+
+    Every construction is COMPLETE on purpose. These tests used to build the
+    model with only the two band fields, and adding the required
+    ``carry_vol_floor`` at D-109 made them raise ``ValidationError`` for a
+    missing field instead — which the two ``pytest.raises`` tests happily
+    accepted, because a missing required field and a rejected band are the SAME
+    exception type. **Only the negative control failed**, which is the whole
+    argument for having one. See the ``match=`` arguments below for the second
+    half of the fix.
+    """
+    base: dict[str, CalibratedValue] = {
+        "notable_deviation_pct": _cal(0.1),
+        "extreme_deviation_pct": _cal(0.5),
+        "carry_vol_floor": _cal(0.1),
+    }
+    base.update(overrides)
+    return FxCarrySettings(**base)
+
+
 def test_the_band_validator_refuses_a_non_positive_notable_band() -> None:
-    """A zero band makes every deviation notable, so 'none' is unreachable."""
-    with pytest.raises(ValidationError):
-        FxCarrySettings(notable_deviation_pct=_cal(0.0), extreme_deviation_pct=_cal(1.0))
+    """A zero band makes every deviation notable, so 'none' is unreachable.
+
+    ``match=`` names the field so the test cannot pass on an unrelated
+    ``ValidationError`` — a missing required field raises the same type and
+    would otherwise satisfy a bare ``pytest.raises``.
+    """
+    with pytest.raises(ValidationError, match="notable_deviation_pct"):
+        _fx_carry_settings(notable_deviation_pct=_cal(0.0))
 
 
 def test_the_band_validator_refuses_an_extreme_band_at_or_below_the_notable_one() -> None:
     """An empty middle band makes the 'notable' label dead vocabulary (D-037)."""
-    with pytest.raises(ValidationError):
-        FxCarrySettings(notable_deviation_pct=_cal(1.0), extreme_deviation_pct=_cal(1.0))
-    with pytest.raises(ValidationError):
-        FxCarrySettings(notable_deviation_pct=_cal(1.0), extreme_deviation_pct=_cal(0.5))
+    with pytest.raises(ValidationError, match="extreme_deviation_pct"):
+        _fx_carry_settings(notable_deviation_pct=_cal(1.0), extreme_deviation_pct=_cal(1.0))
+    with pytest.raises(ValidationError, match="extreme_deviation_pct"):
+        _fx_carry_settings(notable_deviation_pct=_cal(1.0), extreme_deviation_pct=_cal(0.5))
 
 
 def test_the_band_validator_accepts_a_strictly_ordered_pair() -> None:
     """The negative control: an ordinary ordered pair must construct."""
-    settings = FxCarrySettings(notable_deviation_pct=_cal(0.1), extreme_deviation_pct=_cal(0.5))
+    settings = _fx_carry_settings()
     assert settings.notable_threshold_pct == 0.1
     assert settings.extreme_threshold_pct == 0.5
 

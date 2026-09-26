@@ -3972,6 +3972,32 @@ fx_carry:
       same calibration as the leaf above, not a measured quantile, and the
       severity label it produces is a REPORTING band — never a probability and
       never a trade instruction.
+  carry_vol_floor:
+    value: 0.1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The denominator floor in `carry_score`'s carry-to-vol ratio, as an
+      ANNUALISED DECIMAL (0.1 = 10 %/yr). Section 6.7 supplies it as a literal
+      (`max(inputs.realized_vol_annualized, 0.1)`) and it is retained verbatim
+      so the shipped behaviour matches the specification.
+
+      ⚠️ THE UNIT IS THE WHOLE QUESTION, and the specification never states it.
+      Read as an annualised DECIMAL the floor is 10 %/yr, which is NOT a rare
+      value: G10 realised FX vol runs roughly 4–12 %/yr, so this floor binds for
+      a quiet euro or yen pair in most periods. Read as PERCENT it would be
+      0.1 %/yr and would essentially never bind. The two readings differ by 100x
+      and both produce a plausible score, so the model publishes
+      `volatility_floor_binding` on every result and warns when it fires.
+
+      ⚠️ AND WHEN IT BINDS, THE ESTIMAND CHANGES. With the floor in force the
+      score is carry-over-THE-FLOOR, not carry-over-realised-vol, so it is no
+      longer a Sharpe-like ratio and must not be compared with one that is.
+      That is why the flag travels with the value rather than being left to the
+      reader to infer from the inputs.
+
+      10 %/yr is a placeholder, not a measured quantile: calibrating it means
+      measuring the realised-vol distribution of the pairs the score will be
+      used on, which needs a cross-sectional panel this build does not fetch.
 
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture

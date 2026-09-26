@@ -1,9 +1,35 @@
-"""Mutation sweep for Section 6.7's ``cip_check`` (Module 9, Tier 5).
+"""Mutation sweep for Section 6.7's Module 9 — ``cip_check`` and ``carry_score``.
+
+**Two functions, one module, one sweep** (D-109). The labels are partitioned by
+function: **``M1``-``M8`` and ``C1`` are ``cip_check``'s** (D-108), and
+**``K1``-``K6`` and ``C2`` are ``carry_score``'s** (D-109). One sweep rather than
+two because the two functions share a file and a config block, and a second
+sweep over the same file would double the places a future edit must be mirrored
+— `mutation_econometrics.py` covers five functions in one module the same way.
+
+**⚠️ This file is the VICTIM whenever a function is added to ``fx_carry.py``,
+not the culprit.** Adding ``carry_score`` made two of the anchors below fail
+`check_targets` before the sweep would run:
+
+* **M6a's anchor became AMBIGUOUS (2 occurrences)** — the new input model's
+  validator opens with the same ``if not math.isfinite(value):`` line. Fixed by
+  widening the anchor with the unique ``for name in (...)`` line above it.
+* **M8h's anchor became ABSENT** — it pinned the helper call
+  ``_thresholds_are_calibrated()``, which this increment RENAMED to
+  ``_cip_bands_are_calibrated()`` so it names the leaf it reads. Fixed by
+  following the rename.
+
+Both are D-055/D-060's class and both were caught by the gate rather than by a
+mis-reported survivor — which is what the gate is for. **A surviving mutant is a
+claim about the tests until proven otherwise; an AMBIGUOUS anchor is a claim
+about the SWEEP.**
 
 Every mutation below reverts one decision the implementation makes to a
-plausible alternative, and each must be killed. The grouping follows the
+plausible alternative, and each must be killed. The grouping follows each
 function's own structure, because a mutation that does not correspond to a
 *decision* is a mutation that cannot teach anything:
+
+* **``cip_check`` — ``M1``-``M8``, ``C1``:**
 
 * **M1** breaks the PARITY IDENTITY — the whole point of the estimator.
   ``M1a`` swaps the two rates in the ratio, ``M1b`` substitutes the linear
@@ -30,6 +56,23 @@ function's own structure, because a mutation that does not correspond to a
 * **M7** breaks the WARNINGS — each branch, and the noise floor.
 * **M8** breaks the PUBLISHED VALUE or the confidence computation.
 * **C1** swaps or hardcodes the config accessors and the settings validators.
+
+* **``carry_score`` — ``K1``-``K6``, ``C2``:**
+* **K1** breaks the RATIO — the whole point of the estimator. ``K1a`` inverts it,
+  ``K1b`` multiplies where it should divide, ``K1c`` subtracts.
+* **K2** breaks the FLOOR — the denominator substitution. ``K2a`` disables it,
+  ``K2b`` swaps the two branches, ``K2c`` takes the MINIMUM instead of the
+  maximum (which inverts the capping direction), ``K2d`` makes the boundary
+  inclusive.
+* **K3** breaks the DIRECTION — the sign rule and the ``flat`` label.
+* **K4** breaks the GUARDS — the finiteness and positive-volatility refusals and
+  the settings validator.
+* **K5** breaks the WARNING — one branch, and it must fire only when the
+  estimand changes.
+* **K6** breaks the PUBLISHED VALUE, the unit, the source family or the
+  confidence.
+* **C2** hardcodes the floor accessor or points the calibration helper at the
+  wrong leaf.
 
 A survivor is one of three things (D-031): a weak test, an **inert** mutation, or
 a **broken** mutation. The runner heals before it measures — an interrupted run
@@ -97,7 +140,17 @@ _SIDE_SIGN = "    elif deviation_pct > 0.0:"
 # M6: the guards.
 # --------------------------------------------------------------------------
 
-_FINITE_GUARD = "            if not math.isfinite(value):"
+# WIDENED at D-109: the bare `if not math.isfinite(value):` line became
+# AMBIGUOUS when `carry_score`'s input model opened its validator with the same
+# line. The `for name in (...)` above it is unique to `CIPInputs`, so the anchor
+# now resolves to exactly one site. This is the D-055/D-060 remedy — widen the
+# anchor with a distinguishing neighbouring line — and NOT a reason to delete
+# the mutation.
+_FINITE_GUARD = (
+    '        for name in ("spot", "forward", "i_domestic_annualized", "i_foreign_annualized"):\n'
+    "            value = getattr(self, name)\n"
+    "            if not math.isfinite(value):"
+)
 _POSITIVE_GUARD = "            if value <= 0.0:"
 _TENOR_GUARD = "        if self.tenor_days > basis_days:"
 _PERIOD_RATE_GUARD = "            if 1.0 + period <= 0.0:"
@@ -120,7 +173,46 @@ _SEVERITY_KEY = '            "severity": severity,'
 _SIDE_KEY = '            "stressed_currency": side,'
 _NORMALIZED_KEY = '            "normalized_to": "domestic_per_foreign",'
 _INVERTED_KEY = '            "quote_was_inverted": inverted,'
-_HEURISTIC_FLAG = "                is_heuristic_not_calibrated=not _thresholds_are_calibrated(),"
+# RENAMED at D-109: the helper this pinned became `_cip_bands_are_calibrated`
+# when the module gained a second function with its own threshold and a generic
+# `_thresholds_are_calibrated` stopped saying which leaf it read. Following the
+# rename here is mandatory — an anchor left pointing at the old name goes ABSENT
+# and the gate refuses the whole sweep.
+_CIP_HEURISTIC_FLAG = "                is_heuristic_not_calibrated=not _cip_bands_are_calibrated(),"
+
+# --------------------------------------------------------------------------
+# K1-K6: carry_score.
+# --------------------------------------------------------------------------
+
+_CARRY_RATIO = "    score = differential / denominator"
+_CARRY_FLOOR_BINDS = "    floor_binds = realized_vol < volatility_floor"
+_CARRY_DENOMINATOR = "    denominator = volatility_floor if floor_binds else realized_vol"
+_CARRY_OUTCOME_POSITIVE = (
+    '    if rate_differential_annualized > 0.0:\n        return "long_domestic"'
+)
+_CARRY_OUTCOME_NEGATIVE = (
+    '    if rate_differential_annualized < 0.0:\n        return "long_foreign"'
+)
+_CARRY_FINITE_GUARD = (
+    '        for name in ("rate_differential_annualized", "realized_vol_annualized"):\n'
+    "            value = getattr(self, name)\n"
+    "            if not math.isfinite(value):"
+)
+_CARRY_VOL_GUARD = "        if self.realized_vol_annualized <= 0.0:"
+_CARRY_WARN_EARLY_RETURN = "    if not floor_binds:\n        return []"
+_CARRY_SCORE_KEY = '            "score": round(score, 6),'
+_CARRY_DENOM_KEY = '            "effective_denominator": round(denominator, 8),'
+_CARRY_BINDING_KEY = '            "volatility_floor_binding": floor_binds,'
+_CARRY_OUTCOME_KEY = '            "carry_outcome": outcome,'
+_CARRY_UNIT = '        unit="dimensionless (annualised carry per unit of annualised volatility)",'
+_CARRY_DIRECTION = "        direction=outcome,"
+_CARRY_SOURCE_FAMILY = "        source_family=EvidenceSourceFamily.MARKET_FX,"
+_CARRY_HEURISTIC_FLAG = (
+    "                is_heuristic_not_calibrated=not _carry_floor_is_calibrated(),"
+)
+_CARRY_FLOOR_PROP = "        return float(self.carry_vol_floor.value)"
+_CARRY_CALIBRATED_READ = '    return settings.is_calibrated("fx_carry.carry_vol_floor")'
+_CARRY_FLOOR_VALIDATOR = "        if self.volatility_floor <= 0.0:"
 
 # --------------------------------------------------------------------------
 # C1: the config accessors and validators.
@@ -371,7 +463,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     (
         "M8h the confidence drops the heuristic penalty",
         SRC,
-        _HEURISTIC_FLAG,
+        _CIP_HEURISTIC_FLAG,
         "                is_heuristic_not_calibrated=False,",
     ),
     # --- C1: the config accessors and validators -------------------------
@@ -423,6 +515,171 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         _POSITIVE_VALIDATOR,
         "        if False:",
     ),
+    # --- K1: the ratio (carry_score's reason to exist) --------------------
+    (
+        "K1a the ratio is inverted",
+        SRC,
+        _CARRY_RATIO,
+        "    score = denominator / differential",
+    ),
+    (
+        "K1b the differential is multiplied by the denominator",
+        SRC,
+        _CARRY_RATIO,
+        "    score = differential * denominator",
+    ),
+    (
+        "K1c the differential has the denominator subtracted from it",
+        SRC,
+        _CARRY_RATIO,
+        "    score = differential - denominator",
+    ),
+    # --- K2: the floor ----------------------------------------------------
+    (
+        "K2a the floor is disabled (the denominator is always the realised vol)",
+        SRC,
+        _CARRY_FLOOR_BINDS,
+        "    floor_binds = False",
+    ),
+    (
+        "K2b the two denominator branches are swapped",
+        SRC,
+        _CARRY_DENOMINATOR,
+        "    denominator = realized_vol if floor_binds else volatility_floor",
+    ),
+    (
+        "K2c the MINIMUM is taken instead of the maximum (capping direction inverted)",
+        SRC,
+        _CARRY_DENOMINATOR,
+        "    denominator = min(realized_vol, volatility_floor)",
+    ),
+    (
+        "K2d the floor boundary becomes inclusive",
+        SRC,
+        _CARRY_FLOOR_BINDS,
+        "    floor_binds = realized_vol <= volatility_floor",
+    ),
+    # --- K3: the direction ------------------------------------------------
+    (
+        "K3a a positive differential is labelled long_foreign",
+        SRC,
+        _CARRY_OUTCOME_POSITIVE,
+        '    if rate_differential_annualized > 0.0:\n        return "long_foreign"',
+    ),
+    (
+        "K3b a negative differential is labelled long_domestic",
+        SRC,
+        _CARRY_OUTCOME_NEGATIVE,
+        '    if rate_differential_annualized < 0.0:\n        return "long_domestic"',
+    ),
+    (
+        "K3c the flat case is absorbed into long_foreign (its label becomes unreachable)",
+        SRC,
+        _CARRY_OUTCOME_NEGATIVE,
+        '    if rate_differential_annualized <= 0.0:\n        return "long_foreign"',
+    ),
+    # --- K4: the guards ---------------------------------------------------
+    (
+        "K4a the carry finiteness guard removed",
+        SRC,
+        _CARRY_FINITE_GUARD,
+        '        for name in ("rate_differential_annualized", "realized_vol_annualized"):\n'
+        "            value = getattr(self, name)\n"
+        "            if False:",
+    ),
+    (
+        "K4b a zero volatility is admitted",
+        SRC,
+        _CARRY_VOL_GUARD,
+        "        if self.realized_vol_annualized < 0.0:",
+    ),
+    (
+        "K4c the settings' positive-floor validator removed",
+        CONFIG,
+        _CARRY_FLOOR_VALIDATOR,
+        "        if False:",
+    ),
+    # --- K5: the warning --------------------------------------------------
+    (
+        "K5a the floor warning fires on every call (the early return removed)",
+        SRC,
+        _CARRY_WARN_EARLY_RETURN,
+        "    if False:\n        return []",
+    ),
+    (
+        "K5b the floor warning never fires",
+        SRC,
+        _CARRY_WARN_EARLY_RETURN,
+        "    if True:\n        return []",
+    ),
+    # --- K6: the published value, the unit, the family, the confidence ----
+    (
+        "K6a the published score ignores the floor",
+        SRC,
+        _CARRY_SCORE_KEY,
+        '            "score": round(differential / realized_vol, 6),',
+    ),
+    (
+        "K6b the published denominator is the realised vol, floor or not",
+        SRC,
+        _CARRY_DENOM_KEY,
+        '            "effective_denominator": round(realized_vol, 8),',
+    ),
+    (
+        "K6c the floor-binding flag is published as a constant",
+        SRC,
+        _CARRY_BINDING_KEY,
+        '            "volatility_floor_binding": False,',
+    ),
+    (
+        "K6d the published outcome is a constant",
+        SRC,
+        _CARRY_OUTCOME_KEY,
+        '            "carry_outcome": "flat",',
+    ),
+    (
+        "K6e the unit is misdeclared as percent",
+        SRC,
+        _CARRY_UNIT,
+        '        unit="percent",',
+    ),
+    (
+        "K6f the direction field is a constant",
+        SRC,
+        _CARRY_DIRECTION,
+        '        direction="flat",',
+    ),
+    (
+        "K6g the source family is dropped",
+        SRC,
+        _CARRY_SOURCE_FAMILY,
+        "        source_family=None,",
+    ),
+    (
+        "K6h the confidence drops the heuristic penalty",
+        SRC,
+        _CARRY_HEURISTIC_FLAG,
+        "                is_heuristic_not_calibrated=False,",
+    ),
+    # --- C2: the carry config accessors -----------------------------------
+    (
+        "C2a the floor accessor is a hardcoded literal",
+        CONFIG,
+        _CARRY_FLOOR_PROP,
+        "        return 0.1",
+    ),
+    (
+        "C2b the floor accessor returns a CIP band instead",
+        CONFIG,
+        _CARRY_FLOOR_PROP,
+        "        return float(self.notable_deviation_pct.value)",
+    ),
+    (
+        "C2c the calibration helper reads a CIP band instead of the floor",
+        SRC,
+        _CARRY_CALIBRATED_READ,
+        '    return settings.is_calibrated("fx_carry.notable_deviation_pct")',
+    ),
 ]
 
 
@@ -433,6 +690,7 @@ def run_tests() -> bool:
             "-m",
             "pytest",
             "tests/models/test_cip_check.py",
+            "tests/models/test_carry_score.py",
             "tests/test_infrastructure.py",
             "-q",
             "--no-header",
@@ -495,7 +753,9 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     print("=" * 74)
     total = len(_MUTATIONS)
     killed = total - len(survivors)
-    print(f"MUTATION SWEEP — cip_check: {killed}/{total} killed", flush=True)
+    print(
+        f"MUTATION SWEEP — fx_carry (cip_check + carry_score): {killed}/{total} killed", flush=True
+    )
     print("=" * 74)
     if survivors:
         print("SURVIVORS (each is a weak test, an inert mutation, or a broken one):")

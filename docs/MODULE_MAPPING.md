@@ -2073,3 +2073,61 @@ caller is `scripts/live_cip_check.py`), so the Tier 1-4 unreachable baseline sta
 funding-stress read for a carry or dollar view) and states plainly that it is script-only
 until a forward source exists — the same honest gap D-107 recorded for a different
 function.
+
+---
+
+## D-109 — Module 9's `carry_score` (same file, second function) (2026-09-26)
+
+**Tier 5 = 11/23.** Module 18 is untouched at 5 of 6.
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `carry_score` | **9 — FX Carry / Parity** | `models/fx_carry.py` (**exists** — created at D-108) | `AGENTS.md:1027` (§6.7) | **nothing named** — Phase 0–4 had no carry model | **IMPLEMENTED** (D-109) |
+
+**A thirteenth mapping rule — the second function in a file tests a DIFFERENT
+property than the first, and it is the mapping's ANCHORS that are at risk.**
+D-108's twelfth rule said a Tier-5 row whose file is absent is the mapping's most
+informative state. This row is the complement: the file **exists**, the module
+number was already resolved, and the mapping itself was a formality — **and yet
+adding one function broke the sweep that maps the other.** Measured: two of
+`mutation_fx_carry.py`'s anchors failed `check_targets` before the sweep would
+run — one became **AMBIGUOUS** (the new input model opens its validator with the
+same ``if not math.isfinite(value):`` line the old one does) and one went
+**ABSENT** (it pinned a helper this increment renamed). **Both were fixed by
+widening or following the anchor — D-055/D-060's remedy — and the gate caught
+both rather than reporting them as survivors.** The mapping lesson is that **a
+row's file and its module number are the cheap half of the mapping; the anchors
+are the half that decays**, and only re-running the file's existing sweep
+measures it.
+
+**A fourteenth mapping rule — a MAPPING CAN CREATE A SECOND MAPPING, and the
+second one is where the tests live.** `carry_score` maps to the same file as
+`cip_check` but to a **different set of anchors, a different config leaf, a
+different calibration helper and a different live check**. The single most
+consequential mapping decision in this increment was therefore not
+*"which file?"* — that was settled at D-108 — but **`_thresholds_are_calibrated`
+was a GENERIC name mapping one function's confidence to one leaf**, and a second
+function with its own threshold made it a lie. It is now
+`_cip_bands_are_calibrated` (reading `fx_carry.notable_deviation_pct`) beside
+`_carry_floor_is_calibrated` (reading `fx_carry.carry_vol_floor`) — the same
+discipline `_r_squared_floor_is_calibrated`'s docstring states in
+``models/econometrics.py``: **a helper is named for the leaf it reads, because a
+generic name silently claims coverage of leaves added later.**
+
+**The supersession map, updated (D-096):** `classify_regime_rule_based` →
+`classify_regime_markov_switching` (D-105) · `historical_var` / `parametric_var` /
+`expected_shortfall` → `monte_carlo_var` (D-106) · `cip_check` supersedes
+**nothing named** (D-108) · **`carry_score` supersedes nothing named** — Phase 0–4
+had no carry model either · `realized_vol_simple` → GARCH (outstanding, and now
+also the cross-check partner for `carry_score`'s live volatility) · the
+inverse-volatility weighting → `compute_risk_parity_weights` (**shipped at D-071,
+Phase 4 — not outstanding**). **Ask what each entry replaces, never grep the list
+for a keyword.**
+
+**Reachability mapping.** `carry_score` also classifies as **SCRIPT-ONLY — Tier 5**
+(its only caller is `scripts/live_carry_score_check.py`), so the Tier 1-4
+unreachable baseline stays **58 = 58** and the Tier-5 script-only set grows from
+9 to 10. Its `decision_relevance` names the intended consumer — Module 9's carry
+read, paired with `cip_check`'s funding-stress read and the dollar-smile regime —
+and states that it is script-only because no snapshot field carries a rate
+differential or an FX realised volatility.

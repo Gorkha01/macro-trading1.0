@@ -10,6 +10,79 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-109 — Module 9's `carry_score`, and a floor that changes the estimand (Tier 5 = 11/23)
+
+The carry trade's Sharpe-like ratio, in the module D-108 created. `carry_score`
+is the second of Section 6.7's three functions; `dollar_smile_regime` is the
+last.
+
+**Added**
+
+- **`carry_score` and `CarryScoreInputs`** in `src/macro_engine/models/fx_carry.py`
+  — `rate_differential_annualized / max(realized_vol_annualized, floor)`, with
+  the denominator actually used, the floor-binding flag and the carry direction
+  all published so the score can be recomputed from the output alone.
+- **`fx_carry.carry_vol_floor`** — the stub's literal `max(vol, 0.1)` given a home
+  and a **unit** (an annualised decimal, 10 %/yr), value retained verbatim.
+- **`tests/models/test_carry_score.py`** — 42 hand-verified tests, every guard
+  with an explicit negative control, the floor boundary built by **exact float
+  stepping** (`math.nextafter`), and the capping direction pinned.
+- **`scripts/live_carry_score_check.py`** — the first Module-9 live check to run
+  **end to end on real inputs** (nothing constructed).
+
+**Changed**
+
+- **`rate_differential` → `rate_differential_annualized`.** The ratio is
+  dimensionless only if both inputs share a unit, and the specification names one
+  field's unit and not the other. Both are now ANNUALISED DECIMALS.
+- **When the floor binds, the estimand changes** — the score becomes
+  carry-over-the-floor and is no longer a Sharpe-like ratio — so
+  `volatility_floor_binding` is published on every result and a warning fires.
+  **This is not hypothetical:** on live EURUSD the 63-day realised volatility was
+  **4.5572 %** against the 10 % floor, so the published score was **+0.2052 where
+  the un-floored ratio is +0.4503** — the shipped floor caps a quiet G10 pair at
+  less than half its volatility's implication.
+- The specification's `warnings=[… "nickels in front of a steamroller" …]` moved
+  to **`limitations`** — it holds on every call, so it is a caveat, not a
+  condition of the run. `confidence=0.5` is replaced by `compute_confidence()`.
+- `_thresholds_are_calibrated` renamed **`_cip_bands_are_calibrated`**, with a
+  separate `_carry_floor_is_calibrated` — a helper must be named for the leaf it
+  reads, or a generic name silently claims coverage of leaves added later.
+
+**Fixed**
+
+- **The sweep's own anchors**, which adding a second function broke: `M6a`'s
+  became AMBIGUOUS (the new input model opens its validator with the same
+  `if not math.isfinite(value):` line) and `M8h`'s went ABSENT (the renamed
+  helper). Both widened/followed — D-055/D-060's remedy, caught by the gate
+  rather than mis-reported as a survivor.
+- **Four explicit `FxCarrySettings(...)` constructions** in `test_cip_check.py`,
+  broken by the new required field (O-127, 5th instance). Three were
+  `pytest.raises(ValidationError, …)` guard tests and **passed for the wrong
+  reason** — a missing required field raises the same type as a rejected band.
+  Every guard test now carries `match=` on the field it tests.
+
+**Measured**
+
+- Gates: `ruff format --check` **258** == `mypy --strict` **258** · **3303
+  collected / 3302 passed / 0 failed / 1 skipped** via `--junitxml` (delta +42 =
+  the new test file) · reachability **PASS 58/58** · `mutation_fx_carry.py`
+  **71/71** · `sweep_health.py` **45 sweeps, 0 failures**.
+- Live: differential **+2.0523pp**, EURUSD 63d realised vol **4.5572 %**, score
+  **+0.2052** (floor binding). The model's estimator and a hand computation agree
+  to the model's own published precision (3.4e-5 pp).
+
+**Recorded, not fixed**
+
+- **O-135** — `check_targets` reports a **leftover mutation on a clean tree** when
+  a mutation's anchor and its replacement text are *both* absent, and prints a
+  remedy (`git checkout --`) that has already cost this project 97 lines. Three
+  lines to fix; `_sweep_gate.py` is shared by all 45 sweeps, so it needs its own
+  increment.
+- **O-136** — a model's `value` container is not uniform:
+  `realized_vol_simple` publishes a bare `float` while `carry_score` publishes a
+  `dict`, and a cross-check script that assumed one shape failed on the other.
+
 ### D-108 — Module 9's `cip_check`, the first FX function (Tier 5 = 10/23)
 
 Covered interest parity and its deviations, in a **new** module

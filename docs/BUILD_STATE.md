@@ -9132,3 +9132,105 @@ sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shap
 **256 == 256** (D-035; **252 → 256**, the four new files). **Delta against D-107's
 3192 = exactly +68** = 65 new `cip_check` tests + 3 new parametrized-over-sweeps
 cases. **The census moved 44 → 45** in three places (two test files + a test name).
+
+---
+
+## D-109 — Module 9's `carry_score`, and a floor that changes the estimand (2026-09-26) — **PHASE 5, Tier 5 = 11/23**
+
+`carry_score` joins `cip_check` in `src/macro_engine/models/fx_carry.py` — the
+file D-108 created. `dollar_smile_regime` (`AGENTS.md:1047`) is the module's last
+function.
+
+### The stub, and the three decisions
+
+    score = inputs.rate_differential / max(inputs.realized_vol_annualized, 0.1)
+
+1. **`rate_differential`'s unit is unstated** and the ratio is dimensionless only
+   if it matches the volatility's. **Both inputs are ANNUALISED DECIMALS**; the
+   field is renamed `rate_differential_annualized`. Annualised because the carry
+   over ``t`` is ``(i_d - i_f)*t`` while the vol is ``sigma*sqrt(t)``, so their
+   ratio still carries ``sqrt(t)`` — annualising BOTH is what makes the score
+   comparable across tenors.
+2. **`max(vol, 0.1)` is a literal with no unit** → ``fx_carry.carry_vol_floor``,
+   **value retained verbatim at 0.1**, unit named (annualised decimal, 10 %/yr).
+   Not a rare value: G10 realised vol runs 4-12 %/yr. Read as percent it would be
+   0.1 %/yr and never bind — the two readings differ by 100x.
+3. **When the floor binds the ESTIMAND changes** — carry-over-the-floor, no
+   longer a Sharpe-like ratio. **So `volatility_floor_binding` is published on
+   every result and a warning fires when it does.**
+
+Also upgraded: `confidence=0.5` → `compute_confidence()`; the specification's
+`warnings=[... "nickels in front of a steamroller" ...]` **moved to
+`limitations`** (it holds on every call); `unit`, `direction`, `source_family`
+and a full reasoning object added.
+
+### The ratio, derived
+
+The funded trade's excess return is ``(i_d - i_f) + r_fx`` with volatility
+approximately the pair's own, so ``(i_d - i_f)/sigma`` is its **ex-ante
+Sharpe-like ratio**. **The sign is the DIRECTION:** ``i_d > i_f`` ⇒ lend domestic,
+borrow foreign. A `Literal` (`long_domestic`/`long_foreign`/`flat`) with the
+zero case as **its own label**, and ``sign(score) == sign(differential)``
+asserted over a 6x3 grid.
+
+### Live check (PASS) — and the first Module-9 check to run END TO END
+
+`cip_check` needs a forward and none exists; `carry_score` needs a rate
+differential and a volatility, **both reachable**. Measured 2026-09-25/26:
+differential **+2.0523pp** (US 3m 4.08 %/yr vs euro-area 3m 2.0277 %/yr), EURUSD
+63d realised vol **4.5572 %**, score **+0.2052**.
+
+**⚠️ THE SHIPPED FLOOR BINDS ON LIVE DATA.** 4.5572 % < the 10 % floor, so the
+denominator is the FLOOR: **+0.2052 published against an un-floored +0.4503** —
+the shipped configuration caps a quiet G10 pair's reported attractiveness at
+**less than half** what its own volatility implies. The silent-path hazard this
+increment exists to expose fires on the first real pair tried.
+
+**⚠️ The check FAILED on its first run and the failure was MINE.**
+`realized_vol_simple` publishes ``round(vol*100, 4)``, so it carries up to
+**5e-5** of rounding by construction; my cross-check bound was ``1e-6`` and it
+flagged a 3.4e-5 disagreement. **A bound tighter than the coarser side's
+published precision tests the ROUNDING, not the agreement.** The bound is now
+derived as `_VOL_PUBLISHED_PRECISION_PCT`. The same check also caught that
+`realized_vol_simple` publishes a **bare float**, not a dict (O-136).
+
+### ⚠️ O-127 (5th instance) — and the refinement is worse than the breakage
+
+Adding the required `carry_vol_floor` broke **four** constructions in
+`test_cip_check.py`; **three were `pytest.raises(ValidationError, …)` guard tests
+and they PASSED**, because a missing required field raises the same type as a
+rejected band. **Only the negative control failed.** Fixed by a complete
+`_fx_carry_settings()` helper **and by adding `match=` to every guard test**.
+**`pytest.raises(SomeError)` asserts the TYPE, never the CAUSE.**
+
+### ⚠️ O-135 (NEW, OPEN) — a clean tree reported as a LEFTOVER
+
+`check_targets` refused the sweep correctly (M6a's anchor went AMBIGUOUS — the
+new input model opens with the same `if not math.isfinite(value):` line; M8h's
+went ABSENT — the helper it pinned was renamed). Both fixed by
+widening/following the anchor (D-055/D-060).
+
+**But M8h was reported as `MUTATION STILL APPLIED`, and the replacement text is
+not present.** `_is_applied` returns `replace(old,new,1).count(new) ==
+count(new)`, which is **True when BOTH are absent** — a findings-manufacturing
+false positive. `sweep_health.py` simultaneously says 0 leftovers, 0 committed
+mutants. **The printed remedy is `git checkout --`, which has already cost this
+project 97 lines (D-086.8).** Not fixed here: `_sweep_gate.py` is shared by all
+**45** sweeps and deserves its own increment.
+
+### Gates (measured 2026-09-26, never carried forward)
+
+```
+ruff format --check src tests tools scripts   ->  258 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 258 source files
+reachability_audit.py --check-baseline        ->  PASS 58/58, no regressions
+full suite (--junitxml)                       ->  3303 collected / 3302 passed / 0 failed / 1 skipped
+mutation_fx_carry.py                          ->  71/71 killed, exit 0
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**258 == 258** (D-035; **256 → 258**, the two new files). **Delta against D-108's
+3261 = exactly +42** — the new test file's collected count. **The sweep census is
+UNCHANGED at 45**: this increment **extended an existing sweep** rather than
+adding one, which is why no parametrized-over-sweeps case moved.

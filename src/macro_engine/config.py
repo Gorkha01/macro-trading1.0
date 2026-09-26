@@ -5123,6 +5123,20 @@ class FxCarrySettings(BaseModel):
 
     notable_deviation_pct: CalibratedValue
     extreme_deviation_pct: CalibratedValue
+    carry_vol_floor: CalibratedValue
+
+    @property
+    def volatility_floor(self) -> float:
+        """The denominator floor in ``carry_score``'s carry-to-vol ratio.
+
+        An ANNUALISED DECIMAL (``0.1`` = 10 %/yr) — the same unit as
+        ``CarryScoreInputs.realized_vol_annualized``, which is what makes the
+        ``max()`` a comparison between two numbers of one kind rather than a
+        silent 100x rescale. Must be strictly positive: a non-positive floor
+        would make the denominator non-positive, which flips the sign of every
+        score and divides by zero at exactly zero.
+        """
+        return float(self.carry_vol_floor.value)
 
     @property
     def notable_threshold_pct(self) -> float:
@@ -5172,6 +5186,14 @@ class FxCarrySettings(BaseModel):
                 f"fx_carry.notable_deviation_pct ({notable}). Otherwise the "
                 f"'notable' band is empty and its label is unreachable — the "
                 f"severity would jump from 'none' to 'extreme'."
+            )
+        if self.volatility_floor <= 0.0:
+            raise ValueError(
+                f"fx_carry.carry_vol_floor is {self.volatility_floor}. The floor "
+                f"is the DENOMINATOR of the carry-to-vol ratio, so a non-positive "
+                f"value divides by zero at exactly zero and flips the sign of "
+                f"every score below it — a negative-volatility denominator would "
+                f"make a positive carry look like a negative one."
             )
         return self
 

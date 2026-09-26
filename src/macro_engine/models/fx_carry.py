@@ -1,9 +1,9 @@
 """Module 9 — FX Carry / Parity: covered interest parity and its deviations.
 
-Section 6.7 gives this module three functions. This file implements the first
-of them, :func:`cip_check`; ``carry_score`` and ``dollar_smile_regime`` will
-join it here. Section 6.7 also supplies a **reference implementation** for each
-— so these are stubs to UPGRADE, not functions to invent — and the reference
+Section 6.7 gives this module three functions. This file implements two of them,
+:func:`cip_check` (D-108) and :func:`carry_score` (D-109); ``dollar_smile_regime``
+will join them here. Section 6.7 also supplies a **reference implementation** for
+each — so these are stubs to UPGRADE, not functions to invent — and the reference
 implementation of :func:`cip_check` is the simplest possible form::
 
     implied_forward = spot * (1 + i_domestic) / (1 + i_foreign)
@@ -98,6 +98,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    EvidenceSourceFamily,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -105,10 +106,13 @@ from macro_engine.models.contracts import (
 
 __all__ = [
     "CIPInputs",
+    "CarryOutcome",
+    "CarryScoreInputs",
     "DayCountBasis",
     "FundingStressSide",
     "QuoteConvention",
     "StressSeverity",
+    "carry_score",
     "cip_check",
 ]
 
@@ -137,6 +141,13 @@ FundingStressSide = Literal["domestic", "foreign", "none"]
 #: ``|deviation|`` above ``fx_carry.notable_deviation_pct`` and at or below
 #: ``fx_carry.extreme_deviation_pct``; ``"extreme"`` is above the latter.
 StressSeverity = Literal["none", "notable", "extreme"]
+
+#: Which side of the carry trade a positive score points at. A positive rate
+#: differential means the domestic money market pays more, so the funded trade
+#: is to LEND domestic and BORROW foreign — a long domestic-currency position
+#: financed abroad. ``"flat"`` is an exactly zero differential, where there is
+#: no carry to earn in either direction and the score is exactly zero.
+CarryOutcome = Literal["long_domestic", "long_foreign", "flat"]
 
 
 class CIPInputs(BaseModel):
@@ -287,17 +298,43 @@ class CIPInputs(BaseModel):
         return self
 
 
-def _thresholds_are_calibrated() -> bool:
-    """Whether the ONE leaf this function leans on is calibrated.
+def _cip_bands_are_calibrated() -> bool:
+    """Whether the ONE leaf :func:`cip_check` leans on is calibrated.
 
     Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
     caller). The notable band is the leaf that turns a number into the judgement
     "funding stress", so it is the one that costs confidence while it is a
     placeholder — which it is today, deliberately, because calibrating it needs
     a forward series this installation cannot reach.
+
+    **Named for the leaf it reads, not for the section it lives in.** It was
+    ``_thresholds_are_calibrated`` (plural, and generic) until this module gained
+    a second function with its own threshold — at which point the name was
+    ambiguous in exactly the way `_r_squared_floor_is_calibrated`'s docstring in
+    ``models/econometrics.py`` warns about: a reader adding a threshold would
+    reasonably assume the generic helper already covered it. The two functions
+    are priced on DIFFERENT leaves, so they need different helpers with names
+    that say which.
     """
     settings = get_settings()
     return settings.is_calibrated("fx_carry.notable_deviation_pct")
+
+
+def _carry_floor_is_calibrated() -> bool:
+    """Whether the ONE leaf :func:`carry_score` leans on is calibrated.
+
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
+    caller). The volatility floor is the leaf that decides whether the published
+    score is a carry-to-vol ratio or a carry-over-the-floor number, so it is the
+    one that costs confidence while it is a placeholder.
+
+    Deliberately separate from :func:`_cip_bands_are_calibrated` even though the
+    two currently read the same answer: they price different judgements on
+    different leaves, and conflating them would mean a future calibration of one
+    silently changed the other's confidence.
+    """
+    settings = get_settings()
+    return settings.is_calibrated("fx_carry.carry_vol_floor")
 
 
 def _stress_labels(
@@ -519,7 +556,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
         },
         confidence=compute_confidence(
             ConfidenceInputs(
-                is_heuristic_not_calibrated=not _thresholds_are_calibrated(),
+                is_heuristic_not_calibrated=not _cip_bands_are_calibrated(),
                 source_independence_count=0,
                 depends_on_unobservable=False,
             )
@@ -600,6 +637,341 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
             "Do NOT size a position on the deviation alone. It carries no "
             "bid/ask, no settlement-date check and no history, and a deviation "
             "inside the pair's spread is not executable.",
+        ],
+    )
+
+
+class CarryScoreInputs(BaseModel):
+    """A currency pair's carry and the volatility that comes with it.
+
+    **The one thing that must be right, and the one the specification leaves
+    unstated: BOTH FIELDS ARE ANNUALISED DECIMALS, and they must share that
+    unit.** The output is a RATIO, so it is dimensionless only if the numerator
+    and the denominator are the same kind of number. A rate differential in
+    PERCENT divided by a volatility in DECIMALS is 100x too large and is still a
+    perfectly plausible-looking score — the same silent class D-106 found in a
+    docstring whose unit was backwards, and the reason ``rate_differential`` is
+    named ``rate_differential_annualized`` here rather than carrying the
+    specification's bare name.
+
+    The two are also required to share a HORIZON, which annualisation gives
+    them: the carry earned over a period is ``(i_domestic - i_foreign) * t`` and
+    the volatility over that period is ``sigma * sqrt(t)``, so their ratio is
+    ``(i_d - i_f) / sigma * sqrt(t)`` — still horizon-dependent. Annualising BOTH
+    is what makes the published score comparable across tenors, and it is why
+    the differential is annualised rather than the raw per-period spread.
+
+    Domain guards, all at construction: non-finite values are refused (``nan``
+    fails every comparison, so a ``<=`` guard never fires for it — D-078), and
+    ``realized_vol_annualized`` must be strictly POSITIVE. A zero or negative
+    volatility is not a volatility: zero makes the ratio undefined and a
+    negative one flips the score's sign, which would report a carry as its
+    opposite.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    rate_differential_annualized: float = Field(
+        description=(
+            "Domestic minus foreign money-market rate, ANNUALISED DECIMAL "
+            "(0.02 = a 2%/yr differential). Named for the unit because the "
+            "specification's bare ``rate_differential`` does not state one, and "
+            "the ratio is dimensionless only if this matches the volatility's."
+        ),
+    )
+    realized_vol_annualized: float = Field(
+        description=(
+            "Realised volatility of the pair's return series, ANNUALISED DECIMAL "
+            "(0.08 = 8%/yr). Strictly positive. This is an INPUT, not something "
+            "this model fetches or estimates — `realized_vol_simple` in "
+            "``models/risk.py`` is the project's estimator for it, and it "
+            "publishes PERCENT, so a caller wiring the two together must divide "
+            "by 100."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_domain(self) -> CarryScoreInputs:
+        """Refuse an input that is representable but is not a rate or a volatility.
+
+        Two branches, each closing a distinct way the ratio returns a confident
+        number from an input that has no meaning:
+
+        * **Non-finite** — ``nan`` fails every comparison, so ``if vol <= 0``
+          never fires for it and the score comes back ``nan``; ``inf`` PASSES
+          ``> 0`` and needs the explicit finiteness test.
+        * **Non-positive volatility** — zero divides by zero, and a negative one
+          makes the denominator negative, so a positive carry would be published
+          as a negative score with the wrong direction label attached.
+        """
+        for name in ("rate_differential_annualized", "realized_vol_annualized"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{name} is {value!r}, which is not finite. A non-finite input "
+                    f"cannot be classified: every comparison a plausibility check "
+                    f"is made of returns False for nan, so it would reach the "
+                    f"arithmetic and produce a non-finite score (D-078)."
+                )
+        if self.realized_vol_annualized <= 0.0:
+            raise ValueError(
+                f"realized_vol_annualized is {self.realized_vol_annualized}; a "
+                f"volatility must be strictly positive. Zero makes the carry-to-vol "
+                f"ratio undefined, and a negative value would flip the sign of the "
+                f"score and report a positive carry as a negative one."
+            )
+        return self
+
+
+def _carry_outcome(rate_differential_annualized: float) -> CarryOutcome:
+    """Which side of the trade a positive rate differential points at.
+
+    The carry trade is funded in the low-yielding currency and lent in the
+    high-yielding one. A POSITIVE differential therefore means lending domestic
+    and borrowing foreign — a long domestic-currency position financed abroad —
+    and a negative one is the mirror. The exactly-zero case is its own label
+    rather than being absorbed into either side: a zero differential is not a
+    small carry, it is the absence of one, and the score is exactly zero there.
+
+    Deriving the label from the sign rather than from the score keeps the two
+    consistent by construction: the denominator is strictly positive (the input
+    model refuses a non-positive volatility and the floor is configured
+    positive), so ``sign(score) == sign(differential)`` always.
+    """
+    if rate_differential_annualized > 0.0:
+        return "long_domestic"
+    if rate_differential_annualized < 0.0:
+        return "long_foreign"
+    return "flat"
+
+
+def _carry_warnings(
+    *,
+    floor_binds: bool,
+    realized_vol_annualized: float,
+    volatility_floor: float,
+    score: float,
+) -> list[str]:
+    """The conditions of THIS run.
+
+    One branch, and it is the condition that changes what the published number
+    MEANS rather than merely how large it is: when the floor binds, the
+    denominator is not the realised volatility, so the score is no longer a
+    carry-to-vol ratio. A reader who could not see that would compare it against
+    a score produced without the floor and read a difference in estimand as a
+    difference in attractiveness.
+
+    Nothing is emitted when the floor does not bind: the standing caveats (no
+    tail risk, no costs, a backward-looking denominator) hold on every call and
+    are ``limitations``, and a warning that fires on every ordinary call is
+    noise.
+    """
+    if not floor_binds:
+        return []
+    return [
+        f"The realised volatility {realized_vol_annualized:.6f} is below the "
+        f"configured floor {volatility_floor:.6f}, so the published score "
+        f"{score:+.6f} is carry divided by the FLOOR rather than by the realised "
+        f"volatility. It is NOT a carry-to-vol ratio in this run and must not be "
+        f"compared against one that is — the floor CAPS the score, so a pair with "
+        f"genuinely low volatility is reported as less attractive than its own "
+        f"realised volatility implies."
+    ]
+
+
+def _carry_limitations() -> list[str]:
+    """What this result cannot tell you, on every call.
+
+    Distinct from ``warnings``, which report a condition of this run. The first
+    entry is the one that matters most and is Section 6.7's own disclosure,
+    moved here from the specification's ``warnings`` list: it holds on every
+    call, so it is a limitation and not a condition.
+    """
+    return [
+        "TAIL AND CRASH RISK ARE NOT CAPTURED, and this is the limitation that "
+        "matters most. The carry trade earns a small steady premium and loses "
+        "heavily in a dislocation — the peso problem, or the specification's own "
+        "phrase, 'nickels in front of a steamroller'. A SYMMETRIC realised-"
+        "volatility estimate cannot see skew, so the score OVERSTATES the "
+        "risk-adjusted attractiveness of the position it describes.",
+        "The denominator is REALISED volatility, so it is backward-looking. It is "
+        "not a forecast, and a conditional volatility model is a separate Tier-5 "
+        "item (the GARCH family that replaces `realized_vol_simple`).",
+        "The numerator is the EX-ANTE CARRY, not a realised excess return, so the "
+        "score is a Sharpe-LIKE ratio rather than a Sharpe ratio.",
+        "No attractiveness band is applied. Section 6.7 prints the score without "
+        "a threshold and this model does not invent one: whether 0.8 is "
+        "attractive against 1.2 is a judgement that needs the pair's own history, "
+        "which is not an input here.",
+        "A positive score is NOT a prediction. UIP says the carry should be "
+        "arbitraged away and the forward-premium puzzle says it historically has "
+        "not been — both are statements about realised history, and neither makes "
+        "the score a forecast.",
+        "No transaction costs, bid/ask, funding constraints or balance-sheet cost "
+        "are modelled. Executing the carry consumes all of them, and they are "
+        "widest exactly when the carry is.",
+        "One pair, one window, one date. There is no cross-sectional comparison "
+        "and no history, so the score cannot be read as high or low without an "
+        "external reference.",
+        "The independence count is NOT computable from this result. The two rate "
+        "legs come from separate money-market production processes (a US Treasury "
+        "bill and a euro-area interbank fixing) and the evidence-family "
+        "vocabulary names neither separately, so `source_family` carries the "
+        "FX-market tag only and `source_families` is left empty rather than "
+        "asserting a single-family claim.",
+        "The volatility floor is an uncalibrated placeholder, and when it binds "
+        "the estimand changes — see `volatility_floor_binding` and the warning it "
+        "raises.",
+    ]
+
+
+def carry_score(inputs: CarryScoreInputs) -> ModelResult:
+    """Carry per unit of realised volatility — the carry trade's Sharpe-like ratio.
+
+    ``value`` is a ``dict`` carrying the score and every component it was
+    derived from, so each published number can be recomputed from the output
+    alone:
+
+    ``score``
+        ``rate_differential_annualized / effective_denominator``. Its SIGN is
+        the direction of the trade, not a quality ranking: a negative score is
+        the same trade the other way round.
+    ``effective_denominator``
+        ``max(realized_vol_annualized, volatility_floor)`` — the number actually
+        divided into the differential, which is the realised volatility unless
+        ``volatility_floor_binding`` is true.
+    ``volatility_floor_binding``
+        Whether the floor was substituted. **When it is true the score is
+        carry-over-the-floor, not carry-over-vol**, so it is not comparable with
+        a score produced without it.
+    ``carry_outcome``
+        ``"long_domestic"`` (lend domestic, borrow foreign), ``"long_foreign"``,
+        or ``"flat"`` for an exactly zero differential.
+
+    **Why the ratio is the right shape, derived rather than asserted.** The
+    funded trade's excess return over the foreign funding rate is the carry plus
+    the currency's move, ``(i_d - i_f) + r_fx``. Its volatility is approximately
+    the pair's own volatility, because the carry leg is near-constant over the
+    horizon. So ``(i_d - i_f) / sigma`` is the trade's ex-ante Sharpe-like ratio
+    — which is what makes the score interpretable at all, and what makes the
+    floor's effect on it worth disclosing: dividing by a floor instead of by
+    sigma is no longer that ratio.
+
+    The function refuses rather than repairs. A non-finite input or a
+    non-positive volatility is rejected at construction by
+    :class:`CarryScoreInputs`, so a result that exists is a result whose inputs
+    were admissible.
+    """
+    settings = get_settings()
+    fx_carry = settings.fx_carry
+    volatility_floor = fx_carry.volatility_floor
+
+    differential = inputs.rate_differential_annualized
+    realized_vol = inputs.realized_vol_annualized
+
+    floor_binds = realized_vol < volatility_floor
+    denominator = volatility_floor if floor_binds else realized_vol
+    score = differential / denominator
+    outcome = _carry_outcome(differential)
+
+    if outcome == "long_domestic":
+        outcome_phrase = "lend domestic, borrow foreign"
+    elif outcome == "long_foreign":
+        outcome_phrase = "lend foreign, borrow domestic"
+    else:
+        outcome_phrase = "no carry in either direction"
+
+    if floor_binds:
+        denominator_phrase = (
+            f"the realised volatility {realized_vol:.6f} is below the "
+            f"{volatility_floor:.6f} floor, so the denominator is the FLOOR"
+        )
+    else:
+        denominator_phrase = f"carry per unit of realised volatility {realized_vol:.6f}"
+
+    return ModelResult(
+        model_name="carry_score",
+        country="us",
+        as_of=utc_now(),
+        value={
+            "score": round(score, 6),
+            "rate_differential_annualized": round(differential, 8),
+            "realized_vol_annualized": round(realized_vol, 8),
+            "effective_denominator": round(denominator, 8),
+            "volatility_floor": volatility_floor,
+            "volatility_floor_binding": floor_binds,
+            "carry_outcome": outcome,
+        },
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                is_heuristic_not_calibrated=not _carry_floor_is_calibrated(),
+                source_independence_count=0,
+                depends_on_unobservable=False,
+            )
+        ),
+        unit="dimensionless (annualised carry per unit of annualised volatility)",
+        direction=outcome,
+        interpretation=(
+            f"Carry-to-vol score {score:+.4f} ({outcome}: {outcome_phrase}); {denominator_phrase}."
+        ),
+        context=(
+            f"Rate differential {differential:+.6f} annualised (domestic minus "
+            f"foreign) over realised volatility {realized_vol:.6f} annualised. "
+            f"Both are ANNUALISED DECIMALS, which is what makes the ratio "
+            f"dimensionless and comparable across tenors. Effective denominator "
+            f"{denominator:.6f}."
+            + (
+                f" The configured floor {volatility_floor:.6f} is in force, so the "
+                f"score is capped and is not carry-over-realised-vol."
+                if floor_binds
+                else ""
+            )
+            + " UIP predicts this carry is arbitraged away; historically it is not "
+            "(the forward-premium puzzle), which is why the score exists — but a "
+            "positive score is not a forecast."
+        ),
+        inputs_used=[
+            "rate_differential_annualized",
+            "realized_vol_annualized",
+        ],
+        assumptions=[
+            "Both inputs are ANNUALISED DECIMALS for the SAME currency pair and the "
+            "same horizon; the ratio is dimensionless only if they are.",
+            "The differential is the MONEY-MARKET differential of the pair's two "
+            "currencies, not a bond-yield or policy-rate differential — the carry "
+            "trade is funded in the money market.",
+            "`realized_vol_annualized` is the realised volatility of that pair's "
+            "return series over a window the caller chose, annualised by the same "
+            "convention as the differential.",
+        ],
+        source_family=EvidenceSourceFamily.MARKET_FX,
+        warnings=_carry_warnings(
+            floor_binds=floor_binds,
+            realized_vol_annualized=realized_vol,
+            volatility_floor=volatility_floor,
+            score=score,
+        ),
+        limitations=_carry_limitations(),
+        decision_relevance=(
+            "Module 9's carry read. Pairs with `cip_check`, which reports whether "
+            "the funding leg is being priced as stressed, and with "
+            "`dollar_smile_regime`, which conditions whether a carry is durable or "
+            "reversal-prone. Script-only today: no snapshot field carries a rate "
+            "differential or an FX realised volatility, so the caller supplies "
+            "both and the live check is the only consumer until one does."
+        ),
+        decision_prohibition=[
+            "Do NOT size on the score alone. It carries no tail risk, no "
+            "transaction cost and no history, and the trades it ranks most "
+            "attractive are exactly the ones whose losses are absent from the "
+            "realised-volatility window.",
+            "Do NOT read a high score as a forecast that the carry will be earned. "
+            "The forward-premium puzzle is a statement about realised history, not "
+            "a model of the future.",
+            "Do NOT compare a score produced with `volatility_floor_binding` set "
+            "against one produced without it. They divide by different quantities, "
+            "so the difference is an artefact of the floor rather than a "
+            "difference in attractiveness.",
         ],
     )
 
