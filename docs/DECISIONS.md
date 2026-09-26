@@ -18512,6 +18512,118 @@ inert-by-composition hazard, and the `> 0` zero-case defect).
 
 ---
 
+## D-113 — O-138 closed: `--check-targets` was NEVER A FLAG, so the "safe pre-flight" ran the whole sweep; the fix makes it real and answers it BEFORE the tree is touched
+
+**A tool-fix increment, not a function increment** — the operator asked for O-138 to be
+closed before the next Tier-5 name, and it is recorded separately so D-112's function
+increment keeps its own history. **No model code changed; no new function.** Gates below.
+
+### 1. The report was right about the symptom and wrong about the cause
+
+O-138 said *"`check_targets` prints its verdict and then RUNS THE WHOLE SWEEP"* and
+suggested *"make `--check-targets` print the verdict and `sys.exit(0)`."* That implied a
+flag that existed and merely failed to stop. **Measured: it did not exist at all.** No
+sweep in `scripts/` parses `sys.argv` — every `main()` takes no arguments and every
+`__main__` block is a bare `sys.exit(main())` — so `uv run python scripts/mutation_fx_carry.py
+--check-targets` passed a token **nothing read**, and execution fell straight through to the
+full mutation loop. There was no "check mode" to stop; there was a **silently ignored
+argument**, which is the same shape as the one it looks like and *strictly harder to notice*,
+because the operator sees the verdict line and believes the run stopped.
+
+**This is why the suggested fix would not have worked as written.** An `sys.exit(0)` placed
+where the report imagined the flag handling to be would have been unreachable code —
+`main()`'s body never branched on anything. **A suggested fix is a claim about the code it
+names** (D-110's lesson, in its tooling form): the first move was to `grep` for `argv` and
+find that no sweep has one.
+
+### 2. The fix makes the flag real, in the shared module, and answers it EARLY
+
+`scripts/_sweep_gate.py` — the module every sweep already imports — now exports:
+
+* `CHECK_ONLY_FLAG = "--check-targets"` — the flag as a **constant**, so a test can name it
+  rather than a docstring describing it; and
+* `check_only_requested(argv=None)` — reads `sys.argv[1:]` by default, takes an explicit
+  argv for tests, and returns `True` only for an **exact** match, so the near-miss
+  `--check-target` (no `s`) is **not** honoured. Accepting a typo would reintroduce the
+  original lie: the operator believing they checked when nothing was.
+
+`scripts/mutation_fx_carry.py` gains `_check_targets_only()` and two lines in `main()`:
+
+```python
+if check_only_requested():
+    return _check_targets_only()
+with sweep_lifecycle([SRC, CONFIG]) as originals:
+    return _run_sweep(originals)
+```
+
+**The ordering is the fix, not the flag.** `sweep_lifecycle` is what *writes* the sidecar and
+installs the interrupt defence — i.e. it touches the tree. A check-only mode that ran after
+it would still leave a sidecar behind, and a later run would "heal" from that sidecar and
+silently revert a legitimate edit in between. So the check is answered **before** the
+lifecycle is entered, and the mode reads (never writes) the pristine text itself. Exit code
+is **0 clean / 4 unsound** — the same 4 the sweep already returns on a refusal, so no caller
+needs a new case, and it is deliberately *not* the run's success code for a run that never
+happened.
+
+**Measured after the fix:** `--check-targets` prints `143 mutations, 0 problem(s)`, exits
+**0**, in **1.6 s** — against a 12-minute full sweep that had SIGTERM'd and left `M4a` on
+disk. **No sidecar written, tree untouched.**
+
+### 3. Five tests, and both defects proved caught by mutation
+
+In `tests/test_sweep_sidecar_lifecycle.py`, a new section 7:
+
+| test | claim |
+|---|---|
+| `..._flag_is_exported_and_named` | the constant exists and equals `--check-targets` |
+| `..._reads_the_flag` | the predicate, incl. `[]`, `--verbose`, and the `--check-target` near-miss rejected |
+| `..._stops_before_the_lifecycle` (**per sweep**, parametrized) | `main()` CALLS the predicate **and** the call precedes `sweep_lifecycle` in source order |
+| `..._writes_no_sidecar` | behavioural: read → check → stop leaves no sidecar and an untouched file |
+| `..._reports_an_unsound_anchor_without_mutating` | **negative control** — the predicate must be able to FAIL, and failing must not touch the file |
+
+The ordering test is **structural on purpose**: the ordering cannot be observed from a pure
+predicate test, and a behavioural test would have to run a real sweep. Both halves were
+**proved by mutation**, not asserted: (i) moving the `check_only_requested()` call *after*
+the lifecycle → the per-sweep ordering test goes **RED** with the message *"asks the
+check-only flag AFTER sweep_lifecycle: the safe mode would write a sidecar and touch the
+tree (O-138)"*; (ii) making the predicate `return False` (the original silently-ignored
+behaviour) → the predicate test goes **RED**. Each fix was restored immediately and verified.
+
+### 4. What is NOT done, and why that is stated rather than implied
+
+O-138's report carried a **second** suggestion: make the `DIRTY TARGET` banner **refuse**
+unless `--allow-dirty` is passed. **That is not done.** It is a separate change with its own
+trade-off — the banner reporting-not-refusing is deliberate (`describe_dirty_targets`: "a
+legitimate increment *is* a dirty tree... a hard failure here would make the guard unusable
+on the day it is needed"). Closing the half that caused the incident while naming the half
+that did not is the honest boundary; **a disclosure is not a measurement**, and an implied
+fix is a disclosure.
+
+### 5. Gates (measured 2026-09-26 — `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  262 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 262 source files
+full suite (--junitxml)                       ->  3478 tests / 0 failures / 0 errors / 1 skipped
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**262 == 262** (D-035). **+49 against D-112's 3429** = the new section-7 tests (5 named + 50
+parametrized sweep cases, minus overlaps). **No sweep was re-run** — this increment changes
+no mutation anchor, so `mutation_fx_carry`'s 143/143 from D-112 stands and re-running it would
+only re-certify unchanged bytes.
+
+### Next
+
+**Tier 5 = 13/23.** The next Tier-5 name is **`intervention_capacity`** (§20.9,
+`AGENTS.md:4900`-ish — **resolve the line with `grep -n`, because a citation is a claim**),
+specified **immediately after** `ppp_valuation` in §20.9. §21.3's table *"and only that table"*
+decides when a stub becomes IMPLEMENTED. **Re-derive the remaining 10 names from `src/`; do
+not recall the list.** **NOT mine:** the Tier-5 review/audit.
+
+---
+
 ## D-111 — Module 9's `dollar_smile_regime`: the third function, a MEASURED reachable set, three thresholds lifted with their units, and a `--timeout` that was killing a correct test
 
 **Date:** 2026-09-26. **Tier 5 = 12/23. Module 9 = 3 of 3 — COMPLETE.**

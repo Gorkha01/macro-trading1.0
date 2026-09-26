@@ -1,7 +1,17 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-26** (after **D-112 — Module 9's `uip_expected_move`, THE FOURTH
+Last updated: **2026-09-26** (after **D-113 — O-138 CLOSED: `--check-targets` WAS NEVER A
+FLAG.** A tool fix, not a function increment; **no model code changed.** The report was right
+about the symptom and wrong about the cause: the flag was a token **nothing read** — no sweep
+parses `sys.argv` — so the "safe pre-flight" fell straight through to the full sweep, which is
+how D-112 was SIGTERM'd and left `M4a` on disk. The fix makes it real (`CHECK_ONLY_FLAG` +
+`check_only_requested`) and answers it **before `sweep_lifecycle`**, because the lifecycle is
+what writes the sidecar. **Measured: `--check-targets` → `143 mutations, 0 problem(s)`, exit 0,
+1.6 s (was a 12-minute sweep), no sidecar, tree untouched.** Five tests, both defect halves
+proved caught by mutation. **Gates: 262 == 262 · 3478 collected / 0 failed / 1 skipped (JUnit)
+· 45 sweeps OK.** Tier 5 = **13/23** unchanged; no sweep re-run, so **143/143** stands.)
+Previous update: **D-112 — Module 9's `uip_expected_move`, THE FOURTH
 FUNCTION: Module 9 = 4 of 4. Tier 5 = 13/23.** The **supersession question was the first
 deliverable**, answered before any arithmetic: **a DIFFERENT function from `cip_check`
 (one predicts an expected spot move from two rates; the other measures a traded forward's

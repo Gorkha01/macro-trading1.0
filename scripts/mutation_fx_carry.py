@@ -133,7 +133,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import check_targets, format_problems, sweep_lifecycle
+from _sweep_gate import (
+    check_only_requested,
+    check_targets,
+    format_problems,
+    sweep_lifecycle,
+)
 
 SRC = Path("src/macro_engine/models/fx_carry.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -1565,7 +1570,46 @@ def run_tests() -> bool:
     return proc.returncode == 0
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138).
+
+    **Must run BEFORE ``sweep_lifecycle``.** That helper writes a sidecar and
+    installs the interrupt defence — i.e. it writes to the tree. A mode whose
+    entire purpose is to be the SAFE pre-flight must not enter the path that
+    mutates, or it recreates the very hazard it exists to avoid. Reading the
+    pristine text here is enough for ``check_targets``; no sidecar is needed
+    because nothing is written.
+
+    Exit code is **0 for a clean verdict and 4 for problems** — the same 4 the
+    sweep itself returns on a refusal, so a caller that already handles 4 needs
+    no new case. It is deliberately NOT the sweep's success code for a run it
+    never performed.
+    """
+    originals = {p: p.read_text(encoding="utf-8") for p in (SRC, CONFIG) if p.exists()}
+    problems = check_targets(originals, _MUTATIONS)
+    print(
+        f"check_targets: {len(_MUTATIONS)} mutations, {len(problems)} problem(s)",
+        flush=True,
+    )
+    if problems:
+        print(format_problems(problems))
+        print()
+        print("ANCHORS UNSOUND: fix the anchors above before sweeping. A sweep that")
+        print("cannot prove it mutates the site it names certifies nothing.")
+        return 4
+    print()
+    print("Anchors sound: every mutation resolves to exactly one site. No mutation")
+    print("was applied and no sidecar was written (O-138 — this mode stops here).")
+    return 0
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle writes
+    # anything. `--check-targets` used to be a token nothing read, so the
+    # "pre-flight" ran the whole sweep.
+    if check_only_requested():
+        return _check_targets_only()
+
     # The whole interrupt defence in one call (O-103): heal any sidecar a killed
     # previous run left behind, write the pristine text to a sidecar BEFORE the
     # first mutation, and consume it on the way out. On win32 no Python signal

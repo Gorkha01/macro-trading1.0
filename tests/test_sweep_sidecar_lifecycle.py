@@ -589,3 +589,110 @@ def test_the_ownership_banner_is_printed(gate: Any, tmp_path: Path, capsys: Any)
     printed = capsys.readouterr().out
     assert "OWNS THE MACHINE" in printed
     assert "Do NOT run ruff" in printed
+
+
+# ---------------------------------------------------------------------------
+# 7. The check-only flag must be REAL and must STOP (O-138, D-113)
+# ---------------------------------------------------------------------------
+
+
+def test_the_check_only_flag_is_exported_and_named(gate: Any) -> None:
+    """``--check-targets`` must exist as a constant, not as folklore.
+
+    Before this fix the flag was a **token nothing read**: no sweep parses
+    ``sys.argv``, so ``python scripts/mutation_fx_carry.py --check-targets`` ran
+    the whole sweep. A flag that is silently ignored is worse than one that does
+    not exist, because the operator's belief that they only checked is what stops
+    them from checking the tree afterwards.
+    """
+    assert gate.CHECK_ONLY_FLAG == "--check-targets"
+
+
+def test_check_only_requested_reads_the_flag(gate: Any) -> None:
+    """The predicate, against the argv lists that matter — no live process."""
+    assert gate.check_only_requested(["--check-targets"]) is True
+    assert gate.check_only_requested([]) is False
+    assert gate.check_only_requested(["--verbose"]) is False
+    # A near-miss must NOT be honoured: `--check-target` (no s) is a typo, and
+    # silently accepting it would be the same class of lie the flag was fixed for.
+    assert gate.check_only_requested(["--check-target"]) is False
+
+
+@pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)
+def test_a_sweep_that_supports_the_flag_stops_before_the_lifecycle(path: Path) -> None:
+    """**The O-138 regression test, per sweep.** The flag must be answered EARLY.
+
+    Two distinct defects are pinned here, and they are different:
+
+    * the flag was **never read** (so the sweep ran), and
+    * even when read, the check must happen **before** ``sweep_lifecycle`` — that
+      helper writes a sidecar and installs the interrupt defence, i.e. it touches
+      the tree. A safe mode that enters the mutating path recreates the hazard.
+
+    The assertion is structural on purpose: the ordering cannot be observed from
+    a pure predicate test, and a behavioural test would have to run a real sweep.
+    """
+    text = path.read_text(encoding="utf-8")
+    if "check_only_requested" not in text:
+        return
+    tree = ast.parse(text)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name != "main":
+            continue
+        calls = [
+            n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call)
+        ]
+        assert "check_only_requested" in calls, f"{path.name}'s main() never asks the flag"
+        # And it must appear BEFORE the lifecycle call in source order.
+        body = ast.get_source_segment(text, node) or ""
+        ask_at = body.find("check_only_requested")
+        life_at = body.find("sweep_lifecycle")
+        assert ask_at != -1 and (life_at == -1 or ask_at < life_at), (
+            f"{path.name} asks the check-only flag AFTER sweep_lifecycle: the safe "
+            "mode would write a sidecar and touch the tree (O-138)"
+        )
+
+
+def test_the_check_only_mode_writes_no_sidecar(gate: Any, tmp_path: Path) -> None:
+    """The mode must leave NO trace on disk — proven against a real file.
+
+    This is the behavioural half of the O-138 fix: the whole reason the incident
+    cost a session is that the "pre-flight" left a **mutant and a sidecar** behind.
+    The check-only path reads, prints, and stops; if it ever wrote a sidecar, a
+    later run would "heal" from it and silently revert a legitimate edit.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+    sidecar = gate.sidecar_for(target)
+
+    # Exactly what `_check_targets_only` does: read, check, print, stop.
+    originals = {target: target.read_text(encoding="utf-8")}
+    problems = gate.check_targets(originals, [("M1", target, "PRISTINE = 1", "PRISTINE = 2")])
+    assert problems == []
+
+    assert not sidecar.exists(), "the check-only mode must not write a sidecar (O-138)"
+    assert target.read_text(encoding="utf-8") == "PRISTINE = 1\n", "the target must be untouched"
+
+
+def test_the_check_only_mode_reports_an_unsound_anchor_without_mutating(
+    gate: Any, tmp_path: Path
+) -> None:
+    """A REFUSED verdict must also not mutate — the negative control.
+
+    Without this, the fix would be satisfiable by a path that always answers
+    "clean" (the D-051 trap). The predicate must be able to FAIL, and failing
+    must still leave the file alone.
+    """
+    target = tmp_path / "module.py"
+    target.write_text("PRISTINE = 1\n", encoding="utf-8")
+
+    originals = {target: target.read_text(encoding="utf-8")}
+    problems = gate.check_targets(originals, [("M1", target, "NOT PRESENT", "ANYTHING")])
+
+    assert problems, "an absent anchor must be reported, or the check proves nothing"
+    assert "ABSENT" in problems[0]
+    assert target.read_text(encoding="utf-8") == "PRISTINE = 1\n", (
+        "a refusal must not touch the file"
+    )

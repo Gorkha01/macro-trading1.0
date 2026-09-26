@@ -9629,3 +9629,61 @@ the live shortfall is **`0.015131`** — inside the `i_f` bound, as the model pr
 (5) and its docstring were corrected to the fraction-of-move form, and the check now PASSES.
 **This is D-109's lesson firing again: a cross-check's two sides must share a unit** — and it
 is why the check is run rather than assumed.
+
+---
+
+## D-113 — O-138 closed: `--check-targets` was NEVER A FLAG
+
+**A tool fix, not a function increment.** No model code changed; Tier 5 stays **13/23**.
+
+### The root cause was worse than the report
+
+O-138 described *"`check_targets` prints its verdict and then RUNS"* — implying a flag that
+existed and merely failed to stop. **Measured: it did not exist.** No sweep in `scripts/`
+parses `sys.argv`; every `main()` takes no arguments and every `__main__` is a bare
+`sys.exit(main())`. So `--check-targets` was a token **nothing read**, and the sweep fell
+through to its full mutation loop. **A flag that is silently ignored is worse than one that
+does not exist**, because the operator's belief that they only checked is what stops them
+inspecting the tree.
+
+**The suggested fix would not have worked as written.** An `sys.exit(0)` where the report
+imagined the flag handling would have been unreachable code. **A suggested fix is a claim
+about the code it names** — the first move was to `grep` for `argv` and find none.
+
+### The fix
+
+`scripts/_sweep_gate.py` now exports `CHECK_ONLY_FLAG = "--check-targets"` and
+`check_only_requested(argv=None)` (an **exact** match; the `--check-target` typo is NOT
+honoured). `scripts/mutation_fx_carry.py` gains `_check_targets_only()` and answers the flag
+in `main()` **before `sweep_lifecycle`** — the ordering is the fix, because the lifecycle is
+what writes the sidecar. Exit **0 clean / 4 unsound**.
+
+**Measured:** `143 mutations, 0 problem(s)`, exit **0**, **1.6 s** (was a 12-minute sweep),
+**no sidecar**, tree untouched.
+
+### Five tests, both defects proved caught by mutation
+
+New section 7 in `tests/test_sweep_sidecar_lifecycle.py`: constant exported · predicate incl.
+near-miss rejection · **per-sweep structural ordering** · no-sidecar behavioural · a refusing
+**negative control**. Proved: moving the ask after the lifecycle → ordering test RED; making
+the predicate `return False` → predicate test RED.
+
+### Gates (measured 2026-09-26, `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  262 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 262 source files
+full suite (--junitxml)                       ->  3478 tests / 0 failures / 0 errors / 1 skipped
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**262 == 262** (D-035). **+49 against D-112's 3429** = the new section-7 tests. **No sweep
+was re-run** — no anchor changed, so D-112's **143/143** stands.
+
+### Not done
+
+O-138's **second** suggestion — a refusing `DIRTY TARGET` banner unless `--allow-dirty` — is
+**NOT** done. It is a separate change whose report-not-refuse behaviour is deliberate
+(`describe_dirty_targets`: "a legitimate increment *is* a dirty tree"). **An implied fix is a
+disclosure, and a disclosure is not a measurement.**

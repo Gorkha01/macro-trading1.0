@@ -94,6 +94,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = [
+    "CHECK_ONLY_FLAG",
+    "check_only_requested",
     "check_targets",
     "describe_dirty_targets",
     "format_problems",
@@ -105,6 +107,9 @@ __all__ = [
     "sidecar_for",
     "sweep_lifecycle",
 ]
+
+#: The flag that asks a sweep to PRINT its anchor verdict and STOP.
+CHECK_ONLY_FLAG = "--check-targets"
 
 #: The mutation currently written to disk, so a signal handler can undo it.
 _PENDING: list[tuple[Path, str] | None] = [None]
@@ -527,6 +532,38 @@ def sweep_lifecycle(paths: Iterable[Path]) -> Iterator[dict[Path, str]]:
         # (O-122): a refused delete used to raise out of this `finally` and turn a
         # clean 108/109 into EXIT=1.
         remove_sidecars(existing)
+
+
+def check_only_requested(argv: list[str] | None = None) -> bool:
+    """Did the caller ask for the anchor verdict ONLY (O-138)?
+
+    **This exists because ``--check-targets`` was, until now, a silent no-op.**
+    No sweep in this directory parses ``sys.argv``: every ``main()`` takes no
+    arguments and the ``__main__`` block is a bare ``sys.exit(main())``. So an
+    operator who ran ``python scripts/mutation_fx_carry.py --check-targets`` —
+    believing, reasonably, that a flag named ``check-targets`` would CHECK
+    TARGETS — passed a token that **nothing looked at**, and the sweep ran the
+    full mutation loop. Measured at D-112: the command exceeded the foreground
+    cap, was SIGTERM'd mid-mutation, and left a **mutant on disk** whose residue
+    ``git status`` could not distinguish from a legitimate edit (O-131). The
+    "safe pre-flight" was the least safe way to invoke the tool.
+
+    A flag that is silently ignored is worse than a flag that does not exist,
+    because the operator's *belief* that they only checked is what stops them
+    from checking the tree afterwards.
+
+    So this is deliberately **not** an argparse setup. Every sweep's ``main()``
+    can adopt it with two lines and no new dependency, and the check happens
+    BEFORE ``sweep_lifecycle`` — which means **no sidecar is written and the tree
+    is never touched**. That ordering is the whole point: the mode whose purpose
+    is to be safe must not enter the code path that mutates.
+
+    Returns ``True`` when ``CHECK_ONLY_FLAG`` is present. The caller is
+    responsible for printing the verdict and returning 0; this only answers the
+    question, so it cannot enforce a VERDICT it has not seen.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    return CHECK_ONLY_FLAG in args
 
 
 def check_targets(

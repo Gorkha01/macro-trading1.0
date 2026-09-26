@@ -10,6 +10,40 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-113 — O-138 closed: `--check-targets` made real, and answered before the tree is touched
+
+A **tool fix, not a function increment** — no model code changed. **The root cause was worse
+than the report:** `--check-targets` was never a flag. No sweep parses `sys.argv`, so the token
+was **silently ignored** and the "safe pre-flight" ran the full sweep — which is how D-112 was
+SIGTERM'd mid-mutation and left `M4a` on disk.
+
+**Added**
+
+- **`CHECK_ONLY_FLAG`** and **`check_only_requested(argv=None)`** in `scripts/_sweep_gate.py` —
+  the flag as a constant plus an exact-match predicate (a `--check-target` typo is **not**
+  honoured, because accepting it would recreate the original lie).
+- **`_check_targets_only()`** in `scripts/mutation_fx_carry.py`, called from `main()` **before
+  `sweep_lifecycle`**. The ordering is the fix: the lifecycle writes the sidecar, and a
+  check-only mode that ran after it would still leave one behind.
+- **Five tests** (new section 7 in `tests/test_sweep_sidecar_lifecycle.py`): constant exported ·
+  predicate incl. near-miss rejection · **per-sweep structural ordering** · no-sidecar
+  behavioural · a **refusing negative control**. Both defect halves proved caught by mutation.
+
+**Decided**
+
+- **Exit 0 clean / 4 unsound** — reusing the sweep's own refusal code, and deliberately *not*
+  the run's success code for a run that never happened.
+- **O-138's second suggestion (a refusing `DIRTY TARGET` banner) is NOT done** and is named as
+  such: it is a separate change whose report-not-refuse behaviour is deliberate.
+
+**Measured:** `--check-targets` now prints `143 mutations, 0 problem(s)`, exits **0**, in
+**1.6 s** (was: a 12-minute sweep), writing **no sidecar** and leaving the tree untouched.
+
+**Gates (measured — `sweep_health.py` LAST):** `ruff format --check` **262** == `mypy --strict`
+**262** · full suite (`--junitxml`) **3478 tests / 0 failures / 0 errors / 1 skipped** ·
+`sweep_health.py` **OK — 45 sweeps · 0 leftovers · 0 shapes · 0 committed · 0 failures**.
+No sweep was re-run (no anchor changed), so D-112's **143/143** stands.
+
 ### D-112 — Module 9's `uip_expected_move`, the parity benchmark (Tier 5 = 13/23)
 
 The fourth §6.7/§20.9 FX function, and **Module 9's parity branch is now complete**.
