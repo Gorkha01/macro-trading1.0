@@ -18464,6 +18464,45 @@ claim (O-88), and a claim with arithmetic in it is measured or it is not made.**
 `tests/test_sweep_health_leftover_predicate.py` · `scripts/live_carry_score_check.py` ·
 the records.
 
+### 5. The session-close STALENESS PASS — two documents were materially wrong
+
+At the close of the session the operator asked for the memory and docs to be brought current.
+An audit found **two documents making false claims about the current state** — not stale
+timestamps, but wrong facts a reader would act on.
+
+**`docs/PROGRESS.md`'s live header was THREE increments behind.** It still said
+*"Last updated: 2026-09-25 (after D-107 …)"* and **"Tier 5 = 9/23"**, while the file's own body
+carried D-108, D-109 and D-110 below it. **This is the file the router says WINS on a
+disagreement**, so its header was the most authoritative wrong statement in the tree. Refreshed
+to D-110, with the D-109/D-108 entries demoted to `Previous update:` rather than deleted.
+
+**`README.md` said Phase 5 was `not started`, and it is 11/23 done.** Measured against the
+authority rather than recalled: the README's phase table read **"85/98 — the 13 outstanding are
+all Tier 5"**, which implies a **20-name** Tier 5, while **§21.3's list has 23** — the known
+three-way disagreement the project has recorded, now resolved in the README to the authority's
+number. The corrected row is **derived, not recalled**: 78 Tier-1–4 names + 11 implemented
+Tier-5 names = **89/101**, with **12** outstanding. The `5+` row now says **under way** and
+carries the D-096 framing (*an UPGRADE PASS — nothing is deleted*), and the note beneath it
+records why `98` was wrong. The **Quality gates block was also three months of measurements
+stale** (`243 files`, `2808 passed`, `42 sweeps`) and is now `258 / 3306 passed / 45 sweeps`,
+with the `--junitxml` caveat added because it is the one operational fact that turns a green run
+into a red-looking one.
+
+**Why this is a defect and not housekeeping:** O-104 is this project's recorded example of a
+**stale count left standing** (*"the docs said 2 of 201; the tree issues 4"*), and the standing
+rule from it is that a count in prose is a **citation that drifts**. A README that says Phase 5
+has not started, in a repository whose CI has verified eleven Phase-5 functions, is the same
+defect at the most visible surface in the project — and it is the surface a reader outside the
+session encounters first. **The lesson is the one the skill already states and that this pass
+re-earned: a summary document is a CLAIM, and a claim about current state is verified by reading
+the thing it summarises.**
+
+**Also added: `.workbuddy-ai/memory/NEXT_SESSION_PROMPT.md`** — a paste-ready brief for the next
+session, assembled from HANDOFF's §2/§7/§7b plus the standing protocol and the trap list.
+**It is explicitly labelled a convenience copy and NOT a second authority** (HANDOFF wins, then
+AGENTS.md, then PROGRESS), because a restated summary is exactly what drifts (lesson 5cn) — and
+this increment has just demonstrated how far one can drift.
+
 ### Next
 
 **Tier 5 = 11/23, unchanged.** `dollar_smile_regime` (`AGENTS.md:1047`) is

@@ -29,6 +29,17 @@ record**, and two were measured and judged not to be defects.
   **Mutation-proved** (reverting fails 2 of 4; restored byte-exact), and the
   end-to-end message verified: the D-109 shape now prints `target ABSENT`, while a
   genuine leftover still prints `MUTATION STILL APPLIED`.
+- **Two documents were making false claims about the current state** (session-close staleness
+  pass). `docs/PROGRESS.md`'s live header was **three increments behind** — it said *"after
+  D-107 … Tier 5 = 9/23"* while its own body carried D-108/D-109/D-110 below it — and that is
+  the file the router says **wins** on a disagreement. **`README.md` said Phase 5 was `not
+  started`**, in a repository whose CI has verified eleven Phase-5 functions, and its phase
+  table's `85/98` implied a **20-name** Tier 5 while **§21.3's list has 23**. Corrected to a
+  **derived** figure (78 Tier-1–4 names + 11 implemented Tier-5 = **89/101**, 12 outstanding),
+  with the `5+` row now reading *under way* and carrying the D-096 framing. The README's
+  **Quality gates block** was three months stale (`243 files` / `2808 passed` / `42 sweeps`) and
+  is now `258 / 3306 passed / 45 sweeps`, with the `--junitxml` caveat added. **O-104's class: a
+  count in prose is a citation that drifts.**
 
 **Changed**
 

@@ -1,22 +1,29 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-25** (after **D-107 — a CORRECTION increment.** D-106 reported a
-docstring fix it had **not delivered**; the operator asked "have you fixed this?", a direct
-read of `HEAD` showed the prose still contradicted the code by **sqrt(252)**, and the repair
-plus a two-halves regression test were applied. **No new model function; Tier 5 = 9/23
-(corrected from 8/23 — `compute_risk_parity_weights` was already done at D-071, Phase 4);
-Module 18 = 5 of 6.** **Three** harness findings: **O-120 re-fired and honestly corrupted the
-tree** (a foreground SIGTERM'd sweep left a mutation applied, which then *manufactured* a false
-survivor in an unrelated test → **O-131**); **pytest's exit code is unreliable here** — the
-safe-delete hook refuses pytest's own temp dir and leaks `exit=1` on a green run, so
-**`--junitxml` is the authority**; and **a sweep VERDICT flipped with the interpreter's HASH
-SEED** — a sort-determinism test used a two-name fixture whose set order sometimes coincides
-with sorted, so `M2.6` was killed for seeds 0/3/5 and survived for 1/2/4/6/7 (**O-132**, fixed
-by widening the fixture to seven names; now killed for every seed). **A mutation verdict that
-depends on the hash seed is not evidence.** **Gates: ruff format --check 251 · mypy 251 ·
-3192 passed / 1 skipped / 0 failed (default set, JUnit) · monte_carlo 39/39 · rebalancing
-61/3 seed-independent · 44 sweeps OK.**)
+Last updated: **2026-09-26** (after **D-110 — a TRIAGE increment, no new function.** The
+operator read D-109's close-out report and asked *"have you fixed below if required?"*, so
+every item was re-examined: **two required a fix, one required a CORRECTION to a record, two
+were measured and judged NOT defects.** **O-135 CLOSED** — `_is_applied` reported a LEFTOVER
+on a CLEAN tree when a mutation's anchor AND its replacement text were both absent, and the
+remedy it printed (`git checkout --`) has already cost this project 97 lines; fixed in **both**
+deliberately-duplicated copies, with **two tests x two copies** and a mutation proof.
+**O-127's LONG-RECOMMENDED GATE WAS MEASURED AND WITHDRAWN** — *"assert every settings model
+is constructible from its own `model_dump()`"* cannot see a fixture missing a required field,
+so it would have **certified the class as closed while closing nothing** (D-087.23's class in a
+recommendation, and worse than no gate because it manufactures assurance). The live check's
+**foreign-leg defect became a MEASUREMENT** (both reachable legs give `long_domestic`; the
+score moves +0.2052 -> +0.1580). Two items were measured and judged NOT defects: the
+volatility floor's value (the **silent path** was the defect and it is closed) and O-136 (a
+`value`-container inconsistency Section 22.9 permits). **Tier 5 = 11/23; Module 18 = 5 of 6.**
+**Gates: ruff format --check 258 · mypy 258 · 3307 collected / 3306 passed / 0 failed / 1
+skipped (default set, JUnit) · mutation_fx_carry 71/71 · 45 sweeps OK.**)
+Previous update: **D-109 — Module 9's `carry_score`** (Tier 5 = 11/23; the stub's
+`max(vol, 0.1)` floor is a literal with **no unit** -> `fx_carry.carry_vol_floor`, and **when
+it binds the ESTIMAND CHANGES**, so `volatility_floor_binding` is published and warned — and it
+**BINDS on live EURUSD**, capping the score from 0.4503 to 0.2052). Before it, **D-108** =
+Module 9's **`cip_check`**, the first FX function and the first increment whose target file did
+not exist. **D-107** = a correction increment; **D-106** = `monte_carlo_var`.
 Previous update: **D-106 — Module 17's `monte_carlo_var`** (Tier 5 = 8/23; the joint-draw
 replacement for the three Tier-1 estimators; its live check found a **unit the docstring had
 BACKWARDS**, and **D-107 is the increment that actually fixed it**). Before it, **D-105** =
@@ -6698,6 +6705,27 @@ issues in 258 files** · **3307 collected / 3306 passed / 0 failed / 1 skipped**
 two-copies-agree test run explicitly (**229 s**) and passing ·
 **`sweep_health.py` LAST** → **45 sweeps · 0 leftovers · 0 mutant shapes · 0
 committed mutants · 0 failures · OK**.
+
+### 5. The session-close STALENESS PASS — two documents were materially wrong
+
+**`docs/PROGRESS.md`'s own live header was THREE increments behind** (it still said *"after
+D-107 … Tier 5 = 9/23"* while its body carried D-108/D-109/D-110 below it) — refreshed above.
+**`README.md` said Phase 5 was `not started`**, in a repository whose CI has verified eleven
+Phase-5 functions, and its phase table's `85/98` implied a **20-name** Tier 5 while **§21.3's
+list has 23** (the known three-way disagreement). Corrected to a **derived** figure —
+78 Tier-1–4 names + 11 implemented Tier-5 names = **89/101**, 12 outstanding — with the `5+` row
+now reading *under way* and the D-096 framing (*an UPGRADE PASS; nothing deleted*) carried into
+it. The README's **Quality gates block** was three months stale (`243 files`, `2808 passed`,
+`42 sweeps`) and is now `258 / 3306 passed / 45 sweeps`, with the `--junitxml` caveat added.
+
+**Why this is a defect and not housekeeping:** O-104 is this project's recorded example of a
+**stale count left standing** — a count in prose is a *citation that drifts*, and the README is
+the surface a reader outside the session meets first.
+
+**Also added:** `.workbuddy-ai/memory/NEXT_SESSION_PROMPT.md`, a paste-ready brief for the next
+session, **explicitly labelled a convenience copy and NOT a second authority** (HANDOFF wins,
+then AGENTS.md, then PROGRESS) — because a restated summary is what drifts (5cn), as this pass
+just demonstrated.
 
 ### Next
 

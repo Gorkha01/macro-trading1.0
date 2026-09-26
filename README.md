@@ -43,14 +43,20 @@ No function may claim country-genericity it has not earned.
 |---|---|---|
 | 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 8/8; 21/21 routes verified |
 | 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — 9/9, live-validated |
-| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **85/98** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11); the 13 outstanding are **all Tier 5**, deferred by the US-only scope — **not a backlog** |
+| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **89/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 11/23**; the **12** outstanding are all Tier 5 — **not a backlog** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Markov regime, Bayesian updating, FX/commodity/equity build-out, GARCH, multi-country | **not started** — by explicit operator instruction. Entry point is the 13 Tier-5 deferrals; each needs its *own* data registry, reaction function and instrument set |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, multi-country | **under way** — **Tier 5 = 11/23** (D-092 … D-109), one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. Multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
 
-> Phase 5 is deliberately unstarted. The 13 Tier-5 items are the *entry point*, not a
-> backlog: each requires its own verified sources and its own central-bank logic
-> (ECB / BoJ / PBoC are not the Fed relabelled). See `docs/PROGRESS.md`.
+> **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
+> Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded
+> three disagreeing tier-5 counts; §21.3's table, *and only that table*, governs — §22.1).
+> `89/101` is derived, not recalled: 78 Tier-1–4 names + 11 implemented Tier-5 names.
+>
+> **Phase 5 is under way by explicit operator instruction**, one function per increment, each
+> to production standard and each independently verified. The 12 outstanding Tier-5 items are
+> the *entry point* for the rest, not a backlog. See `docs/PROGRESS.md` for the live state and
+> `docs/DECISIONS.md` for the per-increment evidence.
 
 **Run the API:**
 ```bash
@@ -58,21 +64,28 @@ uv run uvicorn macro_engine.api_layer.app:app --host 127.0.0.1 --port 8000
 # /health · /thesis/us · /dashboard_data · /query · /thesis/us/stream (SSE)
 ```
 
-### Quality gates (measured 2026-09-22)
+### Quality gates (measured 2026-09-26)
 
 ```bash
 uv run ruff check .                          # All checks passed!
-uv run ruff format --check .                 # 243 files already formatted
-uv run mypy --strict src tests tools scripts # Success: no issues found in 243 source files
-uv run pytest -m "not live"                  # 2808 passed, 1 skipped, 17 deselected
+uv run ruff format --check .                 # 258 files already formatted
+uv run mypy --strict src tests tools scripts # Success: no issues found in 258 source files
+uv run pytest -q --junitxml=build/full.xml   # 3307 collected / 3306 passed / 0 failed / 1 skipped
 uv run pytest -m live                        # gated on tools/openbb_reachability.py; scheduled CI only
-uv run python tools/sweep_health.py          # run LAST: 42 sweeps, 0 leftovers, OK
+uv run python tools/sweep_health.py          # run LAST: 45 sweeps, 0 leftovers, OK
 ```
 
-Two notes that are easy to get wrong:
+`pytest` runs the **default marker set** (`not live and not slow`) — `slow` tests exist and are
+run explicitly when they are the thing you changed (e.g. the ~230 s two-copies-agree test over
+the real sweep catalogue).
+
+Three notes that are easy to get wrong:
 
 - **All four roots are required** in the `mypy` argument list (`src tests tools scripts`). It is
   the only gate that sees a `src/` rename break a `scripts/` consumer.
+- **Read the suite verdict from `--junitxml`, not the exit code.** On this host the sandbox's
+  safe-delete hook refuses `pytest`'s own bulk temp-dir cleanup and leaks **`exit=1` on a green
+  run**; the XML is the artefact the run itself produced.
 - **`sweep_health.py` runs LAST.** It is a photograph of the working tree: run it before a sweep
   and it reports on a state that a later sweep can invalidate. It also gates the `quality` CI job
   *before* the suite.
