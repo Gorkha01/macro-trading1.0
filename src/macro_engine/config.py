@@ -5132,6 +5132,8 @@ class FxCarrySettings(BaseModel):
     dollar_smile_vix_threshold: CalibratedValue
     dollar_smile_sign_boundary: CalibratedValue
     uip_reliability_cap: CalibratedValue
+    ppp_reliability_cap: CalibratedValue
+    ppp_tactical_horizon_years: CalibratedValue
 
     @property
     def volatility_floor(self) -> float:
@@ -5224,6 +5226,47 @@ class FxCarrySettings(BaseModel):
         """
         return float(self.uip_reliability_cap.value)
 
+    @property
+    def ppp_reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``ppp_valuation`` reports.
+
+        Section 20.9's reference implementation hardcodes ``confidence=0.2``.
+        Section 22.8 forbids a hardcoded confidence, and — as with
+        :attr:`uip_reliability_value` — the standard remedy is the WRONG one
+        here: PPP's inputs are as reliable as their sources (a live spot price
+        and a manual conversion factor), so no input-reliability *factor* is
+        impaired. What makes the model weak is that **absolute PPP is the
+        version of the relationship most strongly rejected empirically** —
+        deviations persist for years — and ``compute_confidence()`` has no
+        factor for "the method is empirically weak". So the value is a
+        model-specific cap, read here, exactly as
+        ``policy.market_implied.*_confidence`` and ``uip_reliability_cap`` are.
+
+        Deliberately **above** ``uip_reliability_cap``: PPP's failure is a
+        matter of *degree and horizon* (the anchor is real, it just does not
+        schedule), whereas UIP's own specification calls it a hypothesis the
+        data reject. The two are not on one scale and this ordering records
+        which is the weaker claim.
+        """
+        return float(self.ppp_reliability_cap.value)
+
+    @property
+    def ppp_tactical_horizon_value(self) -> float:
+        """The YEARS below which ``ppp_valuation`` warns that it is mistimed.
+
+        PPP is a multi-year anchor, so a thesis stated over a shorter horizon is
+        asking the model a question it cannot answer. The bound is a **duration
+        in years**, not a boundary the deviation crosses — it gates the
+        no-tactical-timing WARNING (Section 6.7: "NEVER use PPP for tactical
+        timing"), never a label.
+
+        Must be strictly positive: a non-positive horizon would make the warning
+        condition `horizon_years < 0` unreachable for every real input, so the
+        safety mechanism would be dead vocabulary and the model would look
+        compliant while warning nothing (D-037's class).
+        """
+        return float(self.ppp_tactical_horizon_years.value)
+
     @model_validator(mode="after")
     def _order_the_stress_bands(self) -> FxCarrySettings:
         """Refuse a band pair that cannot express its own three-way vocabulary.
@@ -5278,6 +5321,23 @@ class FxCarrySettings(BaseModel):
                 f"the range would raise at the FIRST call rather than at load. "
                 f"Refusing here makes the defect a config error, where it can be "
                 f"seen, rather than a runtime failure of the model."
+            )
+        if not 0.0 <= self.ppp_reliability_value <= 1.0:
+            raise ValueError(
+                f"fx_carry.ppp_reliability_cap is {self.ppp_reliability_value}. "
+                f"A confidence must lie inside [0, 1] — see the uip_reliability_cap "
+                f"note above; the same ModelResult field constraint applies, and "
+                f"refusing at load turns a runtime failure into a config error."
+            )
+        if self.ppp_tactical_horizon_value <= 0.0:
+            raise ValueError(
+                f"fx_carry.ppp_tactical_horizon_years is "
+                f"{self.ppp_tactical_horizon_value}. A non-positive tactical "
+                f"horizon makes the warning condition 'horizon_years < "
+                f"tactical_horizon' unreachable for every real input, so the "
+                f"no-tactical-timing warning would be dead vocabulary and the "
+                f"model would look compliant while warning nothing (D-037's "
+                f"class)."
             )
         return self
 

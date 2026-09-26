@@ -117,12 +117,15 @@ __all__ = [
     "DollarSmileInputs",
     "DollarSmileSide",
     "FundingStressSide",
+    "PPPInputs",
+    "PPPStatus",
     "QuoteConvention",
     "StressSeverity",
     "UIPInputs",
     "carry_score",
     "cip_check",
     "dollar_smile_regime",
+    "ppp_valuation",
     "uip_expected_move",
 ]
 
@@ -1538,6 +1541,19 @@ def dollar_smile_regime(inputs: DollarSmileInputs) -> ModelResult:
 #: published quantity means the label is reproducible from the output alone.
 UIPDirection = Literal["domestic_depreciation", "domestic_appreciation", "flat"]
 
+#: Which side of purchasing-power parity the spot rate sits on. A spot ABOVE the
+#: PPP-implied rate (``deviation_pct > 0``) means the currency buys less
+#: domestically than the price levels imply — ``"overvalued"``. ``"at_parity"``
+#: is an exact tie, which is a real possibility on a supplied factor and is
+#: published as its own member rather than rounded into one of the two sides.
+PPPStatus = Literal["overvalued", "undervalued", "at_parity"]
+
+#: The quote conventions a PPP pair may share. Deliberately the same members as
+#: ``QuoteConvention``, but asserted against it at import below rather than
+#: aliased: the two are the same SET and must stay so, and a divergence would
+#: mean a PPP input the FX validity guard would reject.
+_QUOTE_CONVENTIONS = frozenset(get_args(QuoteConvention))
+
 
 class UIPInputs(BaseModel):
     """The two money-market rates and the horizon of an uncovered-parity
@@ -1964,6 +1980,400 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
             "`carry_score`'s. It is deliberately far lower because the METHOD is "
             "discredited rather than the data; the two facts are not on one "
             "scale.",
+        ],
+    )
+
+
+class PPPInputs(BaseModel):
+    """A spot exchange rate and the PPP-implied rate it is measured against.
+
+    **The unit question is the one every FX function in this module faces, and
+    it is answered by ORDER rather than by a flag: both rates are the SAME
+    quote convention, and the deviation's SIGN is what carries the verdict.**
+    ``CIPInputs`` makes the quote convention an explicit input because a
+    transposed pair silently inverts a sign there; here the sign is not the
+    output's only content — both levels are published, so a caller can see the
+    convention from the numbers — and the convention itself does not change
+    ``overvalued``/``undervalued`` as it is computed, only which of the two
+    currencies the sentence names. It is therefore NOT a required input, and the
+    published ``quote`` records what the numbers mean.
+
+    **Why a PPP conversion factor is a MANUAL input and not a live series.** The
+    PPP-implied rate is NOT observable in a market: it is constructed from a
+    price-level comparison (the OECD's PPP conversion factors are the standard
+    source), published at a low frequency and revised. Section 21.1 marks
+    ``ppp_implied_rate`` **BLOCKED → MANUAL** for exactly this reason — there is
+    no clean free API — and this model therefore takes it as a declared input
+    rather than pretending a proxy measures it. **The spot rate IS observable**
+    and comes from a live FX series; the asymmetry is the whole point of the
+    function, and the manual leg is disclosed in ``limitations`` rather than
+    hidden.
+
+    **The horizon is required, and this is the function's central discipline.**
+    The specification computes a bare deviation and stops. But PPP is a
+    **multi-year** anchor: the deviation from it is not a signal about the next
+    quarter, and a caller that reads one without the other has matched the tool
+    to the wrong trade. So the horizon over which the thesis is stated is an
+    input, and the model REFUSES a short horizon rather than publishing a
+    confident number at a timescale at which the relationship has no content.
+
+    Two refusals, each closing a way the arithmetic returns a confident number
+    from an input that has no meaning:
+
+    * **Non-finite** — ``nan`` fails every comparison, so a guard built from
+      comparisons never fires for it and the deviation is published as ``nan``
+      while the ``status`` branch falls to ``undervalued`` (D-078: a bare
+      ``nan`` would reach the arithmetic and the label would be a lie). ``inf``
+      passes ``> 0`` and needs the explicit finiteness test.
+    * **Non-positive PPP-implied rate** — the deviation divides by it, so a zero
+      raises ``ZeroDivisionError`` and a negative inverts the sign of every
+      result. A negative price level is not a quote.
+
+    **The horizon refusal is deliberately NOT here, and that is a decision.**
+    A short horizon is a property of the THESIS, not of the quote — a 3-month
+    PPP deviation is a perfectly well-defined number, it is only a useless one.
+    So it is reported as a **warning** rather than refused: refusing would make
+    the function unusable for the one thing it can legitimately do at short
+    horizons (report that the deviation exists and is uninformative), and
+    Section 21.4's discipline is to disclose rather than to forbid. The
+    distinction is between an input that has no meaning (refused) and a
+    meaningful input whose output must not be over-read (warned).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    spot_rate: float = Field(
+        description=(
+            "The observed spot exchange rate, in the SAME quote convention as "
+            "``ppp_implied_rate``. LIVE — a market price."
+        ),
+    )
+    ppp_implied_rate: float = Field(
+        gt=0.0,
+        description=(
+            "The PPP-implied rate for the same pair, from an OECD PPP "
+            "conversion factor. MANUAL — no clean free API (Section 21.1 "
+            "BLOCKED → MANUAL). Must be > 0."
+        ),
+    )
+    horizon_years: float = Field(
+        gt=0.0,
+        description=(
+            "The horizon the caller's thesis is stated over, in YEARS. PPP is a "
+            "multi-year anchor; a horizon under "
+            "``fx_carry.ppp_tactical_horizon_years`` triggers the "
+            "no-tactical-timing warning."
+        ),
+    )
+    quote: str = Field(
+        default="domestic_per_foreign",
+        description=(
+            "The quote convention both rates share: 'domestic_per_foreign' "
+            "(e.g. 1.14 USD per EUR) or 'foreign_per_domestic' (e.g. 147 JPY "
+            "per USD). Recorded so the deviation's sign is interpretable."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_domain(self) -> PPPInputs:
+        """Refuse an input that is representable but is not a price quote.
+
+        Two branches, and they fail differently:
+
+        * **Non-finite** — ``nan`` fails every comparison, so ``if x <= 0``
+          never fires for it; the deviation would be published as ``nan`` and
+          the ``status`` branch, which is a comparison, would silently take the
+          ``undervalued`` arm. ``inf`` passes ``> 0`` and needs the explicit
+          finiteness test (D-078).
+        * **Non-positive PPP-implied rate** — it is the deviation's denominator.
+          A zero raises ``ZeroDivisionError``; a negative inverts every sign.
+          The ``gt=0.0`` field bound already covers this for a finite value, so
+          this branch exists for the ``nan``/``inf`` cases the bound cannot see
+          — which is the point of validating rather than trusting the bound.
+        """
+        for name in ("spot_rate", "ppp_implied_rate", "horizon_years"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{name} is {value!r}, which is not finite. A non-finite input "
+                    f"cannot form a deviation: every comparison a plausibility check "
+                    f"is made of returns False for nan, so it would reach the "
+                    f"arithmetic and produce a non-finite value that looks like an "
+                    f"answer (D-078)."
+                )
+
+        if self.ppp_implied_rate <= 0.0:
+            raise ValueError(
+                f"ppp_implied_rate is {self.ppp_implied_rate}, which is not a "
+                f"price level. The deviation divides by it, so a zero raises "
+                f"ZeroDivisionError and a negative inverts the sign of every "
+                f"result — an 'undervaluation' would be reported for an "
+                f"overvaluation."
+            )
+
+        if self.quote not in _QUOTE_CONVENTIONS:
+            raise ValueError(
+                f"quote is {self.quote!r}; must be one of {sorted(_QUOTE_CONVENTIONS)}."
+            )
+        return self
+
+
+def _ppp_status(deviation_pct: float) -> PPPStatus:
+    """Which side of PPP the spot rate sits on, from the deviation's sign.
+
+    Derived from the SIGN of the published deviation rather than from a fresh
+    comparison of the two levels, so the label and the number cannot disagree —
+    the same discipline ``_uip_direction`` follows. A spot ABOVE the PPP-implied
+    rate (``deviation_pct > 0``) means the currency is **overvalued** relative to
+    purchasing power: it buys less domestically than the price levels imply.
+    """
+    if deviation_pct > 0.0:
+        return "overvalued"
+    if deviation_pct < 0.0:
+        return "undervalued"
+    return "at_parity"
+
+
+def _ppp_limitations() -> list[str]:
+    """The function's standing limitations, published on EVERY call.
+
+    These are structural, not conditional: they hold for every input, which is
+    why they are a constant list rather than a function of the arguments (the
+    same shape as ``_uip_limitations``).
+    """
+    return [
+        "The PPP-implied rate is a MANUAL input, not an observed market price. "
+        "It comes from an OECD PPP conversion factor, which is published at a "
+        "low frequency and REVISED; the vintage matters and is not carried in "
+        "this result. Section 21.1 marks the input BLOCKED → MANUAL.",
+        "PPP is a MULTI-YEAR anchor. A deviation from it is NOT a signal about "
+        "the next quarter: deviations persist for years, and the relationship "
+        "carries no timing information at any horizon a trader acts on. The "
+        "warning fires automatically below the configured tactical horizon.",
+        "The two rates must share ONE quote convention, and the convention is "
+        "carried in the input rather than inferred. A caller that passes a "
+        "consistently transposed pair gets a deviation that is wrong in "
+        "magnitude and whose ``status`` may be wrong in sign.",
+        "Absolute PPP is the version measured here — the ratio of price levels. "
+        "It is the version most strongly rejected empirically; relative PPP "
+        "(the CHANGE in the ratio) is better behaved and is not what this "
+        "computes.",
+        "No uncertainty band, no confidence interval, and no adjustment for the "
+        "Balassa-Samuelson effect (richer countries' price levels are "
+        "systematically higher, so a rich-country currency reads as persistently "
+        "'overvalued' by construction).",
+    ]
+
+
+def _ppp_warnings(
+    *,
+    status: PPPStatus,
+    deviation_pct: float,
+    horizon_years: float,
+    tactical_horizon_years: float,
+) -> list[str]:
+    """The warning paths, each of which a test must be able to trigger.
+
+    Three conditions, and the first is the one the specification names:
+
+    * **a tactical horizon** — the caller's thesis is shorter than PPP can
+      speak to. This is Section 6.7's "NEVER use PPP for tactical timing" made
+      operational: the threshold is a config leaf, so the warning fires on a
+      DATE-like comparison of the stated horizon rather than on a bare literal.
+    * **an overvaluation at a tactical horizon** — the same fact, stated as the
+      specific error 6.7 warns about, because "the currency is 30 % overvalued"
+      read at three months is the single most common misuse of this model.
+    * **a deviation large enough to be a data check** — a >100 % deviation is
+      more often a unit or convention error (a transposed pair, a rate passed
+      where a level was expected) than a genuine market state, so it is
+      surfaced rather than published silently.
+    """
+    warnings: list[str] = []
+    if horizon_years < tactical_horizon_years:
+        warnings.append(
+            f"The stated horizon ({horizon_years} years) is shorter than PPP's "
+            f"tactical minimum ({tactical_horizon_years} years). PPP is a "
+            f"MULTI-YEAR anchor and this deviation carries NO timing "
+            f"information at this horizon — do not act on it (Section 6.7: "
+            f"'NEVER use PPP for tactical timing')."
+        )
+    if status == "overvalued" and horizon_years < tactical_horizon_years:
+        warnings.append(
+            f"{deviation_pct:+.1f}% overvalued, read at {horizon_years} years. "
+            f"An overvaluation is the textbook mean-reversion story AND the "
+            f"textbook way to lose money: it can persist for a decade and "
+            f"widen. Matching the tool's horizon to the trade's horizon is the "
+            f"discipline (Module 9.2)."
+        )
+    if abs(deviation_pct) > 100.0:
+        warnings.append(
+            f"The deviation is {deviation_pct:+.1f}%, beyond any plausible "
+            f"purchasing-power gap. A four-figure deviation is far more often a "
+            f"UNIT OR CONVENTION ERROR than a market state — check that both "
+            f"rates share one quote convention and that neither is a rate "
+            f"passed where a level was expected."
+        )
+    return warnings
+
+
+def ppp_valuation(inputs: PPPInputs) -> ModelResult:
+    """How far the spot rate sits from the purchasing-power-parity rate.
+
+    Module 9.2. PPP is a **MULTI-YEAR anchor, never a timing tool**: the
+    deviation is real and the discipline is to refuse to let it be read at a
+    horizon it cannot speak to.
+
+    ``value`` publishes, so every number can be recomputed from the output
+    alone:
+
+    ``deviation_pct``
+        ``(spot - ppp_implied) / ppp_implied * 100`` — the specification's own
+        formula, positive when the spot rate is ABOVE the PPP-implied rate.
+    ``status``
+        ``"overvalued"``, ``"undervalued"`` or ``"at_parity"``.
+    ``spot_rate`` / ``ppp_implied_rate`` / ``quote``
+        The two inputs and their shared convention, so the sign is readable
+        without the caller's context.
+    ``horizon_years`` / ``tactical_horizon_years``
+        The stated horizon and the configured threshold, so a reader can see
+        whether and why the no-tactical-timing warning fired.
+    ``ratio``
+        ``spot / ppp_implied`` — the same information as ``deviation_pct`` in
+        ratio form, published because it is the natural way to state a PPP gap.
+
+    **``confidence`` is a model-specific cap, NOT ``compute_confidence()``.**
+    The standard remedy for a low hardcoded confidence is to derive it from
+    stated factors (Section 22.8), and this function deliberately does not — the
+    PRE ``uip_expected_move`` precedent, and for the same reason: the inputs are
+    as reliable as their sources (the spot leg is a live price; the PPP leg is a
+    manual vintage), but no reliability factor captures what is wrong here, which
+    is that **absolute PPP is the version of the relationship most strongly
+    rejected by the data**. ``compute_confidence()`` has no factor for "the
+    method is empirically weak". The value is read from
+    ``fx_carry.ppp_reliability_cap``, the specification's own deliberately low
+    ``0.2``.
+
+    **Supersession: this is a DIFFERENT function from anything in the module.**
+    ``cip_check``/``uip_expected_move`` are INTEREST-parity relations between two
+    money-market rates; this is a PRICE-LEVEL relation between a market rate and
+    a constructed level. It shares no input with them and answers a different
+    question — 'is the currency cheap in purchasing-power terms' rather than
+    'what do the two currencies' interest rates imply'. It supersedes nothing
+    and is superseded by nothing. Module 9's `ppp_valuation` and
+    `intervention_capacity` are its neighbours in Section 20.9; the latter is
+    built separately.
+    """
+    settings = get_settings()
+    fx_carry = settings.fx_carry
+    reliability = fx_carry.ppp_reliability_value
+    tactical_horizon_years = fx_carry.ppp_tactical_horizon_value
+
+    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) / inputs.ppp_implied_rate * 100.0
+    ratio = inputs.spot_rate / inputs.ppp_implied_rate
+    status = _ppp_status(deviation_pct)
+
+    if status == "overvalued":
+        status_phrase = (
+            "the spot rate is ABOVE the PPP-implied rate, so the currency is "
+            "OVERvalued in purchasing-power terms"
+        )
+    elif status == "undervalued":
+        status_phrase = (
+            "the spot rate is BELOW the PPP-implied rate, so the currency is "
+            "UNDERvalued in purchasing-power terms"
+        )
+    else:
+        status_phrase = "the spot rate equals the PPP-implied rate, so the currency is AT PARITY"
+
+    return ModelResult(
+        model_name="ppp_valuation",
+        country="global",
+        as_of=utc_now(),
+        value={
+            "deviation_pct": round(deviation_pct, 2),
+            "ratio": round(ratio, 6),
+            "status": status,
+            "spot_rate": inputs.spot_rate,
+            "ppp_implied_rate": inputs.ppp_implied_rate,
+            "quote": inputs.quote,
+            "horizon_years": inputs.horizon_years,
+            "tactical_horizon_years": tactical_horizon_years,
+        },
+        confidence=reliability,
+        unit="percent deviation of the spot rate from the PPP-implied rate",
+        interpretation=(
+            f"{abs(deviation_pct):.1f}% {status} vs PPP — {status_phrase}. "
+            f"MULTI-YEAR anchor only: a PPP deviation is not a signal about the "
+            f"next quarter (Module 9.2)."
+        ),
+        context=(
+            f"Spot {inputs.spot_rate} against a PPP-implied "
+            f"{inputs.ppp_implied_rate} ({inputs.quote}), quoted as a "
+            f"{ratio:.6f} ratio and a {deviation_pct:+.2f}% deviation, over a "
+            f"{inputs.horizon_years}-year thesis against a "
+            f"{tactical_horizon_years}-year tactical minimum. The PPP leg is a "
+            f"MANUAL input (OECD conversion factor, Section 21.1 BLOCKED → "
+            f"MANUAL): it is a constructed price level, not an observed market "
+            f"price, and it is revised. Confidence is a model-specific cap "
+            f"({reliability}), not a computed penalty: what is unreliable is "
+            f"that ABSOLUTE PPP is the version of the relationship most "
+            f"strongly rejected empirically, and no input-reliability factor "
+            f"captures that."
+        ),
+        inputs_used=["spot_rate", "ppp_implied_rate", "horizon_years", "quote"],
+        assumptions=[
+            "Both rates share ONE quote convention, carried in `quote`; the "
+            "deviation's sign and the status label are read under it.",
+            "The PPP-implied rate is an ABSOLUTE-PPP conversion factor (a ratio "
+            "of price levels), not a relative-PPP change forecast.",
+            "The spot rate is a market price and is contemporaneous with the "
+            "call; the PPP factor has its own, older, vintage that this result "
+            "does not carry.",
+            "No adjustment is made for the Balassa-Samuelson effect — richer "
+            "countries' price levels are systematically higher, so a "
+            "rich-country currency reads as persistently overvalued by "
+            "construction.",
+        ],
+        source_family=EvidenceSourceFamily.MARKET_FX,
+        warnings=_ppp_warnings(
+            status=status,
+            deviation_pct=deviation_pct,
+            horizon_years=inputs.horizon_years,
+            tactical_horizon_years=tactical_horizon_years,
+        ),
+        limitations=_ppp_limitations(),
+        decision_relevance=(
+            "Module 9's price-level anchor, and the counterpart to its "
+            "interest-parity relations: `cip_check` and `uip_expected_move` "
+            "answer 'what do two interest rates imply', while this answers 'is "
+            "the currency cheap in purchasing-power terms'. It shares NO input "
+            "with them — the relationship is between a market rate and a "
+            "constructed price level — so it supersedes NOTHING and pairs with "
+            "nothing in the parity family. It is a YEARS-horizon valuation "
+            "input, useful for asking whether a long-lived trade is swimming "
+            "with or against a valuation gap, and useless as a timing signal. "
+            "Script-only today: no snapshot field carries a PPP conversion "
+            "factor, so the live check supplies the manual leg with a declared "
+            "vintage until a source exists."
+        ),
+        decision_prohibition=[
+            "Do NOT use this for tactical timing. PPP is a MULTI-YEAR anchor and "
+            "deviations persist for YEARS; the warning fires automatically below "
+            "the configured tactical horizon, and ignoring it is the single most "
+            "common misuse of this model (Section 6.7: 'NEVER use PPP for "
+            "tactical timing').",
+            "Do NOT treat the manual PPP leg as an observed price. It is a "
+            "constructed, low-frequency, REVISED conversion factor, and a "
+            "different vintage can move the deviation materially — the "
+            "limitations say so on every call.",
+            "Do NOT read the confidence as comparable with an "
+            "interest-parity function's. It is a model-specific cap because the "
+            "METHOD (absolute PPP) is empirically weak, which is a different "
+            "statement from the inputs being noisy.",
+            "Do NOT implement a valuation-gap trade on the deviation alone. Mean "
+            "reversion is not scheduled: the gap can persist and widen for a "
+            "decade, so a position sized to the gap is a position sized to an "
+            "assumption about WHEN, which this model does not make.",
         ],
     )
 

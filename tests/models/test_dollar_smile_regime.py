@@ -626,16 +626,15 @@ def test_an_extra_field_is_refused() -> None:
 
 
 def _fx_carry_settings(**overrides: object) -> FxCarrySettings:
-    base: dict[str, object] = {
-        "notable_deviation_pct": CalibratedValue(value=0.1, calibration_status="conventional"),
-        "extreme_deviation_pct": CalibratedValue(value=0.5, calibration_status="conventional"),
-        "carry_vol_floor": CalibratedValue(value=0.1, calibration_status="conventional"),
-        "dollar_smile_vix_threshold": CalibratedValue(
-            value=25.0, calibration_status="conventional"
-        ),
-        "dollar_smile_sign_boundary": CalibratedValue(value=0.0, calibration_status="conventional"),
-        "uip_reliability_cap": CalibratedValue(value=0.15, calibration_status="conventional"),
-    }
+    """The shipped ``fx_carry`` block, with any field a case cares about replaced.
+
+    Seeded from ``get_settings().fx_carry`` rather than hand-listed, so a newly
+    required field arrives here for free — D-109/D-110/D-112 each broke the
+    hand-listed form of this helper, and D-114 (which added
+    ``ppp_reliability_cap`` and ``ppp_tactical_horizon_years``) is the first to
+    use the generating form.
+    """
+    base: dict[str, object] = dict(get_settings().fx_carry)
     base.update(overrides)
     return FxCarrySettings.model_validate(base)
 

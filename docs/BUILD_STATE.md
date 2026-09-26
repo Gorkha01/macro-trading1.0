@@ -9632,6 +9632,97 @@ is why the check is run rather than assumed.
 
 ---
 
+## D-114 — Module 9.2's `ppp_valuation`: the price-level anchor (2026-09-26) — **PHASE 5, Tier 5 = 14/23**
+
+**Module 9's parity family is complete; this is its price-level neighbour.** `ppp_valuation` is
+the companion to `cip_check`/`uip_expected_move` — it answers *"is the currency cheap in
+purchasing-power terms"* rather than *"what do two interest rates imply"*, and **shares no input
+with them** (a market rate against a constructed level, not two rates against each other).
+
+### The BLOCKED input, and the resolution
+
+§21.1 (`AGENTS.md:5384`) marks **`ppp_implied_rate` BLOCKED → MANUAL** — the OECD publishes PPP
+conversion factors, there is **no clean free API**, and the factor is low-frequency and
+**revised**. The spot rate is LIVE. §21.2's Step 2 is a STOP-and-ask, and the operator chose the
+D-108 / line-2958 precedent: **declared MANUAL + live spot**. The asymmetry is disclosed on
+**three** surfaces — a required `PPPInputs.ppp_implied_rate` (`gt=0.0`), the result's standing
+`limitations` (naming the MANUAL leg and its BLOCKED status **on every call**), and the live
+check's declared vintage. `config/series_registry.yaml`'s `blocked:` entry already existed; this
+is the first increment to consume it.
+
+### The horizon gates a WARNING, never a LABEL
+
+PPP is a **multi-year anchor**. A short horizon is **not refused** — a 3-month deviation is a
+real, useless number — so §21.4's discipline is to **disclose** the mistiming. The threshold is
+`fx_carry.ppp_tactical_horizon_years` (**3.0**), and the separation is **tested directly**: the
+same input at a tactical and a long horizon yields the **same `status` and the same
+`deviation_pct`**, while only the tactical call gains the warning.
+
+### The confidence is a model-specific CAP
+
+`confidence = 0.2` from `fx_carry.ppp_reliability_cap`, **NOT `compute_confidence()`** — the
+`uip_expected_move` precedent. PPP's inputs are as reliable as their sources; what fails is that
+**absolute PPP is the version of the relationship most strongly rejected empirically**. The leaf
+sits **deliberately ABOVE** UIP's `0.15`, and **the ordering is the claim**: UIP's spec says it
+*fails*; PPP's weakness is *degree and horizon*.
+
+### The O-127 mechanical break, fixed STRUCTURALLY (4th firing)
+
+Two new required leaves made all four `_fx_carry_settings` helpers raise for a *missing field* —
+the same `ValidationError` type as the rejection under test. Per the docstrings' own prescribed
+remedy, each helper now seeds from the shipped block:
+`base = dict(get_settings().fx_carry)`. **Verified:** `model_dump()` yields real
+`CalibratedValue` models, not dicts, so both construction paths hold. **The helper can no longer
+go stale.**
+
+### The anchor hazard, the gate, and ONE WEAK TEST
+
+`confidence=reliability,` became **AMBIGUOUS (2 sites)**; `check_targets` **refused** — the gate
+working. `U8b` **widened** with the UIP-only `"direction"` neighbour (never deleted, D-055/D-060).
+
+**First sweep: 170/171, `C6b` SURVIVED.** Triage (D-031): **a WEAK TEST** — the shipped leaf is
+`3.0` and the mutant hardcodes `3.0`, so the tests compared `3.0` with `3.0` (**D-050's trap**).
+Fixed by a NEW test that **perturbs the leaf** to `4.75`/`0.5`. The mutation was **never weakened
+or deleted**. Re-run: **171/171**.
+
+### Step 4 proved load-bearing by 20 probes
+
+Every expectation hand-derived first (leg `1.25`: `1.30 → +4.0`, `1.20 → −4.0`, `1.25 → 0.0`),
+then 20 code probes. **Two gaps found and closed:** the unrounded `ratio` survived (every
+short-decimal fixture's quotient *is* its 6-place rounding — fixed with `1.23456789 / 1.25`), and
+the `<` vs `<=` boundary survived (no fixture **on** the threshold — fixed with a derived
+boundary fixture).
+
+### Live check PASSES; the number was INTERROGATED
+
+Live EUR/USD `1.140121 @ 2026-09-26` vs a declared leg `0.72` → **`+58.35 %`**. A
+decimal-fraction misread gives `+15735 %` and a transposed leg flips to `−17.9 %`, so `+58 %` is
+the genuine **absolute-PPP gap for a rich-country pair** — the **Balassa-Samuelson** artifact the
+model discloses. It sits below 100 %, so the data-error guard's **negative control** is exercised
+on real data.
+
+### Gates (measured 2026-09-26, `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  264 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 264 source files
+full suite (--junitxml)                       ->  3533 tests / 0 failures / 0 errors / 1 skipped
+mutation_fx_carry.py                          ->  171/171 killed
+sweep_health.py  (LAST)                       ->  45 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**264 == 264** (D-035). **+55** against D-113's 3478. **171** mutations against D-112's 143
+(**+28**).
+
+### Not done
+
+The **Tier-5 review/audit** (the operator's). `intervention_capacity` is next in **table** order
+(§21.3), not prose order — the D-112 Next pointer named the wrong function by reading §20.9's
+adjacency (lesson **5dl**).
+
+---
+
 ## D-113 — O-138 closed: `--check-targets` was NEVER A FLAG
 
 **A tool fix, not a function increment.** No model code changed; Tier 5 stays **13/23**.

@@ -365,22 +365,15 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
     rather than silently turning a guard test into a tautology.
 
     D-112 is that future: ``uip_reliability_cap`` was added and this helper
-    broke here, in one place, exactly as designed.
+    broke here, in one place, exactly as designed. **D-114 added two more leaves**
+    (``ppp_reliability_cap``, ``ppp_tactical_horizon_years``) and the base is now
+    seeded from the shipped ``fx_carry`` block, so the "one place" is now the
+    model itself and this helper cannot go stale at all.
+
+    The shipped VALUES are immaterial here: the guard test below overrides
+    ``carry_vol_floor`` and the negative control asserts on its own override.
     """
-    base: dict[str, CalibratedValue] = {
-        "notable_deviation_pct": CalibratedValue(value=0.1, calibration_status="conventional"),
-        "extreme_deviation_pct": CalibratedValue(value=0.5, calibration_status="conventional"),
-        "carry_vol_floor": CalibratedValue(value=0.1, calibration_status="conventional"),
-        "dollar_smile_vix_threshold": CalibratedValue(
-            value=25.0, calibration_status="uncalibrated_illustrative"
-        ),
-        "dollar_smile_sign_boundary": CalibratedValue(
-            value=0.0, calibration_status="institutional_convention"
-        ),
-        "uip_reliability_cap": CalibratedValue(
-            value=0.15, calibration_status="uncalibrated_illustrative"
-        ),
-    }
+    base: dict[str, CalibratedValue] = dict(get_settings().fx_carry)
     base.update(overrides)
     return FxCarrySettings(**base)
 

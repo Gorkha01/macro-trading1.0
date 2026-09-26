@@ -4101,6 +4101,60 @@ fx_carry:
       spot moves against the carry alternative, which needs an FX panel this
       build does not fetch. It is the specification's own illustration and is
       priced into every result it produces.
+  ppp_reliability_cap:
+    value: 0.2
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `ppp_valuation` reports, replacing Section 20.9's
+      hardcoded `confidence=0.2`. Retained verbatim so the shipped behaviour
+      matches the specification.
+
+      ⚠️ THIS IS NOT A `compute_confidence()` PENALTY — same reasoning as
+      `uip_reliability_cap` above, and the reason is the METHOD rather than the
+      data. PPP's inputs are as good as their sources (a live spot price and a
+      manual OECD conversion factor), so no observability, calibration or
+      source-independence factor is impaired. What is weak is that ABSOLUTE PPP
+      — the ratio of price levels measured here — is the version of the
+      relationship most strongly rejected empirically: deviations persist for
+      YEARS. `compute_confidence()` has no factor for "the method is
+      empirically weak", so the value is a model-specific cap read here.
+
+      ⚠️ 0.2 IS DELIBERATELY ABOVE `uip_reliability_cap` (0.15), AND THE ORDERING
+      IS THE CLAIM. UIP's own specification says it FAILS (the forward-premium
+      puzzle) — it exists to be bet against. PPP's problem is one of DEGREE and
+      HORIZON: purchasing power is a real long-run anchor, it simply carries no
+      timing information, so a multi-year valuation statement is better founded
+      than a single-horizon prediction. The two are not on one scale, and a
+      reader comparing them must not read the gap as noise.
+
+      ⚠️ THE VALUE IS NOT CALIBRATED: calibrating it means measuring how well the
+      absolute-PPP gap predicts subsequent multi-year real exchange-rate moves,
+      which needs a long real-rate panel this build does not fetch. It is the
+      specification's own illustration.
+  ppp_tactical_horizon_years:
+    value: 3.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The horizon, in YEARS, below which `ppp_valuation` warns that the thesis
+      is MISTIMED. PPP is a multi-year anchor — Section 20.9's own words are
+      "PPP is a MULTI-YEAR anchor, never a timing tool. Deviations persist for
+      years" — so a deviation read over a shorter window is a real number
+      answering a question the model cannot answer.
+
+      ⚠️ THIS GATES A WARNING, NEVER A LABEL. There is no `status` value that
+      the horizon can change: a 5% undervaluation at one year and at ten years
+      are the same valuation, and only the second is actionable. Refusing a
+      short horizon outright was rejected because a short-horizon deviation is a
+      perfectly well-defined number that a caller may legitimately want reported
+      — the discipline is to DISCLOSE the mistiming, not to forbid the call
+      (Section 21.4).
+
+      ⚠️ 3.0 YEARS IS ILLUSTRATIVE AND THE REVIEW THAT WOULD SET IT IS NAMED.
+      The value is chosen so the warning fires for any horizon a trading desk
+      would call tactical (days to about two years) and stays silent for a
+      genuinely long-run valuation view. Calibrating it means measuring the
+      half-life of real exchange-rate deviations from absolute PPP, which needs
+      the same long real-rate panel `ppp_reliability_cap` would need.
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the

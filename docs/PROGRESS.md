@@ -1,16 +1,37 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-26** (after **D-113 — O-138 CLOSED: `--check-targets` WAS NEVER A
+Last updated: **2026-09-26** (after **D-114 — Module 9.2's `ppp_valuation`, THE PRICE-LEVEL
+ANCHOR: Tier 5 = 14/23.** The first Tier-5 function with a **BLOCKED** input: §21.1 marks
+`ppp_implied_rate` **BLOCKED → MANUAL** (no clean free API), and the operator approved the
+**declared MANUAL + live spot** resolution — the D-108 / line-2958 precedent — disclosed on
+**three** surfaces (a required input, the result's standing `limitations`, and the live check's
+declared vintage). **The horizon gates a WARNING, never a LABEL:** a short horizon is *not*
+refused (a 3-month deviation is a real, useless number), so §21.4's discipline is to **disclose**
+the mistiming; the threshold is a config leaf and the separation is tested directly — the SAME
+input at a tactical and a long horizon gives the SAME `status` and the SAME `deviation_pct`.
+**`confidence = 0.2` is a model-specific config CAP, NOT `compute_confidence()`** — the
+`uip_expected_move` precedent, same reason: the *method* is empirically weak (absolute PPP
+persists for years), and no input-reliability factor captures that; the leaf sits **deliberately
+ABOVE** UIP's `0.15` and the ordering is the claim. **The O-127 mechanical break fired a FOURTH
+time and was fixed STRUCTURALLY** — all four `_fx_carry_settings` helpers now seed from the
+shipped block (`dict(get_settings().fx_carry)`), so the helper can no longer go stale.
+**The anchor hazard recurred and the gate caught it:** `confidence=reliability,` became
+AMBIGUOUS (2 sites); `U8b` was **widened** with the UIP-only `"direction"` neighbour. **One
+survivor on the first sweep (`C6b`) was a WEAK TEST** (the shipped leaf is `3.0`, so the mutant's
+hardcoded `3.0` compared `3.0` with `3.0` — D-050's trap); fixed by PERTURBING THE LEAF, never by
+touching the mutation. **Gates: 264 == 264 · 3533 collected / 0 failed / 1 skipped (JUnit) ·
+171/171 killed · 45 sweeps OK.**)
+Previous update: **D-113 — O-138 CLOSED: `--check-targets` WAS NEVER A
 FLAG.** A tool fix, not a function increment; **no model code changed.** The report was right
 about the symptom and wrong about the cause: the flag was a token **nothing read** — no sweep
 parses `sys.argv` — so the "safe pre-flight" fell straight through to the full sweep, which is
 how D-112 was SIGTERM'd and left `M4a` on disk. The fix makes it real (`CHECK_ONLY_FLAG` +
 `check_only_requested`) and answers it **before `sweep_lifecycle`**, because the lifecycle is
-what writes the sidecar. **Measured: `--check-targets` → `143 mutations, 0 problem(s)`, exit 0,
+what writes the sidecar. **Measured: `--check-targets` → `171 mutations, 0 problem(s)`, exit 0,
 1.6 s (was a 12-minute sweep), no sidecar, tree untouched.** Five tests, both defect halves
 proved caught by mutation. **Gates: 262 == 262 · 3478 collected / 0 failed / 1 skipped (JUnit)
-· 45 sweeps OK.** Tier 5 = **13/23** unchanged; no sweep re-run, so **143/143** stands.)
+· 45 sweeps OK.** Tier 5 was **13/23** at D-113; no sweep re-run then, so **143/143** stood.)
 Previous update: **D-112 — Module 9's `uip_expected_move`, THE FOURTH
 FUNCTION: Module 9 = 4 of 4. Tier 5 = 13/23.** The **supersession question was the first
 deliverable**, answered before any arithmetic: **a DIFFERENT function from `cip_check`

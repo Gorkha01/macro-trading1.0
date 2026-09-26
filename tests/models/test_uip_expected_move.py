@@ -482,27 +482,16 @@ def test_the_day_count_basis_is_a_closed_vocabulary() -> None:
 
 
 def _fx_carry_settings(**overrides: object) -> FxCarrySettings:
-    """A COMPLETE FxCarrySettings, so a new required field fails loudly here."""
-    base: dict[str, object] = {
-        "notable_deviation_pct": CalibratedValue(
-            value=0.1, calibration_status="uncalibrated_illustrative"
-        ),
-        "extreme_deviation_pct": CalibratedValue(
-            value=0.5, calibration_status="uncalibrated_illustrative"
-        ),
-        "carry_vol_floor": CalibratedValue(
-            value=0.1, calibration_status="uncalibrated_illustrative"
-        ),
-        "dollar_smile_vix_threshold": CalibratedValue(
-            value=25.0, calibration_status="uncalibrated_illustrative"
-        ),
-        "dollar_smile_sign_boundary": CalibratedValue(
-            value=0.0, calibration_status="institutional_convention"
-        ),
-        "uip_reliability_cap": CalibratedValue(
-            value=0.15, calibration_status="uncalibrated_illustrative"
-        ),
-    }
+    """The shipped ``fx_carry`` block, so a new required field arrives for free.
+
+    Seeded from ``get_settings().fx_carry`` rather than hand-listed. The
+    hand-listed form broke at D-109, D-110 and D-112; D-114 (which added
+    ``ppp_reliability_cap`` and ``ppp_tactical_horizon_years``) is the first to
+    use the generating form. The three cases below all override
+    ``uip_reliability_cap`` explicitly, so the shipped value is never the subject
+    of an assertion here.
+    """
+    base: dict[str, object] = dict(get_settings().fx_carry)
     base.update(overrides)
     return FxCarrySettings.model_validate(base)
 

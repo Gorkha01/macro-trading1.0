@@ -1,12 +1,14 @@
 """Mutation sweep for Section 6.7's and 20.9's Module 9 — ``cip_check``,
-``carry_score``, ``dollar_smile_regime`` and ``uip_expected_move``.
+``carry_score``, ``dollar_smile_regime``, ``uip_expected_move`` and
+``ppp_valuation``.
 
-**Four functions, one module, one sweep** (D-109, extended at D-110 and D-112).
-The labels are partitioned by function: **``M1``-``M8`` and ``C1`` are
+**Five functions, one module, one sweep** (D-109, extended at D-110, D-112 and
+D-114). The labels are partitioned by function: **``M1``-``M8`` and ``C1`` are
 ``cip_check``'s** (D-108), **``K1``-``K6`` and ``C2`` are ``carry_score``'s**
-(D-109), **``S1``-``S8`` and ``C3`` are ``dollar_smile_regime``'s** (D-110), and
-**``U1``-``U8`` and ``C4`` are ``uip_expected_move``'s** (D-112).
-One sweep rather than four because the functions share a file and a config
+(D-109), **``S1``-``S8`` and ``C3`` are ``dollar_smile_regime``'s** (D-110),
+**``U1``-``U8`` and ``C4`` are ``uip_expected_move``'s** (D-112), and
+**``P1``-``P5`` and ``C5``-``C6`` are ``ppp_valuation``'s** (D-114).
+One sweep rather than five because the functions share a file and a config
 block, and a further sweep over the same file would multiply the places a
 future edit must be mirrored — `mutation_econometrics.py` covers five functions
 in one module the same way.
@@ -120,6 +122,32 @@ function's own structure, because a mutation that does not correspond to a
 * **U8** breaks the unit and the confidence (the hardcoded-literal revert).
 * **C4** hardcodes or cross-wires the reliability accessor, stops reading the
   leaf, and removes the range validator.
+
+* **``ppp_valuation`` — ``P1``-``P5``, ``C5``-``C6``:**
+* **P1** breaks the DEVIATION — the whole point of the estimator. ``P1a`` drops
+  the PPP-relative form, ``P1b`` divides by the spot instead of the leg, ``P1c``
+  inverts the ratio.
+* **P2** breaks the STATUS — the three-way vocabulary and its derivation from the
+  published deviation's sign. ``P2c`` makes the parity arm unreachable.
+* **P3** breaks the PUBLISHED VALUE — each rounded field, the leg, and the
+  published threshold. ``P3a`` leaves the deviation unrounded (float dust).
+* **P4** breaks the WARNING GUARDS — including the two BOUNDARY moves (``P4a``
+  ``<`` to ``<=``, ``P4e`` ``> 100`` to ``>= 100``) that only a boundary fixture
+  can see.
+* **P5** breaks the unit and the confidence (the hardcoded-literal revert).
+* **C5**-``C6`` hardcode or cross-wire the two accessors, stop reading the leaf,
+  and remove the two validators.
+
+**⚠️ ONE SURVIVOR WAS FOUND AND FIXED ON THE FIRST RUN — ``C6b``** ("the
+tactical-horizon leaf is not read at all"), and it is D-050's trap in its
+textbook form. The shipped leaf is ``3.0`` and the mutation hardcodes ``3.0``, so
+every test that compared the PUBLISHED ``tactical_horizon_years`` against
+``get_settings().fx_carry.ppp_tactical_horizon_value`` compared ``3.0`` with
+``3.0`` — a test that cannot tell a literal from a value. The fix is the
+prescribed one: a test that **perturbs the leaf** (``monkeypatch`` on the shipped
+object) to a value no retyped literal would equal, so the hardcoded form
+diverges. **It was the TEST that was weak, not the mutation that was inert** —
+and the mutation was strengthened-toward, never deleted (D-031).
 
 A survivor is one of three things (D-031): a weak test, an **inert** mutation, or
 a **broken** mutation. The runner heals before it measures — an interrupted run
@@ -552,12 +580,82 @@ _UIP_MOVE_KEY = '        "expected_move_pct": round(expected_move_pct, 6),'
 _UIP_SIMPLE_KEY = '        "expected_move_simple_pct": round(expected_move_simple_pct, 6),'
 _UIP_DIRECTION_KEY = '        "direction": direction,'
 _UIP_UNIT = '        unit="percent (expected spot change over the stated tenor)",'
-_UIP_CONFIDENCE = "        confidence=reliability,"
+# WIDENED at D-114 (D-055/D-060): `        confidence=reliability,` became
+# AMBIGUOUS (2 sites) when `ppp_valuation` published the same expression. The
+# span begins at the UIP-only `"direction"` value key, whose twin does not
+# exist in the PPP result — that result publishes `"tactical_horizon_years"` at
+# the same position instead. Measured: 1 site.
+_UIP_CONFIDENCE = '            "direction": direction,\n        },\n        confidence=reliability,'
 
 # The config side.
 _UIP_RELIABILITY_READ = "    reliability = fx_carry.uip_reliability_value"
 _UIP_PROP = "        return float(self.uip_reliability_cap.value)"
 _UIP_VALIDATOR = "        if not 0.0 <= self.uip_reliability_value <= 1.0:"
+
+
+# --------------------------------------------------------------------------
+# P1-P9 and C5-C6: ppp_valuation (this module's FIFTH function, D-114).
+#
+# The labels continue the scheme: `M*` cip_check, `K*` carry_score, `S*` the
+# dollar smile, `U*` uip_expected_move — so `ppp_valuation` takes `P*` and the
+# config side continues at `C5`.
+#
+# ⚠️ THE SAME ANCHOR HAZARD AS D-112 RECURS, and it is now measurable: the
+# ppp function reuses `cip_check`'s quote convention BY DESIGN, so
+# `_QUOTE_CONVENTIONS` and the `quote` FIELD are shared vocabulary. More
+# acutely, `        confidence=reliability,` resolves to **2** sites — the UIP
+# result and the PPP result — so the bare line is AMBIGUOUS and `check_targets`
+# refuses it (D-055/D-060). It is WIDENED here to the three-line span from the
+# PPP-only `"tactical_horizon_years"` value key down through the `confidence=`
+# line. Every other anchor below was measured at exactly one site before being
+# written; a bare anchor is a CLAIM about bytes and an unmeasured one is a sweep
+# that certifies nothing.
+# --------------------------------------------------------------------------
+
+# The computational core.
+_PPP_DEVIATION = (
+    "    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) "
+    "/ inputs.ppp_implied_rate * 100.0"
+)
+_PPP_RATIO = "    ratio = inputs.spot_rate / inputs.ppp_implied_rate"
+_PPP_STATUS_CALL = "    status = _ppp_status(deviation_pct)"
+
+# The two sign arms of `_ppp_status`. Kept as separate spans rather than one
+# block so a mutation can flip ONE arm — a single block would make the
+# `at_parity` fall-through move with the arms and hide a real defect.
+_PPP_STATUS_POS = '    if deviation_pct > 0.0:\n        return "overvalued"'
+_PPP_STATUS_NEG = '    if deviation_pct < 0.0:\n        return "undervalued"'
+
+# The warning guards, each unique to this function.
+_PPP_WARN_TACTICAL = "    if horizon_years < tactical_horizon_years:"
+_PPP_WARN_OVER = '    if status == "overvalued" and horizon_years < tactical_horizon_years:'
+_PPP_WARN_DATA = "    if abs(deviation_pct) > 100.0:"
+
+# The published value and the contract.
+_PPP_DEV_KEY = '        "deviation_pct": round(deviation_pct, 2),'
+_PPP_RATIO_KEY = '        "ratio": round(ratio, 6),'
+_PPP_STATUS_KEY = '        "status": status,'
+_PPP_LEG_KEY = '            "ppp_implied_rate": inputs.ppp_implied_rate,'
+_PPP_TACTICAL_KEY = '            "tactical_horizon_years": tactical_horizon_years,'
+_PPP_UNIT = '        unit="percent deviation of the spot rate from the PPP-implied rate",'
+
+# WIDENED (D-055/D-060): `        confidence=reliability,` is AMBIGUOUS at two
+# sites (the UIP result and this one). The three-line span begins at the
+# PPP-only `"tactical_horizon_years"` value key, whose byte-identical twin does
+# not exist in the UIP result — that result publishes `"direction"` at the same
+# position instead. Measured: 1 site.
+_PPP_CONFIDENCE = (
+    '            "tactical_horizon_years": tactical_horizon_years,\n'
+    "        },\n"
+    "        confidence=reliability,"
+)
+
+# The config side.
+_PPP_RELIABILITY_READ = "    reliability = fx_carry.ppp_reliability_value"
+_PPP_PROP = "        return float(self.ppp_reliability_cap.value)"
+_PPP_PROP_TACTICAL = "        return float(self.ppp_tactical_horizon_years.value)"
+_PPP_VALIDATOR = "        if not 0.0 <= self.ppp_reliability_value <= 1.0:"
+_PPP_TACTICAL_VALIDATOR = "        if self.ppp_tactical_horizon_value <= 0.0:"
 
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
@@ -1513,7 +1611,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "U8b the confidence is a hardcoded literal instead of the config cap",
         SRC,
         _UIP_CONFIDENCE,
-        "        confidence=0.15,",
+        '            "direction": direction,\n        },\n        confidence=0.15,',
     ),
     # --- C4: the UIP config accessor and validator ------------------------
     (
@@ -1540,6 +1638,183 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         _UIP_VALIDATOR,
         "        if False:",
     ),
+    # --- P1: the deviation arithmetic -------------------------------------
+    (
+        "P1a the deviation drops the PPP-relative form (spot/leg as a percent)",
+        SRC,
+        _PPP_DEVIATION,
+        "    deviation_pct = inputs.spot_rate / inputs.ppp_implied_rate * 100.0",
+    ),
+    (
+        "P1b the deviation divides by the SPOT instead of the PPP leg",
+        SRC,
+        _PPP_DEVIATION,
+        "    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) "
+        "/ inputs.spot_rate * 100.0",
+    ),
+    (
+        "P1c the ratio is inverted (leg over spot)",
+        SRC,
+        _PPP_RATIO,
+        "    ratio = inputs.ppp_implied_rate / inputs.spot_rate",
+    ),
+    # --- P2: the status arms ----------------------------------------------
+    (
+        "P2a the overvalued arm is inverted (a spot above PPP reads undervalued)",
+        SRC,
+        _PPP_STATUS_POS,
+        '    if deviation_pct > 0.0:\n        return "undervalued"',
+    ),
+    (
+        "P2b the undervalued arm is inverted",
+        SRC,
+        _PPP_STATUS_NEG,
+        '    if deviation_pct < 0.0:\n        return "overvalued"',
+    ),
+    (
+        "P2c the parity arm is unreachable (the negative arm uses <=)",
+        SRC,
+        _PPP_STATUS_NEG,
+        '    if deviation_pct <= 0.0:\n        return "undervalued"',
+    ),
+    (
+        "P2d the status is not derived from the deviation (a constant)",
+        SRC,
+        _PPP_STATUS_CALL,
+        '    status = "at_parity"',
+    ),
+    # --- P3: the published value ------------------------------------------
+    (
+        "P3a the published deviation is left UNROUNDED (float dust leaks out)",
+        SRC,
+        _PPP_DEV_KEY,
+        '        "deviation_pct": deviation_pct,',
+    ),
+    (
+        "P3b the published deviation is rounded to the wrong precision",
+        SRC,
+        _PPP_DEV_KEY,
+        '        "deviation_pct": round(deviation_pct, 0),',
+    ),
+    (
+        "P3c the published ratio is left unrounded",
+        SRC,
+        _PPP_RATIO_KEY,
+        '        "ratio": ratio,',
+    ),
+    (
+        "P3d the published status is a constant",
+        SRC,
+        _PPP_STATUS_KEY,
+        '        "status": "at_parity",',
+    ),
+    (
+        "P3e the published PPP leg is the fixture constant, not the input",
+        SRC,
+        _PPP_LEG_KEY,
+        '            "ppp_implied_rate": 1.25,',
+    ),
+    (
+        "P3f the published tactical horizon is not read from config",
+        SRC,
+        _PPP_TACTICAL_KEY,
+        '            "tactical_horizon_years": 0.0,',
+    ),
+    # --- P4: the warning guards -------------------------------------------
+    (
+        "P4a the tactical warning boundary moves from < to <=",
+        SRC,
+        _PPP_WARN_TACTICAL,
+        "    if horizon_years <= tactical_horizon_years:",
+    ),
+    (
+        "P4b the tactical warning is removed entirely (dead safety vocabulary)",
+        SRC,
+        _PPP_WARN_TACTICAL,
+        "    if False:",
+    ),
+    (
+        "P4c the overvaluation warning drops its status condition",
+        SRC,
+        _PPP_WARN_OVER,
+        "    if horizon_years < tactical_horizon_years:",
+    ),
+    (
+        "P4d the overvaluation warning drops its horizon condition",
+        SRC,
+        _PPP_WARN_OVER,
+        '    if status == "overvalued":',
+    ),
+    (
+        "P4e the data-error guard becomes >= 100 instead of > 100",
+        SRC,
+        _PPP_WARN_DATA,
+        "    if abs(deviation_pct) >= 100.0:",
+    ),
+    (
+        "P4f the data-error guard is removed entirely",
+        SRC,
+        _PPP_WARN_DATA,
+        "    if False:",
+    ),
+    # --- P5: the contract and the confidence ------------------------------
+    (
+        "P5a the unit is misdeclared as a fraction",
+        SRC,
+        _PPP_UNIT,
+        '        unit="dimensionless (spot-to-PPP ratio)",',
+    ),
+    (
+        "P5b the confidence is a hardcoded literal instead of the config cap",
+        SRC,
+        _PPP_CONFIDENCE,
+        '            "tactical_horizon_years": tactical_horizon_years,\n'
+        "        },\n"
+        "        confidence=0.2,",
+    ),
+    # --- C5-C6: the PPP config accessors and validators -------------------
+    (
+        "C5a the PPP reliability accessor is a hardcoded literal",
+        CONFIG,
+        _PPP_PROP,
+        "        return 0.2",
+    ),
+    (
+        "C5b the PPP reliability accessor returns the UIP leaf instead",
+        CONFIG,
+        _PPP_PROP,
+        "        return float(self.uip_reliability_cap.value)",
+    ),
+    (
+        "C5c the PPP reliability leaf is not read at all (the model ignores config)",
+        SRC,
+        _PPP_RELIABILITY_READ,
+        "    reliability = 0.2",
+    ),
+    (
+        "C5d the range validator on the PPP reliability cap removed",
+        CONFIG,
+        _PPP_VALIDATOR,
+        "        if False:",
+    ),
+    (
+        "C6a the tactical-horizon accessor is a hardcoded literal",
+        CONFIG,
+        _PPP_PROP_TACTICAL,
+        "        return 3.0",
+    ),
+    (
+        "C6b the tactical-horizon leaf is not read at all",
+        SRC,
+        "    tactical_horizon_years = fx_carry.ppp_tactical_horizon_value",
+        "    tactical_horizon_years = 3.0",
+    ),
+    (
+        "C6c the positivity validator on the tactical horizon removed",
+        CONFIG,
+        _PPP_TACTICAL_VALIDATOR,
+        "        if False:",
+    ),
 ]
 
 
@@ -1553,6 +1828,7 @@ def run_tests() -> bool:
             "tests/models/test_carry_score.py",
             "tests/models/test_dollar_smile_regime.py",
             "tests/models/test_uip_expected_move.py",
+            "tests/models/test_ppp_valuation.py",
             "tests/test_infrastructure.py",
             "-q",
             "--no-header",
@@ -1656,7 +1932,7 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     killed = total - len(survivors)
     print(
         f"MUTATION SWEEP — fx_carry (cip_check + carry_score + dollar_smile_regime "
-        f"+ uip_expected_move): "
+        f"+ uip_expected_move + ppp_valuation): "
         f"{killed}/{total} killed",
         flush=True,
     )

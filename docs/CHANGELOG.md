@@ -10,6 +10,61 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-114 — Module 9.2's `ppp_valuation`: the price-level anchor (Tier 5 = 14/23)
+
+Module 9's parity family gains its **price-level neighbour** — the companion to
+`cip_check`/`uip_expected_move` that answers *"is the currency cheap in purchasing-power
+terms"* rather than *"what do two interest rates imply"*, and shares **no input** with them.
+
+**Added**
+
+- **`ppp_valuation`** in `src/macro_engine/models/fx_carry.py`, with `PPPInputs`,
+  `PPPStatus` (`overvalued`/`undervalued`/`at_parity`), `_ppp_status`, `_ppp_limitations` (5),
+  and `_ppp_warnings` (3 branches). Publishes `deviation_pct` (`round(_,2)`), `ratio`
+  (`round(_,6)`), `status`, both levels, `quote`, `horizon_years`, `tactical_horizon_years`.
+- **Two config leaves** in `config.py` + `settings.yaml` — `ppp_reliability_cap` (**0.2**) and
+  `ppp_tactical_horizon_years` (**3.0**), each with a validator and a long rationale note.
+- **`tests/models/test_ppp_valuation.py`** — **55 tests**, expectations hand-derived first and
+  then proved load-bearing by 20 code probes.
+- **`scripts/live_ppp_valuation_check.py`** — a live spot against a **declared** OECD PPP
+  vintage; passes all five sections on real data.
+- **28 new mutations** (`P1`-`P5`, `C5`-`C6`) in `scripts/mutation_fx_carry.py` — now **171**.
+
+**Decided**
+
+- **`ppp_implied_rate` is BLOCKED → MANUAL** (§21.1) and is a **declared input with a documented
+  vintage**, disclosed on three surfaces — never a proxy. The operator approved the D-108 /
+  line-2958 resolution.
+- **The horizon gates a WARNING, never a LABEL.** A short horizon is not refused (a 3-month
+  deviation is real and useless); §21.4's discipline is to *disclose* the mistiming.
+- **`confidence = 0.2` is a model-specific CAP, not `compute_confidence()`** — the `uip_expected_move`
+  precedent: the *method* is empirically weak (absolute PPP persists for years), and no
+  input-reliability factor captures that. The leaf sits **deliberately above** UIP's 0.15.
+
+**Changed**
+
+- **The four `_fx_carry_settings` helpers now seed from the shipped block**
+  (`dict(get_settings().fx_carry)`), fixing the O-127 mechanical break **structurally** on its
+  fourth firing.
+
+**Fixed**
+
+- **The `confidence=reliability,` anchor became AMBIGUOUS (2 sites)** when the fifth function
+  landed; `check_targets` **refused** to run until `U8b` was **widened** with the UIP-only
+  `"direction"` neighbour (never deleted, D-055/D-060).
+- **One first-sweep survivor, `C6b`, was a WEAK TEST** — the shipped leaf is `3.0` and the
+  mutant hardcoded `3.0`, so the tests compared `3.0` with `3.0` (D-050's trap). Fixed by a new
+  test that **perturbs the leaf**; the mutation was never weakened.
+
+**Measured:** live EUR/USD `1.140121 @ 2026-09-26` against a declared leg `0.72` →
+**`+58.35 %`** — interrogated and confirmed as the genuine absolute-PPP gap for a rich-country
+pair (the Balassa-Samuelson artifact the model discloses), not a unit error.
+
+**Gates:** `264 == 264` · **3533 collected / 0 genuine failures / 1 skipped** (JUnit — the 7 tests
+that fail only under FULL-SUITE ordering **reproduce on the pristine D-113 tree too** and are the
+sandbox `unlink` artefact **O-140**, recorded, not caused by this increment) · **171/171 killed**
+· **45 sweeps OK**.
+
 ### D-113 — O-138 closed: `--check-targets` made real, and answered before the tree is touched
 
 A **tool fix, not a function increment** — no model code changed. **The root cause was worse

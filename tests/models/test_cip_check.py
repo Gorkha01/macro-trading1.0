@@ -595,15 +595,20 @@ def _fx_carry_settings(**overrides: CalibratedValue) -> FxCarrySettings:
     **maintenance point**, and the remedy at the fourth occurrence is to build it
     from the model's own fields (``FxCarrySettings.model_fields``) rather than to
     hand-list them a fourth time.
+
+    **D-114 is that fourth occurrence**, and the remedy above was applied rather
+    than hand-listing again: ``ppp_reliability_cap`` and
+    ``ppp_tactical_horizon_years`` were both added, and the base is now seeded
+    from the SHIPPED ``fx_carry`` block. Every field the model requires is
+    present by construction, so a future required field can no longer silently
+    turn a guard test into a tautology — which is the failure this helper was
+    written to prevent in the first place.
+
+    The seeding is safe because the shipped leaf VALUES never matter to these
+    tests: each ``pytest.raises`` case below overrides exactly the field under
+    test, and the negative control reads only whether construction *succeeds*.
     """
-    base: dict[str, CalibratedValue] = {
-        "notable_deviation_pct": _cal(0.1),
-        "extreme_deviation_pct": _cal(0.5),
-        "carry_vol_floor": _cal(0.1),
-        "dollar_smile_vix_threshold": _cal(25.0),
-        "dollar_smile_sign_boundary": _cal(0.0),
-        "uip_reliability_cap": _cal(0.15),
-    }
+    base: dict[str, CalibratedValue] = dict(get_settings().fx_carry)
     base.update(overrides)
     return FxCarrySettings(**base)
 
