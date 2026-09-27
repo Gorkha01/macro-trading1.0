@@ -9723,7 +9723,7 @@ adjacency (lesson **5dl**).
 
 ---
 
-## D-118 — Module 9's `intervention_capacity` — **PHASE 5, Tier 5 = 15/23; MODULE 9 CLOSED (2026-09-28)**
+## D-118 — Module 9's `intervention_capacity` — **PHASE 5, Tier 5 = 15/23; MODULE 9 CLOSED (2026-09-28)** *(15/23 correct as of D-118 — the count first went wrong at D-119, see O-147)*
 
 **The last Module 9 function, and the second D-096 exception.** §20.9's reference impl
 (`AGENTS.md:4906`) gives the body, so this is an UPGRADE that **supersedes nothing** — the
@@ -9927,12 +9927,15 @@ O-138's **second** suggestion — a refusing `DIRTY TARGET` banner unless `--all
 (`describe_dirty_targets`: "a legitimate increment *is* a dirty tree"). **An implied fix is a
 disclosure, and a disclosure is not a measurement.**
 ---
-## D-119 — Module 9's `em_vulnerability_checklist` — **PHASE 5, Tier 5 = 15/23; a SECOND D-096 exception (2026-09-29)**
+## D-119 — Module 9's `em_vulnerability_checklist` — **PHASE 5, Tier 5 = 16/23; a SECOND D-096 exception (2026-09-29)**
 
 **§20's part B, a heading that was HALF FALSE, and the first CONFIRMED block after four false
 ones.** §20's heading (`AGENTS.md:2937`) and its reference impl (`AGENTS.md:2948`) **give the
 body**, so this is an UPGRADE that **supersedes nothing** — the `cip_check` answer, *a NEW
-CAPABILITY*. Tier 5 **stays 15/23** (the name was already counted), and the file is a CREATE.
+CAPABILITY*. Tier 5 moves **15 → 16/23** — *corrected from a written "stays 15/23"; see **O-147***:
+the running count was recalled, not measured, and this entry's "the name was already counted" was a
+false step (`em_vulnerability_checklist` is a **7th, separate** Tier-5 build, not a member of Module
+9's **6**-function parity group). The file is a CREATE.
 
 ### What shipped
 

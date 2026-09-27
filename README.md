@@ -43,18 +43,22 @@ No function may claim country-genericity it has not earned.
 |---|---|---|
 | 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 8/8; 21/21 routes verified |
 | 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — 9/9, live-validated |
-| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **89/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 11/23**; the **12** outstanding are all Tier 5 — **not a backlog** |
+| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **94/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 16/23**; the **7** outstanding are all Tier 5 — **not a backlog** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, multi-country | **under way** — **Tier 5 = 11/23** (D-092 … D-109), one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. Multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, multi-country | **under way** — **Tier 5 = 16/23** (D-092 … D-119), one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. Multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded
 > three disagreeing tier-5 counts; §21.3's table, *and only that table*, governs — §22.1).
-> `89/101` is derived, not recalled: 78 Tier-1–4 names + 11 implemented Tier-5 names.
+> `94/101` is **derived, not recalled**: 78 Tier-1–4 names + **16** implemented Tier-5 names,
+> measured 2026-09-29 against `src/` (**O-147** — a carried `15/23` was an off-by-one). The
+> **7** remaining are `oil_balance_signal` · `gold_driver_attribution` ·
+> `metals_complex_divergence` · `sector_rotation_prior` · `duration_sensitivity` ·
+> `factor_tilt_prior` · `statement_text_diff`.
 >
 > **Phase 5 is under way by explicit operator instruction**, one function per increment, each
-> to production standard and each independently verified. The 12 outstanding Tier-5 items are
+> to production standard and each independently verified. The 7 outstanding Tier-5 items are
 > the *entry point* for the rest, not a backlog. See `docs/PROGRESS.md` for the live state and
 > `docs/DECISIONS.md` for the per-increment evidence.
 
@@ -64,15 +68,15 @@ uv run uvicorn macro_engine.api_layer.app:app --host 127.0.0.1 --port 8000
 # /health · /thesis/us · /dashboard_data · /query · /thesis/us/stream (SSE)
 ```
 
-### Quality gates (measured 2026-09-26)
+### Quality gates (measured 2026-09-29, after D-119)
 
 ```bash
-uv run ruff check .                          # All checks passed!
-uv run ruff format --check .                 # 258 files already formatted
-uv run mypy --strict src tests tools scripts # Success: no issues found in 258 source files
-uv run pytest -q --junitxml=build/full.xml   # 3307 collected / 3306 passed / 0 failed / 1 skipped
+uv run ruff check src tests tools scripts    # All checks passed!
+uv run ruff format --check .                 # 276 files already formatted
+uv run mypy --strict src tests tools scripts # Success: no issues found in 276 source files
+uv run pytest -q --junitxml=build/full.xml   # 3688 passed / 0 failed / 0 errors / 1 skipped
 uv run pytest -m live                        # gated on tools/openbb_reachability.py; scheduled CI only
-uv run python tools/sweep_health.py          # run LAST: 45 sweeps, 0 leftovers, OK
+uv run python tools/sweep_health.py          # run LAST: 47 sweeps, 0 leftovers, OK
 ```
 
 `pytest` runs the **default marker set** (`not live and not slow`) — `slow` tests exist and are
@@ -96,7 +100,7 @@ This project uses **`uv` exclusively**. Do not use pip, poetry, or conda.
 
 ```bash
 uv sync --extra dev        # create .venv, install locked dependencies
-uv run pytest              # offline suite (2808 passed; no network)
+uv run pytest              # offline suite (3688 passed / 1 skipped; no network)
 uv run pytest -m live      # live suite (real OpenBB/FRED calls, scheduled CI)
 uv run ruff check .        # lint
 uv run ruff format --check .

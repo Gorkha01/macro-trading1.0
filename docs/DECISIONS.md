@@ -19583,7 +19583,8 @@ review/audit.
 
 ## D-118 — Module 9's `intervention_capacity`: a **fourth FALSE BLOCK** wired to FRED reserves, a confidence that had to be MULTIPLIED (not `min()`-ed) to keep both halves alive, and 14 survivors the first sweep was right to report
 
-**Date:** 2026-09-27. **Tier 5 = 15/23.** Target: **the new**
+**Date:** 2026-09-27. **Tier 5 = 15/23.** *(correct as of D-118 — `intervention_capacity` was the
+15th; the count first went wrong at D-119, see **O-147**.)* Target: **the new**
 `src/macro_engine/models/intervention.py` (`intervention_capacity`), **the new**
 `src/macro_engine/data_layer/reserves_client.py`, and the **new**
 `InterventionSettings` block in `src/macro_engine/config.py`. Section resolved
@@ -19758,17 +19759,21 @@ so the Tier 1–4 baseline is untouched.
 
 ### Next
 
-**Tier 5 = 15/23.** Re-derive the remaining names from §21.3's table *"and only
+**Tier 5 = 15/23** (*correct as of D-118 — `intervention_capacity` was the 15th; the running count
+first went wrong at D-119, see **O-147***). Re-derive the remaining names from §21.3's table *"and only
 that table"* — do NOT recall them. **NOT mine:** the Tier-5 review/audit.
 
 ---
 
 ## D-119 — Module 9's `em_vulnerability_checklist`: a heading that was **HALF false** (the first CONFIRMED block after four false ones), a gate that REFUSES rather than guesses, and a D-118 rule held to the letter
 
-**Date:** 2026-09-29. **Tier 5 = 15/23** (unchanged: `em_vulnerability_checklist`
-is §20's part B, a **second D-096 exception** — the authority supplies the body,
-so it is an UPGRADE that **supersedes nothing**; the honest answer is the
-`cip_check` answer, **a new capability**). Target: **the new**
+**Date:** 2026-09-29. **Tier 5 = 16/23** (moved **15 → 16**; *corrected 2026-09-29, see **O-147*** —
+the count as written at D-119 said "unchanged: the name was already counted", which treated
+`em_vulnerability_checklist` as an already-counted Module 9 member. It is a **7th, separate** Tier-5
+build; Module 9's parity group is **6**. §21.3's table against `src/` gives **16 defined / 7 not**.
+`em_vulnerability_checklist` is §20's part B, a **second D-096 exception** — the authority supplies
+the body, so it is an UPGRADE that **supersedes nothing**; the honest answer is the `cip_check`
+answer, **a new capability**). Target: **the new**
 `src/macro_engine/models/em_vulnerability.py`, **three new indicator routes** in
 `data_layer/world_bank_client.py`, and the **new** `EMVulnerabilitySettings`
 block in `src/macro_engine/config.py`. Section resolved with `grep -n`:
@@ -19890,7 +19895,12 @@ honesty mechanism; a silent alignment would be the defect.**
 
 ### Next
 
-**Tier 5 = 15/23.** Re-derive the remaining names from §21.3's table *"and only
-that table"* — do NOT recall them. The remaining 8 Tier-5 names are: 4 in Modules
-10–11 (`commodities.py` / `equity_macro.py`), the rest §20.9/sector/statement
-prose. **NOT mine:** the Tier-5 review/audit.
+**Tier 5 = 16/23.** Re-derive the remaining names from §21.3's table *"and only
+that table"* — do NOT recall them. The remaining **7** Tier-5 names, MEASURED
+(2026-09-29) from `AGENTS.md:5541–5550` against `src/` rather than recalled — see
+**O-147** — are: `oil_balance_signal`, `gold_driver_attribution`,
+`metals_complex_divergence` (all Module 10 → a new `models/commodities.py`),
+`sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior` (all Module
+11 → a new `models/equity_macro.py`), and `statement_text_diff` (§20.4 — the one
+name whose spec body **keeps its own `NotImplementedError`**, needing an FOMC
+text feed). **NOT mine:** the Tier-5 review/audit.

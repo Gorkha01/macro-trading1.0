@@ -14,7 +14,9 @@ Entry dates are the date of the change, not the release.
 
 A **function increment**: a heading that was **HALF false**, the first **CONFIRMED**
 block after four false ones, and a gate that **refuses** rather than guesses. Tier 5
-stays **15/23** — a **D-096 exception** (the authority supplies the body, so this is an
+moves **15 → 16/23** — *corrected from a written "stays 15/23"; see **O-147*** (the
+running count was recalled, not measured, and this entry had treated the name as
+already counted). A **D-096 exception** (the authority supplies the body, so this is an
 UPGRADE that supersedes nothing: a *new capability*).
 
 **Added**

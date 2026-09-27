@@ -3,7 +3,11 @@
 **Live tracking file.** Updated in place at each milestone — never restarted.
 Last updated: **2026-09-29** (after **D-119 — Module 9's `em_vulnerability_checklist`: a heading
 that was HALF FALSE, the first CONFIRMED block after four false ones, and a gate that REFUSES
-rather than guesses.** Tier 5 = **15/23** (unchanged: §20's part B is a **second D-096 exception** —
+rather than guesses.** Tier 5 = **16/23** — *corrected from 15/23; see **O-147*** (the running count
+had been recalled, not measured, and D-119's "the name was already counted" was a false step:
+`em_vulnerability_checklist` is a **7th, separate** Tier-5 build against §20's part B, not a member
+of Module 9's **6**-function parity group. Re-derived from §21.3's table `AGENTS.md:5541–5550`
+against `src/`: **16 have a real `def`, 7 do not**). §20's part B is a **second D-096 exception** —
 `AGENTS.md:2937` is the heading, `:2948` the reference implementation — so it **supersedes
 nothing**: the honest answer is the `cip_check` one, *a new capability*). **The blocking claim was
 a CLAIM, and it was measured:** §20's heading says *"needs IMF/World Bank data"*, which under
@@ -35,7 +39,9 @@ branches; the `G*` validators and accessors — the `C6b` class, fixed by **D-05
 reachability **PASS 58/58** · sweep **40/40** · `sweep_health.py` LAST → **47 sweeps, 0 leftovers,
 0 shapes, 0 committed, 0 failures, OK**.)
 Previous update: **2026-09-28** (after **D-118 — Module 9's `intervention_capacity`: a NEW module, a
-NEW data-layer client, a NEW config block, and a FOURTH FALSE BLOCK closed.** Tier 5 = **15/23**.
+NEW data-layer client, a NEW config block, and a FOURTH FALSE BLOCK closed.** Tier 5 = **15/23**
+(*correct at D-118* — `intervention_capacity` was the 15th; the count went wrong only at D-119, see
+**O-147**).
 §20.9 (`AGENTS.md:4861`; the reference implementation is at `:4904` — resolved with `grep -n`)
 specifies the function, so this is an **UPGRADE of a specified function in a NEW file**, and it
 **supersedes nothing** — the honest D-096 answer is the `cip_check` one: *a new capability*. The

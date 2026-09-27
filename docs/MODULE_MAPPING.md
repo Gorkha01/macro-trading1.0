@@ -2340,7 +2340,8 @@ model** matters, and that model was already audited.
 
 ## D-118 — Module 9's `intervention_capacity`, and Module 9 CLOSED (2026-09-28)
 
-**Tier 5 = 15/23. Module 9 = 5 of 5 — COMPLETE.** Module 18 is untouched at 5 of 6.
+**Tier 5 = 15/23. Module 9 = 5 of 5 — COMPLETE.** *(15/23 correct as of D-118; the count first
+went wrong at D-119, see **O-147**.)* Module 18 is untouched at 5 of 6.
 
 `intervention_capacity` claims the **last open Module 9 slot** (Module 9.5 in §20.9's
 numbering, `AGENTS.md:4906`). Module 9 now reads: `cip_check` (D-108) · `carry_score` (D-109) ·
@@ -2382,7 +2383,11 @@ truth.
 
 ## D-119 — Module 9's `em_vulnerability_checklist`: §20's part B, a SIBLING file, and a source-family split (2026-09-29)
 
-**Tier 5 stays 15/23.** This is a **D-096 exception**: §20's heading
+**Tier 5 = 16/23** (*corrected from a written "stays 15/23" — see **O-147***: the running count was
+recalled, not measured, and this entry's "stays" treated `em_vulnerability_checklist` as an
+already-counted Module 9 member. It is a **7th, separate** Tier-5 build — Module 9's parity group is
+**6** — so the count moves **15 → 16**; §21.3's table against `src/` gives **16 defined / 7 not**).
+This is a **D-096 exception**: §20's heading
 (`AGENTS.md:2937`) and its reference implementation (`AGENTS.md:2948`) together
 **give the body**, so the increment is an **UPGRADE of a specified function** —
 and it **supersedes nothing**, because no Module 9 sibling computes a **country
