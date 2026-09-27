@@ -1,7 +1,38 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-27** (after **D-122 — Module 10's `metals_complex_divergence`: the
+Last updated: **2026-09-28** (after **D-125 — `statement_text_diff` (§20.4), the LAST Tier-5 name:
+**TIER 5 = 23/23 COMPLETE**, one genuine MODEL defect, two sweep-harness defects, and the census 49
+→ 50.**). **Tier 5 = 23/23** — MEASURED 2026-09-28 from §21.3's table `AGENTS.md:5541–5550` against
+`src/` (all **23** have a real `def`), not recalled — the **O-147** discipline. `statement_text_diff`
+was the **only** remaining name; §20.4 (`AGENTS.md:4350`) supplies the reference body, making this the
+**eighth D-096 exception**; it **supersedes nothing** — the `cip_check` answer, *a new capability*.
+**The existing** `models/policy_rules.py` (Module 4's home) and `config.py` were extended (**no new
+module, no new OpenBB commands** — the diff is a **pure function of two supplied texts**, so the
+command census stays **6**). **⚠️ ONE GENUINE MODEL DEFECT:** the first reduction named the direction
+off *which side was non-zero* (`if dovish_side == 0: …`), which read a hawkish phrase **LEAVING** as
+**`MORE_HAWKISH`** — the exact inversion of §20.4's premise; caught by
+`test_a_hawkish_removal_is_a_dovish_move` (written from the spec, not the code) and fixed by reducing
+over **direction of movement**. **⚠️ TWO SWEEP-HARNESS DEFECTS:** **O-155** — the sweep's local
+leftover-repair matched the mutation's `new` text alone, and `D2a`'s `new` is a **prefix** of a
+legitimate line, so it "reverted" four never-applied mutations (fixed; the local repair was DELETED —
+the sidecar is the authority); **O-156** — an ad-hoc harness was **SIGTERM'd mid-loop** and left a
+mutation on disk, which the next sweep read as its baseline (**a FALSE SURVIVOR**, the O-131 shape;
+reverted and re-ran to 30/30). The five survivors of the first clean run were triaged per **D-031**
+(one EQUIVALENT retargeted; three WEAK TESTS fixed by **adding** observable tests, never by weakening
+a mutation). **NEW** `scripts/mutation_statement_text.py` (30 mutations, **30/30 killed**) and
+`scripts/live_statement_text_check.py` (6 sections, declared text). **Gates:** **289 == 289** (D-035,
+MEASURED) · **4054 tests / 0 failed / 0 errors / 1 skipped** (via `--junitxml`) · reachability
+**PASS 58/58** (Tier-5 SCRIPT-ONLY **21** + NO CALLER **1** = **22** unwired) · `mutation_qe_stance.py`
+**28/28** (the O-145 check) · `sweep_health.py` LAST → **50 sweeps, 0 leftovers, 0 shapes, 0
+committed, 0 failures, OK**. **⚠️ THE D-114 CLASS RE-FIRED DURING CLOSE-OUT:** the suite was
+backgrounded **in the same message** as the sweep, so it read the sweep's TARGET (`M2a` applied) and
+reported **6 spurious failures** — a clean re-run measured 4054/0/0/1. **NO gate may run while a
+sweep runs.**
+Previous update: **2026-09-27** (after **D-124 — Module 11 COMPLETE: `duration_sensitivity` (§6.9) +
+`factor_tilt_prior` (§20.20-E)**, the **seventh and eighth D-096 exceptions**, and the **NINTH
+anchor-widening** of the O-145 class. Tier 5 = **22/23**. Detail in `docs/DECISIONS.md` D-123/D-124.)
+Previous update: **2026-09-27** (after **D-122 — Module 10's `metals_complex_divergence`: the
 repository's SEVENTH FALSE BLOCK, a probe that had NO CONTROL, and the sweep's own pre-flight
 catching the ambiguity this increment created in ANOTHER file.** Tier 5 = **19/23** — MEASURED
 2026-09-27 from §21.3's table `AGENTS.md:5541–5550` against `src/` (`19` have a real `def`, `4` do
