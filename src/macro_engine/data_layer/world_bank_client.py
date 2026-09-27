@@ -94,10 +94,10 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CURRENT_ACCOUNT_PCT_GDP_INDICATOR",
-    "IndicatorReading",
-    "PPPFactor",
     "RESERVES_TOTAL_USD_INDICATOR",
     "SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR",
+    "IndicatorReading",
+    "PPPFactor",
     "WorldBankError",
     "WorldBankReadError",
     "WorldBankUnavailableError",
