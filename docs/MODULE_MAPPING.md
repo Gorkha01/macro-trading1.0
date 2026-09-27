@@ -2631,3 +2631,62 @@ pytest-detectable mutant (**inverting the `missing` predicate**) that keeps the 
 **The mapping-level rule: before "fixing" a survivor, MEASURE which gate kills it — a survivor in the
 pytest sweep may already be killed by `mypy`, in which case the fix is a retarget plus a record
 (O-154), never a weakened mutation.**
+
+---
+
+## D-123 — Module 11 OPENS: `sector_rotation_prior`, a **silent-coverage hole** (the map covers six of nine states), and a **SIGTERM that left a LIVE MUTATION** (2026-09-27)
+
+**Tier 5 = 20/23** (moved **19 → 20**; MEASURED from `AGENTS.md:5541–5550` against `src/` — **20
+defined / 3 not** — not recalled, the O-147 discipline). This is a **D-096 exception**: §6.9
+(`AGENTS.md:1092` reference body) **gives the body**, so the increment is an **UPGRADE of a
+specified function** — and it **supersedes nothing**, because Module 11 had **no function at all** in
+`src/` before this increment (the `cip_check` answer).
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `sector_rotation_prior` | **11 — Equity Macro** | `models/equity_macro.py` (**CREATES** — Module 11 had **no file**; its tier row `AGENTS.md:1783` maps Module 11 here) | `AGENTS.md:1092` (§6.9) | **nothing** — a NEW capability | **IMPLEMENTED** (D-123) |
+
+**The module-file rule reached its sixth D-096 exception, and this one CREATE a file.** §6.9 gives a
+complete reference body, so the increment was an **UPGRADE of a specified function** whose
+supersession question has the honest `cip_check` answer: **nothing superseded, a NEW capability**.
+Module 11 now has its first function and a file that did not exist before this increment.
+
+**The command census does NOT move — a first for the D-096 exceptions.** `sector_rotation_prior`
+reads **no market data at all**: its only input is a **regime label** produced by the classifier in
+`models/regime.py`. So the OpenBB command census stays **6**, and the live check fetches FRED series
+**only to run the classifier**, never to feed the prior — the tier's first function whose live
+check has a **constructed** rather than **fetched** value path.
+
+**The silent-coverage mapping rule (the D-037 shape, one module downstream).** §6.9's reference
+`ROTATION_MAP` is keyed on **six** regime strings and resolved with `.get(regime_state, [...])`; the
+classifier **declares nine** and — after D-037 made all nine *reachable* — **can return all nine**.
+Under the reference body, `slowdown` / `recovery` / `reflation` would **silently return the generic
+fallback**: the model would answer *"no prior"* for a regime the classifier actually produces. **The
+rule: a mapping keyed on a DECLARED vocabulary must be proven EXHAUSTIVE over that vocabulary, by a
+TEST — because a `.get` fallback turns a missing key into a confident-sounding answer rather than an
+error.** This build's map is exhaustive over `REGIME_STATES` (test-asserted), the fallback is
+reserved for a value genuinely outside the vocabulary (which the `Literal` field refuses anyway), and
+the three added rows are disclosed as this build's declaration (`SPECIFICATION_REGIMES` /
+`SECTOR_PRIOR_EXTENSION_REGIMES` partition the vocabulary and are asserted to).
+
+**⚠️ A NEW TRAP, and the reason the wide shape grep is NOT sufficient: a SIGTERM mid-sweep can leave
+a LIVE MUTATION that looks like ordinary code.** The second sweep run was killed by a foreground
+timeout, leaving `models/equity_macro.py` carrying `confidence = computed + …` (mutation `E4a`)
+**plus** its sidecars. The **wide shape grep printed nothing** — the mutation is a real-looking
+expression, not a `MUTANT`/`if False:` shape. It was caught only by **diffing every swept file against
+its `.sweepbackup` byte-for-byte** (`config.py` matched; `equity_macro.py` did **not**), healed from
+the pristine sidecar, and re-swept. **The mapping-level rule: the shape grep catches SHAPE-shaped
+leftovers only; the sidecar DIFF is the authority for "did this run die mid-mutation?", and it must
+be run before trusting the tree after ANY non-clean sweep exit.**
+
+**Reachability moved — SCRIPT-ONLY count 17 → 18.** `sector_rotation_prior`'s caller is the
+**committed** `scripts/live_equity_macro_check.py`, so it classifies **SCRIPT-ONLY — Tier 5**.
+`oil_balance_signal` remains **`NO CALLER — Tier 5`** (unchanged since D-121). The **total** stays
+**PASS 58/58**.
+
+**The sweep census moved 48 → 49, and the count lives in THREE places.** Unlike D-120/D-121/D-122
+(which EXTENDED `mutation_commodities.py` and left the census alone), this increment adds a **new
+sweep script**, so the catalogue is **49**. The count is asserted in
+`test_sweep_sidecar_lifecycle.py` (**twice** — the function NAME `test_there_are_forty_nine_sweeps_to_cover`
+and its assertion) and `test_sweep_health_leftover_predicate.py` (**once**), and all three were edited
+together — the rule D-025 established when the census first drifted.

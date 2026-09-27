@@ -10367,3 +10367,88 @@ unchanged at **48** (no new sweep module — the metals mutations were added to 
   "fixed".
 
 **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-123 (2026-09-27) — `sector_rotation_prior`, Module 11 (Section 21.3 Tier-5 #11; authority §6.9)
+
+**Tier 5 = 20/23** (moved **19 → 20**; MEASURED 2026-09-27 from `AGENTS.md:5541–5550` against
+`src/`: **20** have a real `def`, **3** do not — `duration_sensitivity`, `factor_tilt_prior`,
+`statement_text_diff`). `AGENTS.md:1092` supplies a complete reference body ⇒ the **sixth D-096
+exception**; it **supersedes nothing** — the `cip_check` answer, *a new capability*. **NO new OpenBB
+commands** — the function reads **no market data at all**: its only input is a **regime label**, so
+the command census **stays 6**. **This increment CREATES the file** — Module 11 had no `def` in
+`src/` before it.
+
+### Step 1–2 — the economic question and the input
+
+§6.9 maps a macro **regime label** (Module 3/4's classifier) onto an equity-**sector** posture. It
+reads no prices and estimates nothing; it is a **lookup whose domain is the classifier's own
+declared vocabulary**. Single input `regime_state`, typed as the classifier's `RegimeState` Literal.
+
+### Step 3 — the defect: a SILENT-COVERAGE hole (the D-037 shape, one module downstream)
+
+§6.9's reference `ROTATION_MAP` is keyed on **SIX** strings and resolved via
+`.get(regime_state, ["diversified — no strong prior"])`. The classifier declares **NINE** and — after
+D-037 made all nine *reachable* — **can return all nine**. Under the reference body,
+`slowdown` / `recovery` / `reflation` would **silently return the fallback** ⇒ the model answers
+*"no prior"* for a regime the classifier actually produces. **Closed:** `SECTOR_ROTATION_PRIOR` is
+keyed on **every** `REGIME_STATES` member (test-asserted); the three added rows are disclosed
+(`SPECIFICATION_REGIMES` / `SECTOR_PRIOR_EXTENSION_REGIMES` partition the vocabulary and are
+asserted to); the fallback is reserved for a value outside the vocabulary (the `Literal` refuses it
+anyway).
+
+### Step 4–5 — the model, the confidence, the caveat
+
+Confidence is a **PRODUCT** (`compute_confidence(...) × equity_macro.reliability_value` = **0.4**) —
+`min()` rejected: both factors sit in `[0, 1]`, so `min()` would publish the smaller always and one
+half would be **dead code** (D-118's removal). `source_independence_count = 1` (no market data read;
+one source family `MANUAL_ASSESSMENT`). The prior-not-rule qualification is published in `context`
+**and** a `warnings` entry on **every** path.
+
+### Step 6 — real-data execution (2026-09-27)
+
+```
+GDPC1 latest            = 24 269.613
+GDPPOT latest           = 29 443.023
+output_gap              = -17.571 %
+inflation_yoy           =  +3.713 %
+inflation_trend_3m      =  +0.046 %
+unemployment_gap        =  -0.300 pp
+classify_regime_rule_based -> 'recession'
+sector_rotation_prior   -> ['utilities', 'staples', 'healthcare'] (confidence 0.2200)
+```
+
+The live check is **END-TO-END**: it fetches the classifier's own inputs from FRED, runs
+`classify_regime_rule_based`, and feeds the **classifier's own** state — not a hand-typed string —
+into the prior. All nine regimes resolve to a real prior (no fallback), the map's keys diff clean
+against `REGIME_STATES`, and the confidence is the product of both halves from **one** run
+(`0.55 × 0.40 = 0.22`).
+
+### Step 9 — gates (2026-09-27, all MEASURED)
+
+* `ruff check src tests tools scripts` — **clean** (3 E501 + 1 I001 in the new files fixed, not
+  `noqa`-ed).
+* `ruff format --check` = **287** == `mypy --strict` = **287** (D-035, MEASURED — one more than
+  D-122's 286: the new `models/equity_macro.py`).
+* Full suite via `--junitxml`: **3975 tests / 0 failed / 0 errors / 1 skipped** (D-122 was 3938).
+* The changed `slow` test `test_the_two_copies_agree_on_the_real_catalogue` run explicitly with
+  `-m slow`: **1 passed (284.49 s)**.
+* Reachability `--check-baseline`: **PASS 58/58**; SCRIPT-ONLY Tier 5 = **18** (up from 17 —
+  `sector_rotation_prior` joins it, the committed live check being a caller); `NO CALLER — Tier 5: 1`
+  (`oil_balance_signal`, unchanged).
+* `mutation_equity_macro.py` = **30/30 killed** (a NEW sweep script); `--check-targets` = **30
+  mutations, 0 problems**.
+* `sweep_health.py` **LAST** → **49 sweeps · 0 leftovers · 0 shapes · 0 committed · 0 failures · OK**
+  (census **48 → 49**, bumped in its three homes).
+
+### Left standing on purpose
+
+* **Module 11's other two functions** — `duration_sensitivity` and `factor_tilt_prior` — are the next
+  Tier-5 names in the same file. Left standing (one function per increment).
+* **The prior is unconditional on starting valuations** — §6.9 itself names this as the principal
+  reason a same-phase cycle can reward a different sector; disclosed in `assumptions`, not "fixed".
+* **The SIGTERM leftover-mutation hazard (O-131, third firing)** — recorded and refined in
+  `REFERENCE.md`, the skill, and `OPEN_ISSUES.md`; the sidecar diff is the standing control.
+
+**NOT mine:** the Tier-5 review/audit.

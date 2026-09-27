@@ -20416,3 +20416,169 @@ recall them. The remaining **4** Tier-5 names, MEASURED (2026-09-27) from `AGENT
 against `src/`, are: `sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior` (Module 11
 → a new `models/equity_macro.py`), and `statement_text_diff` (§20.4). **All four have NO definition
 anywhere in `src/`.**
+
+---
+
+## D-123 — Module 11's `sector_rotation_prior`: the reference map **covers SIX of the classifier's NINE states**, a **SILENT-COVERAGE HOLE** closed a module downstream (the D-037 shape), plus a sweep that left a **LIVE MUTATION** when a SIGTERM killed it
+
+**Date:** 2026-09-27 (session clock). **Tier 5 = 20/23** (moved **19 → 20**; MEASURED 2026-09-27 from
+`§21.3`'s table at `AGENTS.md:5541–5550` against `src/`, not recalled — the O-147 discipline).
+Target: a **NEW** `src/macro_engine/models/equity_macro.py` (Module 11 had **no file** before this
+increment) plus a **NEW** `EquityMacroSettings` block in the existing `src/macro_engine/config.py`.
+Section resolved with `grep -n`: the authority is **§6.9** (`AGENTS.md:1092` reference body), the
+"Module 11 — Equity Macro: Sector Rotation" block whose tier-table row (`AGENTS.md:1783`) maps
+Module 11 to `models/equity_macro.py`. **NO new OpenBB commands** — the function reads **no market
+data at all** (its only input is a regime *label*), so the command census **stays 6**.
+
+### 1. What the authority said, and what was built
+
+`AGENTS.md:1092` gives a **complete reference body** (the tier's **sixth** such body, after §6.7's
+FX block, §20.9/§20's part B, §6.8's oil block, Appendix D's gold block, and §20.10's metals block),
+so this is a **D-096 exception**. Applied in the §22.1 order, the D-096 question *"what does this
+supersede?"* has the honest answer: **nothing is superseded — this is a NEW CAPABILITY** (Module 11's
+first function). It shares **no input** with any shipped model: those read prices, rates, spreads and
+flows; this reads a single **regime label**.
+
+### 2. THE DEFECT — the reference map is not exhaustive over the vocabulary it is keyed on
+
+Section 6.9's reference body inlines a `ROTATION_MAP` keyed on **six** regime strings —
+`early_expansion` / `mid_expansion` / `late_expansion` / `recession` / `stagflation` / `disinflation`
+— and resolves it with `ROTATION_MAP.get(regime_state, ["diversified — no strong prior"])`. But
+`models/regime.py` **declares nine** states in `REGIME_STATES`, and — after **D-037** made the
+declared vocabulary *reachable* by fixing exactly the three states §6.2 left unreachable — it **can
+return all nine**, including `slowdown`, `recovery` and `reflation`. Under the reference body a
+lookup on any of those three **silently returns the generic fallback**: the model would answer *"no
+prior"* for a regime the classifier actually produces.
+
+This is the **same `declared-consumed-unreachable` shape D-037 fixed in the classifier's own branch
+chain, reappearing one module downstream** — the reference map is not **exhaustive over the
+vocabulary it is keyed on**. `sector_rotation_prior` closes it: `SECTOR_ROTATION_PRIOR` is keyed on
+**every** member of `REGIME_STATES`, **asserted by a test so the two cannot drift**, and the
+fallback is reserved for a regime value **outside** the declared vocabulary — which
+`SectorRotationInputs` refuses at construction anyway.
+
+**Two design consequences, both load bearing rather than decoration:**
+
+1. **A PRIOR, not a rule.** §6.9's own `context` and the Module 11 discussion (`AGENTS.md:2195`) are
+   emphatic that a sector rotation here is a **historical base-rate prior**, not a mechanical rule
+   ("every cycle has idiosyncratic features (starting valuations, policy mix)"). The published
+   `context` states this, and a `warnings` entry names the cycle-specific adjustment — because a
+   caller who reads a bare sector list as a recommendation has **misread the model**.
+2. **The vocabulary is REFUSED, not defaulted.** §6.9's signature is
+   `sector_rotation_prior(regime_state: str)` and its body branches on a mapping. A bare `str` lets a
+   typo reach the `.get` and receive the generic fallback — a caller who passes `"recesion"` is told
+   *"no strong prior"* rather than *"that is not a regime"*. The field is therefore typed as the
+   classifier's own `RegimeState` **Literal, imported rather than re-typed (D-046: ask the upper
+   layer's rule)**, so an unrecognised value is refused at construction.
+
+### 3. FOUR deviations, all logged BEFORE they were written
+
+1. **The map is made EXHAUSTIVE over `REGIME_STATES`, with three added rows.** The three
+   specification-absent states (`slowdown` / `recovery` / `reflation`) are drawn from Module 11's own
+   factor-tilt sibling (`AGENTS.md:3092`'s `FACTOR_REGIME_MAP`, which *is* exhaustive over the nine)
+   and from the adjacent-regime logic the reference already uses: `slowdown` takes the defensive /
+   quality tilt, `recovery` takes the early-recovery cyclical tilt, `reflation` takes the late-cycle
+   real-asset / cyclical tilt. **The three added rows are this build's declaration, recorded as
+   such** — `SPECIFICATION_REGIMES` (the six §6.9 rows) and `SECTOR_PRIOR_EXTENSION_REGIMES` (the
+   three additions) are declared constants that **partition the vocabulary** and are asserted to do
+   so, so a reader can always tell a specification row from an extension row, and the extension rows
+   carry an `assumptions` disclosure saying "NOT Section 6.9's".
+2. **`confidence=0.4` moves to config as a CAP, and the confidence is a PRODUCT.** §22.8 forbids a
+   bare literal; the cap lives in `equity_macro.reliability_cap = 0.4` **with its status carried as
+   `uncalibrated_illustrative`** and is **multiplied** by a `compute_confidence(...)` result — the
+   D-118/D-119/D-120/D-121/D-122 rule. **`min()` was rejected because both factors sit in `[0, 1]`,
+   so `min()` would publish the smaller on every path and one factor would be dead code** — exactly
+   the defect D-118 removed. The spec's **own** `0.4` is **KEPT** (unlike `intervention_capacity`'s
+   0.8/0.7, which the ordering rebutted): a base-rate prior is a historical *frequency*, and refusing
+   the spec's number to type a different one would be an unevidenced figure in config
+   (D-043/D-047's three-time defect).
+3. **`source_independence_count = 1`.** The model reads **no market data** — one input (a regime
+   label), one source family (`MANUAL_ASSESSMENT`). Reporting anything else would overstate the
+   evidence.
+4. **`no_prior_label` is a config leaf with a `_leaf` suffix (the O-150 class).** The field is
+   `no_prior_label_leaf`; the **property** is `no_prior_label` (the public name). The `_leaf` suffix
+   convention exists precisely so a field and its own accessor property cannot collide — the same
+   defect D-122 hit in `MetalsComplexSettings`, avoided here at authoring time.
+
+### 4. THE HAZARD THE SWEEP'S PRE-FLIGHT ANSWERED, AND THE SIBLINGS IT DID NOT REDDEN
+
+Adding `EquityMacroSettings` made `config.py` hold **SIX** byte-identical copies of the same two
+accessor bodies and guard strings (Intervention / EMVulnerability / OilBalance / Gold / Metals /
+**EquityMacro**):
+
+| byte-identical string | copies |
+|---|---|
+| `        return float(self.reliability_cap.value)` | 6 |
+| `        if not 0.0 <= self.reliability_value <= 1.0:` | 6 |
+| `        return self.reliability_cap.is_trustworthy` | 6 |
+
+A bare anchor would have matched six sites — an **AMBIGUITY, not a mutation** (O-145). Each new
+config anchor was therefore **WIDENED with a distinguishing neighbour unique to this block** and
+measured at `count() == 1` **by reading the file in Python** (a widening is a claim about BYTES):
+`_N1_CAP_PROP` (docstring tail), `_N1_CALIBRATED_READ` (widened with the `def no_prior_label` opener —
+unique to this block), `_N3_CAP_VALIDATOR` / `_N3_LABEL_VALIDATOR` (the unique `equity_macro.*` error
+messages). `--check-targets` returned **30 mutations, 0 problems** before a single mutant ran.
+
+**The D-119 O-145 hazard — that this increment's config class would redden a SIBLING sweep's anchors
+— was checked, not assumed, and did NOT fire:** all four sibling sweeps' anchors still resolve
+(`mutation_intervention` 60/0, `mutation_em_vulnerability` 40/0, `mutation_commodities` 105/0,
+`mutation_fx_carry` 171/0).
+
+### 5. FOUR SURVIVORS on the first run, and the SIGTERM that left a LIVE MUTATION
+
+The first full run reported **27/30** with three survivors, each triaged by **D-031** (*a survivor is
+a weak test, an inert mutation, or a broken one*) — **none fixed by weakening a mutation:**
+
+* **`E3d` — a BROKEN mutation.** The anchor inserted an inert `_shared` line that had no runtime
+  effect, so nothing could kill it. **Fix = retarget** to `published = sectors  # type: ignore`
+  (the mutation now genuinely shares the map's own tuple, which the fresh-list test catches).
+* **`E6e` — an EQUIVALENT mutation.** `assert True or …` can never fire, so it changed no behaviour.
+  **Fix = retarget** to `assert … == set(SPECIFICATION_REGIMES)` (a false assertion → the module
+  fails to import → killed).
+* **`N1b` — a WEAK TEST.** No test read the effect of the calibration-status leaf on the confidence.
+  **Fix = PERTURB THE LEAF** (D-031/D-050): a new test moves `reliability_cap.calibration_status`
+  to a trustworthy value via `monkeypatch.setattr` and asserts the published confidence **RISES by
+  exactly the configured `heuristic_penalty`** — proving the computed half reads the leaf rather
+  than assuming it.
+
+**A second defect surfaced during this triage, and it is the increment's most reusable lesson:** the
+**second** sweep run was **killed mid-flight by a foreground timeout (SIGTERM)**, leaving the tree
+carrying a **LIVE MUTATION** in `models/equity_macro.py` (`confidence = computed + …` instead of
+`* …`, mutation `E4a`) **plus its two `.sweepbackup` sidecars**. The **wide shape grep did NOT catch
+it** — the mutation is a real-looking product expression, not a `MUTANT`/`if False:` shape. It was
+caught only by **diffing each swept file against its `.sweepbackup` byte-for-byte BEFORE trusting the
+tree**: `config.py` matched its sidecar (both pristine) but **`equity_macro.py` did NOT** — the
+sidecar held the pristine `*`, the live file the mutated `+`. The file was **healed from its pristine
+sidecar**, the sidecars removed, and the sweep re-run to completion. **Lesson restated: verify tree
+clean + sidecar ABSENT before AND after every sweep; a SIGTERM on win32 gets no `finally` turn, so a
+leftover mutation can survive a run that died between `write_text` calls — and it manufactures a
+FALSE SURVIVOR in the next run.**
+
+**After the fix the sweep re-ran to 30/30 killed on the FINAL committed bytes** — the count is the
+last run's, not the first.
+
+### 6. Gates
+
+* `ruff check src tests tools scripts` — **clean** (run FIRST; three E501s and one I001 in the new
+  files were fixed rather than `noqa`-ed).
+* `ruff format --check` = **287** == `mypy --strict` = **287** (D-035 matched, MEASURED — one more
+  than D-122's 286, exactly the new `models/equity_macro.py`).
+* Reachability: **PASS 58/58**; the Tier-5 partition is `SCRIPT-ONLY — Tier 5: 18`
+  (`sector_rotation_prior` joins it, because the new committed live-check script **is** a caller —
+  17 → 18) + `NO CALLER — Tier 5: 1` (`oil_balance_signal`, unchanged).
+* Full suite (DEFAULT markers, via `--junitxml`): MEASURED at session close (see §6 note below).
+* `mutation_equity_macro.py` = **30/30 killed**, after the D-031 triage above (one broken mutation
+  retargeted, one equivalent mutation retargeted, one weak test fixed by leaf perturbation);
+  `--check-targets` = **30 mutations, 0 problems**.
+* `sweep_health.py` **LAST** → **49 sweeps · 0 leftovers · 0 shapes · 0 committed mutants ·
+  0 failures · OK** (census **48 → 49** at D-123, bumped in the THREE places that carry it:
+  `test_sweep_sidecar_lifecycle.py` ×2 — the function NAME and the assertion — and
+  `test_sweep_health_leftover_predicate.py` ×1).
+
+### Next
+
+**Tier 5 = 20/23.** Re-derive the remaining names from §21.3's table *"and only that table"* — do NOT
+recall them. The remaining **3** Tier-5 names, MEASURED (2026-09-27) from `AGENTS.md:5541–5550`
+against `src/`, are: `duration_sensitivity`, `factor_tilt_prior` (Module 11's remaining two →
+`models/equity_macro.py`, now created), and `statement_text_diff` (§20.4). **All three have NO
+definition anywhere in `src/`.**

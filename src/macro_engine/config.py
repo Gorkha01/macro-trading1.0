@@ -6056,6 +6056,116 @@ class MetalsComplexSettings(BaseModel):
         return self
 
 
+class EquityMacroSettings(BaseModel):
+    """Module 11's equity-macro leaves (Section 6.9's ``sector_rotation_prior``).
+
+    Section 6.9's reference body (``AGENTS.md:1092``) carries a **bare confidence**
+    (``confidence=0.4``) — which Section 22.8 forbids — and an INLINE
+    rotation map whose keys are a hand-typed literal list. The confidence moves to
+    ``reliability_cap`` (the D-112/D-114/D-118…D-122 precedent) and the map is held
+    in the model module beside the vocabulary it is keyed on, because the map's
+    domain is the CLASSIFIER's declared regime vocabulary, not a free-standing
+    tuning number.
+
+    ⚠️ **THE REFERENCE MAP COVERS SIX OF THE CLASSIFIER'S NINE STATES.** Section
+    6.9's ``ROTATION_MAP`` is keyed on
+    ``early_expansion`` / ``mid_expansion`` / ``late_expansion`` / ``recession`` /
+    ``stagflation`` / ``disinflation``, and its ``.get(regime_state, [...])``
+    fallback silently absorbs every other key. But ``models/regime.py``'s
+    ``REGIME_STATES`` — the declared, and (after D-037) **reachable** — vocabulary
+    is NINE long: it also emits ``slowdown``, ``recovery`` and ``reflation``. A
+    lookup on any of those three would return the generic fallback, i.e. the
+    model would answer *"no prior"* for three states the classifier actually
+    produces — a coverage hole of exactly the ``declared-consumed-unreachable``
+    shape D-037 fixed in the classifier itself. ``sector_rotation_prior`` closes
+    it: the map is exhaustive over ``REGIME_STATES`` (test-asserted), and the
+    fallback is reserved for a regime value that is genuinely not in the
+    vocabulary.
+
+    ``reliability_cap`` is a **model-specific confidence CAP** — the D-112 family.
+    It sits **at 0.4**, and the placement is the claim: this is a **base-rate
+    PRIOR**, not a rule and not an estimate. It carries no measurement of the
+    current cycle, so it cannot be more reliable than a relation built from
+    observable prices (``ppp_valuation`` 0.2, ``uip_expected_move`` 0.15) is
+    *for its own inputs*; but it is also not a doctrine about unobserved
+    mechanisms (``intervention_capacity`` 0.12). The reference's own ``0.4`` is
+    kept — unlike the intervention block, there is no ordering argument against
+    it, because a historical base rate is at least a *frequency* — but it is now
+    read from config rather than written in the body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    no_prior_label_leaf: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``sector_rotation_prior`` reports.
+
+        Section 6.9 hardcodes ``0.4``. Section 22.8 forbids a hardcoded
+        confidence; the reference value is KEPT (unlike
+        ``intervention_capacity``'s 0.8/0.7, which the ordering rebutted) because
+        a base-rate prior is a historical *frequency* and the value is the SPEC's
+        own — refusing it would be typing an unevidenced figure into config
+        (D-043/D-047's three-time defect). It stays low because the method has no
+        factor measuring the current cycle's idiosyncrasies, which is the whole
+        content of the model's own caveat.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is calibrated rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` so the computed
+        half prices the leaf's own status rather than assuming it.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def no_prior_label(self) -> str:
+        """The single sector label published for a regime with no defined prior.
+
+        Section 6.9 inlines ``["diversified — no strong prior"]`` as the ``.get``
+        default. It is vocabulary a caller keys on, so it lives here rather than
+        in the body, and it is a ONE-element list because the function's
+        ``value`` contract is a ``list[str]`` of sectors on every path — an empty
+        list would make the published shape depend on the branch.
+        """
+        return str(self.no_prior_label_leaf.value)
+
+    @model_validator(mode="after")
+    def _validate_cap_and_label(self) -> EquityMacroSettings:
+        """Refuse a cap outside ``[0, 1]`` and an empty no-prior label.
+
+        The cap check mirrors every sibling block: ``ModelResult`` refuses a
+        confidence outside ``[0, 1]``, so a leaf outside it would raise at the
+        FIRST call rather than at load — turning a config error into a runtime
+        failure of a model.
+
+        The label must be non-empty because it is the published sector for an
+        unknown regime: an empty string would put a blank sector into the thesis
+        with no error anywhere, which is the silent-empty-value class this
+        project refuses. The reference's own string is non-empty, so this guard
+        protects a future edit rather than correcting the spec.
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"equity_macro.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — the same ModelResult field "
+                f"constraint applies as on the sibling caps."
+            )
+        if not self.no_prior_label.strip():
+            raise ValueError(
+                f"equity_macro.no_prior_label is {self.no_prior_label!r}. It is "
+                f"the published sector for a regime with no defined prior; an "
+                f"empty label would put a blank sector into the thesis with no "
+                f"error anywhere."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -6102,6 +6212,7 @@ class Settings(BaseModel):
     oil_balance: OilBalanceSettings
     gold_driver: GoldDriverSettings
     metals_complex: MetalsComplexSettings
+    equity_macro: EquityMacroSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

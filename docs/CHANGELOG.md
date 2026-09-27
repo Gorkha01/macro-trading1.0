@@ -10,6 +10,55 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-123 — Module 11 OPENS: `sector_rotation_prior`, a silent-coverage hole, and a SIGTERM'd sweep that left a live mutation (2026-09-27)
+
+A **function increment** that **creates a file**: `src/macro_engine/models/equity_macro.py` did not
+exist before this change (Module 11 had **no function** in `src/`), and the increment adds
+`EquityMacroSettings` to `config.py`. Tier 5 moves **19 → 20/23** — **MEASURED** against §21.3's
+table (`AGENTS.md:5541–5550`) against `src/`, not recalled (O-147). A **D-096 exception** (the
+authority, §6.9 at `AGENTS.md:1092`, supplies the body ⇒ **UPGRADE of a specified function**) whose
+supersession answer is **"nothing — a NEW capability"** (the `cip_check` answer). **NO new OpenBB
+command** — the function reads **no market data at all** (its only input is a **regime label**), so
+the command census **stays 6**.
+
+**The defect closed:** §6.9's reference `ROTATION_MAP` is keyed on **SIX** regime strings and
+resolves via `.get(regime_state, ["diversified — no strong prior"])`, but the classifier in
+`models/regime.py` **declares NINE** and — after **D-037** made all nine *reachable* — **can return
+all nine**. Under the reference body, `slowdown` / `recovery` / `reflation` would **silently return
+the fallback**: the model answers *"no prior"* for a regime the classifier actually produces. This
+is the **`declared-consumed-unreachable` shape D-037 fixed, one module downstream.** The map is now
+**exhaustive over `REGIME_STATES`** (test-asserted), the three added rows are disclosed as this
+build's declaration (`SPECIFICATION_REGIMES` / `SECTOR_PRIOR_EXTENSION_REGIMES` **partition** the
+vocabulary), the fallback is reserved for a value outside the vocabulary, and the input field is
+typed as the classifier's own `RegimeState` **`Literal`, imported not re-typed (D-046)**, so a typo
+raises at construction instead of defaulting.
+
+**Confidence is a PRODUCT** (`compute_confidence(...) × equity_macro.reliability_value` = **0.4**),
+so neither half is dead code (`min()` rejected — both factors sit in `[0, 1]`, so `min()` would
+publish the smaller always and one half would be **dead code**, the D-118 removal). The spec's **own
+0.4 is KEPT** (a base-rate prior is a historical *frequency*; refusing it would type an unevidenced
+figure — D-043/D-047). `source_independence_count = 1` (no market data read).
+
+**Three defects found and fixed:**
+* **Three sweep survivors, triaged by D-031, none fixed by weakening a mutation** — `E3d` (a
+  **broken** mutation: an inert `_shared` line) and `E6e` (an **equivalent** mutation:
+  `assert True or …`) were **retargeted**; `N1b` (a **weak test**: nothing read the calibration
+  leaf's effect) was fixed by **perturbing the leaf** (D-050). Final: **30/30 killed.**
+* **⚠️ A SIGTERM'd sweep left a LIVE MUTATION the wide shape grep could not see** — the leftover was
+  `confidence = computed + cap`, a real-looking expression. Caught **only by diffing each swept file
+  against its `.sweepbackup` byte-for-byte**. Recorded as a refinement of **O-131** (its third
+  firing) and as a REFERENCE rule.
+* **`_leaf` suffix applied at authoring time** (`no_prior_label_leaf` field vs. `no_prior_label`
+  property) — the **O-150 class in `config.py`**, avoided (D-122 hit it).
+
+**Changed:** `src/macro_engine/models/equity_macro.py` (NEW) · `src/macro_engine/config.py`
+(`EquityMacroSettings`) · `config/settings.yaml` (`equity_macro:` block) · `tests/models/test_equity_macro.py`
+(NEW, 33 tests) · `scripts/mutation_equity_macro.py` (NEW sweep, 30 mutations) ·
+`scripts/live_equity_macro_check.py` (NEW end-to-end live check) · the sweep census **48 → 49** in
+its three homes. **Gates:** `ruff check` clean · `ruff format --check` == `mypy --strict` == **287** ·
+suite **3975 / 0 failed / 0 errors / 1 skipped** · reachability **PASS 58/58** ·
+`mutation_equity_macro.py` **30/30** · `sweep_health.py` **49 sweeps · OK**.
+
 ### D-122 — Module 10's `metals_complex_divergence`, the SEVENTH false block, and a probe that needed a control (2026-09-27)
 
 A **function increment** whose most reusable lesson was **methodological**: the live-source probe

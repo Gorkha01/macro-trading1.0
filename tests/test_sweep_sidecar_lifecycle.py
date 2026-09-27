@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_eight_sweeps_to_cover() -> None:
+def test_there_are_forty_nine_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -490,9 +490,17 @@ def test_there_are_forty_eight_sweeps_to_cover() -> None:
     in `data_layer/openbb_client.py`, and its config block. It uses
     `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two checks
     cover it.
+
+    **48 → 49 at D-123**, which added `mutation_equity_macro.py` — the sweep over
+    Module 11's `sector_rotation_prior`, the **fifth** NEW module created by a
+    Tier-5 increment (`models/equity_macro.py`) plus its config block. It has **no
+    new client** — the function reads no market data, its only input is a regime
+    label — so this is the first of the module-creating sweeps to cover a model
+    and its config alone. It uses `sweep_lifecycle` and carries the CANARY1
+    refusal gate, so the same two checks cover it.
     """
     files = _sweep_files()
-    assert len(files) == 48, f"expected 48 sweeps, found {len(files)}"
+    assert len(files) == 49, f"expected 49 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

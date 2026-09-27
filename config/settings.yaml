@@ -4654,6 +4654,73 @@ metals_complex:
       value for exactly this reason.
 
   # ---------------------------------------------------------------------------
+# equity_macro — Module 11, Sector Rotation Prior (Section 6.9, D-123)
+# ===========================================================================
+# The reference body for `sector_rotation_prior` is at AGENTS.md:1092 (Section
+# 6.9) — a D-096 exception where the authority gives the body. Its leaves live
+# here rather than inline: Section 22.8 forbids the bare `confidence=0.4`
+# literal, and both the no-prior label and the cap are values a reader must be
+# able to find and audit.
+#
+# ⚠️ ANCHOR NOTE (D-119's O-145, restated): this block is a NEW config class.
+#    Adding it makes a DIFFERENT sweep's anchors ambiguous if any anchor's text
+#    is byte-identical to text here. Every new/widened anchor was measured with
+#    `count() == 1` before this block was written.
+equity_macro:
+  reliability_cap:
+    value: 0.4
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `sector_rotation_prior` reports. Section 6.9
+      supplies `confidence=0.4` as a literal, which Section 22.8 refuses.
+
+      ⚠️ THE SPECIFICATION'S VALUE IS KEPT — UNLIKE `intervention_capacity`'s
+      0.8/0.7, WHICH THE ORDERING REBUTTED. A sector-rotation prior is a
+      HISTORICAL BASE RATE, i.e. a frequency; refusing the spec's own number and
+      typing a different one would be an unevidenced figure in config
+      (D-043/D-047's three-time defect). What is NEW is that the number is now
+      READ from config and its status (`uncalibrated_illustrative`) is carried,
+      so the computed half of the confidence prices it rather than assuming it.
+
+      ⚠️ IT IS A CAP, AND THE MODEL MULTIPLIES RATHER THAN `min()`-ing, so both
+      halves stay load-bearing and neither becomes dead code (D-118…D-122). The
+      computed half measures INPUT quality (is the regime label known, is the
+      regime value one the classifier actually emits?) — a distinct question from
+      how much a base-rate prior is worth, which is what this cap states.
+
+      ⚠️ WHERE IT SITS IS THE CLAIM. 0.4 is BELOW any relation built from
+      observable prices (`ppp_valuation` 0.2 is a relation, but this number is a
+      PRIOR with no measured current-cycle signal) and ABOVE the doctrine-only
+      `intervention_capacity` (0.12): a historical frequency is better evidence
+      than a mechanically-derived asymmetry, and worse than a relation whose
+      inputs are all observable and current.
+
+      Placeholder, not calibrated: calibrating it means measuring how often a
+      regime-conditional sector prior beat an unconditional one, a multi-decade
+      backtest this build does not attempt.
+  no_prior_label_leaf:
+    value: "diversified — no strong prior"
+    calibration_status: institutional_convention
+    note: >
+      The single sector-prior label published when the regime is A VALID
+      CLASSIFIER VALUE THAT HAS NO DEFINED ROTATION. Section 6.9 inlines it as
+      the `.get(regime_state, ["diversified — no strong prior"])` default.
+
+      ⚠️ THE REFERENCE'S DEFAULT CONFLATES TWO DIFFERENT CASES, AND THIS BUILD
+      SEPARATES THEM. The `.get` fires both for (a) a regime value outside the
+      declared vocabulary — a caller error, which must be REFUSED — and (b) a
+      declared regime state for which no prior is defined, which is a real
+      coverage question. Section 6.9's own map covers SIX of the classifier's
+      NINE declared states (`models/regime.py`'s REGIME_STATES), so under the
+      reference `slowdown`, `recovery` and `reflation` — all reachable after
+      D-037 — would silently return this label. This build's map is EXHAUSTIVE
+      over REGIME_STATES (test-asserted), so the label is only ever published for
+      a declared-but-unmapped value; a value outside the vocabulary is refused at
+      construction and never reaches this leaf.
+
+      The em dash (—) is preserved from the specification so the published string
+      matches the document a reader checks it against.
+  # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No
