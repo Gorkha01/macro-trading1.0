@@ -5381,7 +5381,7 @@ may exist outside these five categories.**
 |---|---|---|
 | `spot`, `forward` | LIVE | IBKR or FX provider; forwards may be BLOCKED if unavailable |
 | `i_domestic`, `i_foreign` | LIVE | Respective policy rates / short rates |
-| `ppp_implied_rate` | **BLOCKED → MANUAL** | OECD publishes PPP conversion factors; no clean free API. Manual entry with documented vintage. |
+| `ppp_implied_rate` | **LIVE** | World Bank REST `PA.NUS.PPP`, direct (not OpenBB). **Upgraded from BLOCKED → MANUAL at D-117**: the "no clean free API" premise was measured false (D-043's FALSE-BLOCK class; `docs/PLAN_ppp_source.md`). The estimand is the RATIO `factor(domestic)/factor(foreign)`; the euro container is **DEU** (the World Bank's EMU aggregate measures 0 points, so the substitute is a recorded decision). A **disclosed vintage, not a point-in-time vintage** — the World Bank has no point-in-time selector. |
 | `rate_differential` | DERIVED | i_domestic − i_foreign |
 | `realized_vol_annualized` | DERIVED | `realized_vol_simple()` |
 | `vix_level` | LIVE | CBOE / IBKR |

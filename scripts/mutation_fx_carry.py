@@ -614,10 +614,9 @@ _UIP_VALIDATOR = "        if not 0.0 <= self.uip_reliability_value <= 1.0:"
 
 # The computational core.
 _PPP_DEVIATION = (
-    "    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) "
-    "/ inputs.ppp_implied_rate * 100.0"
+    "    deviation_pct = (inputs.spot_rate - ppp_implied_rate) / ppp_implied_rate * 100.0"
 )
-_PPP_RATIO = "    ratio = inputs.spot_rate / inputs.ppp_implied_rate"
+_PPP_RATIO = "    ratio = inputs.spot_rate / ppp_implied_rate"
 _PPP_STATUS_CALL = "    status = _ppp_status(deviation_pct)"
 
 # The two sign arms of `_ppp_status`. Kept as separate spans rather than one
@@ -635,7 +634,7 @@ _PPP_WARN_DATA = "    if abs(deviation_pct) > 100.0:"
 _PPP_DEV_KEY = '        "deviation_pct": round(deviation_pct, 2),'
 _PPP_RATIO_KEY = '        "ratio": round(ratio, 6),'
 _PPP_STATUS_KEY = '        "status": status,'
-_PPP_LEG_KEY = '            "ppp_implied_rate": inputs.ppp_implied_rate,'
+_PPP_LEG_KEY = '            "ppp_implied_rate": ppp_implied_rate,'
 _PPP_TACTICAL_KEY = '            "tactical_horizon_years": tactical_horizon_years,'
 _PPP_UNIT = '        unit="percent deviation of the spot rate from the PPP-implied rate",'
 
@@ -1643,20 +1642,19 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "P1a the deviation drops the PPP-relative form (spot/leg as a percent)",
         SRC,
         _PPP_DEVIATION,
-        "    deviation_pct = inputs.spot_rate / inputs.ppp_implied_rate * 100.0",
+        "    deviation_pct = inputs.spot_rate / ppp_implied_rate * 100.0",
     ),
     (
         "P1b the deviation divides by the SPOT instead of the PPP leg",
         SRC,
         _PPP_DEVIATION,
-        "    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) "
-        "/ inputs.spot_rate * 100.0",
+        "    deviation_pct = (inputs.spot_rate - ppp_implied_rate) / inputs.spot_rate * 100.0",
     ),
     (
         "P1c the ratio is inverted (leg over spot)",
         SRC,
         _PPP_RATIO,
-        "    ratio = inputs.ppp_implied_rate / inputs.spot_rate",
+        "    ratio = ppp_implied_rate / inputs.spot_rate",
     ),
     # --- P2: the status arms ----------------------------------------------
     (

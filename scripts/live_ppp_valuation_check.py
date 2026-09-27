@@ -1,4 +1,4 @@
-"""Live wiring check: a real spot rate + a declared PPP leg -> Section 20.9's
+"""Live wiring check: a real spot rate + a FETCHED PPP leg -> Section 20.9's
 ``ppp_valuation``.
 
 Not a test. This directory holds operator scripts, deliberately excluded from
@@ -10,31 +10,23 @@ Section 21.0: unit tests prove the arithmetic, this proves the WIRING — the
 units, the sign, the horizon discipline, and whether the numbers that come out
 are the numbers the specification says should come out.
 
-The asymmetry this check exists to make visible
------------------------------------------------
-``ppp_valuation`` takes a **LIVE spot rate** and a **MANUAL PPP conversion
-factor**. Section 21.1 marks ``ppp_implied_rate`` **BLOCKED -> MANUAL**: the OECD
-publishes PPP conversion factors, there is no clean free API, and the factor is
-low-frequency and REVISED. So this check cannot fetch the PPP leg the way it
-fetches the spot leg — and the honesty of the check is in SAYING SO: the manual
-leg is supplied as a DECLARED VINTAGE, printed with its source, and the result's
-own ``limitations`` (which disclose the manual leg on every call) are printed
-back to confirm the model says the same thing.
+The two live legs, and what changed at D-117
+-------------------------------------------
+Until D-117 ``ppp_valuation`` took a **LIVE spot rate** and a **MANUAL PPP
+conversion factor**: Section 21.1 marked ``ppp_implied_rate`` BLOCKED -> MANUAL
+on the premise *"no clean free API"*. **That premise was measured false** (the
+D-043 FALSE-BLOCK class) — the World Bank REST API is reachable — so BOTH legs
+are now fetched, and this check fetches both:
 
-The live half
--------------
 * ``EURUSD`` (yfinance, via the project's OpenBB client) — a real spot level.
-  This is the observed leg, and it is the only market input the function has.
+* ``PA.NUS.PPP`` (World Bank REST, direct — NOT through OpenBB) for the euro
+  leg (DEU) and the numeraire leg (USA), combined into a PPP-implied rate.
 
-The manual half
----------------
-* The euro-area PPP conversion factor, **DECLARED, NOT FETCHED**. The number is
-  the OECD's most recent published euro-area conversion factor at the vintage
-  named in ``_PPP_VINTAGE``; it is a constructed price level, not a price, and
-  the check prints the vintage beside it so a reader can see how stale it is.
-  The value is asserted into a plausible BAND first, so a decimal-vs-level or
-  a transposed-pair mistake fails here rather than producing a confident
-  deviation.
+The fetched PPP leg is a **DISCLOSED VINTAGE, not a point-in-time vintage**: the
+World Bank offers no point-in-time selector (measured against all four free
+sources the operator named — ``docs/PLAN_ppp_source.md`` §6). The check prints
+the publication date and the observation year beside the number, and confirms
+the model repeats that provenance in its own ``limitations``.
 
 What this check establishes
 ---------------------------
@@ -43,26 +35,29 @@ What this check establishes
    A discontinued or empty route is BLOCKED, and a spot outside a wide EUR/USD
    band is a data error rather than a market state.
 
-2. **The deviation is recomputed from the two published levels.** The published
+2. **The FETCHED PPP legs are plausible and the ratio is the estimand.** The
+   euro leg is asserted into a band, the numeraire leg is asserted to be the
+   definitional 1, and the implied rate is RECOMPUTED as
+   ``factor(DEU) / factor(USA)`` so the published figure is shown to be that
+   ratio rather than a raw factor passed through.
+
+3. **The deviation is recomputed from the two published levels.** The published
    ``deviation_pct`` must equal ``(spot - ppp) / ppp * 100`` recomputed here,
    and ``ratio`` must equal ``spot / ppp`` — so the two published forms are
    shown to be the same fact, not two independent claims.
 
-3. **The sign and the label agree.** A spot above the PPP leg must publish
-   ``overvalued`` and a positive deviation; below must publish ``undervalued``
-   and a negative one. Both directions are exercised by perturbing the PPP leg
-   around the live spot, so the check does not depend on which side the market
-   happens to be on today.
+4. **The sign and the label agree, BOTH directions.** Exercised by perturbing
+   the PPP leg around the live spot, so the check does not depend on which side
+   the market happens to be on today.
 
-4. **The horizon gates a WARNING, not a LABEL.** The SAME inputs at a tactical
+5. **The horizon gates a WARNING, not a LABEL.** The SAME inputs at a tactical
    horizon and at a long horizon must produce the SAME ``status`` and the SAME
    ``deviation_pct``, while the tactical call gains the no-tactical-timing
-   warning and the long call does not. That separation is the function's central
-   discipline and it is MEASURED here rather than asserted in prose.
+   warning and the long call does not.
 
-5. **The manual leg is disclosed.** The result's ``limitations`` must name the
-   MANUAL input and the BLOCKED status, so the live output carries the same
-   caveat the docstring makes.
+6. **The fetched leg's provenance is disclosed.** The result's ``limitations``
+   must name the fetch, the DISCLOSED-VINTAGE distinction, and the World Bank
+   source — so the live output carries the same caveat the docstring makes.
 
 Exit code is 0 on success and 1 on any failed check.
 """
@@ -79,26 +74,27 @@ sys.path.insert(0, str(REPO / "src"))
 
 from macro_engine.config import get_settings  # noqa: E402
 from macro_engine.data_layer.openbb_client import OpenBBClient  # noqa: E402
+from macro_engine.data_layer.world_bank_client import (  # noqa: E402
+    fetch_ppp_conversion_factor,
+    implied_rate_from_factors,
+)
 from macro_engine.models.contracts import ModelResult  # noqa: E402
 from macro_engine.models.fx_carry import PPPInputs, ppp_valuation  # noqa: E402
 
-#: The DECLARED PPP conversion factor for the euro area, in the SAME quote
-#: convention as the spot (USD per EUR). NOT fetched — Section 21.1 marks the
-#: input BLOCKED -> MANUAL. The value is the OECD's published euro-area PPP
-#: conversion factor; the vintage is named beside it so a reader can see how old
-#: it is. A different vintage moves the deviation materially, which is exactly
-#: why the result carries the disclosure.
-_PPP_LEG = 0.72
-_PPP_VINTAGE = "OECD PPP conversion factor, euro area (USD per EUR), 2024 vintage"
+#: The two legs of the PPP-implied EURUSD rate. DEU is the euro container (the
+#: World Bank's EMU aggregate measures 0 points), USA is the definitional
+#: numeraire. Kept as named constants so the check prints WHICH pair it used.
+_DOMESTIC_ISO3 = "DEU"
+_FOREIGN_ISO3 = "USA"
 
 #: Plausible band for a spot EUR/USD level. Wide on purpose: the point is to
 #: fail on a transposed pair or a percent-where-a-level mistake, not to pin a
 #: regime.
 _SPOT_BAND = (0.5, 2.0)
 
-#: Plausible band for the PPP conversion factor. Narrower than the spot band
-#: because a PPP level is a long-run average and moves far less than a market
-#: rate — but still wide enough not to pin a vintage.
+#: Plausible band for the euro-area PPP conversion factor. Narrower than the
+#: spot band because a PPP level is a long-run average and moves far less than a
+#: market rate — but still wide enough not to pin a vintage.
 _PPP_BAND = (0.4, 1.5)
 
 #: Horizons the check compares. ``_LONG_HORIZON`` must exceed the configured
@@ -182,18 +178,37 @@ def main() -> int:
             f"the deviation meaningless"
         )
 
-    # --- (1c) the MANUAL leg is DECLARED, not fetched ----------------------
+    # --- (1c) the PPP legs are FETCHED from the World Bank ------------------
     print()
-    print("  the MANUAL leg (Section 21.1: BLOCKED -> MANUAL, DECLARED not fetched):")
+    print("  the PPP legs (D-117: FETCHED from the World Bank REST API, direct):")
+    domestic = fetch_ppp_conversion_factor(_DOMESTIC_ISO3)
+    foreign = fetch_ppp_conversion_factor(_FOREIGN_ISO3)
     plow, phigh = _PPP_BAND
-    pstatus = "OK" if plow < _PPP_LEG < phigh else "OUT-OF-BAND"
-    print(f"    {_PPP_VINTAGE}")
-    print(f"    PPP-implied      {_PPP_LEG:8.4f}     [{pstatus}]")
-    if not plow < _PPP_LEG < phigh:
+    pstatus = "OK" if plow < domestic.value < phigh else "OUT-OF-BAND"
+    print(f"    {domestic.vintage_label}")
+    print(f"    {_DOMESTIC_ISO3} factor        {domestic.value:8.6f}     [{pstatus}]")
+    if not plow < domestic.value < phigh:
         failures.append(
-            f"the declared PPP leg {_PPP_LEG} is outside the plausible band "
-            f"{_PPP_BAND} — a unit error in the manual input"
+            f"the euro leg {domestic.value} is outside the plausible band "
+            f"{_PPP_BAND} — a unit error in the fetched input"
         )
+    # The USA leg is the definitional 1 (LCU per international $). Asserted,
+    # not assumed: if it ever moved, the estimand would need re-deriving.
+    if abs(foreign.value - 1.0) > 1e-9:
+        failures.append(
+            f"the numeraire leg ({_FOREIGN_ISO3}) is {foreign.value}, expected "
+            f"exactly 1 — the international dollar IS the US dollar, so a "
+            f"non-unit factor means the wrong series was read"
+        )
+    print(f"    {_FOREIGN_ISO3} factor        {foreign.value:8.6f}     [OK]")
+
+    # The estimand is the RATIO. Recompute it from the two factors so the
+    # published figure is shown to be that ratio, not a raw factor.
+    ppp_implied = implied_rate_from_factors(domestic, foreign)
+    print(
+        f"    PPP-implied {_DOMESTIC_ISO3}/{_FOREIGN_ISO3}  {ppp_implied:8.6f}  "
+        f"(= {domestic.value} / {foreign.value})"
+    )
 
     # --- (2) the deviation is recomputed from the two published levels -----
     tactical = get_settings().fx_carry.ppp_tactical_horizon_value
@@ -208,16 +223,31 @@ def main() -> int:
             f"minimum {tactical}, or the warning it expects cannot fire"
         )
 
+    # Exercised through the MODEL's own fetch path (pair, no explicit rate), so
+    # this proves the wiring a caller actually gets — not just the client.
     result = ppp_valuation(
-        PPPInputs(spot_rate=spot, ppp_implied_rate=_PPP_LEG, horizon_years=_LONG_HORIZON)
+        PPPInputs(
+            spot_rate=spot,
+            domestic_iso3=_DOMESTIC_ISO3,
+            foreign_iso3=_FOREIGN_ISO3,
+            horizon_years=_LONG_HORIZON,
+        )
     )
+    published_ppp = _number(result, "ppp_implied_rate")
     published_dev = _number(result, "deviation_pct")
     published_ratio = _number(result, "ratio")
-    expected_dev = (spot - _PPP_LEG) / _PPP_LEG * 100.0
+    expected_dev = (spot - ppp_implied) / ppp_implied * 100.0
 
     print()
     print("  (2) the published deviation is recomputed from the published levels:")
-    print(f"    spot {spot:.6f} vs PPP {_PPP_LEG:.6f}")
+    print(f"    model-fetched PPP leg   {published_ppp:.6f}   (client {ppp_implied:.6f})")
+    if abs(published_ppp - ppp_implied) > 1e-9:
+        failures.append(
+            f"the model's fetched PPP leg {published_ppp} disagrees with the "
+            f"client's {ppp_implied} — the model and this check fetched "
+            f"different numbers, so at least one is not the documented route"
+        )
+    print(f"    spot {spot:.6f} vs PPP {published_ppp:.6f}")
     print(f"    deviation_pct     published {published_dev:+.4f}   recomputed {expected_dev:+.4f}")
     # The published field is round(x, 2); the tolerance is the rounding step
     # (5e-3), taken from the COARSER side's published precision (lesson 5cu).
@@ -226,13 +256,14 @@ def main() -> int:
             f"published deviation {published_dev} disagrees with the recomputed "
             f"{expected_dev} by more than the 2-place rounding step"
         )
-    if abs(published_ratio - spot / _PPP_LEG) > 5e-7:
+    if abs(published_ratio - spot / published_ppp) > 5e-7:
         failures.append(
             f"published ratio {published_ratio} disagrees with spot/ppp "
-            f"{spot / _PPP_LEG} by more than the 6-place rounding step"
+            f"{spot / published_ppp} by more than the 6-place rounding step"
         )
     print(
-        f"    ratio             published {published_ratio:.6f}   recomputed {spot / _PPP_LEG:.6f}"
+        f"    ratio             published {published_ratio:.6f}   "
+        f"recomputed {spot / published_ppp:.6f}"
     )
 
     # --- (3) the sign and the label agree, BOTH directions -----------------
@@ -268,7 +299,12 @@ def main() -> int:
     print()
     print("  (4) the horizon gates a WARNING, NOT a label:")
     tactical_call = ppp_valuation(
-        PPPInputs(spot_rate=spot, ppp_implied_rate=_PPP_LEG, horizon_years=_TACTICAL_HORIZON)
+        PPPInputs(
+            spot_rate=spot,
+            domestic_iso3=_DOMESTIC_ISO3,
+            foreign_iso3=_FOREIGN_ISO3,
+            horizon_years=_TACTICAL_HORIZON,
+        )
     )
     same_label = _label(tactical_call, "status") == _label(result, "status")
     same_dev = _number(tactical_call, "deviation_pct") == published_dev
@@ -287,17 +323,22 @@ def main() -> int:
         if not ok:
             failures.append(msg)
 
-    # --- (5) the manual leg is disclosed -----------------------------------
+    # --- (5) the fetched leg's provenance is disclosed ---------------------
     print()
-    print("  (5) the MANUAL leg is disclosed on the live output:")
+    print("  (5) the FETCHED leg's provenance is disclosed on the live output:")
     limitations = " | ".join(result.limitations)
-    discloses = "MANUAL input" in limitations and "BLOCKED" in limitations
-    print(f"    limitations name the manual, BLOCKED leg: {discloses}")
+    discloses = (
+        "FETCHED" in limitations
+        and "DISCLOSED VINTAGE" in limitations
+        and "World Bank" in limitations
+        and "no point-in-time selector" in limitations
+    )
+    print(f"    limitations name the fetch, the vintage distinction, the source: {discloses}")
     print(f"    confidence (model-specific cap):          {result.confidence}")
     if not discloses:
         failures.append(
-            "the result's limitations do not disclose the MANUAL/BLOCKED PPP leg — "
-            "the live output must carry the same caveat the docstring makes"
+            "the result's limitations do not disclose the FETCHED, DISCLOSED-VINTAGE "
+            "PPP leg — the live output must carry the same caveat the docstring makes"
         )
 
     # --- verdict -----------------------------------------------------------

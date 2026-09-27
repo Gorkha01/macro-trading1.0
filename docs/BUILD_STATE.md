@@ -9723,6 +9723,80 @@ adjacency (lesson **5dl**).
 
 ---
 
+## D-117 — `ppp_implied_rate` wired LIVE from the World Bank (2026-09-27) — **PHASE 5, Tier 5 = 14/23 (no new function; D-114's model re-sourced)**
+
+**A SOURCING increment, not a function increment.** No model formula changed — `ppp_valuation`
+(D-114) stands untouched, and its thresholds, `confidence` CAP and horizon rule are all
+unchanged. What changed is where its **input** comes from: a typed MANUAL constant became a
+**fetched value** from the World Bank REST API, via the new
+`src/macro_engine/data_layer/world_bank_client.py`. Tier 5 stays **14/23** (D-114 added the
+function; D-117 re-sourced it).
+
+### The BLOCK was FALSE, and the criterion was fixed before the sources were probed
+
+§21.1's premise for this row — *"OECD publishes PPP conversion factors; no clean free API"* —
+is **measurably wrong** (the third FALSE BLOCK this repo has caught, D-043's class). The
+ALFRED question the operator raised was answered against the engine's own contract, not
+against what the four sources advertise: the capability is a **point-in-time selector**
+(`realtime_start == realtime_end == as_of`), and **none of World Bank / IMF / OECD / Eurostat
+implements one** — so none can substitute for ALFRED, and the IMF is the trap (right label,
+HTTP 200, and a `?version=` that is **absorbed silently** — O-6's defect verbatim). Full
+per-source table in `DECISIONS.md` D-117 §1 and `PLAN_ppp_source.md` §6.
+
+### What shipped
+
+* **`data_layer/world_bank_client.py`** (new) — `PA.NUS.PPP`, two legs, and a **division
+  performed rather than assumed** (a non-USA numeraire is not silently read as `1`). No
+  `realtime_start` parameter exists on any signature; `ROUTE_NAME = "world_bank_direct"`.
+* **`config/series_registry.yaml`** — two real `series:` entries (`ppp_conversion_factor_eur`
+  = DEU `0.709983` verified 2025 / `ppp_conversion_factor_usd` = USA `1.0`), both
+  `not_a_snapshot_field: true`, **deliberately NOT** `vintage_eligible`; and the `blocked:`
+  entry replaced by a **tombstone** (an ABSENT block cannot be audited — D-047).
+* **`models/fx_carry.py`** — `PPPInputs` now takes **either** a supplied rate **or** the
+  `domestic_iso3`/`foreign_iso3` pair (never both, never one leg); the disclosure
+  discriminates **FETCHED** from **SUPPLIED BY THE CALLER** so the two can never read alike.
+* **`AGENTS.md`** §21.1's row changed `BLOCKED → MANUAL` → **`LIVE`**.
+* Tests: **20** new client tests + **1** registry-schema guard + **3** model tests;
+  `live_ppp_valuation_check.py` now drives the **fetch** path.
+
+### Two defects the FULL SUITE found that the increment's own tests could not (O-141, O-142)
+
+The increment-local surface was **fully green** — 20 client tests, model tests, live check on
+real data, `ruff`/`mypy` **266 == 266**, reachability **58 == 58**, `--check-targets`
+**171 / 0** — and the full suite then reported **`34 failed / 3557`**.
+
+* **O-141** — an `iso3: DEU` key on a registry entry. `RegistrySeries` is **`extra="forbid"`**,
+  so this did not degrade one entry: it made the **whole registry unparseable**, reddening
+  **33 tests across 7 modules that do not mention PPP**, while all 20 new client tests stayed
+  green (**none of them loads the registry**). Fixed by moving the country to the **client
+  call**, + a test that reads the field list **from the model** and asserts the registry still
+  parses. **Mutation-proved** (re-adding the key fails it by name).
+* **O-142** — `scripts/mutation_fx_carry.py` reached the suite carrying **CRLF** (1 961 `\r`),
+  caught **only** by the hygiene test; the sweep **cannot detect this by construction**. In a
+  CRLF file an anchor written with `'\n'` matches **zero** times silently ⇒ a **FALSE
+  SURVIVOR** (O-119/D-061/O-131). Fixed by normalising on disk; `git diff --numstat` proves
+  the 7 intended content changes survive.
+
+**The lesson:** an increment's own tests are written against the **schema the author believes
+in**, and both defects lived in the gap between that belief and the repository. A green
+increment-local suite is **not** evidence that the tree is green — which is what §21.2 Step 8
+exists to catch.
+
+### Gates (re-derived after the fixes, `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  266 files already formatted
+ruff check src tests tools scripts            ->  All checks passed!
+mypy --strict src tests tools scripts         ->  Success: no issues found in 266 source files
+full suite (--junitxml)                       ->  see PROGRESS.md (count re-measured, not carried)
+reachability --check-baseline                 ->  PASS 58/58 (ppp_valuation was already SCRIPT-ONLY)
+mutation_fx_carry.py --check-targets          ->  171 mutations, 0 problem(s)
+sweep_health.py  (LAST)                       ->  recorded in PROGRESS.md
+```
+
+**266 == 266** (D-035). The **sweep was re-run** — three anchors were widened for the new
+local variable, unlike D-114 where no anchor changed.
+
 ## D-113 — O-138 closed: `--check-targets` was NEVER A FLAG
 
 **A tool fix, not a function increment.** No model code changed; Tier 5 stays **13/23**.

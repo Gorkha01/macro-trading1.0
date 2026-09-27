@@ -1152,6 +1152,93 @@ series:
     verified_observation_date: 2026-07-01
     plausible_range: [0.0, 300000.0]
 
+  # ------------------------------------------------- Module 9.2 PPP legs (D-117)
+  # `ppp_implied_rate` was BLOCKED -> MANUAL in Section 21.1 on the premise
+  # "OECD publishes PPP conversion factors; no clean free API." The 2026-09-27
+  # re-probe (docs/PLAN_ppp_source.md) MEASURED that premise false -- D-043's
+  # FALSE-BLOCK class, the third such entry in this file. The input is now
+  # sourced from the World Bank REST API, the same "direct, not OpenBB" route
+  # Section 21.1 already sanctions for `current_account_pct_gdp`.
+  #
+  # TWO entries, not one, because the estimand is a RATIO of two countries'
+  # factors (both LCU per international $, so the denominator cancels). The
+  # client divides rather than assuming the USD leg is 1, so a future non-USD
+  # base cannot silently change the estimand.
+  #
+  # These are NOT `vintage_eligible`. The World Bank REST API has no
+  # point-in-time selector, and its `lastupdated` field is a PUBLICATION date,
+  # not a vintage handle. That was measured against all four free sources the
+  # operator named (World Bank / IMF / OECD / Eurostat, PLAN_ppp_source.md §6):
+  # NOT ONE implements a point-in-time selector, so the ALFRED capability
+  # remains FRED-only (data_layer/alfred_client.py). Marking these
+  # vintage_eligible would be a false claim of exactly the O-6 class.
+  #
+  # NOTE -- the COUNTRY is deliberately NOT a key on these entries, and this
+  # cost a measured failure rather than being a style choice. `RegistrySeries`
+  # is `extra="forbid"` (config.py:1047), so an `iso3: DEU` key here is not
+  # ignored, it makes the WHOLE registry unparseable: 33 tests that merely
+  # LOAD the registry failed with "Extra inputs are not permitted", while every
+  # test that reads the new client passed -- a blast radius far wider than the
+  # change, and invisible to the tests I had written for it.
+  # The country belongs to the CLIENT CALL, not the registry: the client's
+  # `fetch_ppp_implied_rate(domestic_iso3, foreign_iso3)` is the single place
+  # that binds a leg to a country, and the leg identity is stated in prose
+  # below. If a future increment needs it machine-readable, the fix is to
+  # DECLARE a field on `RegistrySeries` first (and validate it), never to add
+  # an undeclared key here. [O-141]
+  ppp_conversion_factor_eur:
+    provider: world_bank
+    symbol: PA.NUS.PPP
+    not_a_snapshot_field: true
+    description: >
+      PPP conversion factor, GDP, for GERMANY -- the euro-container leg of the
+      EURUSD PPP-implied rate. LCU per international $. Published annually;
+      36 non-null points 1990..2025, latest 0.709983 @ 2025 (published
+      2026-07-13). USA is exactly 1 on every year by construction.
+
+      WHY GERMANY, and this is a DECISION rather than a constant (PLAN_ppp_source
+      .md §4 step 1). The World Bank's EMU aggregate returns 0 points -- MEASURED,
+      not assumed -- so "USD per EUR at PPP" has no single official value.
+      Germany is the euro area's largest economy, and it is the leg D-114's
+      declared MANUAL 0.72 already matched: 0.72 is within 1.4% of DEU's 2025
+      value, which is what makes the swap from a typed number to a fetched one
+      a WIRING change rather than a MODEL change. The operator directed DEU.
+
+      Not to be confused with the OECD's EU27_2020 aggregate, which IS published
+      (OECD DSD_PPP@DF_PPP, measured) but covers EU27 -- including non-euro
+      members -- and carries different vintage semantics. DEU is the chosen
+      single-member proxy; a second source is a later increment's decision.
+    frequency: annual
+    units: lcu_per_international_dollar
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 0.709983
+    verified_observation_date: 2025-01-01
+    plausible_range: [0.1, 5.0]
+
+  ppp_conversion_factor_usd:
+    provider: world_bank
+    symbol: PA.NUS.PPP
+    not_a_snapshot_field: true
+    description: >
+      PPP conversion factor, GDP, for the UNITED STATES -- the numeraire leg of
+      the EURUSD PPP-implied rate. LCU per international $, so this is the
+      definitional 1: MEASURED to be exactly 1 on every populated year, because
+      the international dollar IS the US dollar.
+
+      Carried as a real registry entry rather than folded into a constant
+      (the D-109 lesson: a literal that stands for a measured quantity must come
+      from the measurement, not from a convenient 1.0). The client divides by
+      this leg, so a future change of numeraire is a registry edit and not a
+      silent re-definition of the estimand.
+    frequency: annual
+    units: lcu_per_international_dollar
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 1.0
+    verified_observation_date: 2025-01-01
+    plausible_range: [0.5, 2.0]
+
 # ---------------------------------------------------------------------------
 # BLOCKED — Section 21.4 Loophole Ledger. These have no reachable source.
 # The registry records them so that an attempt to use them fails loudly and
@@ -1190,24 +1277,13 @@ blocked:
     reason: No clean free source for iron ore prices.
     opened_in: OPEN_ISSUES.md
 
-  - field: ppp_implied_rate
-    reason: |
-      HELD MANUAL, but NOT because no source exists -- the 2026-09-27 re-probe
-      (docs/PLAN_ppp_source.md) found one. In OpenBB: 0 of 278 paths expose PPP.
-      In FRED: PPP-derived series exist (e.g. MEXPPPSH) but the conventional
-      conversion-factor IDs (PPPTTL, PA.NUS.PPP, PPPGDP) are EMPTY. In the
-      WORLD BANK REST API: REACHABLE -- indicator PA.NUS.PPP ("PPP conversion
-      factor, GDP (LCU per international $)") returns 36 annual points for
-      member countries (DEU 0.709983 @ 2025, FRA 0.677618, GBR 0.677133), and
-      exactly 1 for the USA. NOTE: the EMU AGGREGATE is empty (0 points), so a
-      "USD per EUR at PPP" leg must be a member state or a constructed
-      aggregate -- a decision, not a constant. The route is the same "direct,
-      not OpenBB" one Section 21.1 already uses for current_account_pct_gdp.
-      D-114's live check declared 0.72, within 1.4% of DEU's 2025 value, so the
-      MODEL's number is sound -- what was wrong is the CLAIM below ("no clean
-      free API"), which is D-043's FALSE-BLOCK class. Wired or not is the next
-      increment's scope decision (Plan A in the plan doc).
-    opened_in: docs/PLAN_ppp_source.md
+  # ppp_implied_rate MOVED from `blocked:` to `series:` at D-117. It was a
+  # FALSE BLOCK (D-043's class): Section 21.1's premise "no clean free API" was
+  # measured wrong on 2026-09-27. Kept here as a tombstone so the move is
+  # auditable rather than silent -- a `blocked:` entry that disappears without a
+  # trace is how the ABSENT-block defect (D-047) opens.
+  #   - field: ppp_implied_rate
+  #     reason: ... (now `series:` below; wired via the World Bank REST API)
 
   - field: supercore_direction
     reason: >

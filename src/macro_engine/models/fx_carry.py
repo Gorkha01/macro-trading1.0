@@ -101,6 +101,7 @@ from typing import Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
+from macro_engine.data_layer.world_bank_client import fetch_ppp_implied_rate
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     EvidenceSourceFamily,
@@ -1548,6 +1549,15 @@ UIPDirection = Literal["domestic_depreciation", "domestic_appreciation", "flat"]
 #: published as its own member rather than rounded into one of the two sides.
 PPPStatus = Literal["overvalued", "undervalued", "at_parity"]
 
+#: The provenance sentence used when the PPP leg was SUPPLIED by the caller
+#: (the deterministic override) rather than fetched. A constant so the caller-
+#: supplied and fetched paths disclose in the same place with the same weight —
+#: an override must not be quieter than a fetch.
+_PPP_PROVENANCE_SUPPLIED = (
+    "The PPP leg was SUPPLIED by the caller rather than fetched, so its "
+    "provenance is unknown to this result."
+)
+
 #: The quote conventions a PPP pair may share. Deliberately the same members as
 #: ``QuoteConvention``, but asserted against it at import below rather than
 #: aliased: the two are the same SET and must stay so, and a divergence would
@@ -1998,16 +2008,34 @@ class PPPInputs(BaseModel):
     currencies the sentence names. It is therefore NOT a required input, and the
     published ``quote`` records what the numbers mean.
 
-    **Why a PPP conversion factor is a MANUAL input and not a live series.** The
-    PPP-implied rate is NOT observable in a market: it is constructed from a
-    price-level comparison (the OECD's PPP conversion factors are the standard
-    source), published at a low frequency and revised. Section 21.1 marks
-    ``ppp_implied_rate`` **BLOCKED → MANUAL** for exactly this reason — there is
-    no clean free API — and this model therefore takes it as a declared input
-    rather than pretending a proxy measures it. **The spot rate IS observable**
-    and comes from a live FX series; the asymmetry is the whole point of the
-    function, and the manual leg is disclosed in ``limitations`` rather than
-    hidden.
+    **Why a PPP conversion factor is now a FETCHED input rather than a manual one.**
+    Until D-117 this docstring read *"the PPP-implied rate is NOT observable in a
+    market … Section 21.1 marks ``ppp_implied_rate`` BLOCKED → MANUAL … there is
+    no clean free API."* **That premise was measured false** (the D-043
+    FALSE-BLOCK class): ``docs/PLAN_ppp_source.md`` found the World Bank REST API
+    reachable at indicator ``PA.NUS.PPP``, the same *"direct, not OpenBB"* route
+    Section 21.1 already sanctions for ``current_account_pct_gdp``. The input is
+    therefore **fetched** — ``data_layer/world_bank_client.py`` — and the
+    **fetch is the only path**: there is no manual fallback to go stale beside
+    it (the two-paths-for-one-number ambiguity Section 21.1 exists to remove).
+
+    **The fetch is NOT a vintage read, and the distinction is load-bearing.**
+    The World Bank offers no point-in-time selector; ``lastupdated`` is a
+    PUBLICATION date. That was measured against all four free sources the
+    operator named — **not one** has a point-in-time selector — so the ALFRED
+    capability remains FRED-only. The fetched value is a **disclosed vintage**,
+    and the disclosure is published in ``limitations`` on every call.
+
+    **The estimand is a RATIO, not a factor.** ``PA.NUS.PPP`` is LCU per
+    international $, so the PPP-implied level is
+    ``factor(domestic) / factor(foreign)``. The euro leg is **Germany** — the
+    World Bank's EMU aggregate measures **0 points**, so the substitute is a
+    **decision, not a constant** (``PLAN_ppp_source.md`` §4 step 1), recorded in
+    the registry with its justification.
+
+    **The spot rate IS observable** and comes from a live FX series; the
+    asymmetry is the whole point of the function, and the fetched leg's vintage
+    is disclosed in ``limitations`` rather than hidden.
 
     **The horizon is required, and this is the function's central discipline.**
     The specification computes a bare deviation and stops. But PPP is a
@@ -2048,12 +2076,33 @@ class PPPInputs(BaseModel):
             "``ppp_implied_rate``. LIVE — a market price."
         ),
     )
-    ppp_implied_rate: float = Field(
+    ppp_implied_rate: float | None = Field(
+        default=None,
         gt=0.0,
         description=(
-            "The PPP-implied rate for the same pair, from an OECD PPP "
-            "conversion factor. MANUAL — no clean free API (Section 21.1 "
-            "BLOCKED → MANUAL). Must be > 0."
+            "The PPP-implied rate for the same pair. **Optional since D-117**: "
+            "when omitted, ``ppp_valuation`` FETCHES it from the World Bank "
+            "(indicator ``PA.NUS.PPP``) using ``domestic_iso3`` / ``foreign_iso3``. "
+            "When supplied, it is used verbatim — so a test, or a replay against "
+            "a recorded value, is deterministic and offline. Supplying it is the "
+            "override; omitting it is the live path. Must be > 0 when supplied."
+        ),
+    )
+    domestic_iso3: str | None = Field(
+        default=None,
+        description=(
+            "ISO3 code of the DOMESTIC leg, used when ``ppp_implied_rate`` is "
+            "omitted. For a 'domestic per foreign' quote (USD per EUR) this is "
+            "the base of the level (EUR -> 'DEU' is the euro container; see the "
+            "registry's ``ppp_conversion_factor_eur``)."
+        ),
+    )
+    foreign_iso3: str | None = Field(
+        default=None,
+        description=(
+            "ISO3 code of the FOREIGN leg, used when ``ppp_implied_rate`` is "
+            "omitted. For a 'domestic per foreign' quote this is the numeraire "
+            "('USA' for a USD-quoted pair, whose factor is definitionally 1)."
         ),
     )
     horizon_years: float = Field(
@@ -2078,7 +2127,7 @@ class PPPInputs(BaseModel):
     def _validate_domain(self) -> PPPInputs:
         """Refuse an input that is representable but is not a price quote.
 
-        Two branches, and they fail differently:
+        Branches, and they fail differently:
 
         * **Non-finite** — ``nan`` fails every comparison, so ``if x <= 0``
           never fires for it; the deviation would be published as ``nan`` and
@@ -2090,8 +2139,14 @@ class PPPInputs(BaseModel):
           The ``gt=0.0`` field bound already covers this for a finite value, so
           this branch exists for the ``nan``/``inf`` cases the bound cannot see
           — which is the point of validating rather than trusting the bound.
+        * **The rate XOR the pair** — since D-117 the rate is OPTIONAL and the
+          model can FETCH it. Supplying neither leaves no estimator; supplying
+          an incomplete pair leaves an unanswerable fetch. **Both are refused
+          here rather than at fetch time**, so a caller learns the request is
+          malformed before any network call, and the failure is the same
+          offline as online.
         """
-        for name in ("spot_rate", "ppp_implied_rate", "horizon_years"):
+        for name in ("spot_rate", "horizon_years"):
             value = getattr(self, name)
             if not math.isfinite(value):
                 raise ValueError(
@@ -2102,14 +2157,35 @@ class PPPInputs(BaseModel):
                     f"answer (D-078)."
                 )
 
-        if self.ppp_implied_rate <= 0.0:
-            raise ValueError(
-                f"ppp_implied_rate is {self.ppp_implied_rate}, which is not a "
-                f"price level. The deviation divides by it, so a zero raises "
-                f"ZeroDivisionError and a negative inverts the sign of every "
-                f"result — an 'undervaluation' would be reported for an "
-                f"overvaluation."
-            )
+        if self.ppp_implied_rate is None:
+            # The fetch path. Both legs are required, and each must be a
+            # plausible ISO3 -- validated here so an incomplete request fails
+            # identically offline and online.
+            if self.domestic_iso3 is None or self.foreign_iso3 is None:
+                raise ValueError(
+                    "ppp_implied_rate was omitted (the fetch path), so BOTH "
+                    "domestic_iso3 and foreign_iso3 must be supplied. Supplying "
+                    "neither leaves no estimator; supplying one leaves an "
+                    "unanswerable fetch. Pass ppp_implied_rate directly for a "
+                    "deterministic offline call, or pass the pair to fetch it."
+                )
+        else:
+            if not math.isfinite(self.ppp_implied_rate):
+                raise ValueError(
+                    f"ppp_implied_rate is {self.ppp_implied_rate!r}, which is not "
+                    f"finite. A non-finite input cannot form a deviation: every "
+                    f"comparison a plausibility check is made of returns False for "
+                    f"nan, so it would reach the arithmetic and produce a "
+                    f"non-finite value that looks like an answer (D-078)."
+                )
+            if self.ppp_implied_rate <= 0.0:
+                raise ValueError(
+                    f"ppp_implied_rate is {self.ppp_implied_rate}, which is not a "
+                    f"price level. The deviation divides by it, so a zero raises "
+                    f"ZeroDivisionError and a negative inverts the sign of every "
+                    f"result — an 'undervaluation' would be reported for an "
+                    f"overvaluation."
+                )
 
         if self.quote not in _QUOTE_CONVENTIONS:
             raise ValueError(
@@ -2134,18 +2210,37 @@ def _ppp_status(deviation_pct: float) -> PPPStatus:
     return "at_parity"
 
 
-def _ppp_limitations() -> list[str]:
+def _ppp_limitations(ppp_vintage: str | None) -> list[str]:
     """The function's standing limitations, published on EVERY call.
 
-    These are structural, not conditional: they hold for every input, which is
-    why they are a constant list rather than a function of the arguments (the
-    same shape as ``_uip_limitations``).
+    Structurally constant except for one interpolated fact, ``ppp_vintage`` —
+    the provenance of the PPP leg. It is a parameter rather than a constant
+    since D-117 because the leg is **fetched**, and its freshness is a real
+    property of the call: the published figure, its year, and its publication
+    date. A constant string here would be a disclosure that discloses nothing
+    (the D-110 class: a caveat that CAN be an assertion SHOULD be).
+
+    When ``ppp_vintage`` is ``None`` the leg was supplied by the caller
+    (the deterministic/offline override) and the text says so, rather than
+    pretending a provenance it cannot know.
     """
+    if ppp_vintage is None:
+        vintage_clause = (
+            "The PPP-implied rate was SUPPLIED BY THE CALLER rather than "
+            "fetched, so its vintage is unknown to this result. Section 21.1 "
+            "sources this input from the World Bank REST API (indicator "
+            "PA.NUS.PPP); a caller that overrides it takes responsibility for "
+            "the figure's provenance."
+        )
+    else:
+        vintage_clause = (
+            f"The PPP-implied rate is FETCHED, not a market price, and is a "
+            f"DISCLOSED VINTAGE rather than a point-in-time vintage: the World "
+            f"Bank REST API offers no point-in-time selector, so this is the "
+            f"latest published revision. {ppp_vintage}"
+        )
     return [
-        "The PPP-implied rate is a MANUAL input, not an observed market price. "
-        "It comes from an OECD PPP conversion factor, which is published at a "
-        "low frequency and REVISED; the vintage matters and is not carried in "
-        "this result. Section 21.1 marks the input BLOCKED → MANUAL.",
+        vintage_clause,
         "PPP is a MULTI-YEAR anchor. A deviation from it is NOT a signal about "
         "the next quarter: deviations persist for years, and the relationship "
         "carries no timing information at any horizon a trader acts on. The "
@@ -2268,8 +2363,25 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
     reliability = fx_carry.ppp_reliability_value
     tactical_horizon_years = fx_carry.ppp_tactical_horizon_value
 
-    deviation_pct = (inputs.spot_rate - inputs.ppp_implied_rate) / inputs.ppp_implied_rate * 100.0
-    ratio = inputs.spot_rate / inputs.ppp_implied_rate
+    # --- resolve the PPP leg: fetch it, or take the caller's override -------
+    # The fetch is the ONLY live path (the operator's D-117 decision): there is
+    # no manual fallback to drift beside it. A caller MAY override with an
+    # explicit rate, which is what keeps unit tests deterministic and offline.
+    ppp_implied_rate = inputs.ppp_implied_rate
+    ppp_vintage: str | None = None
+    if ppp_implied_rate is None:
+        # Validated in `_validate_domain`: both legs are present here.
+        if inputs.domestic_iso3 is None or inputs.foreign_iso3 is None:  # pragma: no cover
+            raise ValueError(
+                "ppp_implied_rate is None but the pair is incomplete; "
+                "_validate_domain should have refused this input."
+            )
+        ppp_implied_rate, ppp_vintage = fetch_ppp_implied_rate(
+            inputs.domestic_iso3, inputs.foreign_iso3
+        )
+
+    deviation_pct = (inputs.spot_rate - ppp_implied_rate) / ppp_implied_rate * 100.0
+    ratio = inputs.spot_rate / ppp_implied_rate
     status = _ppp_status(deviation_pct)
 
     if status == "overvalued":
@@ -2294,7 +2406,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
             "ratio": round(ratio, 6),
             "status": status,
             "spot_rate": inputs.spot_rate,
-            "ppp_implied_rate": inputs.ppp_implied_rate,
+            "ppp_implied_rate": ppp_implied_rate,
             "quote": inputs.quote,
             "horizon_years": inputs.horizon_years,
             "tactical_horizon_years": tactical_horizon_years,
@@ -2308,13 +2420,13 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
         ),
         context=(
             f"Spot {inputs.spot_rate} against a PPP-implied "
-            f"{inputs.ppp_implied_rate} ({inputs.quote}), quoted as a "
+            f"{ppp_implied_rate} ({inputs.quote}), quoted as a "
             f"{ratio:.6f} ratio and a {deviation_pct:+.2f}% deviation, over a "
             f"{inputs.horizon_years}-year thesis against a "
-            f"{tactical_horizon_years}-year tactical minimum. The PPP leg is a "
-            f"MANUAL input (OECD conversion factor, Section 21.1 BLOCKED → "
-            f"MANUAL): it is a constructed price level, not an observed market "
-            f"price, and it is revised. Confidence is a model-specific cap "
+            f"{tactical_horizon_years}-year tactical minimum. "
+            f"{_PPP_PROVENANCE_SUPPLIED if ppp_vintage is None else ppp_vintage} "
+            f"It is a constructed price level, not an observed market price, and "
+            f"it is revised. Confidence is a model-specific cap "
             f"({reliability}), not a computed penalty: what is unreliable is "
             f"that ABSOLUTE PPP is the version of the relationship most "
             f"strongly rejected empirically, and no input-reliability factor "
@@ -2328,7 +2440,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
             "of price levels), not a relative-PPP change forecast.",
             "The spot rate is a market price and is contemporaneous with the "
             "call; the PPP factor has its own, older, vintage that this result "
-            "does not carry.",
+            "carries only as a disclosure.",
             "No adjustment is made for the Balassa-Samuelson effect — richer "
             "countries' price levels are systematically higher, so a "
             "rich-country currency reads as persistently overvalued by "
@@ -2341,7 +2453,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
             horizon_years=inputs.horizon_years,
             tactical_horizon_years=tactical_horizon_years,
         ),
-        limitations=_ppp_limitations(),
+        limitations=_ppp_limitations(ppp_vintage),
         decision_relevance=(
             "Module 9's price-level anchor, and the counterpart to its "
             "interest-parity relations: `cip_check` and `uip_expected_move` "

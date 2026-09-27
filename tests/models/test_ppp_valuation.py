@@ -411,16 +411,57 @@ def test_an_ordinary_long_horizon_call_carries_no_warnings() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_manual_ppp_leg_is_disclosed_in_the_limitations() -> None:
-    """The BLOCKED -> MANUAL asymmetry is the function's central disclosure.
+def test_the_callersupplied_ppp_leg_is_disclosed_in_the_limitations() -> None:
+    """A caller-supplied leg must not be QUIETER than a fetched one.
 
-    Section 21.1 marks ``ppp_implied_rate`` BLOCKED -> MANUAL. The model must
-    say so on EVERY call rather than hiding the manual leg behind a live spot
-    price.
+    Until D-117 the PPP leg was BLOCKED -> MANUAL and the limitations said so.
+    The leg is now FETCHED from the World Bank; a caller MAY override it with a
+    literal (which is what keeps unit tests deterministic and offline). **The
+    override path must still disclose**, in the same slot with the same weight —
+    an override that said nothing would make "which number did the thesis use"
+    unanswerable, which is the ambiguity Section 21.1 exists to remove.
     """
     limitations = " | ".join(ppp_valuation(_inputs(1.30)).limitations)
-    assert "MANUAL input" in limitations
-    assert "BLOCKED" in limitations
+    assert "SUPPLIED BY THE CALLER" in limitations
+    assert "vintage is unknown" in limitations
+
+
+def test_the_fetched_ppp_leg_discloses_it_is_a_disclosed_vintage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FETCH path discloses provenance AND the vintage distinction.
+
+    The World Bank offers no point-in-time selector, so the fetched value is a
+    DISCLOSED vintage rather than a vintage read (PLAN_ppp_source.md §6). The
+    disclosure must say so, and must name the fetched provenance.
+    """
+    monkeypatch.setattr(
+        "macro_engine.models.fx_carry.fetch_ppp_implied_rate",
+        lambda *a, **k: (0.71, "World Bank PA.NUS.PPP (DEU), 2025 figure, published 2026-07-13."),
+    )
+    result = ppp_valuation(
+        PPPInputs(spot_rate=1.30, domestic_iso3="DEU", foreign_iso3="USA", horizon_years=5.0)
+    )
+    limitations = " | ".join(result.limitations)
+    assert "DISCLOSED VINTAGE" in limitations
+    assert "no point-in-time selector" in limitations
+    assert "World Bank PA.NUS.PPP (DEU), 2025 figure" in limitations
+    assert as_float(result, key="ppp_implied_rate") == pytest.approx(0.71)
+
+
+def test_omitting_the_rate_without_a_pair_is_refused() -> None:
+    """The fetch path needs BOTH legs; an incomplete request fails at validation.
+
+    Refused in the validator rather than at fetch time, so the failure is
+    identical offline and online and no network call happens for a malformed
+    request.
+    """
+    with pytest.raises(ValidationError, match="BOTH domestic_iso3 and foreign_iso3"):
+        PPPInputs(spot_rate=1.30, horizon_years=5.0)
+    with pytest.raises(ValidationError, match="BOTH domestic_iso3 and foreign_iso3"):
+        PPPInputs(spot_rate=1.30, domestic_iso3="DEU", horizon_years=5.0)
+    with pytest.raises(ValidationError, match="BOTH domestic_iso3 and foreign_iso3"):
+        PPPInputs(spot_rate=1.30, foreign_iso3="USA", horizon_years=5.0)
 
 
 def test_the_limitations_and_prohibitions_are_structural_and_non_empty() -> None:

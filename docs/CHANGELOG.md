@@ -10,6 +10,69 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-117 — `ppp_implied_rate` wired LIVE from the World Bank (2026-09-27)
+
+A **sourcing** increment, not a function increment: D-114's `ppp_valuation` model is untouched,
+and its **input** moves from a typed MANUAL constant to a fetched value. Tier 5 stays **14/23**.
+
+**Added**
+
+- **`src/macro_engine/data_layer/world_bank_client.py`** — a new direct client for the World
+  Bank REST API (`PA.NUS.PPP`, PPP conversion factor GDP, LCU per international $). Exposes
+  `fetch_ppp_conversion_factor(iso3)`, `implied_rate_from_factors(domestic, foreign)` and
+  `fetch_ppp_implied_rate(domestic_iso3, foreign_iso3)`; `ROUTE_NAME = "world_bank_direct"`.
+  It **divides** the two legs rather than assuming the numeraire is 1, and exposes **no
+  point-in-time selector** — deliberately, because the World Bank's `lastupdated` is a
+  *publication* date, not a vintage handle.
+- **`tests/data_layer/test_world_bank_client.py`** — **21 tests**: structural guards (no OpenBB
+  import; no `realtime_start`/`as_of` parameter **on any signature**), failure guards (malformed
+  ISO3, non-list body, missing `lastupdated`, all-null series, retried non-200), estimand guards
+  (ratio, **a non-USA numeraire is not silently 1**, zero foreign factor refused), selection
+  guards (newest year by value not row order; a suppressed year skipped, not read as 0), pair
+  disclosure, and the **O-141 registry-schema guard**.
+- **`docs/PLAN_ppp_source.md` §6** — the measured answer to the operator's four-source question.
+
+**Changed**
+
+- **`config/series_registry.yaml`** — the `blocked:` entry for `ppp_implied_rate` becomes a
+  **tombstone**, and two real `series:` entries are added: `ppp_conversion_factor_eur`
+  (DEU, `0.709983` verified 2025-01-01) and `ppp_conversion_factor_usd` (USA, `1.0`). Both
+  `not_a_snapshot_field: true` and **deliberately NOT** `vintage_eligible` — the World Bank
+  offers no point-in-time selector, so marking them so would be a false claim of O-6's class.
+- **`models/fx_carry.py`** — `PPPInputs.ppp_implied_rate` is now optional (`gt=0.0`), joined by
+  `domestic_iso3`/`foreign_iso3`; `_validate_domain` refuses the **rate XOR the pair** (both
+  neither and one-leg cases raise); `_ppp_limitations` discriminates **FETCHED … DISCLOSED
+  VINTAGE, no point-in-time selector** from **SUPPLIED BY THE CALLER … vintage is unknown**.
+- **`scripts/live_ppp_valuation_check.py`** — now fetches **both** legs and drives the model
+  through its **fetch** path; it asserts the USA leg is exactly `1`. **Passes on real data:**
+  spot `1.140121` @ 2026-09-26, DEU factor `0.709983`, deviation `+60.58 %`, `confidence 0.2`.
+- **`scripts/mutation_fx_carry.py`** — three anchors widened for the new local variable
+  (`_PPP_DEVIATION`, `_PPP_RATIO`, `_PPP_LEG_KEY`); **171 mutations, 0 problems**.
+- **`AGENTS.md`** §21.1 — the `ppp_implied_rate` row moves `BLOCKED → MANUAL` → **`LIVE`**.
+
+**Fixed**
+
+- **O-141** — an undeclared `iso3` key on a registry entry made the **whole registry
+  unparseable** (`RegistrySeries` is `extra="forbid"`), reddening **33 tests across 7 modules
+  unrelated to PPP**. Fixed by moving the country to the client call, plus a test that reads
+  the field list **from the model** and asserts the registry still parses. Mutation-proved.
+- **O-142** — `scripts/mutation_fx_carry.py` reached the suite carrying **CRLF** (the
+  O-119/D-061 trap: in a CRLF file a `'\n'` anchor matches zero times **silently** ⇒ a FALSE
+  SURVIVOR). Normalised on disk; `git diff --numstat` proves the 7 intended content changes.
+
+**Decided**
+
+- **No ALFRED substitute exists among the four sources the operator named.** The criterion is a
+  **point-in-time selector**, and none of World Bank / IMF / OECD / Eurostat implements one; the
+  **IMF is the trap** (right label, HTTP 200, `?version=` **absorbed silently** — O-6 verbatim).
+  The World Bank is the right Plan A source. Recorded in `DECISIONS.md` D-117 §1.
+- **The euro-container leg is `DEU`** (operator decision): the World Bank **EMU aggregate
+  returns 0 points — measured** — so DEU is the chosen single-member proxy, and it is the leg
+  D-114's MANUAL `0.72` already matched to within 1.4 %.
+- **The fetch is the only live path** (operator decision): no MANUAL fallback, because a dead
+  fallback reads exactly like a live fetch whenever it fires. A caller-supplied rate survives
+  but is **disclosed as supplied**.
+
 ### D-114 — Module 9.2's `ppp_valuation`: the price-level anchor (Tier 5 = 14/23)
 
 Module 9's parity family gains its **price-level neighbour** — the companion to

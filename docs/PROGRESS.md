@@ -1,7 +1,36 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-26** (after **D-114 — Module 9.2's `ppp_valuation`, THE PRICE-LEVEL
+Last updated: **2026-09-27** (after **D-117 — `ppp_implied_rate` WIRED LIVE from the World
+Bank: a FALSE BLOCK removed, the ALFRED question answered by MEASUREMENT, and TWO defects the
+full suite found that the increment's own tests could not.** D-114's `ppp_valuation` model is
+**untouched** — this is a **SOURCING** increment, so Tier 5 stays **14/23**: its input moves
+from a typed MANUAL constant to a **fetched** value. **The operator's four-source question was
+answered against the engine's own contract, not against what the sources advertise:** the ALFRED
+capability is a **point-in-time selector** (`realtime_start == realtime_end == as_of`), and
+**none of World Bank / IMF / OECD / Eurostat implements one** — so none can substitute for
+ALFRED. The **IMF is the trap** (right series label, HTTP 200, and a `?version=` **absorbed
+silently** — **O-6's defect verbatim**); the **World Bank `PA.NUS.PPP`** is the right Plan A
+source. §21.1's premise *"no clean free API"* is **measurably false** — the **third FALSE BLOCK**
+this repo has caught (D-043's class). **The estimand is a RATIO of two countries' factors**, so
+it is two legs and a **division performed rather than assumed** (a non-USA numeraire is *not*
+silently read as `1`); the euro leg is **DEU** by operator decision (the World Bank's **EMU
+aggregate returns 0 points — measured**), and the **fetch is the ONLY live path** (no MANUAL
+fallback: a dead fallback reads exactly like a live fetch whenever it fires). **No ALFRED
+substitute among the four; the capability stays FRED-only.** **The increment-local surface was
+FULLY GREEN and the FULL SUITE still reported `34 failed / 3557`** — both failures outside
+everything the increment tested: **O-141** (an undeclared `iso3` key made the **WHOLE REGISTRY
+unparseable**, because `RegistrySeries` is `extra="forbid"` and every entry parses as part of
+`SeriesRegistry` — **33 tests across 7 modules that do not mention PPP**, while all 20 new client
+tests stayed green because none of them loads the registry) and **O-142** (`mutation_fx_carry.py`
+reached the suite carrying **CRLF** — the O-119/D-061 trap, in which a `'\n'` anchor matches
+**zero times SILENTLY** and the mutation reports `APPLIED` on untouched code ⇒ a **FALSE
+SURVIVOR**; caught **only** by the hygiene test, because the sweep **cannot detect this by
+construction**). **The lesson: an increment's own tests are written against the schema the
+AUTHOR BELIEVES IN, and both defects lived in the gap between that belief and the repository.**
+**Gates: 266 == 266 · 3558 collected / 0 failed / 1 skipped (JUnit) · reachability 58/58 PASS ·
+`--check-targets` 171/0 · sweep 171/171 killed · 45 sweeps OK.**
+Previous update: **D-114 — Module 9.2's `ppp_valuation`, THE PRICE-LEVEL
 ANCHOR: Tier 5 = 14/23.** The first Tier-5 function with a **BLOCKED** input: §21.1 marks
 `ppp_implied_rate` **BLOCKED → MANUAL** (no clean free API), and the operator approved the
 **declared MANUAL + live spot** resolution — the D-108 / line-2958 precedent — disclosed on
@@ -22,6 +51,7 @@ survivor on the first sweep (`C6b`) was a WEAK TEST** (the shipped leaf is `3.0`
 hardcoded `3.0` compared `3.0` with `3.0` — D-050's trap); fixed by PERTURBING THE LEAF, never by
 touching the mutation. **Gates: 264 == 264 · 3533 collected / 0 failed / 1 skipped (JUnit) ·
 171/171 killed · 45 sweeps OK.**)
+
 Previous update: **D-113 — O-138 CLOSED: `--check-targets` WAS NEVER A
 FLAG.** A tool fix, not a function increment; **no model code changed.** The report was right
 about the symptom and wrong about the cause: the flag was a token **nothing read** — no sweep

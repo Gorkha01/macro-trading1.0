@@ -2315,3 +2315,24 @@ under **both** reachable foreign legs and asserts the read is robust to the choi
 (`+0.205227` vs `+0.158000`, both `long_domestic`). **The direction is robust and
 the level is not**, and that difference is now a printed number rather than a
 sentence. **A caveat that can be converted into an assertion should be.**
+
+## D-117 — no new mapping; an ALREADY-MAPPED function is RE-SOURCED (2026-09-27)
+
+**No mapping changes.** `ppp_valuation` (D-114) keeps its Module 9.2 slot, its inputs, and its
+consumers. What changed is the **provenance of one input**: `ppp_implied_rate` moved from a
+MANUAL declared constant to a **fetched** World Bank value. The mapping stays valid because a
+mapping records *what feeds what*, and the wiring did not alter either end of that.
+
+**The one thing worth recording here** is the direction of the check that this increment made
+routine: an input's provenance is part of the mapping even when the graph is unchanged. A
+MANUAL constant and a fetched value are **different kinds of node**, and the disclosure text
+is what makes the difference visible to a consumer — `FETCHED … DISCLOSED VINTAGE` versus
+`SUPPLIED BY THE CALLER … vintage is unknown`. A reader who saw only "input: ppp_implied_rate"
+would be unable to tell a measured number from a typed one, which is the **D-114 §"declared
+input"** distinction carried one step further.
+
+**Also recorded:** the reachability audit was re-run and **did not move** — `ppp_valuation`
+was already **SCRIPT-ONLY** in Tier 5, so `--check-baseline` stayed **PASS 58/58**. A new
+`data_layer` client does not itself become a Tier-5 reachability target; only its **calling
+model** matters, and that model was already audited.
+

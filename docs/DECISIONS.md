@@ -18756,6 +18756,140 @@ because D-112's Next pointer took the prose ordering and named the wrong functio
 
 ---
 
+## D-117 — Module 9.2's `ppp_implied_rate`: a **FALSE BLOCK** wired to live data, the ALFRED question answered by MEASUREMENT against four named sources, and two defects the FULL SUITE found that the increment's own tests could not
+
+**Date:** 2026-09-27. **Tier 5 = 14/23.** Target: `src/macro_engine/models/fx_carry.py`
+(`ppp_valuation`, created D-114), **`AGENTS.md:5384`** (§21.1's sourcing row —
+**verified with `grep -n`; a citation is a claim**), plus the **new**
+`src/macro_engine/data_layer/world_bank_client.py`. Supersedes **nothing**: D-114's
+model stands, and this increment replaces its **input** from a typed constant with a
+fetched value. Two operator decisions were taken before any code (below).
+
+### 1. The operator's four-source question was answered by MEASUREMENT, and the answer was "none of them" — because the criterion is not "does it have PPP data"
+
+The operator asked whether the World Bank / IMF / OECD / Eurostat could stand in as an
+**ALFRED-style client** in place of OpenBB. The question is the right one — §21.1 had
+`ppp_implied_rate` **BLOCKED → MANUAL** on the premise *"OECD publishes PPP conversion
+factors; no clean free API"*, and D-043/D-047 established that such a premise is
+**auditable and therefore testable**. So the premise was re-probed, and the criterion was
+fixed first, from the engine's own contract rather than from what the sources advertise:
+
+* `data_layer/alfred_client.py` defines the capability as `fetch_vintage_observations(
+  series_id, as_of)` setting **`realtime_start == realtime_end == as_of`** — a
+  **point-in-time selector** returning *the values in force on that date*, where a
+  pre-publication date returns **`{}`** (an honest empty set) and `VintageUnavailableError`
+  is **deliberately fatal**, because *"a vintage that silently degrades to 'latest' is
+  worse than no vintage at all."* The module exists solely because **O-6** measured OpenBB
+  **absorbing** `realtime_start` silently and returning the latest revision at HTTP 200.
+
+So the deciding question is **"does the source implement a point-in-time selector?"**, not
+**"does it carry PPP data?"**. Probed 2026-09-27 (full method and per-source evidence in
+`docs/PLAN_ppp_source.md` §6):
+
+| Source | PPP item reachable? | Point-in-time selector? | Verdict |
+| --- | --- | --- | --- |
+| **World Bank** `PA.NUS.PPP` | **Yes** — right item, right units | **No** (`lastupdated` is a *publication* date, not a vintage handle) | **the right Plan A source** |
+| **IMF** `PPPEX` | Right *label*, but **WEO projections to 2031** | **No** — and `?version=` is **absorbed silently** | **the one to avoid**; reproduces O-6 |
+| **OECD** `DSD_PPP@DF_PPP` | Yes, + the only `EU27_2020` aggregate | **No** — `updatedAfter` ≠ a vintage | workable second source, later |
+| **Eurostat** `prc_ppp_ind` | **Wrong item** — a price-level **INDEX** | n/a | refused |
+
+**Verdict: no ALFRED substitute exists among the four.** None implements a point-in-time
+selector, so the ALFRED capability remains **FRED-only**, and marking any of these
+`vintage_eligible` would be a false claim of exactly the **O-6 class**. The IMF is singled
+out because it is the *plausible-looking* trap: the right series label, HTTP 200, and a
+`version` parameter that **silently corrupts the read** — precisely the defect the engine's
+own `alfred_client.py` was written to defeat. But the premise that mattered — *"no clean
+free API"* — is **false**, so the block is a **FALSE BLOCK (D-043's class, the third in
+this file)** and the input is wired live.
+
+### 2. The estimand is a RATIO of two COUNTRIES' factors, so it is two legs and a division — never a single number
+
+`PA.NUS.PPP` is **LCU per international $**. The international dollar **cancels** in the
+ratio, so `implied_rate = factor(domestic) / factor(foreign)`, and the **USA leg is exactly
+`1` by construction** — *because the international dollar IS the US dollar.*
+
+That "exactly 1" is the trap. The **D-109 lesson** is that a literal standing for a
+measured quantity must come from the measurement, not from a convenient constant, so the
+client **divides** rather than assuming the numeraire is 1 — and a test proves a non-USA
+numeraire is **not** silently assumed to be `1`. Two operator decisions were taken before
+any code was written, and both are recorded as decisions rather than constants:
+
+1. **The euro-container leg is `DEU`.** The World Bank's **EMU aggregate returns 0 points
+   — MEASURED, not assumed** — so "USD per EUR at PPP" has **no single official value**.
+   Germany is the euro area's largest economy, and it is the leg D-114's declared MANUAL
+   `0.72` already matched (`0.709983` is within **1.4 %**), which is what makes the swap a
+   **WIRING** change rather than a **MODEL** change. The operator directed DEU.
+2. **The fetch is the ONLY path — no MANUAL fallback.** A dead fallback would be
+   indistinguishable from a live fetch whenever it fired, which is the O-6 failure mode
+   wearing a different hat. The sole live path is the fetch; an explicit caller-supplied
+   rate remains, and it is **disclosed as `SUPPLIED BY THE CALLER … vintage is unknown`**
+   rather than passing as measured. The disclosure is a **claimed-vintage discriminator**,
+   so the fetched path and the supplied path can never read alike (D-110: a disclosure
+   that *can* be an assertion *should* be).
+
+### 3. **Two defects the full suite found that the increment's own tests could not** — and why that is the increment's real lesson
+
+The code was complete and every test **written for it** was green — the 20 new client
+tests, the model tests, the live check against real data, `ruff`/`mypy` at **266 == 266**,
+reachability **58 == 58**, `--check-targets` **171 mutations, 0 problems**. The full suite
+then reported **`34 failed / 3557 collected`.** Both failures were **outside** everything
+the increment thought to test:
+
+* **O-141 — the `iso3` key made the WHOLE REGISTRY unparseable.** Adding `iso3: DEU` to a
+  `series:` entry, on the assumption an unused tag is *ignored*, is wrong: `RegistrySeries`
+  is **`extra="forbid"`** (`config.py:1047`), and every entry parses as part of
+  `SeriesRegistry` (`config.py:1673`, also `extra="forbid"`), so **one unknown key on one
+  entry rejects the entire file.** **33 tests** — in **seven modules that do not mention
+  PPP**, some of which merely *load the config* — failed with the identical
+  `Extra inputs are not permitted`, while **all 20 tests in the new client file stayed
+  green because none of them loads the registry.** The blast radius was maximally
+  **non-local** and pointed at nothing. `extra="forbid"` is correct (it is what catches a
+  typo'd key); the defect is that the increment **assumed a schema it had not read.**
+  Fixed by removing the key and moving the country to the **client call**
+  (`fetch_ppp_implied_rate(domestic_iso3, foreign_iso3)`), with the reasoning written into
+  `series_registry.yaml` and **pinned by a new test** that reads the field list **from the
+  model** rather than hardcoding it, and asserts **both** that no key is undeclared
+  **and** that the registry still parses. **Mutation-proved:** re-adding `iso3: DEU` fails
+  it by name; restored byte-exact.
+* **O-142 — the sweep target reached the suite carrying CRLF.** After the hand edit,
+  `scripts/mutation_fx_carry.py` held **1 961 `\r` and 1 961 `\n`** — every line CRLF —
+  caught **only** because `test_source_hygiene.py` watches for it; **the mutation sweep
+  cannot detect this by construction.** The measurement that settles it: `HEAD`'s copy has
+  **0 `\r`**, `.gitattributes` pins `* text=auto eol=lf`, while this box has **`core.autocrlf
+  = true` globally** (a checkout-side conversion the repo cannot fully defend against), and
+  **`git diff --numstat` still reports exactly the 7 intended content changes** — so no
+  content was fabricated. The hazard is **O-119/D-061** verbatim: in a CRLF file an anchor
+  written with `'\n'` matches **zero** times, `str.replace` returns the string unchanged,
+  and the mutation reports **`M… APPLIED`** while the code is untouched — a **FALSE
+  SURVIVOR** (O-131's manufacturing direction). Here the anchors were edited through an
+  editor that preserved the file's line endings, so nothing was lost; **the hazard was
+  live and the sweep that depends on it could not have seen it.** Fixed by normalising on
+  disk, with `git diff --numstat` as the proof that content was preserved.
+
+**The lesson, and it is the increment's actual deliverable:** the tests an author writes
+are written against the **schema the author believes in**. Both defects lived in the gap
+between that belief and the repository — `iso3` in a typed config, CRLF in a swept file —
+and **neither was reachable from the increment's own test surface.** A green increment-local
+suite is not evidence that the *tree* is green, which is exactly why §21.2 Step 8 runs the
+whole suite and why the operator's "report and wait" precedes the next increment.
+
+### 4. What did NOT change — the model's own contract stands
+
+`ppp_valuation`'s thresholds, its `confidence` **CAP**, its horizon rule, and D-114's
+BLOCKED→MANUAL provenance structure are all **untouched**. The live check now drives the
+**fetch** path (`PPPInputs(spot_rate=…, domestic_iso3=…, foreign_iso3=…)`) and asserts the
+disclosure, and it **PASSES on real data**: spot **`1.140121`** @ 2026-09-26, fetched DEU
+factor **`0.709983`** (2025, published 2026-07-13), deviation **`+60.58 %`**,
+`confidence 0.2`. The registry carries **two real entries** (both `not_a_snapshot_field`,
+**deliberately NOT** `vintage_eligible`), and the `blocked:` entry for `ppp_implied_rate`
+is replaced by a **tombstone** — because an ABSENT block cannot be audited (**D-047**),
+and this one is worth keeping visible: it is the third FALSE BLOCK this file has caught.
+
+**Gates re-derived after the fixes, not carried:** `ruff format` file count **==** `mypy
+--strict` file count (**266**); full suite **green** (see §5); live check **PASS**;
+reachability `--check-baseline` **58 == 58 PASS**; `--check-targets` **171 / 0**;
+`sweep_health.py` **LAST** — counts recorded in `PROGRESS.md`.
+
 ## D-113 — O-138 closed: `--check-targets` was NEVER A FLAG, so the "safe pre-flight" ran the whole sweep; the fix makes it real and answers it BEFORE the tree is touched
 
 **A tool-fix increment, not a function increment** — the operator asked for O-138 to be
