@@ -5907,6 +5907,155 @@ class GoldDriverSettings(BaseModel):
         return self
 
 
+class MetalsComplexSettings(BaseModel):
+    """Module 10.3's metals-complex leaves (Section 21.1's ``metals_complex_divergence``).
+
+    The reference body (``AGENTS.md:4945``) inlines TWO magic numbers and a bare
+    confidence, and Section 22.8 forbids the confidence while the "every number
+    must be findable" rule disallows the rest:
+
+    * ``confidence=0.4`` — replaced by ``compute_confidence(...) x cap``.
+    * ``abs(aluminum_change_pct) < 2.0`` — the aluminum-stability band that
+      DISCRIMINATES construction-specific from broad weakness (the spec's own
+      word). It becomes ``aluminum_stability_band_pct``.
+    * ``all(x < -2.0 for x in ...)`` — the breadth threshold below which the
+      whole complex counts as broadly weak. It becomes ``broad_weakness_threshold_pct``.
+      Note it is the SAME magnitude as the aluminum band and the OPPOSITE
+      comparison, which is exactly why they must be two named leaves rather than
+      one shared number: a reader who sees them equal would still need to know
+      which side of zero each applies to.
+
+    ``reliability_cap`` is a **model-specific confidence CAP**, the
+    D-112/D-114/D-118/D-119/D-120/D-121 precedent. It sits **just below**
+    ``gold_driver``'s 0.35, because this model classifies three observable price
+    changes into one of three patterns on uncalibrated bands — the SAME shape as
+    gold but with a WEAKER primary signal: gold's primary is a change in a
+    real yield with an independent VIX confirmation, whereas here the three legs
+    are all commodity prices from ONE provider and ONE family, so the
+    independence credit is 1 at most and the pattern is a sign test. The
+    ordering (below gold) is the claim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    value_decimals_leaf: CalibratedValue
+    # ⚠️ THE FIELD NAMES DELIBERATELY DIFFER FROM THE PROPERTY NAMES, exactly as
+    #    the gold block's do. Python binds the LAST definition, so a field and a
+    #    property with the same name would leave the property shadowing the field
+    #    (or vice versa) — the O-150 shadowing class, in config rather than tests.
+    #    The `_band_pct_leaf` / `_threshold_pct_leaf` suffixes keep them apart.
+    aluminum_stability_band_pct_leaf: CalibratedValue
+    broad_weakness_threshold_pct_leaf: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``metals_complex_divergence`` reports.
+
+        The reference ships ``confidence=0.4``, which Section 22.8 refuses. The
+        cap is NOT carried forward at face value: the method is a three-way
+        pattern match over two uncalibrated bands on three prices from a single
+        provider family, so it stays low — deliberately BELOW ``gold_driver``'s
+        0.35, because gold's primary leg is confirmed by an independent second
+        series while these three legs share one provider and one family.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is calibrated rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` so the computed
+        half prices the leaf's own status rather than assuming it.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def value_decimals(self) -> int:
+        """The decimal places each published percent change is rounded to.
+
+        The changes are percent moves of monthly benchmark prices published to a
+        high decimal count; ``1`` is enough to show the direction and rough
+        magnitude without implying the model's bands are resolved finer than
+        whole per-cent.
+        """
+        return int(self.value_decimals_leaf.value)
+
+    @property
+    def aluminum_band_pct(self) -> float:
+        """The ``|aluminum change|`` band inside which aluminum counts as stable.
+
+        The reference inlines ``< 2.0``. It is the DISCRIMINATING test: aluminum
+        is energy-cost driven with different end-use exposure, so its stability
+        while copper and iron ore fall is what separates a China-construction
+        signal from a broad-industrial one. Preserved so the model and the
+        specification agree on what "flat" means.
+        """
+        return float(self.aluminum_stability_band_pct_leaf.value)
+
+    @property
+    def broad_weakness_threshold_pct(self) -> float:
+        """The ``change`` below which each metal counts toward broad weakness.
+
+        The reference inlines ``< -2.0``. A metal at or above this is not
+        "broadly weak". Preserved from the specification; it is a magnitude, so
+        the comparison is ``change < -threshold``.
+        """
+        return float(self.broad_weakness_threshold_pct_leaf.value)
+
+    @model_validator(mode="after")
+    def _validate_cap_decimals_and_bands(self) -> MetalsComplexSettings:
+        """Refuse a cap outside ``[0, 1]``, non-positive decimals, or bad bands.
+
+        The cap check mirrors the sibling blocks: ``ModelResult`` refuses a
+        confidence outside ``[0, 1]``, so a leaf outside it would raise at the
+        FIRST call rather than at load, turning a config error into a runtime
+        failure of a model.
+
+        The decimals leaf must be non-negative because ``round`` accepts a
+        negative ``ndigits``, which would silently publish a change far coarser
+        than the contract implies.
+
+        **Both bands must be POSITIVE, and the reason is the dead-vocabulary
+        failure (D-037's class).** A non-positive ``aluminum_stability_band_pct``
+        makes ``abs(change) < band`` true only for an exactly-zero change, so the
+        discriminating test would almost never fire and the construction-specific
+        verdict would become unreachable. A non-positive
+        ``broad_weakness_threshold_pct`` makes ``change < -threshold`` true for
+        every non-negative change, so the broad-weakness verdict would fire on a
+        RISING complex — the same dead branch with an inverted meaning.
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"metals_complex.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — the same ModelResult field "
+                f"constraint applies as on the sibling caps."
+            )
+        if self.value_decimals < 0:
+            raise ValueError(
+                f"metals_complex.value_decimals is {self.value_decimals}. A "
+                f"negative `ndigits` makes `round` coarsen the figure, "
+                f"publishing a change far less precise than the contract implies."
+            )
+        if self.aluminum_band_pct <= 0.0:
+            raise ValueError(
+                f"metals_complex.aluminum_stability_band_pct is "
+                f"{self.aluminum_band_pct}. A non-positive band makes "
+                f"`abs(change) < band` true only for an exactly-zero change, so "
+                f"the construction-specific verdict becomes unreachable — dead "
+                f"vocabulary (D-037)."
+            )
+        if self.broad_weakness_threshold_pct <= 0.0:
+            raise ValueError(
+                f"metals_complex.broad_weakness_threshold_pct is "
+                f"{self.broad_weakness_threshold_pct}. A non-positive threshold "
+                f"makes `change < -threshold` true for every non-negative change, "
+                f"so the broad-weakness verdict fires on a RISING complex — an "
+                f"inverted branch."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5952,6 +6101,7 @@ class Settings(BaseModel):
     em_vulnerability: EMVulnerabilitySettings
     oil_balance: OilBalanceSettings
     gold_driver: GoldDriverSettings
+    metals_complex: MetalsComplexSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

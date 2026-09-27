@@ -1,7 +1,47 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-29** (after **D-121 — Module 10's `gold_driver_attribution`: the increment's
+Last updated: **2026-09-27** (after **D-122 — Module 10's `metals_complex_divergence`: the
+repository's SEVENTH FALSE BLOCK, a probe that had NO CONTROL, and the sweep's own pre-flight
+catching the ambiguity this increment created in ANOTHER file.** Tier 5 = **19/23** — MEASURED
+2026-09-27 from §21.3's table `AGENTS.md:5541–5550` against `src/` (`19` have a real `def`, `4` do
+not), not recalled — the **O-147** discipline. §20.10 (`AGENTS.md:4935` heading, `:4945` reference
+body) supplies the reference body, making this the **fifth D-096 exception**; it **supersedes
+nothing** — the `cip_check` answer, *a new capability*. **The existing** `models/commodities.py` and
+`data_layer/commodities_client.py` were extended (no new module, **no new OpenBB commands** — the
+command census stays **6**; all three metals legs reuse `economy.fred_series`). **All three legs are
+LIVE** — measured 2026-09-27 on FRED (IMF Primary Commodity Prices, monthly, **USD per metric
+ton**): `PCOPPUSDM` copper · `PIORECRUSDM` iron ore · `PALUMUSDM` aluminum. **⚠️ THE AUTHORITY TAGGED
+IRON ORE "likely BLOCKED"** (§21.1 `AGENTS.md:5395`, repeated at §21.4's ledger item 8) — **it is
+LIVE, and the tag is the SEVENTH FALSE BLOCK.** **The probe very nearly recorded a false negative
+because its first form had NO CONTROL** (O-152): a non-empty frame does not distinguish "the full
+monthly history" from "a half-populated route", and only a known-good series on the **same** route
+settles it — `DCOILWTICO` (WTI spot, same `economy.fred_series` call) returned **2,926 rows** against
+**139** per metal, so the ~21× ratio (monthly vs daily) is what makes 139 evidence. **The unit was
+read from `fred_search` METADATA, not a web search** (O-153): the provider reports *U.S. Dollars per
+Metric Ton*, a search claimed *per pound*, and the wrong choice is a **silent ~2,200×** error. All
+three `*_change_pct` inputs are **DERIVED** by differencing the two most recent monthly vintages; a
+zero prior **REFUSES** rather than publishing an `inf`. Confidence is the **PRODUCT** rule again
+(cap **0.30**, `×` the computed half, never `min()`), and the **three FRED legs count as ONE
+provider** — reporting `fetched_legs` would overstate the evidence threefold. A **tie branch was
+written, measured UNREACHABLE, and REMOVED** (the two predicates are mutually exclusive with
+positive bands — the D-118 `R6a` lesson), with a mutual-exclusivity grid proof left as a test.
+**⚠️ THE SWEEP FOUND THE DEFECT BEFORE IT RAN: adding the metals code made FOUR PRE-EXISTING
+anchors AMBIGUOUS** (`M5a`/`M8a`/`GM5a` in `commodities.py`, `GC3a` in `commodities_client.py`) —
+the D-119 O-145 shape **pointing the other way** — and `--check-targets` named all four **before**
+`sweep_lifecycle` wrote anything; **five NEW config anchors** also needed widening because `config.py`
+now holds **FIVE** byte-identical copies of each guard/accessor body. All nine were **WIDENED, never
+deleted**, each measured at `count() == 1`. **FOUR survivors on the first sweep run, all in the new
+metals block:** three (`MM7a`/`MM7b`/`MM7c`) were **weak tests** (rounding asserted against the RAW
+input with a tolerance both values satisfy) fixed by **perturbing the leaf** + an **EXACT**-output
+assertion; the fourth (`MM8d`) removed a **type-narrowing assertion** that is **load-bearing for
+`mypy --strict`** but changes no runtime behaviour, so it was **retargeted** (D-031 `U4a`), not
+dropped (**O-154**). **NEW** `scripts/live_metals_complex_check.py` (9
+sections; control + three legs + derived change + verdict + confidence + refusal + honesty tier).
+**Gates:** **283 == 283** (D-035, MEASURED) · **3938 tests / 0 failed / 0 errors / 1 skipped** (via
+`--junitxml`) · reachability **PASS 58/58** · sweep **105/105** (64 → 105) · `sweep_health.py` LAST →
+**48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK**.
+Previous update: **2026-09-29** (after **D-121 — Module 10's `gold_driver_attribution`: the increment's
 only real defect was SIX SHADOWED TESTS (an O-117 recurrence that let a mutant survive), plus a CRLF
 defect from an ad-hoc script.** Tier 5 = **18/23** — MEASURED 2026-09-29 from §21.3's table
 `AGENTS.md:5541–5550` against `src/` (`18` have a real `def`, `5` do not), not recalled — the
@@ -34,7 +74,6 @@ the byte level. **NEW** `scripts/live_gold_driver_check.py` (7 sections; **PASSE
 0.55 × 0.35). **Gates:** **282 == 282** (D-035) · **3857 tests / 0 failed / 0 errors / 1 skipped**
 (via `--junitxml`) · reachability **PASS 58/58** · sweep **64/64** · `sweep_health.py` LAST →
 **48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK**.
-Previous update: **2026-09-27** (after **D-120 — Module 10's `oil_balance_signal`: the repository's
 FIRST increment to add NEW OpenBB commands (census 4 → 6), a FIFTH FALSE BLOCK (both inputs LIVE),
 and a `fetch_series` trap that forced a NEW transport.** Tier 5 = **17/23** — MEASURED 2026-09-27
 from §21.3's table `AGENTS.md:5541–5550` against `src/` (`17` have a real `def`, `6` do not), not

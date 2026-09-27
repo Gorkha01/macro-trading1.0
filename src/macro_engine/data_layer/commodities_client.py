@@ -791,3 +791,192 @@ def _observed_pairs(
         pairs.append((when, _parse_value(raw_value, context=f"{symbol} {label} row @ {when}")))
     pairs.sort(key=lambda item: item[0])
     return pairs
+
+
+# =========================================================================
+# Module 10.3 — the metals complex (copper / iron ore / aluminum)
+#
+# Section 21.1 (``AGENTS.md:5395``) tags these three inputs
+# **LIVE/BLOCKED**: *"Copper & aluminum via IBKR/yfinance futures; iron ore
+# has no clean free source — likely BLOCKED, document"*. Section 21.4's
+# Loophole Ledger repeats it as item 8: *"Iron ore prices — no clean free
+# source"*.
+#
+# MEASURED 2026-09-27: the whole trio is **LIVE**, and the block is the
+# repository's **SEVENTH FALSE BLOCK** (D-043's class, after
+# ``ppp_implied_rate`` x2, ``fx_reserves_usd_bn``, the two EM-vulnerability
+# legs, the two oil legs and the gold real-yield/VIX pair). The model's own
+# docstring records it; this comment records the MEASUREMENT.
+#
+#   * **The deciding route is FRED ``economy.fred_series``**, the SAME route the
+#     gold legs already use — no new endpoint, no new OpenBB command. The
+#     authority's IBKR/yfinance suggestion was not needed and was NOT taken: a
+#     futures quote is a different estimand from the IMF benchmark price, and
+#     the FRED series carry a documented monthly vintage.
+#   * **All three symbols resolve through ``fred_search`` with identical
+#     semantics** (measured, not assumed): ``PCOPPUSDM`` / ``PIORECRUSDM`` /
+#     ``PALUMUSDM`` are each *"Global price of <metal>"*, **U.S. Dollars per
+#     Metric Ton**, **Monthly**, source **IMF Primary Commodity Prices**,
+#     last observation **2026-07-01**. The unit is read FROM THE PROVIDER'S
+#     OWN METADATA (a ``*USDM`` suffix means monthly USD-per-metric-ton; the
+#     search result claiming "USD per pound" for copper is WRONG and would have
+#     been the D-106 unit trap).
+#   * **The control is ``DCOILWTICO``, from the same route and caller.** It
+#     returns 2 926 rows over 2015-2026; each metals leg returns 139 rows over
+#     the same window. A probe with NO working control would not have been
+#     evidence (the D-121 lesson).
+#   * **The spec's ``*_change_pct`` inputs are DERIVED, not published.** No
+#     FRED series publishes the percent change, so the client differences the
+#     two most recent monthly vintages — the same shape as the gold real-yield
+#     leg, and the reason a reading carries BOTH the latest and prior level.
+#
+# A reading is a CHANGE in PER CENT (not a level), because the specification's
+# own field names say ``_change_pct``; the level is carried too so a consumer
+# can see what the change was taken FROM.
+
+#: The FRED symbols for the three metals, each a monthly benchmark price in
+#: U.S. Dollars per Metric Ton (IMF Primary Commodity Prices, via FRED).
+COPPER_SYMBOL = "PCOPPUSDM"
+IRON_ORE_SYMBOL = "PIORECRUSDM"
+ALUMINUM_SYMBOL = "PALUMUSDM"
+
+#: The unit all three series are published in. Named once so the model's
+#: declared unit and this reading cannot drift apart.
+METALS_SOURCE_UNIT = "usd_per_metric_ton"
+
+
+@dataclass(frozen=True)
+class MetalChangeReading:
+    """A metal's latest benchmark price plus the prior point needed for a CHANGE.
+
+    ``level`` is the price the provider publishes (U.S. Dollars per Metric Ton),
+    NOT the change. ``change_pct`` is the percent change from the prior monthly
+    vintage to the latest — the specification's ``*_change_pct`` input.
+
+    ``prior_observation_date`` / ``prior_level`` are ``None`` — never ``0.0`` —
+    when the series carries fewer than two observations, because a fabricated
+    zero prior would make a CHANGE read as a LEVEL (the D-078 class), and a
+    ``0.0`` prior would then divide-by-zero or produce an infinite percent.
+    """
+
+    symbol: str
+    observation_date: str
+    level: float
+    prior_observation_date: str | None
+    prior_level: float | None
+    change_pct: float | None
+    source_unit: str = METALS_SOURCE_UNIT
+    observation_count: int = 0
+
+
+def fetch_metal_change(
+    symbol: str,
+    *,
+    as_of: date,
+    label: str,
+    client: OpenBBClient | None = None,
+) -> MetalChangeReading:
+    """Fetch a metal's latest benchmark price and the percent change from its prior.
+
+    Returns a :class:`MetalChangeReading` carrying the latest observation, the
+    one before it, and the percent change between them. The series is clipped to
+    observations at or before ``as_of`` so a caller controlling the as-of date
+    gets a deterministic answer — the O-134 lesson applied to the fetch.
+
+    ``label`` names the metal in error messages (``copper`` / ``iron_ore`` /
+    ``aluminum``) so a failure identifies WHICH leg died rather than reporting a
+    bare symbol.
+
+    Raises :class:`CommodityReadError` when the transport fails, the series is
+    empty, the frame lacks the client's tidy ``date``/``value`` columns, or no
+    observation falls at or before ``as_of``.
+    """
+    own_client = client is None
+    active = client if client is not None else OpenBBClient()
+    try:
+        frame = active.fetch_series(
+            provider=_FRED_PROVIDER,
+            endpoint=_FRED_ENDPOINT,
+            params={"symbol": symbol},
+            series_label=f"metals_{label}",
+        )
+    except OpenBBFetchError as exc:
+        raise CommodityReadError(f"{label} price series {symbol} could not be read: {exc}") from exc
+    finally:
+        if own_client:
+            active.close()
+
+    observed = _observed_pairs(frame, symbol=symbol, as_of=as_of, label=f"{label} price")
+    if not observed:
+        raise CommodityReadError(
+            f"{label} price series {symbol} had no observation at or before {as_of.isoformat()}."
+        )
+
+    latest_date, latest_value = observed[-1]
+    if len(observed) >= 2:
+        prior_date, prior_value = observed[-2]
+        prior_iso: str | None = prior_date.isoformat()
+        prior_val: float | None = prior_value
+        change_pct: float | None = _percent_change(
+            latest_value, prior_value, symbol=symbol, label=label
+        )
+    else:
+        prior_iso = None
+        prior_val = None
+        change_pct = None
+
+    return MetalChangeReading(
+        symbol=symbol,
+        observation_date=latest_date.isoformat(),
+        level=latest_value,
+        prior_observation_date=prior_iso,
+        prior_level=prior_val,
+        change_pct=change_pct,
+        observation_count=len(observed),
+    )
+
+
+def _percent_change(
+    latest: float,
+    prior: float,
+    *,
+    symbol: str,
+    label: str,
+) -> float:
+    """The percent change from ``prior`` to ``latest``.
+
+    A ``prior`` of exactly zero is refused with an error rather than returning
+    ``inf``/``nan``: the percent change is undefined, and a silent infinity would
+    flow into the model's comparisons and make every branch false — the model
+    would report MIXED for a metal whose move is UNKNOWN, which is a different
+    claim from MIXED (the D-078 class). No real benchmark price is zero, so this
+    is a guard, not a routine path.
+    """
+    if prior == 0.0:
+        raise CommodityReadError(
+            f"{label} price series {symbol} has a prior observation of exactly "
+            f"0.0, so the percent change is undefined. Refusing rather than "
+            f"publishing an infinite or missing change."
+        )
+    return (latest - prior) / prior * 100.0
+
+
+def fetch_copper_change(*, as_of: date, client: OpenBBClient | None = None) -> MetalChangeReading:
+    """Fetch global copper price and its percent change (``PCOPPUSDM``)."""
+    return fetch_metal_change(COPPER_SYMBOL, as_of=as_of, label="copper", client=client)
+
+
+def fetch_iron_ore_change(*, as_of: date, client: OpenBBClient | None = None) -> MetalChangeReading:
+    """Fetch global iron-ore price and its percent change (``PIORECRUSDM``).
+
+    The authority tags this leg *"no clean free source — likely BLOCKED"*
+    (Section 21.1, ``AGENTS.md:5395``); measured 2026-09-27 it is **LIVE** and
+    the tag is the repository's **seventh FALSE BLOCK**. This docstring names
+    the fact so the next reader does not re-trust the tag.
+    """
+    return fetch_metal_change(IRON_ORE_SYMBOL, as_of=as_of, label="iron_ore", client=client)
+
+
+def fetch_aluminum_change(*, as_of: date, client: OpenBBClient | None = None) -> MetalChangeReading:
+    """Fetch global aluminum price and its percent change (``PALUMUSDM``)."""
+    return fetch_metal_change(ALUMINUM_SYMBOL, as_of=as_of, label="aluminum", client=client)

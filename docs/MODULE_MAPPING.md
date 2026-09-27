@@ -2551,3 +2551,83 @@ last definition; `pytest` reported a healthy 106 while 112 existed). The mapping
 **when extending an existing test file, a new test name must not collide with an existing one** —
 and `tests/test_source_hygiene.py::test_no_module_defines_a_top_level_name_twice` is the gate that
 enforces it. **It existed and was not run**, which is why the defect reached a sweep survivor.
+
+---
+
+## D-122 — Module 10 EXTENDS AGAIN: `metals_complex_divergence`, the SEVENTH false block, and a probe that needed a control (2026-09-27)
+
+**Tier 5 = 19/23** (moved **18 → 19**; MEASURED from `AGENTS.md:5541–5550` against `src/` —
+**19 defined / 4 not** — not recalled, the O-147 discipline). This is a **D-096 exception**:
+§20.10 (`AGENTS.md:4935` heading, `:4945` reference body) **gives the body**, so the increment is an
+**UPGRADE of a specified function** — and it **supersedes nothing**, because Module 10's third
+function is a **new capability** (the `cip_check` answer).
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `metals_complex_divergence` | **10 — Commodities** | `models/commodities.py` (**EXTENDS** — Module 10's THIRD function, beside `oil_balance_signal` and `gold_driver_attribution`) | `AGENTS.md:4935` / `:4945` (§20.10) | **nothing** — a NEW capability | **IMPLEMENTED** (D-122) |
+
+**The module-file rule is now a PATTERN, not an observation.** D-120 created `models/commodities.py`
+whole; D-121 appended a second household; D-122 appends a **third**. Three functions now share one
+module file and one config settings family, and the shared-plumbing cost compounds: `config.py` now
+holds **FIVE** byte-identical copies of each guard/accessor body (Intervention / EMVulnerability /
+OilBalance / Gold / **Metals**), so **every** new settings class widens a larger set of anchors. The
+sweep grew **64 → 105 mutations** in the **same** script, so the **sweep census stays 48**.
+
+**The command census does NOT move — again.** All three metals legs reuse the existing
+`economy.fred_series`, so the census in `tests/test_openbb_command_inventory.py` stays at **6**. Two
+increments in a row (D-121, D-122) added live legs **without** adding a command; the mapping-level
+fact stands: **a new function does not imply a new command.**
+
+**A false-block mapping rule, now at SEVEN instances: the ledger's tags are CLAIMS, and a tag is
+re-verified against the DATA route before it is trusted.** §21.1 (`AGENTS.md:5395`) and §21.4's
+ledger item 8 both said iron ore *"has no clean free source — likely BLOCKED"*; measured, all three
+metals are **LIVE** on FRED. **`PIORECRUSDM` is the SEVENTH FALSE BLOCK.** The mapping-level rule
+restated: **"in the catalogue" / "documented as blocked" and "serves data" are DIFFERENT CLAIMS**,
+and the decisive evidence is always the **data route**.
+
+**A probe-methodology mapping rule: A PROBE NEEDS A WORKING CONTROL (O-152).** The first metals
+probe returned a non-empty frame for each leg and could have concluded "LIVE" — but a non-empty
+frame does **not** distinguish *"the full history"* from *"a half-populated route"*. The claim under
+test is *"the route serves the full history"*, and **only a known-good series on the SAME route
+settles it**: `DCOILWTICO` (WTI spot, same `economy.fred_series` call) returned **2 926 rows**
+against **139** per metal, and the ~21× ratio (daily vs monthly) is consistent with the full history.
+This is now the rule for **every** live-source probe: **no control ⇒ no evidence.**
+
+**A unit-provenance mapping rule, restated from D-106 (O-153): the unit comes from the PROVIDER's
+metadata, never from a search result.** `fred_search` reports *"U.S. Dollars per Metric Ton"* for
+all three metals; a web search claimed copper is quoted *per pound*, and the wrong choice is a
+**silent ~2,200×** error no plausible-range check tuned to the wrong unit would catch. **A web search
+is a PROBE, not a source** — useful for finding a symbol, never for settling a unit.
+
+**A classifier mapping rule: MUTUALLY-EXCLUSIVE BRANCHES HAVE NO PRECEDENCE (the dead-branch
+rule).** §20.10 writes `if construction_specific: … elif broad_industrial: …`; measured, the two
+predicates are **contradictory** with positive bands (`|aluminum| < band` vs `aluminum <
+-threshold`), so the `if/elif` order **decides nothing** and the tie branch this build first carried
+was **unreachable** (the D-118 `R6a` shape). The rule: **write the authority's precedence, but prove
+by MEASUREMENT whether it can ever bind** — and if it cannot, delete the branch and leave the proof
+as a test (the mutual-exclusivity grid).
+
+**Reachability moved — SCRIPT-ONLY count 16 → 17.** `metals_complex_divergence`'s caller is the
+**committed** `scripts/live_metals_complex_check.py`, so it classifies **SCRIPT-ONLY — Tier 5**.
+`oil_balance_signal` remains **`NO CALLER — Tier 5`** (unchanged from D-121). The **total** stays
+**PASS 58/58**.
+
+**The cross-file anchor-ambiguity mapping rule (the O-145 shape, reversed).** D-119 found that a new
+**config class** reddened a **different sweep's** anchors. D-122 found the **mirror**: new **model and
+client** code reddened **four PRE-EXISTING anchors** (`M5a`, `M8a`, `GM5a`, `GC3a`). The rule:
+**adding code to a swept module is a claim that the OTHER mutations' anchors stay unique**, and the
+measurement is `--check-targets` run **before** `sweep_lifecycle` — a widening, never a deletion.
+
+**A survivor-triage mapping rule (D-031, new shape at D-122): a mutation's KILL can live in a
+DIFFERENT gate than the one that reports the survivor — and a pytest-only sweep misreports a
+`mypy`-only mutation as a weak test.** Four survivors appeared on the first run, all in the new
+metals block. **Three were genuine weak tests** (the published rounding was asserted against the
+**RAW** input with a tolerance both the rounded and unrounded values satisfy) — fixed by
+**perturbing the leaf** and asserting the **EXACT** rounded output. **The fourth (`MM8d`) was NOT a
+weak test:** it removed a **type-narrowing assertion** that changes no runtime behaviour after the
+`missing` guard but **fails `mypy --strict` with six errors** — a mutation that is **load-bearing for
+a different gate**. Per the D-031 **`U4a`** precedent it was **retargeted**, not dropped, to a
+pytest-detectable mutant (**inverting the `missing` predicate**) that keeps the family's intent.
+**The mapping-level rule: before "fixing" a survivor, MEASURE which gate kills it — a survivor in the
+pytest sweep may already be killed by `mypy`, in which case the fix is a retarget plus a record
+(O-154), never a weakened mutation.**

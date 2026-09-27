@@ -39,13 +39,23 @@ from pydantic import ValidationError
 from macro_engine.config import (
     CalibratedValue,
     GoldDriverSettings,
+    MetalsComplexSettings,
     OilBalanceSettings,
     get_settings,
 )
+from macro_engine.data_layer.commodities_client import (
+    ALUMINUM_SYMBOL,
+    COPPER_SYMBOL,
+    IRON_ORE_SYMBOL,
+    CommodityReadError,
+    MetalChangeReading,
+)
 from macro_engine.models.commodities import (
     GoldDriverInputs,
+    MetalsComplexInputs,
     OilBalanceInputs,
     gold_driver_attribution,
+    metals_complex_divergence,
     oil_balance_signal,
 )
 from macro_engine.models.contracts import (
@@ -1221,3 +1231,769 @@ def test_a_non_positive_vix_threshold_is_refused(bad: float) -> None:
     """G4d: a non-positive VIX threshold makes crisis_indicator permanently True."""
     with pytest.raises(ValidationError, match="crisis_vix_spike_level"):
         _gold_settings_with(crisis_vix_spike_level=_calibrated(bad))
+
+
+# =============================================================================
+# Module 10.3 — metals_complex_divergence (Section 20.10, D-122)
+#
+# ⚠️ EVERY TEST NAME BELOW IS PREFIXED ``metals_`` OR IS OTHERWISE DISTINCT.
+#    D-121's O-150: a new ``test_*`` name that collides with an existing one makes
+#    Python bind the LAST definition, silently deleting the earlier body while
+#    pytest still reports a healthy count. The gold twins were renamed for exactly
+#    this reason; these are named to never collide in the first place.
+# =============================================================================
+
+
+def _metals_inputs(**overrides: object) -> MetalsComplexInputs:
+    """A metals inputs object with ALL THREE values SUPPLIED, so no network is used.
+
+    Supplying all three is the right unit-test default for a *classifier*: it lets
+    a test pin the exact pattern it means to exercise. The fetch paths have their
+    own tests below and the live check exercises them end to end.
+    """
+    base: dict[str, object] = {
+        "copper_change_pct": 0.0,
+        "iron_ore_change_pct": 0.0,
+        "aluminum_change_pct": 0.0,
+    }
+    base.update(overrides)
+    return MetalsComplexInputs(**base)  # type: ignore[arg-type]
+
+
+def _metals_verdict(result: ModelResult) -> str:
+    item = _value(result, "verdict")
+    assert isinstance(item, str)
+    return item
+
+
+def _metals_change(result: ModelResult, key: str) -> float:
+    item = _value(result, key)
+    assert isinstance(item, float)
+    return item
+
+
+def _metals_settings_with(**values: object) -> MetalsComplexSettings:
+    """A MetalsComplexSettings seeded from the shipped block, with overrides.
+
+    Seeding from ``get_settings().metals_complex.model_dump()`` rather than
+    restating every field means a new field can never make this fixture stale
+    (the O-127 structural fix D-114 applied to its own helpers).
+
+    The numeric leaves are typed ``CalibratedValue``, so a bare ``5.0`` is
+    REFUSED by pydantic. A **bare number is wrapped** by ``_calibrated``, while
+    an already-wrapped ``CalibratedValue`` is passed THROUGH untouched — without
+    that guard a caller writing ``_calibrated(0.42)`` would get
+    ``CalibratedValue(CalibratedValue(0.42))`` and the validator would die on a
+    ``TypeError`` instead of testing anything (the ``float()`` of a model).
+    """
+    base = dict(get_settings().metals_complex.model_dump())
+    base.update(
+        {
+            name: value if isinstance(value, CalibratedValue) else _calibrated(value)
+            for name, value in values.items()
+        }
+    )
+    return MetalsComplexSettings.model_validate(base)
+
+
+def _stub_metal_fetches(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    copper: float | None,
+    iron_ore: float | None,
+    aluminum: float | None,
+) -> None:
+    """Patch the three metal fetch wrappers to return fixed MetalChangeReadings.
+
+    Patching the CLIENT functions (not the model helpers) is what makes the
+    model's own resolution loop, its ``fetched_legs`` accounting and its
+    source-family choice execute end to end; the client's transport has its own
+    tests in ``test_commodities_client.py``.
+
+    A ``None`` for any leg makes that stub RAISE, which is how a fetch failure is
+    represented — the model turns it into a ``None`` change and a disclosure.
+    """
+
+    def _make(name: str, value: float | None) -> object:
+        def _fetch(*, as_of: object, client: object = None) -> object:
+            if value is None:
+                raise CommodityReadError(f"stub {name} failure")
+            return MetalChangeReading(
+                symbol={
+                    "copper": COPPER_SYMBOL,
+                    "iron_ore": IRON_ORE_SYMBOL,
+                    "aluminum": ALUMINUM_SYMBOL,
+                }[name],
+                observation_date="2026-07-01",
+                level=100.0,
+                prior_observation_date="2026-06-01",
+                prior_level=100.0,
+                change_pct=value,
+                observation_count=139,
+            )
+
+        return _fetch
+
+    monkeypatch.setattr(
+        "macro_engine.models.commodities.fetch_copper_change", _make("copper", copper)
+    )
+    monkeypatch.setattr(
+        "macro_engine.models.commodities.fetch_iron_ore_change", _make("iron_ore", iron_ore)
+    )
+    monkeypatch.setattr(
+        "macro_engine.models.commodities.fetch_aluminum_change", _make("aluminum", aluminum)
+    )
+
+
+# --- the three verdicts -------------------------------------------------------
+
+
+def test_metals_the_specifications_named_case_is_construction_specific() -> None:
+    """THE SPECIFICATION'S OWN TEST (Section 21.2's ``test_metals_divergence_china_specific``).
+
+    "iron ore worst, copper down, aluminum flat must return
+    CHINA_CONSTRUCTION_SPECIFIC" — this is that case, verbatim.
+    """
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert _metals_verdict(result) == "CHINA_CONSTRUCTION_SPECIFIC"
+
+
+def test_metals_all_three_falling_hard_is_broad_industrial() -> None:
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-5.0,
+            iron_ore_change_pct=-8.0,
+            aluminum_change_pct=-4.0,
+        )
+    )
+    assert _metals_verdict(result) == "BROAD_INDUSTRIAL_WEAKNESS"
+
+
+def test_metals_an_inert_complex_is_mixed_not_an_error() -> None:
+    """No pattern is a READING, not a crash and not an empty string."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=1.0,
+            iron_ore_change_pct=-1.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_copper_and_iron_rising_is_mixed() -> None:
+    """Construction requires BOTH to be negative; a rising pair is not it."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=3.0,
+            iron_ore_change_pct=5.0,
+            aluminum_change_pct=0.1,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_iron_ore_not_the_worst_faller_is_not_construction() -> None:
+    """The construction test needs ``iron_ore < copper < 0``.
+
+    With copper the worst faller (iron ore merely down), the ordering clause
+    fails — so a mutant that dropped the ordering would change this verdict.
+    """
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-9.0,
+            iron_ore_change_pct=-4.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_copper_exactly_zero_is_not_strictly_negative() -> None:
+    """The spec requires ``copper < 0`` strictly; a flat copper is not "down"."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=0.0,
+            iron_ore_change_pct=-5.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+# --- the boundary cases, ON the thresholds (the D-031 discipline) --------------
+
+
+@pytest.mark.parametrize("aluminum", [-2.0, 2.0])
+def test_metals_aluminum_exactly_on_the_band_is_not_stable(aluminum: float) -> None:
+    """``abs(aluminum) < band`` is STRICT: exactly on the band is NOT stable.
+
+    The two parametrised values are the band's two signs. A mutant that flipped
+    ``<`` to ``<=`` would make this case construction-specific instead of
+    broad/mixed — which is why the fixture sits exactly ON the band.
+    """
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=aluminum,
+        )
+    )
+    # aluminum = -2.0: |-2.0| < 2.0 is False AND -2.0 < -2.0 is False => MIXED.
+    # aluminum = +2.0: |2.0| < 2.0 is False => the broad test also fails => MIXED.
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_aluminum_just_inside_the_band_is_stable() -> None:
+    """Just inside the band (1.99) IS stable, so the construction branch fires."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=1.99,
+        )
+    )
+    assert _metals_verdict(result) == "CHINA_CONSTRUCTION_SPECIFIC"
+
+
+def test_metals_aluminum_exactly_on_the_broad_threshold_is_not_weak() -> None:
+    """``change < -threshold`` is STRICT: exactly ``-2.0`` is NOT broad-weak."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-5.0,
+            iron_ore_change_pct=-8.0,
+            aluminum_change_pct=-2.0,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_aluminum_just_below_the_broad_threshold_is_weak() -> None:
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-5.0,
+            iron_ore_change_pct=-8.0,
+            aluminum_change_pct=-2.01,
+        )
+    )
+    assert _metals_verdict(result) == "BROAD_INDUSTRIAL_WEAKNESS"
+
+
+def test_metals_one_metal_above_the_broad_threshold_is_not_broad() -> None:
+    """``all(...)`` is required: copper at exactly -2.0 breaks the quantifier."""
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-2.0,
+            iron_ore_change_pct=-8.0,
+            aluminum_change_pct=-5.0,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def test_metals_the_two_branches_are_mutually_exclusive() -> None:
+    """THE DEAD-BRANCH PROOF (D-118 ``R6a``'s lesson, measured).
+
+    The construction test needs ``|aluminum| < band`` (aluminum quiet) while the
+    broad test needs ``aluminum < -threshold`` (aluminum falling hard). With
+    positive bands these are contradictory, so NO input set satisfies both and
+    the specification's ``if/elif`` order never actually decides a verdict. An
+    earlier draft carried an "ambiguous pattern" disclosure for a tie; it was
+    unreachable and was removed. This asserts the exclusivity on a grid that
+    straddles both bands, so a future band change that broke it would fail here.
+    """
+    band = get_settings().metals_complex.aluminum_band_pct
+    for copper in (-9.0, -5.0, -1.0, 0.0, 3.0):
+        for iron_ore in (-12.0, -6.0, -0.5, 2.0):
+            for aluminum in (-band - 0.5, -band, 0.0, band, band + 0.5):
+                result = metals_complex_divergence(
+                    _metals_inputs(
+                        copper_change_pct=copper,
+                        iron_ore_change_pct=iron_ore,
+                        aluminum_change_pct=aluminum,
+                    )
+                )
+                verdict = _metals_verdict(result)
+                # The construction branch (aluminum strictly inside the band) and
+                # the broad branch (aluminum strictly below -band) cannot co-occur.
+                in_band = abs(aluminum) < band
+                below_broad = aluminum < -band
+                assert not (in_band and below_broad), (
+                    f"bands overlap at aluminum={aluminum}: in_band={in_band}, "
+                    f"below_broad={below_broad}"
+                )
+                assert verdict in {
+                    "CHINA_CONSTRUCTION_SPECIFIC",
+                    "BROAD_INDUSTRIAL_WEAKNESS",
+                    "MIXED_no_clear_pattern",
+                }
+
+
+# --- the thresholds come from the LEAVES, not literals (D-050) -----------------
+
+
+def test_metals_the_aluminum_band_follows_a_perturbed_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Move the band and the verdict must move with it.
+
+    With the shipped band of 2.0, aluminum at 3.0 is NOT stable (mixed). With a
+    perturbed band of 5.0, the SAME aluminum IS stable, so the verdict flips to
+    construction-specific — proving the model reads the leaf rather than a
+    hardcoded 2.0 (the D-050 leaf-perturbation rule, never a value comparison).
+    """
+    _stub_perturbed_metals_settings(monkeypatch, aluminum_stability_band_pct_leaf=5.0)
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=3.0,
+        )
+    )
+    assert _metals_verdict(result) == "CHINA_CONSTRUCTION_SPECIFIC"
+
+
+def test_metals_the_broad_threshold_follows_a_perturbed_leaf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Widen the broad threshold to 3.0 and a -2.5 complex is NO LONGER broad.
+
+    With the shipped 2.0, copper -2.5 / iron ore -2.5 / aluminum -2.5 is broad
+    (all below -2.0). With a threshold of 3.0 none clears it, so the verdict is
+    mixed — proving the model reads the leaf rather than a hardcoded 2.0.
+    """
+    _stub_perturbed_metals_settings(monkeypatch, broad_weakness_threshold_pct_leaf=3.0)
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-2.5,
+            iron_ore_change_pct=-2.5,
+            aluminum_change_pct=-2.5,
+        )
+    )
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+def _stub_perturbed_metals_settings(monkeypatch: pytest.MonkeyPatch, **values: object) -> None:
+    """Make ``get_settings()`` return a metals block with the given leaves moved.
+
+    The model calls ``get_settings().metals_complex``, so patching the SETTINGS
+    accessor is what makes the leaf-perturbation tests exercise the model's own
+    read of config rather than a stub of the model.
+    """
+    block = _metals_settings_with(**values)
+    real = get_settings()
+
+    class _Shim:
+        metals_complex = block
+
+    monkeypatch.setattr("macro_engine.models.commodities.get_settings", lambda: _Shim())
+    # Keep a reference so linters do not flag the unused read; and assert the
+    # shim is not simply the real block (a no-op patch would make the test lie).
+    assert real.metals_complex is not block
+
+
+# --- the refusal when a leg cannot be resolved --------------------------------
+
+
+def test_metals_an_unresolved_leg_with_no_supplied_value_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing leg is a DIFFERENT pattern, so the model REFUSES rather than guesses."""
+    _stub_metal_fetches(monkeypatch, copper=None, iron_ore=-6.0, aluminum=0.5)
+    with pytest.raises(ValueError, match="copper_change_pct"):
+        metals_complex_divergence(MetalsComplexInputs())
+
+
+def test_metals_supplying_the_failed_leg_avoids_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Supplying the leg the fetch could not provide is the documented escape.
+
+    Only copper is SUPPLIED; iron ore and aluminum are left ``None`` so the two
+    stubbed fetches (``-9.0`` / ``0.5``) actually run — which is the point. The
+    helper's ``0.0`` defaults would otherwise mask the stubs and the pattern
+    under test would never be constructed.
+    """
+    _stub_metal_fetches(monkeypatch, copper=None, iron_ore=-9.0, aluminum=0.5)
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=None,
+            aluminum_change_pct=None,
+        )
+    )
+    assert _metals_verdict(result) == "CHINA_CONSTRUCTION_SPECIFIC"
+
+
+def test_metals_two_missing_legs_are_both_named_in_the_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_metal_fetches(monkeypatch, copper=None, iron_ore=None, aluminum=0.5)
+    with pytest.raises(ValueError) as excinfo:
+        metals_complex_divergence(MetalsComplexInputs())
+    message = str(excinfo.value)
+    assert "copper_change_pct" in message
+    assert "iron_ore_change_pct" in message
+
+
+def test_metals_a_fully_supplied_run_never_reaches_the_fetchers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Supply all three and NO fetch is called — proven by making every fetch explode."""
+
+    def _boom(*, as_of: object, client: object = None) -> object:
+        raise AssertionError("the fetchers must not be reached when all legs are supplied")
+
+    monkeypatch.setattr("macro_engine.models.commodities.fetch_copper_change", _boom)
+    monkeypatch.setattr("macro_engine.models.commodities.fetch_iron_ore_change", _boom)
+    monkeypatch.setattr("macro_engine.models.commodities.fetch_aluminum_change", _boom)
+    result = metals_complex_divergence(_metals_inputs())
+    assert _metals_verdict(result) == "MIXED_no_clear_pattern"
+
+
+# --- confidence: the PRODUCT, and the independence count -----------------------
+
+
+def test_metals_confidence_is_the_product_of_the_computed_half_and_the_cap() -> None:
+    """The D-118/D-119/D-120/D-121 rule: MULTIPLY, do not ``min()``.
+
+    The computed half prices this run's inputs; the cap states what the METHOD is
+    worth. ``min()`` would publish the cap on every path and make the computed
+    half dead code — exactly the defect D-118 removed. A fully-supplied run has
+    the quality flag SET and one NO source family, so the computed half is below
+    the cap and the product is strictly BELOW the cap alone.
+    """
+    result = metals_complex_divergence(_metals_inputs())
+    cap = get_settings().metals_complex.reliability_value
+    computed = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=True,
+            is_heuristic_not_calibrated=(
+                not get_settings().metals_complex.reliability_cap_is_calibrated
+            ),
+            source_independence_count=0,
+            depends_on_unobservable=False,
+        )
+    )
+    assert result.confidence == pytest.approx(computed * cap)
+    assert result.confidence < cap
+
+
+def test_metals_confidence_is_not_the_cap_alone() -> None:
+    """A ``min()`` mutant would return the cap; the product must be strictly less."""
+    result = metals_complex_divergence(_metals_inputs())
+    cap = get_settings().metals_complex.reliability_value
+    assert result.confidence != pytest.approx(cap)
+
+
+def test_metals_a_fetched_run_reports_higher_confidence_than_a_supplied_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fetching all three clears the quality flag, so the computed half rises."""
+    supplied = metals_complex_divergence(_metals_inputs())
+    _stub_metal_fetches(monkeypatch, copper=-4.0, iron_ore=-9.0, aluminum=0.5)
+    fetched = metals_complex_divergence(MetalsComplexInputs())
+    assert fetched.confidence > supplied.confidence
+
+
+def test_metals_all_three_fetched_legs_count_as_one_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE INDEPENDENCE TEST. Three FRED legs are ONE provider, so the count is 1.
+
+    A model that reported ``fetched_legs`` as the independence count would let the
+    source-independence bonus scale with THREE fetches from one family and
+    overstate the evidence threefold. This asserts the count the model actually
+    passed to ``compute_confidence`` matches the one-provider reading.
+    """
+    captured: dict[str, object] = {}
+    import macro_engine.models.commodities as commodities_module
+
+    real = commodities_module.compute_confidence
+
+    def _spy(inputs: ConfidenceInputs) -> float:
+        captured["inputs"] = inputs
+        return real(inputs)
+
+    monkeypatch.setattr(commodities_module, "compute_confidence", _spy)
+    _stub_metal_fetches(monkeypatch, copper=-4.0, iron_ore=-9.0, aluminum=0.5)
+    metals_complex_divergence(MetalsComplexInputs())
+    inputs = captured["inputs"]
+    assert isinstance(inputs, ConfidenceInputs)
+    assert inputs.source_independence_count == 1
+    assert inputs.data_quality_flags_present is False
+
+
+def test_metals_a_fully_supplied_run_has_no_independent_provider() -> None:
+    captured: dict[str, object] = {}
+    import macro_engine.models.commodities as commodities_module
+
+    real = commodities_module.compute_confidence
+
+    def _spy(inputs: ConfidenceInputs) -> float:
+        captured["inputs"] = inputs
+        return real(inputs)
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(commodities_module, "compute_confidence", _spy)
+        metals_complex_divergence(_metals_inputs())
+    inputs = captured["inputs"]
+    assert isinstance(inputs, ConfidenceInputs)
+    assert inputs.source_independence_count == 0
+    assert inputs.data_quality_flags_present is True
+
+
+# --- the result contract -------------------------------------------------------
+
+
+def test_metals_the_result_carries_its_contract_fields() -> None:
+    result = metals_complex_divergence(_metals_inputs())
+    assert result.model_name == "metals_complex_divergence"
+    assert result.country == "global"
+    assert result.unit == "driver_classification"
+    assert result.inputs_used == [
+        "copper_change_pct",
+        "iron_ore_change_pct",
+        "aluminum_change_pct",
+    ]
+
+
+def test_metals_the_direction_is_expansionary_only_when_mixed() -> None:
+    mixed = metals_complex_divergence(
+        _metals_inputs(copper_change_pct=1.0, iron_ore_change_pct=1.0, aluminum_change_pct=1.0)
+    )
+    broad = metals_complex_divergence(
+        _metals_inputs(copper_change_pct=-5.0, iron_ore_change_pct=-6.0, aluminum_change_pct=-4.0)
+    )
+    assert mixed.direction == "expansionary"
+    assert broad.direction == "restrictive"
+
+
+def test_metals_the_value_carries_every_reading() -> None:
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert _metals_change(result, "copper_change_pct") == pytest.approx(-4.0)
+    assert _metals_change(result, "iron_ore_change_pct") == pytest.approx(-9.0)
+    assert _metals_change(result, "aluminum_change_pct") == pytest.approx(0.5)
+
+
+def test_metals_the_published_change_uses_the_config_decimals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The published change is rounded to the CONFIG leaf, not a hardcoded literal.
+
+    The rounding must be observable, so the leaf is PERTURBED to a precision that
+    differs from the shipped ``1`` and the assertion is an EXACT comparison
+    against ``round(raw, decimals)`` — NOT ``pytest.approx(raw)``, which the raw
+    input itself satisfies no matter whether the round happened. With ``decimals
+    = 3`` and a raw of seven decimals, an unrounded ``-4.123456`` would fail this
+    assertion (it is ``-4.123`` that must come back), which is what kills MM7a.
+    """
+    _stub_perturbed_metals_settings(monkeypatch, value_decimals_leaf=_calibrated(3))
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.1234567,
+            iron_ore_change_pct=-9.9876543,
+            aluminum_change_pct=0.5555555,
+        )
+    )
+    assert _metals_change(result, "copper_change_pct") == -4.123
+    assert _metals_change(result, "iron_ore_change_pct") == -9.988
+    assert _metals_change(result, "aluminum_change_pct") == 0.556
+    # The rounding must not be a no-op: the raw inputs have more decimals.
+    assert _metals_change(result, "copper_change_pct") != -4.1234567
+
+
+# --- the disclosures and warnings ---------------------------------------------
+
+
+def test_metals_the_commodity_scope_warning_is_always_present() -> None:
+    result = metals_complex_divergence(_metals_inputs())
+    assert any("INFORMATIONAL ONLY" in w for w in result.warnings)
+    assert any("China demand" in w for w in result.warnings)
+
+
+def test_metals_the_construction_verdict_names_aluminum_as_the_discriminator() -> None:
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-4.0,
+            iron_ore_change_pct=-9.0,
+            aluminum_change_pct=0.5,
+        )
+    )
+    assert any("discriminating" in w.lower() and "aluminum" in w.lower() for w in result.warnings)
+
+
+def test_metals_the_broad_verdict_warns_against_localising_to_china() -> None:
+    result = metals_complex_divergence(
+        _metals_inputs(
+            copper_change_pct=-5.0,
+            iron_ore_change_pct=-6.0,
+            aluminum_change_pct=-4.0,
+        )
+    )
+    assert any("NOT construction-specific" in w for w in result.warnings)
+
+
+def test_metals_the_mixed_reading_is_warned_not_silent() -> None:
+    result = metals_complex_divergence(_metals_inputs())
+    assert any("NO clear pattern" in w for w in result.warnings)
+
+
+def test_metals_a_supplied_leg_is_disclosed_as_supplied() -> None:
+    result = metals_complex_divergence(_metals_inputs())
+    joined = " ".join(result.data_provenance)
+    assert "SUPPLIED BY THE CALLER" in joined
+    assert "FETCHED" not in joined
+
+
+def test_metals_a_fetched_leg_is_disclosed_as_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_metal_fetches(monkeypatch, copper=-4.0, iron_ore=-9.0, aluminum=0.5)
+    result = metals_complex_divergence(MetalsComplexInputs())
+    joined = " ".join(result.data_provenance)
+    assert "FETCHED — FRED" in joined
+    assert "SUPPLIED BY THE CALLER" not in joined
+
+
+def test_metals_a_fetched_run_is_tagged_market_commodity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_metal_fetches(monkeypatch, copper=-4.0, iron_ore=-9.0, aluminum=0.5)
+    result = metals_complex_divergence(MetalsComplexInputs())
+    assert result.source_family is EvidenceSourceFamily.MARKET_COMMODITY
+
+
+def test_metals_a_fully_supplied_run_is_tagged_manual_assessment() -> None:
+    result = metals_complex_divergence(_metals_inputs())
+    assert result.source_family is EvidenceSourceFamily.MANUAL_ASSESSMENT
+
+
+def test_metals_a_partly_supplied_run_warns_that_some_legs_are_caller_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_metal_fetches(monkeypatch, copper=None, iron_ore=-9.0, aluminum=0.5)
+    result = metals_complex_divergence(_metals_inputs(copper_change_pct=-4.0))
+    assert any("SUPPLIED BY THE CALLER" in w for w in result.warnings)
+
+
+# --- the input validator -------------------------------------------------------
+
+
+def test_metals_extra_input_fields_are_refused() -> None:
+    with pytest.raises(ValidationError):
+        MetalsComplexInputs(**{**_metals_dict(), "surprise": 1})  # type: ignore[arg-type]
+
+
+def _metals_dict() -> dict[str, object]:
+    return {
+        "copper_change_pct": 0.0,
+        "iron_ore_change_pct": 0.0,
+        "aluminum_change_pct": 0.0,
+    }
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_metals_a_non_finite_change_is_refused(bad: float) -> None:
+    """A nan silently fails every comparison and would read as MIXED (D-078's class)."""
+    with pytest.raises(ValidationError):
+        MetalsComplexInputs(
+            copper_change_pct=bad,
+            iron_ore_change_pct=0.0,
+            aluminum_change_pct=0.0,
+        )
+
+
+def test_metals_a_non_finite_change_on_a_later_leg_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        MetalsComplexInputs(
+            copper_change_pct=0.0,
+            iron_ore_change_pct=float("nan"),
+            aluminum_change_pct=0.0,
+        )
+
+
+def test_metals_the_country_defaults_to_global() -> None:
+    assert MetalsComplexInputs().country == "global"
+
+
+# --- the settings block --------------------------------------------------------
+
+
+@pytest.mark.parametrize("sentinel", [0.42, 0.11])
+def test_metals_the_reliability_accessor_follows_a_perturbed_leaf(sentinel: float) -> None:
+    """GM1: the accessor must READ the leaf, not return a literal."""
+    block = _metals_settings_with(reliability_cap=_calibrated(sentinel))
+    assert block.reliability_value == pytest.approx(sentinel)
+
+
+@pytest.mark.parametrize("sentinel", [1, 4])
+def test_metals_the_decimals_accessor_follows_a_perturbed_leaf(sentinel: int) -> None:
+    """GM2: the accessor must READ the leaf, not return a literal."""
+    block = _metals_settings_with(value_decimals_leaf=_calibrated(sentinel))
+    assert block.value_decimals == sentinel
+
+
+@pytest.mark.parametrize("sentinel", [1.5, 7.5])
+def test_metals_the_aluminum_band_accessor_follows_a_perturbed_leaf(sentinel: float) -> None:
+    """GM3: the accessor must READ the leaf, not return a literal."""
+    block = _metals_settings_with(aluminum_stability_band_pct_leaf=_calibrated(sentinel))
+    assert block.aluminum_band_pct == pytest.approx(sentinel)
+
+
+@pytest.mark.parametrize("sentinel", [1.5, 7.5])
+def test_metals_the_broad_threshold_accessor_follows_a_perturbed_leaf(sentinel: float) -> None:
+    """GM4: the accessor must READ the leaf, not return a literal."""
+    block = _metals_settings_with(broad_weakness_threshold_pct_leaf=_calibrated(sentinel))
+    assert block.broad_weakness_threshold_pct == pytest.approx(sentinel)
+
+
+@pytest.mark.parametrize("bad", [-0.01, 1.01])
+def test_metals_a_cap_outside_the_unit_interval_is_refused(bad: float) -> None:
+    """GM5: the cap validator must FIRE on an out-of-range cap."""
+    with pytest.raises(ValidationError, match="reliability_cap"):
+        _metals_settings_with(reliability_cap=_calibrated(bad))
+
+
+@pytest.mark.parametrize("bad", [-1, -3])
+def test_metals_a_negative_decimals_leaf_is_refused(bad: int) -> None:
+    """GM6: a negative ``ndigits`` coarsens the published change."""
+    with pytest.raises(ValidationError, match="value_decimals"):
+        _metals_settings_with(value_decimals_leaf=_calibrated(bad))
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0])
+def test_metals_a_non_positive_aluminum_band_is_refused(bad: float) -> None:
+    """GM7: a non-positive band makes the construction verdict unreachable."""
+    with pytest.raises(ValidationError, match="aluminum_stability_band_pct"):
+        _metals_settings_with(aluminum_stability_band_pct_leaf=_calibrated(bad))
+
+
+@pytest.mark.parametrize("bad", [0.0, -5.0])
+def test_metals_a_non_positive_broad_threshold_is_refused(bad: float) -> None:
+    """GM8: a non-positive threshold makes the broad verdict fire on a RISING complex."""
+    with pytest.raises(ValidationError, match="broad_weakness_threshold_pct"):
+        _metals_settings_with(broad_weakness_threshold_pct_leaf=_calibrated(bad))
+
+
+def test_metals_the_cap_sits_below_the_gold_cap() -> None:
+    """The ordering IS the claim: a one-family sign test is weaker than gold's
+    change-in-a-yield with an independent second leg."""
+    assert (
+        get_settings().metals_complex.reliability_value
+        <= get_settings().gold_driver.reliability_value
+    )

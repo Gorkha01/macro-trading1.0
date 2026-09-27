@@ -4558,6 +4558,101 @@ gold_driver:
       Measured 2026-09-27, the live VIX is **14.21** — BELOW the threshold — so
       crisis_indicator resolves False and the acute layer does not fire, which is
       the expected behaviour for a spike test in a calm market.
+
+# ===========================================================================
+# metals_complex — Module 10.3, Copper/China Metals Complex Divergence (D-122)
+# ===========================================================================
+# The reference body for `metals_complex_divergence` is at AGENTS.md:4945
+# (Section 20.10) — the FIFTH D-096 exception. Its leaves live here rather than
+# inline: Section 22.8 forbids the bare `confidence=0.4` literal, and the two
+# inlined bands (`abs(aluminum) < 2.0`, `all(x < -2.0)` ) are thresholds a reader
+# must be able to find and audit.
+#
+# ⚠️ ANCHOR NOTE (D-119's O-145, restated): this block is a NEW config class.
+#    Adding it makes a DIFFERENT sweep's anchors ambiguous if any anchor's text
+#    is byte-identical to text here. The mutation sweep for this increment
+#    (mutation_commodities.py) was extended and re-run for exactly this reason,
+#    and every new/widened anchor was measured with `count() == 1`.
+metals_complex:
+  reliability_cap:
+    value: 0.30
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `metals_complex_divergence` reports. The reference
+      (AGENTS.md:4945) supplies `confidence=0.4` as a literal, which Section 22.8
+      refuses.
+
+      ⚠️ 0.40 IS NOT CARRIED FORWARD AT FACE VALUE. It is a three-way pattern
+      match over TWO uncalibrated bands on THREE commodity prices from ONE
+      provider family (FRED/IMF), so the independence credit is 1 at most and the
+      method is a sign test — weaker than `gold_driver`'s 0.35, whose primary leg
+      (a change in an observed real yield) is confirmed by an INDEPENDENT second
+      series (VIX). The ordering is the claim: it lands EQUAL to
+      `oil_balance`'s 0.30, because both are pattern reads on a single
+      observation family, and the published order strongest-to-weakest runs
+      `gold_driver` 0.35 > `oil_balance` 0.30 = **this** > EM checklist 0.10.
+
+      ⚠️ IT IS A CAP, AND THE MODEL MULTIPLIES RATHER THAN `min()`-ing. The
+      function applies compute_confidence() to the INPUT half and multiplies by
+      this leaf (D-118/D-119/D-120/D-121), so both halves stay load-bearing and
+      neither becomes dead code.
+
+      Placeholder, not calibrated: calibrating it means measuring how often the
+      three-way verdict correctly diagnosed the driver of a realised metals move,
+      a small-sample question this build does not attempt.
+  value_decimals_leaf:
+    value: 1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The decimal places each published percent CHANGE is rounded to. The
+      reference writes no rounding at all, so the precision is this build's
+      declaration.
+
+      It is 1 because the changes are percent moves of MONTHLY benchmark prices:
+      one decimal shows the direction and rough magnitude without implying the
+      model's bands are resolved finer than whole per-cent (the bands themselves
+      are 2.0).
+
+      Kept as a leaf so the rounding is a declared property of the result rather
+      than a magic literal in the function body.
+  aluminum_stability_band_pct_leaf:
+    value: 2.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The absolute aluminum CHANGE, in PER CENT, inside which aluminum counts as
+      STABLE. The reference inlines `abs(inputs.aluminum_change_pct) < 2.0`.
+
+      ⚠️ THIS IS THE DISCRIMINATING TEST, and that is why it is a named leaf. The
+      specification's own words: aluminum's stability is "the discriminating
+      evidence, since it is energy-cost driven with different end-use exposure".
+      Copper and iron ore both fall on a China-construction slowdown AND on a
+      broad-industrial one; only aluminum's NON-participation separates them.
+      Preserved at the specification's own 2.0.
+
+      ⚠️ A NON-POSITIVE BAND WOULD MAKE `abs(change) < band` TRUE ONLY FOR AN
+      EXACTLY-ZERO CHANGE, so the construction-specific verdict would become
+      unreachable — dead vocabulary (D-037's class). The settings validator
+      refuses a non-positive value for exactly this reason.
+  broad_weakness_threshold_pct_leaf:
+    value: 2.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The CHANGE, in PER CENT, BELOW which (as a magnitude: `change < -threshold`)
+      each metal counts toward BROAD industrial weakness. The reference inlines
+      `all(x < -2.0 for x in [...])`.
+
+      ⚠️ IT EQUALS THE ALUMINUM BAND (2.0) AND APPLIES ON THE OPPOSITE SIDE OF
+      ZERO. They are kept as TWO leaves rather than one shared number precisely
+      because the equality is a coincidence of the specification's choices, not a
+      shared concept: the band asks "is aluminum quiet?", the threshold asks "is
+      the whole complex falling hard?". A reader who saw one number would still
+      need to know which comparison it feeds.
+
+      ⚠️ A NON-POSITIVE THRESHOLD WOULD MAKE `change < -threshold` TRUE FOR EVERY
+      NON-NEGATIVE CHANGE, so the broad-weakness verdict would fire on a RISING
+      complex — an inverted branch. The settings validator refuses a non-positive
+      value for exactly this reason.
+
   # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the

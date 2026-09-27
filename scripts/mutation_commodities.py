@@ -113,7 +113,17 @@ _CONF_IND = "            source_independence_count=fetched_legs,"
 # M5: the refusal.  measured: 1
 # --------------------------------------------------------------------------
 
-_MISSING_REFUSAL = "    if missing:"
+# ⚠️ D-122 WIDENED THIS. `    if missing:` now occurs at TWO sites in the model
+#    (the oil refusal and the metals refusal). Widened with the OIL block's own
+#    error-message prefix, which names `oil_balance_signal`: 1 (asserted by
+#    `_check_targets_only`). A bare anchor here would have rewritten the METALS
+#    refusal instead, leaving the oil refusal alive and manufacturing a false
+#    survivor — exactly the D-119 O-145 class, in the opposite direction.
+_MISSING_REFUSAL = (
+    "    if missing:\n"
+    "        raise ValueError(\n"
+    '            f"oil_balance_signal cannot compute the transmitted tightness: no "'
+)
 
 # --------------------------------------------------------------------------
 # M6: the published contract.  measured: 1 each
@@ -140,10 +150,19 @@ _FAMILY = (
 _SUPPLIED_INV = '            "inventory_change_weekly SUPPLIED BY THE CALLER — unit is THOUSAND "'
 
 # --------------------------------------------------------------------------
-# M8: the input guards.  measured: 1
+# M8: the input guards.
+#
+# ⚠️ D-122 WIDENED THIS. The bare guard line now occurs at TWO sites (the oil
+#    validator and the metals validator — the metals block reuses the same
+#    idiom). Widened with the loop's own `getattr` line, which the metals
+#    validator has but the oil one does not: 1 (asserted by
+#    `_check_targets_only`).
 # --------------------------------------------------------------------------
 
-_NAN_GUARD = '            if value is not None and (value != value or abs(value) == float("inf")):'
+_NAN_GUARD = (
+    "            value = getattr(self, name)\n"
+    '            if value is not None and (value != value or abs(value) == float("inf")):'
+)
 
 # --------------------------------------------------------------------------
 # M9: the value dict keys.  measured: 1 each
@@ -282,7 +301,16 @@ _GOLD_DQ = (
     "            source_independence_count=independent_providers,"
 )
 
-_GOLD_IND = "            source_independence_count=independent_providers,"
+# ⚠️ D-122 WIDENED THIS. `            source_independence_count=independent_providers,`
+#    now occurs at TWO sites (the gold block and the metals block). Widened with
+#    the gold confidence call's own two preceding lines, which carry gold's
+#    `fetched_legs < 2` and `gold.reliability_cap_is_calibrated`: 1 (asserted by
+#    `_check_targets_only`).
+_GOLD_IND = (
+    "            data_quality_flags_present=fetched_legs < 2,\n"
+    "            is_heuristic_not_calibrated=not gold.reliability_cap_is_calibrated,\n"
+    "            source_independence_count=independent_providers,"
+)
 
 # `if change_bp is None:` occurs TWICE (the resolve guard and the refusal).
 # Widened with the refusal's own first message line: 1.
@@ -339,7 +367,22 @@ _GOLD_CLIP = (
     '        pairs.append((when, _parse_value(raw_value, context=f"{symbol} {label} row @ {when}")))'
 )
 
-_GOLD_WINDOW = "    if len(observed) >= 2:"
+# ⚠️ D-122 WIDENED THIS. `    if len(observed) >= 2:` now occurs at TWO sites in
+#    the client (the gold real-yield reader and the metals shared reader).
+#    Widened with the gold reader's own label line and error message, which name
+#    `real-yield` and `REAL_YIELD_SYMBOL`: 1 (asserted by `_check_targets_only`).
+_GOLD_WINDOW = (
+    '        label="real-yield",\n'
+    "    )\n"
+    "    if not observed:\n"
+    "        raise CommodityReadError(\n"
+    '            f"real-yield series {REAL_YIELD_SYMBOL} had no observation at or "\n'
+    '            f"before {as_of.isoformat()}."\n'
+    "        )\n"
+    "\n"
+    "    latest_date, latest_value = observed[-1]\n"
+    "    if len(observed) >= 2:"
+)
 
 # --------------------------------------------------------------------------
 # GG1-GG4: the GOLD config leaves (D-121).
@@ -381,6 +424,171 @@ _GOLD_DECIMALS_VALIDATOR = (
 
 _GOLD_YIELD_VALIDATOR = "        if self.yield_change_threshold_bp <= 0.0:"
 _GOLD_VIX_VALIDATOR = "        if self.crisis_vix_threshold_value <= 0.0:"
+
+# --------------------------------------------------------------------------
+# MM1-MM8, MC1-MC4, MG1-MG5: the METALS complex (D-122).
+#
+# ⚠️ EVERY anchor below is a MEASURED-UNIQUE form (``count() == 1`` against its
+#    target file AFTER this increment's edits). The widening is stated with each
+#    constant so a future reader can see WHY it is not the bare line, and can
+#    re-measure it rather than trusting this comment. A bare line that occurs
+#    twice would mutate the FIRST site and manufacture a false survivor (D-048).
+# --------------------------------------------------------------------------
+
+# The two predicates. Both unique by construction (their parameter names
+# ``aluminum_band_pct`` / ``broad_weakness_threshold_pct`` occur once each).
+_MM1_CONSTRUCTION = (
+    "    construction_specific = iron_ore < copper < 0 and abs(aluminum) < aluminum_band_pct"
+)
+_MM2_BROAD = (
+    "        value < -broad_weakness_threshold_pct for value in (copper, iron_ore, aluminum)"
+)
+_MM6_DIRECTION = (
+    '        direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else "restrictive"),'
+)
+_MM7_ROUND_CU = '            "copper_change_pct": round(copper, metals.value_decimals),'
+_MM7_ROUND_FE = '            "iron_ore_change_pct": round(iron_ore, metals.value_decimals),'
+_MM7_ROUND_AL = '            "aluminum_change_pct": round(aluminum, metals.value_decimals),'
+_MM8_ASSERT = "    assert copper is not None and iron_ore is not None and aluminum is not None"
+# ⚠️ D-122 RETARGET (the D-031 `U4a` precedent). `_MM8_ASSERT` above is a
+#    TYPE-NARROWING assertion: past the `missing` guard all three legs are
+#    non-None, so removing it changes NO runtime behaviour — a pytest sweep can
+#    never kill it. MEASURED 2026-09-27: removing it fails `mypy --strict` with
+#    SIX errors (`copper`/`iron_ore`/`aluminum` typed `float | None` at the
+#    `_classify_metals` call and the three `round(...)` calls), so the mutation
+#    IS load-bearing — but for the MYPY GATE, not for pytest. Per D-031 a
+#    survivor that is neither a weak test nor inert is RETARGETED, not dropped:
+#    the mutation below inverts the `missing` predicate's sense so the refusal
+#    fires on the legs that ARE present. That IS pytest-detectable, keeps the
+#    "resolution must be complete" intent, and does NOT duplicate `MM8a` (which
+#    removes the raise entirely rather than misfiring it).
+_MM8_MISSING = "        if value is None"
+_INF = 'float("inf")'
+_MM8_FINITE = (
+    "            value = getattr(self, name)\n"
+    "            if value is not None and (value != value or abs(value) == " + _INF + "):"
+)
+
+# The two verdict-literal anchors are unique because the construction branch is
+# indented one level deeper than the fallthrough (``        return`` vs
+# ``    return``), so each literal occurs once.
+_MM3_RET_CONSTRUCTION = '        return "CHINA_CONSTRUCTION_SPECIFIC"'
+_MM3_RET_BROAD = '        return "BROAD_INDUSTRIAL_WEAKNESS"'
+_MM3_RET_MIXED = '    return "MIXED_no_clear_pattern"'
+
+# ⚠️ ``    independent_providers = 1 if fetched_legs > 0 else 0`` occurs at TWO
+#    sites after the metals addition (the gold model has the identical line).
+#    WIDENED with the metals comment's own closing words, which are
+#    metals-specific: 1.
+_MM4_INDEP = (
+    "rule, restated for three legs instead of two.\n"
+    "    independent_providers = 1 if fetched_legs > 0 else 0"
+)
+
+_MM4_MULTIPLY = "    confidence = computed * metals.reliability_value"
+_MM4_FLAG = "            data_quality_flags_present=fetched_legs < 3,"
+
+# ⚠️ ``            EvidenceSourceFamily.MARKET_COMMODITY\n            if fetched_legs > 0``
+#    occurs at THREE sites (oil, gold, metals). WIDENED with the metals block's
+#    own ``direction=`` line, which carries the metals-only verdict vocabulary: 1.
+_MM5_FAMILY = (
+    '        direction=("expansionary" if verdict == "MIXED_no_clear_pattern"'
+    ' else "restrictive"),\n'
+    "        source_family=(\n"
+    "            EvidenceSourceFamily.MARKET_COMMODITY\n"
+    "            if fetched_legs > 0"
+)
+
+# ⚠️ ``    if missing:`` occurs at TWO sites in the model. WIDENED with the
+#    metals error message's own first fragment (the function name), which is
+#    unique: 1.
+_MM8_REFUSAL = (
+    "    if missing:\n"
+    "        raise ValueError(\n"
+    '            f"metals_complex_divergence cannot resolve'
+)
+
+# --- the CLIENT anchors ----------------------------------------------------
+_MC1_COPPER = 'COPPER_SYMBOL = "PCOPPUSDM"'
+_MC1_IRON = 'IRON_ORE_SYMBOL = "PIORECRUSDM"'
+_MC1_ALUM = 'ALUMINUM_SYMBOL = "PALUMUSDM"'
+_MC2_UNIT = 'METALS_SOURCE_UNIT = "usd_per_metric_ton"'
+_MC3_PCT = "    return (latest - prior) / prior * 100.0"
+_MC3_ZERO = "    if prior == 0.0:"
+
+# ⚠️ ``    if len(observed) >= 2:`` occurs at TWO sites in the client (the gold
+#    real-yield reader and the metals shared reader). WIDENED with the metals
+#    reader's own label line, which is metals-only (``{label} price``): 1.
+_MC4_WINDOW = (
+    '    observed = _observed_pairs(frame, symbol=symbol, as_of=as_of, label=f"{label} price")\n'
+    "    if not observed:\n"
+    "        raise CommodityReadError(\n"
+    '            f"{label} price series {symbol} had no observation at or before '
+    '{as_of.isoformat()}."\n'
+    "        )\n"
+    "\n"
+    "    latest_date, latest_value = observed[-1]\n"
+    "    if len(observed) >= 2:"
+)
+
+# --- the CONFIG anchors ----------------------------------------------------
+#
+# ⚠️ FIVE of these need widening. Adding ``MetalsComplexSettings`` made the
+#    following byte-identical strings AMBIGUOUS — the D-119 O-145 shape, now at
+#    FIVE copies across Intervention/EMVulnerability/OilBalance/Gold/Metals:
+#
+#      ``        return float(self.reliability_cap.value)``     5 sites
+#      ``        return int(self.value_decimals_leaf.value)``   3 sites
+#      ``        if not 0.0 <= self.reliability_value <= 1.0:`` 5 sites
+#      ``        if self.value_decimals < 0:``                  3 sites
+#      ``        return self.reliability_cap.is_trustworthy``   5 sites
+#
+#    Each widened form below was measured at exactly 1.
+_MG1_CAP = (
+    "        series while these three legs share one provider and one family.\n"
+    '        """\n'
+    "        return float(self.reliability_cap.value)"
+)
+_MG1_DECIMALS = (
+    "        magnitude without implying the model's bands are resolved finer than\n"
+    "        whole per-cent.\n"
+    '        """\n'
+    "        return int(self.value_decimals_leaf.value)"
+)
+# These two are unique by construction (their leaf names occur once).
+_MG2_BAND = "        return float(self.aluminum_stability_band_pct_leaf.value)"
+_MG3_THRESH = "        return float(self.broad_weakness_threshold_pct_leaf.value)"
+_MG4_CAP_VALID = (
+    "        if not 0.0 <= self.reliability_value <= 1.0:\n"
+    "            raise ValueError(\n"
+    '                f"metals_complex.reliability_cap is {self.reliability_value}. A "'
+)
+_MG4_DECIMALS_VALID = (
+    "        if self.value_decimals < 0:\n"
+    "            raise ValueError(\n"
+    '                f"metals_complex.value_decimals is {self.value_decimals}. A "'
+)
+# These two are unique by construction (metals-only property names).
+_MG4_BAND_VALID = "        if self.aluminum_band_pct <= 0.0:"
+_MG4_THRESH_VALID = "        if self.broad_weakness_threshold_pct <= 0.0:"
+#
+# ⚠️ The two metals-branded validators above carry the identity in BOTH the
+#    guard compare AND the neighbouring error message, so a mutation of the
+#    guard cannot silently retarget a sibling class's validator.
+#
+# ⚠️ ``        return self.reliability_cap.is_trustworthy`` occurs at FIVE
+#    sites; the gas/gold/others' preceding docstrings are identical. WIDENED
+#    FORWARD into the NEXT property (``value_decimals``), whose docstring IS
+#    metals-specific: 1.
+_MG5_TRUST = (
+    "        half prices the leaf's own status rather than assuming it.\n"
+    '        """\n'
+    "        return self.reliability_cap.is_trustworthy\n"
+    "\n"
+    "    @property\n"
+    "    def value_decimals(self) -> int:\n"
+    '        """The decimal places each published percent change is rounded to.'
+)
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
     # --- CANARY (O-72/D-051): a syntax error the selection MUST catch --------
@@ -786,6 +994,292 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         CONFIG,
         _GOLD_VIX_VALIDATOR,
         "        if False:",
+    ),
+    # ======================================================================
+    # MODULE 10.3 — the METALS complex (D-122).
+    #
+    # ⚠️ EVERY anchor below was measured with ``str.count()`` against its target
+    #    file AFTER this increment's edits, and the count is recorded. Five of
+    #    the config anchors and two model/client anchors had to be WIDENED,
+    #    because adding ``MetalsComplexSettings`` made byte-identical siblings
+    #    AMBIGUOUS — the D-119 O-145 shape, now at FIVE copies:
+    #
+    #      * ``        return float(self.reliability_cap.value)``       5 sites
+    #      * ``        return int(self.value_decimals_leaf.value)``     3 sites
+    #      * ``        if not 0.0 <= self.reliability_value <= 1.0:``   5 sites
+    #      * ``        if self.value_decimals < 0:``                    3 sites
+    #      * ``        return self.reliability_cap.is_trustworthy``     5 sites
+    #      * ``    independent_providers = 1 if fetched_legs > 0 else 0`` 2 sites
+    #      * ``            EvidenceSourceFamily.MARKET_COMMODITY``/``if fetched_legs > 0`` 3 sites
+    #      * ``    if len(observed) >= 2:`` (client)                    2 sites
+    #
+    #    A widening is a claim about BYTES, so each is asserted at 1 in the
+    #    comments and re-verified by ``_check_targets_only``.
+    # ======================================================================
+    # --- MM1: the construction-specific predicate --------------------------
+    #     The DISCRIMINATING test. This is the whole point of the function: a
+    #     mutant that drops the iron-ore-first ordering or the aluminum band
+    #     destroys the localisation. measured: 1
+    (
+        "MM1a the iron-ore-first ordering relaxed to copper-first",
+        MODEL,
+        _MM1_CONSTRUCTION,
+        "    construction_specific = copper < iron_ore < 0 and abs(aluminum) < aluminum_band_pct",
+    ),
+    (
+        "MM1b the iron-ore-must-fall condition dropped",
+        MODEL,
+        _MM1_CONSTRUCTION,
+        "    construction_specific = copper < 0 and abs(aluminum) < aluminum_band_pct",
+    ),
+    (
+        "MM1c the aluminum-stability band flipped to <= (a boundary mutant)",
+        MODEL,
+        _MM1_CONSTRUCTION,
+        "    construction_specific = iron_ore < copper < 0 and abs(aluminum) <= aluminum_band_pct",
+    ),
+    (
+        "MM1d the aluminum-stability condition dropped entirely",
+        MODEL,
+        _MM1_CONSTRUCTION,
+        "    construction_specific = iron_ore < copper < 0",
+    ),
+    # --- MM2: the broad-weakness predicate ---------------------------------
+    #     measured: 1
+    (
+        "MM2a the broad threshold flipped to <= (a boundary mutant)",
+        MODEL,
+        _MM2_BROAD,
+        "        value <= -broad_weakness_threshold_pct for value in (copper, iron_ore, aluminum)",
+    ),
+    (
+        "MM2b the broad threshold sign dropped (rising metals would be 'weak')",
+        MODEL,
+        _MM2_BROAD,
+        "        value < broad_weakness_threshold_pct for value in (copper, iron_ore, aluminum)",
+    ),
+    (
+        "MM2c the broad test applied to only two of the three metals",
+        MODEL,
+        _MM2_BROAD,
+        "        value < -broad_weakness_threshold_pct for value in (copper, iron_ore)",
+    ),
+    # --- MM3: the verdict literals -----------------------------------------
+    (
+        "MM3a the construction verdict literal swapped to broad",
+        MODEL,
+        _MM3_RET_CONSTRUCTION,
+        '        return "BROAD_INDUSTRIAL_WEAKNESS"',
+    ),
+    (
+        "MM3b the broad verdict literal swapped to construction",
+        MODEL,
+        _MM3_RET_BROAD,
+        '        return "CHINA_CONSTRUCTION_SPECIFIC"',
+    ),
+    (
+        "MM3c the fallthrough verdict mislabelled",
+        MODEL,
+        _MM3_RET_MIXED,
+        '    return "MIXED"',
+    ),
+    # --- MM4: confidence / independence ------------------------------------
+    #     The independence count must be ONE for any fetched set (three legs,
+    #     one provider). Reporting the leg count would triple-count the
+    #     evidence — the D-118/D-119 rule restated for three legs.
+    (
+        "MM4a the independence count inflated to the leg count",
+        MODEL,
+        _MM4_INDEP,
+        "    independent_providers = fetched_legs",
+    ),
+    (
+        "MM4b the independent-provider count forced to 0",
+        MODEL,
+        _MM4_INDEP,
+        "    independent_providers = 0",
+    ),
+    (
+        "MM4c the confidence product replaced by the cap alone (min-like)",
+        MODEL,
+        _MM4_MULTIPLY,
+        "    confidence = metals.reliability_value",
+    ),
+    (
+        "MM4d the fetched-legs quality flag inverted",
+        MODEL,
+        _MM4_FLAG,
+        "            data_quality_flags_present=fetched_legs > 0,",
+    ),
+    # --- MM5: the source family --------------------------------------------
+    (
+        "MM5a the fetched family swapped to MANUAL_ASSESSMENT",
+        MODEL,
+        _MM5_FAMILY,
+        "            EvidenceSourceFamily.MANUAL_ASSESSMENT\n            if fetched_legs > 0",
+    ),
+    (
+        "MM5b the fetched condition inverted so a supplied run claims market data",
+        MODEL,
+        _MM5_FAMILY,
+        "            EvidenceSourceFamily.MARKET_COMMODITY\n            if fetched_legs == 0",
+    ),
+    # --- MM6: the direction vocabulary -------------------------------------
+    (
+        "MM6a the restrictive branch swapped for expansionary",
+        MODEL,
+        _MM6_DIRECTION,
+        '        direction=("expansionary" if verdict != "MIXED_no_clear_pattern" else "restrictive"),',
+    ),
+    # --- MM7: the rounding --------------------------------------------------
+    (
+        "MM7a the copper rounding dropped",
+        MODEL,
+        _MM7_ROUND_CU,
+        '            "copper_change_pct": copper,',
+    ),
+    (
+        "MM7b the iron-ore rounding dropped",
+        MODEL,
+        _MM7_ROUND_FE,
+        '            "iron_ore_change_pct": iron_ore,',
+    ),
+    (
+        "MM7c the aluminum rounding dropped",
+        MODEL,
+        _MM7_ROUND_AL,
+        '            "aluminum_change_pct": aluminum,',
+    ),
+    # --- MM8: the refusal and the finite guard -----------------------------
+    (
+        "MM8a the missing-leg refusal neutralised",
+        MODEL,
+        _MM8_REFUSAL,
+        "        pass",
+    ),
+    (
+        "MM8b the non-finite input guard neutralised",
+        MODEL,
+        _MM8_FINITE,
+        "            if False:",
+    ),
+    (
+        "MM8c the non-finite guard's ``abs`` dropped (inf only, nan escapes)",
+        MODEL,
+        _MM8_FINITE,
+        "            if value is not None and (value != value or value == " + _INF + "):",
+    ),
+    (
+        "MM8d the missing predicate inverted (the refusal misfires on present legs)",
+        MODEL,
+        _MM8_MISSING,
+        "        if value is not None",
+    ),
+    # --- MC1-MC2: the client symbols and unit ------------------------------
+    (
+        "MC1a the copper symbol swapped for the aluminum one",
+        CLIENT,
+        _MC1_COPPER,
+        'COPPER_SYMBOL = "PALUMUSDM"',
+    ),
+    (
+        "MC1b the iron-ore symbol swapped for the copper one",
+        CLIENT,
+        _MC1_IRON,
+        'IRON_ORE_SYMBOL = "PCOPPUSDM"',
+    ),
+    (
+        "MC1c the aluminum symbol swapped for the iron-ore one",
+        CLIENT,
+        _MC1_ALUM,
+        'ALUMINUM_SYMBOL = "PIORECRUSDM"',
+    ),
+    (
+        "MC2a the metals unit mislabelled as per pound",
+        CLIENT,
+        _MC2_UNIT,
+        'METALS_SOURCE_UNIT = "usd_per_pound"',
+    ),
+    # --- MC3: the percent change -------------------------------------------
+    (
+        "MC3a the percent change dropped its scale factor",
+        CLIENT,
+        _MC3_PCT,
+        "    return (latest - prior) / prior",
+    ),
+    (
+        "MC3b the percent change inverted (prior over latest)",
+        CLIENT,
+        _MC3_PCT,
+        "    return (prior - latest) / latest * 100.0",
+    ),
+    (
+        "MC3c the zero-prior guard neutralised",
+        CLIENT,
+        _MC3_ZERO,
+        "    if False:",
+    ),
+    # --- MC4: the two-vintage window ---------------------------------------
+    (
+        "MC4a the two-observation window collapsed to one (change always None)",
+        CLIENT,
+        _MC4_WINDOW,
+        "    if len(observed) >= 1:",
+    ),
+    # --- MG1-MG5: the config accessors and validators ----------------------
+    (
+        "MG1a the metals cap accessor returns a literal",
+        CONFIG,
+        _MG1_CAP,
+        "        return 0.5",
+    ),
+    (
+        "MG1b the metals decimals accessor returns a literal",
+        CONFIG,
+        _MG1_DECIMALS,
+        "        return 4",
+    ),
+    (
+        "MG2a the aluminum-band accessor returns a literal",
+        CONFIG,
+        _MG2_BAND,
+        "        return 2.0",
+    ),
+    (
+        "MG3a the broad-threshold accessor returns a literal",
+        CONFIG,
+        _MG3_THRESH,
+        "        return 2.0",
+    ),
+    (
+        "MG4a the metals cap validator neutralised",
+        CONFIG,
+        _MG4_CAP_VALID,
+        "        if False:",
+    ),
+    (
+        "MG4b the metals decimals validator neutralised",
+        CONFIG,
+        _MG4_DECIMALS_VALID,
+        "        if False:",
+    ),
+    (
+        "MG4c the metals aluminum-band validator neutralised",
+        CONFIG,
+        _MG4_BAND_VALID,
+        "        if False:",
+    ),
+    (
+        "MG4d the metals broad-threshold validator neutralised",
+        CONFIG,
+        _MG4_THRESH_VALID,
+        "        if False:",
+    ),
+    (
+        "MG5a the metals cap-trust accessor forced True",
+        CONFIG,
+        _MG5_TRUST,
+        "        return True",
     ),
 ]
 

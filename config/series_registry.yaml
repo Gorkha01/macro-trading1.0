@@ -1542,6 +1542,132 @@ series:
     plausible_range: [5.0, 90.0]
 
   # -------------------------------------------------------------------------
+  # Module 10.3 — the METALS COMPLEX (copper / iron ore / aluminum), D-122.
+  #
+  # ⚠️ THE AUTHORITY TAGS THIS TRIO **LIVE/BLOCKED** and it is the repository's
+  #    SEVENTH FALSE BLOCK (D-043's class). Section 21.1 (AGENTS.md:5395) says:
+  #    "Copper & aluminum via IBKR/yfinance futures; iron ore has no clean free
+  #    source — likely BLOCKED, document" — and Section 21.4's Loophole Ledger
+  #    repeats "Iron ore prices — no clean free source" as item 8.
+  #
+  #    MEASURED 2026-09-27: ALL THREE are live monthly FRED benchmarks (IMF
+  #    Primary Commodity Prices), each in U.S. Dollars per Metric Ton. The
+  #    deciding route is FRED `economy.fred_series` — the SAME route the gold
+  #    legs already use — so NO new OpenBB command was added and the command
+  #    census is unchanged. The authority's IBKR/yfinance suggestion was NOT
+  #    taken: a futures quote is a different estimand from the IMF benchmark.
+  #
+  #    The CONTROL that makes the probe evidence: `DCOILWTICO` (WTI), from the
+  #    same route and caller, returns 2,926 rows over 2015-2026 while each metal
+  #    returns 139. A probe with no working control would not have been evidence
+  #    (the D-121 lesson).
+  # -------------------------------------------------------------------------
+
+  metals_copper:
+    provider: fred
+    endpoint: economy.fred_series
+    symbol: PCOPPUSDM
+    not_a_snapshot_field: true
+    signed_series: true
+    description: >
+      Global price of Copper — the IMF Primary Commodity Prices benchmark in
+      U.S. DOLLARS PER METRIC TON, monthly (FRED `PCOPPUSDM`). This is Section
+      20.10's `copper_change_pct` source.
+
+      ⚠️ THE UNIT IS READ FROM THE PROVIDER'S OWN METADATA, NOT ASSUMED. The
+      `*USDM` suffix means USD-per-metric-ton MONTHLY; a web search claiming
+      "USD per pound" for copper is WRONG and would have been the D-106 unit
+      trap. `fred_search` reports units "U.S. Dollars per Metric Ton" for this
+      series, and `PCOPPUSDM`'s FRED page agrees.
+
+      ⚠️ THE SERIES IS A LEVEL; SECTION 20.10'S INPUT IS A PERCENT CHANGE. The
+      client (`commodities_client.fetch_copper_change`) returns the two most
+      recent observations and differences them to a percent — the specification's
+      own field name says `_change_pct`, so no `_change_pct` series is published
+      and none is invented.
+
+      `signed_series: true` because the change is signed and its sign participates
+      in the China-construction pattern (iron ore < copper < 0).
+
+      Measured 2026-09-27: 139 monthly observations 2015-01..2026-07; latest
+      2026-07-01 = 13,542.82, prior 2026-06-01 = 13,552.04.
+    frequency: monthly
+    units: usd_per_metric_ton
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 13542.82
+    verified_observation_date: 2026-07-01
+    plausible_range: [1000.0, 30000.0]
+
+  metals_iron_ore:
+    provider: fred
+    endpoint: economy.fred_series
+    symbol: PIORECRUSDM
+    not_a_snapshot_field: true
+    signed_series: true
+    description: >
+      Global price of Iron Ore — the IMF Primary Commodity Prices benchmark in
+      U.S. DOLLARS PER METRIC TON, monthly (FRED `PIORECRUSDM`). This is Section
+      20.10's `iron_ore_change_pct` source, and it is the leg the authority
+      called BLOCKED.
+
+      ⚠️ **THE SEVENTH FALSE BLOCK.** Section 21.1 (AGENTS.md:5395) tags iron ore
+      "no clean free source — likely BLOCKED", and Section 21.4's Loophole Ledger
+      lists it as a permanent gap. Measured 2026-09-27 it is LIVE: `fred_search`
+      reports series_id `PIORECRUSDM`, title "Global price of Iron Ore", units
+      "U.S. Dollars per Metric Ton", frequency Monthly, last observation
+      2026-07-01, last_updated 2026-08-17 — a clean, free, documented source.
+      The tag is corrected here rather than carried.
+
+      ⚠️ THE SERIES IS A LEVEL; SECTION 20.10'S INPUT IS A PERCENT CHANGE, taken
+      by the client from the two most recent vintages — the same shape as the
+      gold real-yield leg.
+
+      `signed_series: true` because iron ore's being the WORST faller is the
+      first clause of the construction-specific pattern.
+
+      Measured 2026-09-27: 139 monthly observations 2015-01..2026-07; latest
+      2026-07-01 = 101.60, prior 2026-06-01 = 103.79.
+    frequency: monthly
+    units: usd_per_metric_ton
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 101.60
+    verified_observation_date: 2026-07-01
+    plausible_range: [20.0, 1000.0]
+
+  metals_aluminum:
+    provider: fred
+    endpoint: economy.fred_series
+    symbol: PALUMUSDM
+    not_a_snapshot_field: true
+    signed_series: true
+    description: >
+      Global price of Aluminum — the IMF Primary Commodity Prices benchmark in
+      U.S. DOLLARS PER METRIC TON, monthly (FRED `PALUMUSDM`). This is Section
+      20.10's `aluminum_change_pct` source, and it is the DISCRIMINATING leg:
+      aluminum is energy-cost driven with different end-use exposure, so its
+      STABILITY while copper and iron ore fall is what separates a
+      China-construction signal from a broad-industrial one.
+
+      ⚠️ THE SERIES IS A LEVEL; SECTION 20.10'S INPUT IS A PERCENT CHANGE, taken
+      by the client from the two most recent vintages.
+
+      `signed_series: true` because the sign is what the `|change| < band` test
+      and the `< -threshold` test both read.
+
+      Measured 2026-09-27: 139 monthly observations 2015-01..2026-07; latest
+      2026-07-01 = 3,158.27, prior 2026-06-01 = 3,438.85.
+    frequency: monthly
+    units: usd_per_metric_ton
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 3158.27
+    verified_observation_date: 2026-07-01
+    plausible_range: [1000.0, 10000.0]
+
+
+  # -------------------------------------------------------------------------
   # ⚠️ THE THIRD GOLD DRIVER IS A **MEASURED, CONFIRMED BLOCK** — RECORDED HERE
   #    AS PROSE, WITH NO ENTRY, BECAUSE THERE IS NO SOURCE TO ENTER.
   #

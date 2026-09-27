@@ -20208,3 +20208,211 @@ against `src/`, are: `metals_complex_divergence` (Module 10), `sector_rotation_p
 `statement_text_diff` (§20.4). **All five have NO definition anywhere in `src/`** — the earlier note
 that `statement_text_diff` "keeps its own `NotImplementedError`" was **carried, not measured, and is
 FALSE**: there is no `def` at all.
+
+
+---
+
+## D-122 — Module 10's `metals_complex_divergence`: the repository's **SEVENTH FALSE BLOCK** (iron ore was tagged "likely BLOCKED" and is LIVE), a first probe that **had no control**, and the sweep's own **pre-flight catching the ambiguity this increment created in ANOTHER file**
+
+**Date:** 2026-09-27 (session clock; the surrounding records are dated 2026-09-29). **Tier 5 = 19/23**
+(moved **18 → 19**; MEASURED 2026-09-27 from `AGENTS.md:5541–5550` against `src/`, not recalled — the
+O-147 discipline). Target: the **existing** `src/macro_engine/models/commodities.py` (a **metals
+household** appended beside D-120's oil one and D-121's gold one) and the **existing**
+`src/macro_engine/data_layer/commodities_client.py` (three new FRED legs). Section resolved with
+`grep -n`: the authority is **§20.10** (`AGENTS.md:4935` heading, `:4945` reference body), the
+"Module 10 — Copper/China, Metals Complex Divergence" block whose own comment says *"Phase 5+,
+INFORMATIONAL ONLY"*. **NO new OpenBB commands** — the three metals legs reuse the existing
+`economy.fred_series`, so the command census **stays 6**.
+
+### 1. What the authority said, and what was built
+
+`AGENTS.md:4935–4979` gives a **complete reference body** (the tier's **fifth** such body, after
+§6.7's FX block, §20.9/§20's part B, §6.8's oil block, and Appendix D's gold block), so this is a
+**D-096 exception** as well as an **upgrade**. Applied in the §22.1 order, the D-096 question *"what
+does this supersede?"* has the honest answer: **nothing is superseded — this is a NEW CAPABILITY**
+(Module 10's third function).
+
+The spec's decision order is preserved exactly — `if construction_specific: … elif
+broad_industrial: … else: …` — but the two predicates are extracted into `_classify_metals(...)` so
+each is stated **once** and the bands arrive as **parameters**, never as module constants. A second
+copy of `2.0` in the model would be the D-118 dead-constant shape in reverse (a live constant
+shadowed by a hardcoded value), so the only copy of either band lives in
+`config/settings.yaml:metals_complex`.
+
+### 2. THREE deviations, all logged BEFORE they were written
+
+1. **`value` is a DICT, not the bare string the reference returns.** The reference publishes
+   `value=verdict` and discards the three resolved changes it just classified. That makes the reading
+   *unauditable at the point of use* — a consumer cannot see WHICH pattern the bands actually saw.
+   The published `value` therefore carries `verdict` **plus** the three rounded `*_change_pct`
+   inputs. **Supersedes nothing; it only stops the reference from throwing away information it
+   already computed.**
+2. **Confidence is a PRODUCT, and the independence count is 1, not 3.** The reference hardcodes
+   `confidence=0.4`. §22.8 forbids a bare literal, so the cap lives in config
+   (`metals_complex.reliability_cap = 0.30`) and is multiplied by a `compute_confidence(...)`
+   result — the D-118/D-119/D-120/D-121 rule. **All three legs (`PCOPPUSDM`, `PIORECRUSDM`,
+   `PALUMUSDM`) are FRED**, so `source_independence_count = 1` when any is fetched: **three legs,
+   ONE provider.** Reporting `fetched_legs` as the count would overstate the evidence **threefold**,
+   and it is the same class of error as counting one signal twice. `min()` was rejected because it
+   would publish the cap on **every** path here, making the computed half **dead code** — exactly the
+   defect D-118 removed. The cap sits **equal to `oil_balance`'s 0.30 and BELOW `gold_driver`'s
+   0.35**: the method is a three-way pattern match on uncalibrated bands over one provider family —
+   weaker than gold, whose primary leg (an observed real-yield change) is confirmed by an
+   **independently sourced** second series (VIX). The ordering is the claim.
+3. **All three inputs are made OPTIONAL** (`float | None`, `None` = resolve it), matching
+   `OilBalanceInputs` / `GoldDriverInputs` and their predecessors. The reference declares three
+   **required** floats, which would force a caller to fetch by hand. A supplied value stays
+   distinguishable from a fetched one because each is disclosed separately — *a fabricated input
+   must never read like a measured one.*
+
+### 3. THE SEVENTH FALSE BLOCK — the authority's tag was half false, and a probe without a control nearly hid it
+
+Section 21.1 (`AGENTS.md:5395`) tags the trio *"LIVE/BLOCKED — copper & aluminum via
+IBKR/yfinance futures; iron ore has no clean free source — **likely BLOCKED**, document"*, and
+Section 21.4's Loophole Ledger repeats it as item 8 (*"Iron ore prices — no clean free source"*).
+**Measured 2026-09-27, all three are LIVE** on FRED (IMF Primary Commodity Prices), each a monthly
+benchmark price in **U.S. Dollars per Metric Ton** — a clean, free, documented source for every leg.
+
+**The probe nearly reported a false negative, and the reason is the increment's most reusable
+lesson: THE FIRST PROBE HAD NO CONTROL.** A `fred_search` for the metals returned the three symbols
+and the route accepted them, but a series that returns a *small* number of rows is ambiguous — it
+could be a healthy monthly series or a half-populated route, and **nothing in the probe could tell
+the two apart**. The fix was to fetch a **known-good series on the SAME route**:
+`DCOILWTICO` (WTI spot) returned **2,926 rows** over 2015–2026, against **139 rows** for each metal.
+Only *against* that yardstick is 139 interpretable as "the full monthly history" rather than "the
+route is broken". **A probe with no control is not evidence** — it is a reading with no scale.
+
+**The unit was read from the PROVIDER's metadata, not assumed.** `fred_search` reports
+`units: "U.S. Dollars per Metric Ton"` for all three. A web search during the probe claimed copper
+is quoted in **USD per pound**, which for *these* series is **WRONG** — and the error is not cosmetic:
+a pound-vs-metric-ton mix-up is a silent **~2,200×** error that no plausible-range check tuned to the
+wrong unit would catch. The unit is therefore asserted into the `MetalChangeReading` (`source_unit`)
+and re-asserted by the live check's band, so the error class fails loudly (the **D-106** unit trap).
+
+The `*_change_pct` inputs are **DERIVED, not published**: the client differences the two most recent
+monthly vintages, exactly as the gold model's real-yield leg differs two TIPS vintages. A `prior` of
+**exactly zero is REFUSED** rather than returning an `inf` — an infinity would fail every comparison
+and the model would report `MIXED_no_clear_pattern`, a claim about the *pattern* that is really a
+claim about a broken leg (the D-078 class).
+
+### 4. THE SWEEP'S PRE-FLIGHT CAUGHT THE AMBIGUITY THIS INCREMENT CREATED IN ANOTHER FILE — before a single mutant ran
+
+`scripts/mutation_commodities.py` had **64** mutations before this increment; it now has **105**.
+Adding the metals anchors was the easy part. **The hard part was that this increment's own code made
+FOUR PRE-EXISTING anchors AMBIGUOUS**, and `--check-targets` (the O-138 flag, now real) named every
+one **before** `sweep_lifecycle` wrote anything:
+
+```
+check_targets: 105 mutations, 4 problem(s)
+  !! M5a  the missing-legs refusal removed: target AMBIGUOUS in commodities.py (2 occurrences)
+  !! M8a  the non-finite guard removed:      target AMBIGUOUS in commodities.py (2 occurrences)
+  !! GM5a the independence count ...:        target AMBIGUOUS in commodities.py (2 occurrences)
+  !! GC3a the two-point window loosened ...: target AMBIGUOUS in commodities_client.py (2 occurrences)
+```
+
+This is the **D-119 O-145 shape pointing the other way**: at D-119 the new config class reddened the
+*new* anchors; here the new **model and client** code reddened **the old ones**, in files the metals
+work touched but the mutations were written for different households. **A bare `    if missing:`
+would have rewritten the FIRST site (the oil refusal), leaving the metals refusal alive — a FALSE
+SURVIVOR manufactured by a wrong-site mutation (D-048).** All four were **WIDENED, never deleted**,
+each widening measured at `count() == 1`:
+`M5a` into the oil block's own `oil_balance_signal cannot compute…` prefix; `M8a` into the loop's
+`getattr` line; `GM5a` into gold's `fetched_legs < 2` / `gold.reliability_cap_is_calibrated` pair;
+`GC3a` into the real-yield reader's own `real-yield` label and error message.
+
+**Five of the NEW config anchors needed the same treatment**, because `config.py` now holds **FIVE**
+byte-identical copies of the same two guard strings and accessor bodies
+(Intervention / EMVulnerability / OilBalance / Gold / **Metals**):
+
+| byte-identical string | copies |
+|---|---|
+| `        return float(self.reliability_cap.value)` | 5 |
+| `        return int(self.value_decimals_leaf.value)` | 3 |
+| `        if not 0.0 <= self.reliability_value <= 1.0:` | 5 |
+| `        if self.value_decimals < 0:` | 3 |
+| `        return self.reliability_cap.is_trustworthy` | 5 |
+
+Each widened form carries the metals block's own surrounding prose (its docstring sentence, or its
+`metals_complex.<leaf>` error-message prefix). **A widening is a claim about BYTES**, so every one
+was measured with `str.count()` against the file it targets, recorded in a comment, and re-verified
+by `--check-targets` → **105 mutations, 0 problems**.
+
+### 5. The dead branch, found by MEASUREMENT and removed before it shipped
+
+The first draft carried a **tie / "AMBIGUOUS PATTERN"** branch: if *both* predicates were true the
+model would warn and return a distinct verdict. **It was unreachable, and the model's own docstring
+now records the proof:** the construction test requires `|aluminum| < band` (aluminum quiet) while
+the broad test requires `aluminum < -threshold` (aluminum falling hard); with both bands positive
+these are **contradictory**, so no real input set satisfies both, and the specification's `if/elif`
+order **decides nothing**. Per the **D-118 `R6a`** lesson (*a branch that can never fire is a defect,
+not a safety net*) the branch was **removed** rather than kept as belt-and-braces — `_classify_metals`
+returns `str` only. The **mutual-exclusivity grid proof** survives as a test: a grid over the band
+space asserts `not (in_band and below_broad)` at every point, so if a future edit makes them
+overlap the test fails rather than the code silently picking the first branch.
+
+**A config field/property name collision was hit and fixed at authoring time.** The two new leaves
+were first named `aluminum_stability_band_pct` and `broad_weakness_threshold_pct` — the *same names*
+as their own accessor properties — and Python binds the LAST definition, so the property shadowed the
+field and the validator died on `TypeError: '<=' not supported between instances of 'CalibratedValue'
+and 'float'`. The **fields** were renamed with a `_leaf` suffix (the property names are the public
+ones), which is the **O-150 shadowing class in config rather than tests**, and the reason the
+`_leaf` suffix convention exists.
+
+### 5b. FOUR SURVIVORS on the first sweep run — three weak tests and one mypy-only mutation (D-031 triage)
+
+The first full run reported **101/105** with four survivors, all in the **new metals block** — which
+is exactly where a fresh increment's weak tests live (the same shape as D-121's `M6a`). Each was
+triaged by **D-031** (*a survivor is a weak test, an inert mutation, or a broken one*), and **NONE
+was fixed by weakening the mutation**:
+
+* **`MM7a`/`MM7b`/`MM7c` — the three "rounding dropped" mutations: WEAK TESTS.** The published change
+  was asserted with `pytest.approx(-4.123456, abs=10 ** -decimals)` — i.e. **against the RAW input**
+  with a tolerance (`0.1` at `decimals = 1`) that **both** the rounded `-4.1` and the unrounded
+  `-4.123456` satisfy. The test could not discriminate, so dropping the `round(...)` was invisible.
+  **Fix = PERTURB THE LEAF** (D-031/D-050): the rewired test monkeypatches `value_decimals_leaf` to
+  **3** and asserts the **EXACT** rounded output (`== -4.123`, `-9.988`, `0.556`), plus a
+  `!= raw` guard. **MEASURED:** with the fix, each of the three mutants fails the test
+  (`-4.1234567 != -4.123`) — all three KILLED.
+* **`MM8d` — the "leg-resolution assertion dropped" mutation: MYPY-ONLY, RETARGETED (not dropped).**
+  `assert copper is not None and iron_ore is not None and aluminum is not None` is a **type-narrowing
+  assertion**: past the `missing` guard all three legs are provably non-None, so removing it changes
+  **NO runtime behaviour** and **a pytest sweep can never kill it**. **MEASURED:** removing it fails
+  `mypy --strict` with **SIX errors** (the `_classify_metals` call and the three `round(...)` calls
+  see `float | None`) — so the mutation **IS load-bearing, for the MYPY GATE**. Per the **D-031 `U4a`
+  precedent** (*a survivor that is neither a weak test nor inert is RETARGETED, and the reason is
+  recorded*), the mutation was replaced with one that **is** pytest-detectable and keeps the family's
+  intent: **inverting the `missing` predicate** (`if value is None` → `if value is not None`) so the
+  refusal **misfires on the legs that ARE present**. **MEASURED:** the retargeted mutant is KILLED
+  (**37 metals tests fail**), and it does not duplicate `MM8a` (which removes the raise entirely).
+
+**A second defect surfaced during this triage:** the first sweep run was **killed mid-flight**
+(a SIGTERM cascade from an over-eager poll loop), leaving the tree carrying a **LIVE MUTATION** in
+`config.py` (`return 4` at the `value_decimals` accessor) plus its three `.sweepbackup` sidecars —
+the **O-131 leftover-mutation** class, which manufactures a **false survivor** if the next run starts
+from it. It was caught by diffing each swept file against its `.sweepbackup` **before** trusting the
+tree, and restored from the backup. **Lesson restated: verify tree clean + sidecar ABSENT before AND
+after every sweep; never assume a killed sweep healed.**
+
+### 6. Gates
+
+* `ruff check src tests tools scripts` — **clean**.
+* `ruff format --check` = **283** == `mypy --strict` = **283** (D-035 matched, MEASURED — the prior
+  D-122 draft's `288` was a never-measured PREDICTION, corrected per the O-147 discipline).
+* Reachability: **PASS 58/58**; the Tier-5 partition is `SCRIPT-ONLY — Tier 5: 17`
+  (`metals_complex_divergence` joins it, because the new committed live-check script **is** a
+  caller) + `NO CALLER — Tier 5: 1` (`oil_balance_signal`, unchanged from D-121).
+* Full suite (DEFAULT markers, via `--junitxml`): **3938 tests / 0 failed / 0 errors / 1 skipped**
+  (the prior D-122 draft's `3924` was a never-measured PREDICTION, corrected to the MEASURED 3938).
+* `mutation_commodities.py` = **105/105 killed** (64 → 105 at D-122, the metals block adding 41),
+  after the D-031 triage above (three weak tests fixed by leaf perturbation; one mypy-only mutation
+  retargeted); `--check-targets` = **105 mutations, 0 problems**.
+* `sweep_health.py` **LAST** → **48 sweeps · 0 leftovers · 0 shapes · 0 committed mutants ·
+  0 failures · OK**.
+
+### Next
+
+**Tier 5 = 19/23.** Re-derive the remaining names from §21.3's table *"and only that table"* — do NOT
+recall them. The remaining **4** Tier-5 names, MEASURED (2026-09-27) from `AGENTS.md:5541–5550`
+against `src/`, are: `sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior` (Module 11
+→ a new `models/equity_macro.py`), and `statement_text_diff` (§20.4). **All four have NO definition
+anywhere in `src/`.**

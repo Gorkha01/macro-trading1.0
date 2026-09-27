@@ -10213,3 +10213,157 @@ unchanged at **48** (no new sweep module — the gold mutations were added to th
   rewriting a prior session's log.
 
 **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-122 (2026-09-27) — `metals_complex_divergence`, Module 10 (Section 21.3 Tier-5 #10; authority §20.10)
+
+**Tier 5 = 19/23** (moved **18 → 19**; MEASURED 2026-09-27 from `AGENTS.md:5541–5550` against
+`src/`: **19** have a real `def`, **4** do not — `sector_rotation_prior`, `duration_sensitivity`,
+`factor_tilt_prior`, `statement_text_diff`). `AGENTS.md:4935` (heading) / `:4945` (reference body)
+supplies a complete body ⇒ the **fifth D-096 exception**; it **supersedes nothing** — the `cip_check`
+answer, *a new capability*. **NO new OpenBB commands** — all three metals legs reuse
+`economy.fred_series`, so the command census **stays 6**.
+
+### Step 1–2 — the economic question and the inputs
+
+§20.10's own point, quoted: *"metals diverging tells you WHICH driver is active. Iron ore falling
+hardest + copper falling + aluminum flat ⇒ China construction/property specific, NOT broad global
+industrial weakness (aluminum's stability is the discriminating evidence, since it is energy-cost
+driven with different end-use exposure)."* The function therefore **classifies** the pattern into
+one of three verdicts; it never estimates a magnitude. **INFORMATIONAL ONLY — commodities are
+outside the production universe (§6.8).**
+
+**All three inputs LIVE — the tag said otherwise:**
+
+| input | source | status |
+| --- | --- | --- |
+| `copper_change_pct` | FRED **`PCOPPUSDM`** (IMF, USD/metric ton, monthly) × 2 vintages | **LIVE** |
+| `iron_ore_change_pct` | FRED **`PIORECRUSDM`** (IMF, USD/metric ton, monthly) × 2 vintages | **LIVE** |
+| `aluminum_change_pct` | FRED **`PALUMUSDM`** (IMF, USD/metric ton, monthly) × 2 vintages | **LIVE** |
+
+Section 21.1 (`AGENTS.md:5395`) tags the trio *"LIVE/BLOCKED — … iron ore has no clean free source —
+likely BLOCKED, document"*, repeated at §21.4's ledger item 8. **MEASURED 2026-09-27 all three are
+LIVE** ⇒ the **SEVENTH FALSE BLOCK.**
+
+### Step 6 — real-data execution (2026-09-27)
+
+```
+control  DCOILWTICO (WTI spot, DAILY, same route) :  2 926 rows 2015-2026
+PCOPPUSDM copper    (MONTHLY)                     :    139 rows
+PIORECRUSDM iron ore(MONTHLY)                     :    139 rows
+PALUMUSDM aluminum  (MONTHLY)                     :    139 rows
+```
+
+The **control is the measurement**: monthly ÷ daily ≈ 1/21, and 139 ÷ 2 926 ≈ 1/21 — so 139 is the
+**full** monthly history, not a truncated route. **Without the control the count proves nothing**
+(O-152).
+
+### Step 7 — plausibility assessment
+
+Units read from `fred_search` **metadata** (`"U.S. Dollars per Metric Ton"`), not a web search
+(a search claimed *per pound* — a silent **~2,200×** error; O-153). All three levels land inside the
+metric-ton plausible bands, and the derived changes match the hand-recomputation from the two
+published vintages to `< 1e-6`.
+
+### Step 8 — the three verdict branches, and the dead-branch removal
+
+`_classify_metals(...)` implements the specification's `if/elif/else` **literally**, with both bands
+as **parameters** from config (never module constants — the D-118 dead-constant shape in reverse).
+
+**A tie/"AMBIGUOUS PATTERN" branch was written, MEASURED, and REMOVED.** The construction test needs
+`|aluminum| < band`; the broad test needs `aluminum < -threshold`; with both bands positive these are
+**contradictory**, so no input set satisfies both and the branch was **unreachable** — the D-118
+`R6a` shape (*a branch that can never fire is a defect*). The precedence is still written in the
+spec's order, but the docstring records that it **decides nothing**. A **mutual-exclusivity grid
+proof** is left as a test: it asserts `not (in_band and below_broad)` across the band space, so a
+future edit that made them overlap would fail the test rather than silently take the first branch.
+
+### ⚠️ THE SWEEP'S PRE-FLIGHT FOUND THE DEFECT BEFORE A SINGLE MUTANT RAN
+
+`mutation_commodities.py` grew **64 → 105**. The hard part was **not** the new anchors — it was that
+**this increment's own code made FOUR PRE-EXISTING anchors AMBIGUOUS**, and `--check-targets` named
+every one before `sweep_lifecycle` wrote anything:
+
+```
+check_targets: 105 mutations, 4 problem(s)
+  !! M5a  the missing-legs refusal removed: target AMBIGUOUS in commodities.py (2 occurrences)
+  !! M8a  the non-finite guard removed:      target AMBIGUOUS in commodities.py (2 occurrences)
+  !! GM5a the independence count ...:        target AMBIGUOUS in commodities.py (2 occurrences)
+  !! GC3a the two-point window loosened ...: target AMBIGUOUS in commodities_client.py (2 occurrences)
+```
+
+This is the **D-119 O-145 shape pointing the other way** — there, the new config class reddened the
+*new* anchors; here the metals **model and client** code reddened **the old ones**, in files the
+increment touched but the mutations were written for other households. **A bare `    if missing:`
+would have rewritten the FIRST site (the oil refusal), leaving the metals refusal alive — a FALSE
+SURVIVOR (D-048).** All four were **WIDENED, never deleted**. **Five NEW config anchors** needed the
+same treatment, because `config.py` now holds **FIVE** byte-identical copies of each guard/accessor
+body (Intervention / EMVulnerability / OilBalance / Gold / **Metals**); each widened form carries the
+metals block's own prose and was measured at `count() == 1`. Result: `--check-targets` →
+**105 mutations, 0 problems**.
+
+### ⚠️ The config field/property collision (the O-150 shape in config)
+
+The two new leaves were first named `aluminum_stability_band_pct` / `broad_weakness_threshold_pct` —
+the **same names as their own accessor properties** — so Python bound the LAST definition and the
+validator died on `TypeError: '<=' not supported between instances of 'CalibratedValue' and 'float'`.
+The **fields** were renamed with a `_leaf` suffix. This is **O-150's shadowing class, in `config.py`
+rather than tests**, and the reason the `_leaf` convention exists.
+
+### ⚠️ FOUR SURVIVORS on the first sweep run — D-031 triage (three weak tests, one mypy-only, retargeted)
+
+The first full run reported **101/105**. All four survivors were in the new metals block:
+
+* **`MM7a`/`MM7b`/`MM7c` — WEAK TESTS.** The published change was asserted with
+  `pytest.approx(-4.123456, abs=10 ** -decimals)` — **against the RAW input**, with a tolerance
+  (`0.1` at `decimals = 1`) that both the rounded and the unrounded value satisfy, so dropping the
+  `round(...)` was invisible. **Fixed by PERTURBING THE LEAF** (D-031/D-050): the test now patches
+  `value_decimals_leaf` to **3** and asserts the **EXACT** rounded output (`== -4.123`, `-9.988`,
+  `0.556`) plus a `!= raw` guard. **MEASURED: all three KILLED.**
+* **`MM8d` — MYPY-ONLY, RETARGETED.** The leg-resolution `assert … is not None …` sits AFTER the
+  `missing` guard, so removing it changes **no** runtime behaviour (a pytest sweep can never kill
+  it), **but it fails `mypy --strict` with SIX errors** — so it is load-bearing for the **mypy gate**.
+  Per the **D-031 `U4a`** precedent, the mutation was **retargeted** (not dropped) to **inverting the
+  `missing` predicate** (`if value is None` → `if value is not None`), which **is** pytest-detectable
+  and does not duplicate `MM8a`. **MEASURED: KILLED (37 metals tests fail).** Recorded as **O-154**.
+
+**⚠️ A killed sweep left a LIVE MUTATION in the tree.** The first run was **SIGTERM'd mid-flight**;
+`config.py` then carried `return 4` at the `value_decimals` accessor plus three `.sweepbackup`
+sidecars — the **O-131 leftover-mutation** class. Caught by **diffing each swept file against its
+`.sweepbackup` BEFORE trusting the tree**, then restored. **Verify tree clean + sidecar ABSENT before
+AND after every sweep; never assume a killed sweep healed.**
+
+### Step 8–9 — gates (all re-run SEQUENTIALLY after the triage; `ruff check` FIRST, `sweep_health.py` LAST)
+
+```
+ruff check src tests tools scripts            ->  All checks passed!
+ruff format --check src tests tools scripts   ->  283 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 283 source files
+reachability_audit.py --check-baseline        ->  PASS — 58 = 58, no regressions
+full suite (-q --junitxml=build/full.xml)     ->  3938 tests / 0 failures / 0 errors / 1 skipped
+mutation_commodities.py                       ->  105/105 killed
+mutation_commodities.py --check-targets       ->  105 mutations, 0 problem(s)
+scripts/live_metals_complex_check.py          ->  PASS (9/9 sections, control-bearing)
+sweep_health.py  (LAST)                       ->  48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**283 == 283** (D-035), MEASURED — the `282` tracked `.py` files under the four roots **+ 1** new
+`scripts/live_metals_complex_check.py`. **⚠️ A prior D-122 draft wrote `288 == 288` and `3924 tests`
+as PREDICTIONS that were never measured; the O-147 discipline caught BOTH at the gate run and they
+are corrected to the MEASURED `283 == 283` and `3938 tests / 1 skipped`.** The sweep census is
+unchanged at **48** (no new sweep module — the metals mutations were added to the existing
+`mutation_commodities.py`, which grew **64 → 105**).
+
+### Left standing on purpose
+
+* **The metals' monthly lag** is inherent (the series is published monthly) — disclosed in the
+  model's `assumptions`, not "fixed".
+* **`oil_balance_signal` is still `NO CALLER — Tier 5`**, unchanged from D-121 — its live check was
+  run inline and never committed. Left standing rather than fixed in this increment (one function
+  per increment).
+* The **`_leaf` suffix convention** is now load-bearing in **five** settings classes; a future
+  refactor that drops it would re-introduce the config shadowing (O-150's class). Recorded, not
+  "fixed".
+
+**NOT mine:** the Tier-5 review/audit.

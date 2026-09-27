@@ -10,6 +10,67 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-122 — Module 10's `metals_complex_divergence`, the SEVENTH false block, and a probe that needed a control (2026-09-27)
+
+A **function increment** whose most reusable lesson was **methodological**: the live-source probe
+that established the three metals legs **had no control**, and a row count with no known-good series
+beside it is not evidence (O-152). Section 21.1's tag (*"iron ore has no clean free source — likely
+BLOCKED"*) was **half false** — all three metals are LIVE on FRED, making `PIORECRUSDM` the
+repository's **SEVENTH FALSE BLOCK**. Tier 5 moves **18 → 19/23** — **MEASURED** against §21.3's
+table, not recalled (the O-147 discipline). A **D-096 exception** (the authority supplies the body ⇒
+an UPGRADE that supersedes nothing — a *new capability*).
+
+### Added
+
+- **`metals_complex_divergence`** (`models/commodities.py`, extending D-120/D-121's file) — §20.10's
+  **three-way classifier** over the metals complex (`CHINA_CONSTRUCTION_SPECIFIC` /
+  `BROAD_INDUSTRIAL_WEAKNESS` / `MIXED_no_clear_pattern`), where aluminum's **stability** is the
+  discriminating evidence. INFORMATIONAL ONLY (§6.8).
+- **`MetalsComplexInputs`**, and the client's `fetch_metal_change` / `fetch_copper_change` /
+  `fetch_iron_ore_change` / `fetch_aluminum_change` / `_percent_change`
+  (`data_layer/commodities_client.py`) over **`PCOPPUSDM`** / **`PIORECRUSDM`** / **`PALUMUSDM`** —
+  all FRED (IMF Primary Commodity Prices, **USD per metric ton**, monthly), **all reused routes; NO
+  new OpenBB command (census stays 6)**.
+- **`MetalsComplexSettings`** (`config.py` + `settings.yaml`) with four leaves — `reliability_cap`
+  **0.30** (equal to `oil_balance`, **below** `gold_driver`'s 0.35, because three legs share ONE
+  provider family), `value_decimals_leaf` **1**, `aluminum_stability_band_pct_leaf` **2.0**,
+  `broad_weakness_threshold_pct_leaf` **2.0** — and **no new sweep** (the existing
+  `mutation_commodities.py` grew **64 → 105**).
+- **`scripts/live_metals_complex_check.py`** — a 9-section live wiring check, whose **section 1
+  re-fetches the CONTROL** (`DCOILWTICO` on the same route) on every run and fails if it degrades.
+
+### Fixed
+
+- **FOUR PRE-EXISTING sweep anchors made AMBIGUOUS by this increment's own code** (`M5a`, `M8a`,
+  `GM5a` in `commodities.py`; `GC3a` in `commodities_client.py`) — caught by `--check-targets`
+  **before** `sweep_lifecycle` wrote anything, and **widened, never deleted**. Five **new** config
+  anchors needed the same widening because `config.py` now holds **FIVE** byte-identical copies of
+  each guard/accessor body.
+- **A config field/property name collision** — the two new leaves were named identically to their own
+  accessor properties, so the property shadowed the field and the validator died on
+  `TypeError: '<=' not supported between instances of 'CalibratedValue' and 'float'`. The **fields**
+  were renamed with a `_leaf` suffix (the O-150 shadowing class, in `config.py`).
+- **A DEAD BRANCH removed** — the tie/"AMBIGUOUS PATTERN" branch was **unreachable** (the two
+  predicates are contradictory with positive bands), so it was deleted per the D-118 `R6a` lesson;
+  a **mutual-exclusivity grid proof** is left as a test.
+- **FOUR sweep survivors on the first run, triaged by D-031** — three (`MM7a`/`MM7b`/`MM7c`) were
+  **weak tests** (the rounding was asserted against the RAW input with a tolerance both the rounded
+  and unrounded values satisfy) and were fixed by **perturbing the leaf** and asserting the **EXACT**
+  rounded output; the fourth (`MM8d`) removed a **type-narrowing assertion** that is **load-bearing
+  for `mypy --strict`** (six errors) but changes no runtime behaviour, so it was **retargeted** (not
+  dropped, per the D-031 `U4a` precedent) to an inverting-`missing`-predicate mutant that IS
+  pytest-detectable (**O-154**).
+- **A leftover LIVE MUTATION** in `config.py` (the O-131 class) from a sweep that was SIGTERM'd
+  mid-flight, found by diffing each swept file against its `.sweepbackup` before trusting the tree,
+  and restored.
+
+### Changed
+
+- `reachability_audit.py`: **SCRIPT-ONLY — Tier 5: 16 → 17** (`metals_complex_divergence`, whose live
+  check **is committed**). `oil_balance_signal` remains **`NO CALLER — Tier 5`**, unchanged.
+- Quality gates: **283 == 283** (D-035) · **3938 tests / 0 failed / 0 errors / 1 skipped** ·
+  sweep **105/105** · `sweep_health.py` → **48 sweeps, 0 failures, OK**.
+
 ### D-121 — Module 10's `gold_driver_attribution`, six SHADOWED tests, and a CRLF defect from an ad-hoc script (2026-09-29)
 
 A **function increment** whose only real defect was **not in the model**: appending a gold test

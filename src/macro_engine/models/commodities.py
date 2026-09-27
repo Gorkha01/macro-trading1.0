@@ -65,18 +65,34 @@ trap are documented in ``data_layer/commodities_client.py``; this model fetches
 through it and **refuses** rather than publishing a signal from a leg it could
 not read. The **sixth** false-block case is the pair of live gold legs in the
 same client — measured 2026-09-27.
+
+The module's third household is **Module 10.3's metals complex**
+(``metals_complex_divergence``, added at D-122), the **fifth D-096 exception** —
+Section 20.10 (``AGENTS.md:4935`` heading / ``:4945`` ref impl) supplies a full
+body under *"Module 10 — Copper/China, Metals Complex Divergence"*. It lands in
+this same file because the authority's own code comment names it
+(``# src/macro_engine/models/commodities.py (additions)``), exactly as Appendix
+D did for gold. Its three inputs are the **seventh FALSE BLOCK**: Section 21.1
+(``AGENTS.md:5395``) tags iron ore *"no clean free source — likely BLOCKED"* and
+Section 21.4's Loophole Ledger repeats it as item 8, but all three metals are
+live monthly FRED benchmarks — see the client for the probe and its control.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.data_layer.commodities_client import (
     CommodityReadError,
+    fetch_aluminum_change,
+    fetch_copper_change,
     fetch_crude_inventories,
+    fetch_iron_ore_change,
     fetch_opec_spare_capacity,
     fetch_real_yield,
     fetch_vix_level,
@@ -94,8 +110,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "GoldDriverInputs",
+    "MetalsComplexInputs",
     "OilBalanceInputs",
+    "compute_confidence",
     "gold_driver_attribution",
+    "metals_complex_divergence",
     "oil_balance_signal",
 ]
 
@@ -830,4 +849,414 @@ def _resolve_crisis_indicator() -> tuple[bool | None, str]:
         f"FETCHED — FRED {reading.symbol} @ {reading.observation_date}: level "
         f"{reading.level} {reading.source_unit} vs the config threshold "
         f"{threshold} => crisis_indicator={fired}"
+    )
+
+
+class MetalsComplexInputs(BaseModel):
+    """Module 10.3's three metals, each optionally fetched.
+
+    Section 20.10 (``AGENTS.md:4940``) declares three REQUIRED floats —
+    ``copper_change_pct``, ``iron_ore_change_pct``, ``aluminum_change_pct`` —
+    each a percent change in a monthly benchmark price. This build makes all
+    three **optional** (``None`` = resolve it), matching ``OilBalanceInputs``,
+    ``GoldDriverInputs`` and their predecessors: a caller with a value supplies
+    it, a caller without one lets the model fetch it. The two paths stay
+    distinguishable in the output because a supplied value is disclosed as
+    caller-supplied — the D-117…D-121 discipline, because *a fabricated input
+    must never read like a measured one.*
+
+    ⚠️ **ALL THREE ARE LIVE (measured 2026-09-27), and that is a correction.**
+    Section 21.1 tags this trio *"LIVE/BLOCKED — ... iron ore has no clean free
+    source — likely BLOCKED, document"*, and Section 21.4's Loophole Ledger lists
+    *"Iron ore prices — no clean free source"* as a permanent gap. Measured
+    against FRED, all three are monthly benchmark prices in U.S. Dollars per
+    Metric Ton (IMF Primary Commodity Prices): a clean, free, documented source
+    for every leg. The tag is the repository's **SEVENTH FALSE BLOCK** (D-043's
+    class). The probe, and the control that makes it evidence, are in
+    ``data_layer/commodities_client.py``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    country: str = Field(
+        default="global",
+        description=(
+            'ISO-3166 alpha-2 lowercase, or "global". The reference returns '
+            'country="global" because the metals complex is a global benchmark '
+            "family, not a national series — copper is ~50% China demand but the "
+            "PRICE is a world benchmark."
+        ),
+    )
+    copper_change_pct: float | None = Field(
+        default=None,
+        description=(
+            "Percent change in the global copper benchmark price. None (the "
+            "default) fetches FRED PCOPPUSDM and differences the two most recent "
+            "monthly vintages. Copper is ~50% China demand, so a fall here is "
+            "NOT a clean global-growth read — see the warning."
+        ),
+    )
+    iron_ore_change_pct: float | None = Field(
+        default=None,
+        description=(
+            "Percent change in the global iron-ore benchmark price. None (the "
+            "default) fetches FRED PIORECRUSDM. The authority tags this leg "
+            "'likely BLOCKED'; measured it is LIVE (the seventh false block)."
+        ),
+    )
+    aluminum_change_pct: float | None = Field(
+        default=None,
+        description=(
+            "Percent change in the global aluminum benchmark price. None (the "
+            "default) fetches FRED PALUMUSDM. Aluminum's STABILITY while the "
+            "others fall is the discriminating evidence between a "
+            "construction-specific and a broad-industrial signal."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_finite(self) -> MetalsComplexInputs:
+        """Refuse a non-finite change on any leg.
+
+        A ``nan`` silently fails every ``<``/``>`` comparison, so a nan change
+        would make all three branches false and the verdict would read
+        ``MIXED_no_clear_pattern`` — *a different claim* from MIXED, because the
+        move is UNKNOWN rather than genuinely mixed (the D-078 class, and the
+        same reasoning ``GoldDriverInputs`` uses for its real-yield change).
+
+        The changes are NOT clamped: copper and aluminum can move either way, and
+        a large magnitude is the most interesting reading. Only non-finiteness is
+        refused.
+        """
+        for name in (
+            "copper_change_pct",
+            "iron_ore_change_pct",
+            "aluminum_change_pct",
+        ):
+            value = getattr(self, name)
+            if value is not None and (value != value or abs(value) == float("inf")):
+                raise ValueError(
+                    f"{name} must be finite when supplied; got {value!r}. A nan "
+                    f"silently fails every comparison, so an unknown change would "
+                    f"report MIXED_no_clear_pattern — a different claim from "
+                    f"'the complex is genuinely mixed' (D-078's class)."
+                )
+        return self
+
+
+def metals_complex_divergence(inputs: MetalsComplexInputs) -> ModelResult:
+    """WHICH driver is moving the metals complex — never a trade.
+
+    The specification's central point (Section 20.10): *"metals diverging tells
+    you WHICH driver is active."* Because copper and iron ore both fall in a
+    China-construction slowdown AND in a broad industrial slowdown, the pair
+    alone cannot separate them; ALUMINUM's non-participation can, since it is
+    energy-cost driven with different end-use exposure. The function therefore
+    classifies the pattern into one of three verdicts:
+
+    * ``CHINA_CONSTRUCTION_SPECIFIC`` — iron ore falling hardest, copper also
+      falling, and aluminum FLAT (``|change| < band``). The construction
+      materials (iron ore, copper) are down while the broadly-used,
+      energy-driven metal is not, which localises the shock to Chinese
+      construction/property rather than global industry.
+    * ``BROAD_INDUSTRIAL_WEAKNESS`` — ALL THREE below ``-threshold``. When even
+      aluminum is falling hard, the weakness is not construction-specific.
+    * ``MIXED_no_clear_pattern`` — neither pattern holds. This is a READING, not
+      an error: the complex is not telling a clean story.
+
+    Precedence is the specification's own ``if/elif`` order — construction
+    first, broad second — and it is preserved verbatim. **It decides nothing,
+    however, and that is a MEASURED fact rather than an assumption:** the
+    construction test requires ``|aluminum| < band`` while the broad test requires
+    ``aluminum < -threshold``, and with positive bands those cannot both hold, so
+    the two branches are mutually exclusive. An earlier draft carried an
+    "ambiguous pattern" disclosure for a tie; it was unreachable and was removed
+    (the D-118 ``R6a`` shape — a branch that can never fire is a defect, not a
+    safety net). See :func:`_classify_metals` for the proof.
+
+    ``value`` is a dict (``verdict`` / ``copper_change_pct`` /
+    ``iron_ore_change_pct`` / ``aluminum_change_pct``) rather than the bare
+    string the reference returns, so a consumer sees the numbers the verdict was
+    taken FROM and not only the label — a bare label over unreported inputs is
+    the D-037 shape (a reader cannot tell what produced it).
+
+    Raises ``ValueError`` only when **a leg cannot be resolved and none was
+    supplied**. All three are inputs to the pattern, so a missing leg is not a
+    weaker verdict — it is a different pattern, and the function refuses rather
+    than reporting a verdict it could not compute.
+    """
+    settings = get_settings()
+    metals = settings.metals_complex
+
+    provenance: list[str] = []
+    fetched_legs = 0
+
+    copper, copper_disclosure, copper_fetched = _resolve_metal_leg(
+        supplied=inputs.copper_change_pct,
+        fetcher=fetch_copper_change,
+        name="copper_change_pct",
+        metal="copper",
+    )
+    if copper_fetched:
+        fetched_legs += 1
+    provenance.append(copper_disclosure)
+
+    iron_ore, iron_disclosure, iron_fetched = _resolve_metal_leg(
+        supplied=inputs.iron_ore_change_pct,
+        fetcher=fetch_iron_ore_change,
+        name="iron_ore_change_pct",
+        metal="iron ore",
+    )
+    if iron_fetched:
+        fetched_legs += 1
+    provenance.append(iron_disclosure)
+
+    aluminum, aluminum_disclosure, aluminum_fetched = _resolve_metal_leg(
+        supplied=inputs.aluminum_change_pct,
+        fetcher=fetch_aluminum_change,
+        name="aluminum_change_pct",
+        metal="aluminum",
+    )
+    if aluminum_fetched:
+        fetched_legs += 1
+    provenance.append(aluminum_disclosure)
+
+    missing = [
+        name
+        for name, value in (
+            ("copper_change_pct", copper),
+            ("iron_ore_change_pct", iron_ore),
+            ("aluminum_change_pct", aluminum),
+        )
+        if value is None
+    ]
+    if missing:
+        raise ValueError(
+            f"metals_complex_divergence cannot resolve {', '.join(missing)}: no "
+            f"value was supplied and the fetch returned nothing. All three legs "
+            f"enter the pattern, so a missing leg is not a weaker verdict — it is "
+            f"a DIFFERENT pattern, and reporting one computed from two legs would "
+            f"assert a divergence the inputs do not support. Supply the change "
+            f"explicitly, or investigate the fetch (see commodities_client)."
+        )
+
+    # The two legs are non-None past the guard above; the assertions state that
+    # to the type checker without a cast, and a failed assertion here would be a
+    # logic error rather than bad data.
+    assert copper is not None and iron_ore is not None and aluminum is not None
+
+    verdict = _classify_metals(
+        copper=copper,
+        iron_ore=iron_ore,
+        aluminum=aluminum,
+        aluminum_band_pct=metals.aluminum_band_pct,
+        broad_weakness_threshold_pct=metals.broad_weakness_threshold_pct,
+    )
+    # --- confidence: two producers, both load-bearing (D-118/D-119 rule) -----
+    # ⚠️ MULTIPLICATIVE, NOT `min()`. The computed half prices THIS run's inputs
+    # (how many legs were fetched); the cap states what the METHOD is worth (a
+    # three-way pattern match over uncalibrated bands). Multiplying keeps both
+    # live: `min()` would publish the cap on every path here and make the computed
+    # half dead code, which is exactly the defect D-118 removed.
+    #
+    # ⚠️ THE INDEPENDENCE COUNT IS 1 WHEN ANY LEG IS FETCHED, AND THAT IS THE
+    #    POINT. All three series come through FRED (IMF Primary Commodity Prices):
+    #    three fetches, ONE provider family. Reporting `fetched_legs` as the
+    #    independence count would overstate the evidence threefold — the same
+    #    class of error as counting a signal twice — so the count is 1 for any
+    #    fetched set and 0 when nothing was fetched. The gold model's "legs are
+    #    not sources" rule, restated for three legs instead of two.
+    independent_providers = 1 if fetched_legs > 0 else 0
+    computed = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=fetched_legs < 3,
+            is_heuristic_not_calibrated=not metals.reliability_cap_is_calibrated,
+            source_independence_count=independent_providers,
+            depends_on_unobservable=False,
+        )
+    )
+    confidence = computed * metals.reliability_value
+
+    warnings: list[str] = [
+        "INFORMATIONAL ONLY — no commodity positions in this system's production "
+        "universe (Section 6.8); this diagnostic identifies a DRIVER, never "
+        "expresses a position in it.",
+        "Copper is ~50% China demand — never read it as a clean GLOBAL growth "
+        "proxy. A copper fall attributes to China before it attributes to the "
+        "world (Module 10.3).",
+    ]
+    if verdict == "CHINA_CONSTRUCTION_SPECIFIC":
+        warnings.append(
+            "Aluminum's STABILITY is the discriminating evidence here: copper and "
+            "iron ore fall on both a construction-specific and a broad-industrial "
+            "cause, so only aluminum's non-participation localises the shock to "
+            "Chinese construction/property."
+        )
+    if verdict == "BROAD_INDUSTRIAL_WEAKNESS":
+        warnings.append(
+            "All three metals are below the broad-weakness threshold. Because "
+            "even energy-cost-driven aluminum is falling, the weakness is NOT "
+            "construction-specific — do not localise it to China property."
+        )
+    if verdict == "MIXED_no_clear_pattern":
+        warnings.append(
+            "NO clear pattern: the complex is not telling a clean story. 'Mixed' "
+            "is a reading, not an error — but it means this diagnostic does not "
+            "identify the driver, and a consumer must not read the empty verdict "
+            "as evidence of any particular cause."
+        )
+    if fetched_legs < 3:
+        warnings.append(
+            f"{3 - fetched_legs} of the 3 metals were SUPPLIED BY THE CALLER "
+            f"rather than fetched, so part of this pattern rests on inputs whose "
+            f"vintage is unknown. Confidence prices that."
+        )
+
+    assumptions = [
+        "The three changes are percent changes in MONTHLY benchmark prices, "
+        "differenced by the client from the two most recent vintages; the "
+        "specification's own field names say `_change_pct`, so a LEVEL is never "
+        "read as a change.",
+        "All three series are IMF Primary Commodity Prices via FRED, published in "
+        "U.S. Dollars per Metric Ton — so their source independence is ONE family "
+        "and the confidence's source count is 1, not 3.",
+        "The verdict is a PATTERN MATCH on uncalibrated bands, not an estimated "
+        "transmission coefficient; it names which driver is most consistent with "
+        "the observed divergence, not how far the complex will move.",
+        "Precedence is the specification's `if/elif` order (construction before "
+        "broad); the two branches are mutually exclusive with positive bands, so "
+        "the order never actually decides a verdict (measured — see "
+        "_classify_metals).",
+    ]
+
+    return ModelResult(
+        model_name="metals_complex_divergence",
+        country=inputs.country,
+        as_of=utc_now(),
+        value={
+            "verdict": verdict,
+            "copper_change_pct": round(copper, metals.value_decimals),
+            "iron_ore_change_pct": round(iron_ore, metals.value_decimals),
+            "aluminum_change_pct": round(aluminum, metals.value_decimals),
+        },
+        confidence=confidence,
+        unit="driver_classification",
+        direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else "restrictive"),
+        source_family=(
+            EvidenceSourceFamily.MARKET_COMMODITY
+            if fetched_legs > 0
+            else EvidenceSourceFamily.MANUAL_ASSESSMENT
+        ),
+        interpretation=f"Metals complex signal: {verdict}",
+        context=(
+            "Divergence across the complex identifies the driver; aluminum "
+            "stability discriminates construction-specific from broad "
+            "(Module 10.3, Section 20.10)"
+        ),
+        inputs_used=[
+            "copper_change_pct",
+            "iron_ore_change_pct",
+            "aluminum_change_pct",
+        ],
+        warnings=warnings,
+        assumptions=assumptions,
+        data_provenance=provenance,
+    )
+
+
+def _classify_metals(
+    *,
+    copper: float,
+    iron_ore: float,
+    aluminum: float,
+    aluminum_band_pct: float,
+    broad_weakness_threshold_pct: float,
+) -> str:
+    """The verdict, per Section 20.10's ``if/elif`` order.
+
+    Extracted from :func:`metals_complex_divergence` so the two predicates are
+    stated once and can be read without the surrounding plumbing. Both bands are
+    PARAMETERS rather than module constants, so the only copy of each lives in
+    config — a second literal here would be the D-118 dead-constant shape in
+    reverse (a live constant shadowed by a hardcoded value).
+
+    ⚠️ **THE TWO BRANCHES ARE MUTUALLY EXCLUSIVE, SO THERE IS NO TIE TO RESOLVE.**
+    This was measured, not assumed, and it removed a dead branch this build first
+    carried. The construction test requires ``|aluminum| < band`` (aluminum quiet);
+    the broad test requires ``aluminum < -threshold`` (aluminum falling hard).
+    With both bands positive these cannot BOTH hold — ``|aluminum| < band`` and
+    ``aluminum < -band`` are contradictory. So the specification's ``if/elif``
+    order is *not* load-bearing for a real input set, and an earlier draft's
+    "ambiguous pattern" warning was unreachable code (the D-118 ``R6a`` shape: a
+    branch that can never fire is a defect, not a safety net). Precedence is
+    still written in the specification's order, because that is what the
+    authority says and the order costs nothing — but it decides nothing.
+    """
+    construction_specific = iron_ore < copper < 0 and abs(aluminum) < aluminum_band_pct
+    broad_industrial = all(
+        value < -broad_weakness_threshold_pct for value in (copper, iron_ore, aluminum)
+    )
+
+    if construction_specific:
+        return "CHINA_CONSTRUCTION_SPECIFIC"
+    if broad_industrial:
+        return "BROAD_INDUSTRIAL_WEAKNESS"
+    return "MIXED_no_clear_pattern"
+
+
+def _resolve_metal_leg(
+    *,
+    supplied: float | None,
+    fetcher: Callable[..., Any],
+    name: str,
+    metal: str,
+) -> tuple[float | None, str, bool]:
+    """Resolve one metals leg, returning ``(change_pct, provenance, fetched)``.
+
+    A supplied value is disclosed as caller-supplied and reported ``fetched=False``;
+    a fetch is reported ``fetched=True`` and carries the two vintages in its
+    provenance so the change can be verified from the message. A fetch failure or
+    a series too short to difference both return ``None`` — the CALLER decides
+    whether the absence is fatal, the same split ``gold_driver_attribution`` and
+    its predecessors use.
+
+    ``fetcher`` is passed in rather than looked up by name so the three call sites
+    read identically and a mismatch between the label and the fetch is impossible.
+    """
+    if supplied is not None:
+        return (
+            supplied,
+            (
+                f"{name} SUPPLIED BY THE CALLER as {supplied!r} percent — no fetch "
+                f"was performed and the vintage is unknown; the value is a claim by "
+                f"the caller, not a measurement."
+            ),
+            False,
+        )
+
+    try:
+        reading = fetcher(as_of=utc_now().date())
+    except CommodityReadError as exc:
+        logger.info("metals_complex_divergence: %s fetch failed: %s", metal, exc)
+        return None, f"NOT AVAILABLE — the {metal} fetch failed: {exc}", False
+
+    if reading.change_pct is None:
+        return (
+            None,
+            (
+                f"NOT AVAILABLE — {reading.symbol} ({metal}) returned "
+                f"{reading.observation_count} observation(s) at or before the as-of "
+                f"date, which is fewer than the two needed to form a CHANGE."
+            ),
+            False,
+        )
+    return (
+        reading.change_pct,
+        (
+            f"FETCHED — FRED {reading.symbol} ({metal}): {reading.level} "
+            f"{reading.source_unit} on {reading.observation_date}, prior "
+            f"{reading.prior_level} on {reading.prior_observation_date} "
+            f"=> change {reading.change_pct:+.1f}%"
+        ),
+        True,
     )

@@ -503,6 +503,9 @@ def test_the_registry_entries_declare_only_real_schema_fields() -> None:
         "opec_spare_capacity",
         "gold_real_yield_10y",
         "gold_crisis_vix",
+        "metals_copper",
+        "metals_iron_ore",
+        "metals_aluminum",
     ):
         entry = raw["series"][key]
         # Raises if any key is not a schema field.
@@ -787,3 +790,301 @@ def test_the_two_gold_units_are_declared_distinctly() -> None:
     assert REAL_YIELD_SOURCE_UNIT == "percent"
     assert VIX_SOURCE_UNIT == "index_points"
     assert REAL_YIELD_SOURCE_UNIT != VIX_SOURCE_UNIT
+
+
+# =============================================================================
+# The METALS complex (Module 10.3, D-122): three live FRED legs
+# =============================================================================
+#
+# The authority tags all three legs "LIVE/BLOCKED" and singles out iron ore as
+# "no clean free source — likely BLOCKED" (Section 21.1, AGENTS.md:5395;
+# repeated at Section 21.4's Loophole Ledger item 8). MEASURED 2026-09-27 all
+# THREE are LIVE, which makes iron ore the repository's **seventh FALSE BLOCK**.
+# These tests assert what replacing that tag obliges:
+#
+#   (a) the SYMBOL and the ROUTE (FRED, one series per call — not the EIA table
+#       route the oil household uses),
+#   (b) the UNIT read from the provider's metadata (USD per metric ton), which a
+#       web search claiming "USD per pound" for copper gets WRONG,
+#   (c) the CHANGE is DERIVED by differencing two consecutive monthly vintages,
+#       never adopted from a published field,
+#   (d) a ``prior`` of exactly zero REFUSES rather than publishing an infinity,
+#   (e) a single-observation series reports ``None`` — never ``0.0`` — for both
+#       the prior and the change (the D-078 class), and
+#   (f) ``as_of`` clips future-dated rows so a past-dated call is deterministic.
+#
+# The values are real, captured live on 2026-09-27.
+
+
+def _metals_frame(pairs: list[tuple[date, float]]) -> Any:
+    """Three monthly vintages, as FRED serves them (ascending, tidy frame)."""
+    return _fred_frame(pairs)
+
+
+def test_the_copper_leg_uses_the_fred_route_and_symbol() -> None:
+    from macro_engine.data_layer.commodities_client import (
+        COPPER_SYMBOL,
+        fetch_copper_change,
+    )
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 5, 1), 9000.0), (date(2026, 6, 1), 9500.0)])
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.symbol == COPPER_SYMBOL == "PCOPPUSDM"
+    assert reading.level == 9500.0
+    call = stub.calls[0]
+    assert call["provider"] == "fred"
+    assert call["endpoint"] == "economy.fred_series"
+    assert call["params"]["symbol"] == "PCOPPUSDM"
+
+
+def test_the_iron_ore_leg_uses_the_fred_route_and_symbol() -> None:
+    """The leg the authority called BLOCKED has a working FRED route (the 7th)."""
+    from macro_engine.data_layer.commodities_client import (
+        IRON_ORE_SYMBOL,
+        fetch_iron_ore_change,
+    )
+
+    stub = _SeriesStubClient(_metals_frame([(date(2026, 5, 1), 100.0), (date(2026, 6, 1), 92.0)]))
+    reading = fetch_iron_ore_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.symbol == IRON_ORE_SYMBOL == "PIORECRUSDM"
+    assert stub.calls[0]["params"]["symbol"] == "PIORECRUSDM"
+
+
+def test_the_aluminum_leg_uses_the_fred_route_and_symbol() -> None:
+    from macro_engine.data_layer.commodities_client import (
+        ALUMINUM_SYMBOL,
+        fetch_aluminum_change,
+    )
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 5, 1), 2400.0), (date(2026, 6, 1), 2450.0)])
+    )
+    reading = fetch_aluminum_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.symbol == ALUMINUM_SYMBOL == "PALUMUSDM"
+    assert stub.calls[0]["params"]["symbol"] == "PALUMUSDM"
+
+
+def test_the_three_metal_symbols_are_distinct() -> None:
+    """A copy-paste that gave two legs the same symbol would be invisible otherwise."""
+    from macro_engine.data_layer.commodities_client import (
+        ALUMINUM_SYMBOL,
+        COPPER_SYMBOL,
+        IRON_ORE_SYMBOL,
+    )
+
+    assert len({COPPER_SYMBOL, IRON_ORE_SYMBOL, ALUMINUM_SYMBOL}) == 3
+
+
+def test_the_metal_reading_carries_the_source_unit() -> None:
+    """The unit is USD per METRIC TON, from the provider — not a web guess."""
+    from macro_engine.data_layer.commodities_client import (
+        METALS_SOURCE_UNIT,
+        fetch_copper_change,
+    )
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 5, 1), 9000.0), (date(2026, 6, 1), 9500.0)])
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.source_unit == METALS_SOURCE_UNIT == "usd_per_metric_ton"
+
+
+def test_the_metal_change_is_the_difference_of_two_vintages() -> None:
+    """The ``*_change_pct`` input is DERIVED, not a published field."""
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 5, 1), 8000.0), (date(2026, 6, 1), 8400.0)])
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.change_pct == pytest.approx(5.0)
+    assert reading.prior_level == 8000.0
+    assert reading.prior_observation_date == "2026-05-01"
+
+
+def test_the_metal_change_reverses_sign_on_a_fall() -> None:
+    """A FALL is negative — the sign is the whole content of the classification."""
+    from macro_engine.data_layer.commodities_client import fetch_iron_ore_change
+
+    stub = _SeriesStubClient(_metals_frame([(date(2026, 5, 1), 100.0), (date(2026, 6, 1), 90.0)]))
+    reading = fetch_iron_ore_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.change_pct == pytest.approx(-10.0)
+
+
+def test_a_single_point_metal_series_has_no_prior_and_no_change() -> None:
+    """One vintage cannot form a change — ``None``, never ``0.0`` (D-078)."""
+    from macro_engine.data_layer.commodities_client import fetch_aluminum_change
+
+    stub = _SeriesStubClient(_metals_frame([(date(2026, 6, 1), 2450.0)]))
+    reading = fetch_aluminum_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.prior_observation_date is None
+    assert reading.prior_level is None
+    assert reading.change_pct is None
+
+
+def test_a_zero_prior_metal_price_refuses_rather_than_dividing() -> None:
+    """A ``0.0`` prior makes the percent undefined; an infinity would poison the model.
+
+    Returning ``inf`` would make every one of the classifier's comparisons false
+    and the model would report MIXED — a claim about the PATTERN that is really a
+    claim about a broken leg. Refusing is the honest outcome.
+    """
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(_metals_frame([(date(2026, 5, 1), 0.0), (date(2026, 6, 1), 8400.0)]))
+    with pytest.raises(CommodityReadError, match="undefined"):
+        fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+
+def test_the_metal_reading_reports_the_observation_count() -> None:
+    """The count lets a caller see how deep the series behind the change is."""
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame(
+            [
+                (date(2026, 3, 1), 8000.0),
+                (date(2026, 4, 1), 8100.0),
+                (date(2026, 5, 1), 8200.0),
+                (date(2026, 6, 1), 8400.0),
+            ]
+        )
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_count == 4
+
+
+def test_the_metal_change_clips_future_dated_rows() -> None:
+    """An observation after ``as_of`` must be excluded (the O-134 discipline)."""
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame(
+            [
+                (date(2026, 5, 1), 8000.0),
+                (date(2026, 6, 1), 8400.0),
+                (date(2026, 8, 1), 9999.0),  # AFTER the as-of
+            ]
+        )
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-06-01"
+    assert reading.level == 8400.0
+    assert reading.observation_count == 2
+
+
+def test_a_metal_row_dated_exactly_on_the_as_of_is_kept() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 6, 30), 8400.0), (date(2026, 5, 1), 8000.0)])
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-06-30"
+
+
+def test_an_empty_metal_frame_raises() -> None:
+    """An empty frame dies in the shared observation helper, naming the series."""
+    from macro_engine.data_layer.commodities_client import fetch_aluminum_change
+
+    stub = _SeriesStubClient(_metals_frame([]))
+    with pytest.raises(CommodityReadError, match="no observations"):
+        fetch_aluminum_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+
+def test_all_metal_rows_after_the_as_of_raises() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_iron_ore_change
+
+    stub = _SeriesStubClient(_metals_frame([(date(2026, 8, 1), 92.0)]))
+    with pytest.raises(CommodityReadError, match="no observation at or before"):
+        fetch_iron_ore_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_null_metal_value_is_dropped_not_repaired() -> None:
+    """A null in the frame is DROPPED before ordering, never turned into zero."""
+    import pandas as pd
+
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    frame = pd.DataFrame({"date": ["2026-05-01", "2026-06-01"], "value": [None, 8400.0]})
+    stub = _SeriesStubClient(frame)
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.level == 8400.0
+    assert reading.observation_count == 1
+
+
+def test_the_metal_latest_wins_regardless_of_row_order() -> None:
+    """FRED returns ascending, but a reversed response must not pick the oldest."""
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 6, 1), 8400.0), (date(2026, 5, 1), 8000.0)])
+    )
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-06-01"
+    assert reading.change_pct == pytest.approx(5.0)
+
+
+def test_a_transport_failure_on_any_metal_is_wrapped_and_names_the_metal() -> None:
+    """The message must say WHICH leg died, not just print a bare symbol."""
+    from macro_engine.data_layer.commodities_client import fetch_iron_ore_change
+    from macro_engine.data_layer.openbb_client import OpenBBFetchError
+
+    stub = _SeriesStubClient(error=OpenBBFetchError("boom"))
+    with pytest.raises(CommodityReadError, match="iron_ore"):
+        fetch_iron_ore_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_frame_without_the_tidy_metal_columns_raises() -> None:
+    import pandas as pd
+
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(pd.DataFrame({"date": ["2026-06-01"], "close": [8400.0]}))
+    with pytest.raises(CommodityReadError, match="unexpected frame shape"):
+        fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_metal_series_stub_is_not_closed_when_caller_owns_it() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_copper_change
+
+    stub = _SeriesStubClient(
+        _metals_frame([(date(2026, 5, 1), 8000.0), (date(2026, 6, 1), 8400.0)])
+    )
+    fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    assert stub.closed is False
+
+
+def test_percent_change_is_public_and_refuses_a_zero_prior() -> None:
+    """The helper is unit-testable directly, so its refusal is asserted ON it."""
+    from macro_engine.data_layer.commodities_client import _percent_change
+
+    assert _percent_change(110.0, 100.0, symbol="X", label="copper") == pytest.approx(10.0)
+    with pytest.raises(CommodityReadError, match="undefined"):
+        _percent_change(110.0, 0.0, symbol="X", label="copper")
+
+
+def test_the_registry_carries_the_three_metal_series_as_fred() -> None:
+    """The registry entries must name the FRED route and the metric-ton unit."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent.parent
+    registry = yaml.safe_load(
+        (root / "config" / "series_registry.yaml").read_text(encoding="utf-8")
+    )
+    series = registry["series"]
+    for key, symbol in (
+        ("metals_copper", "PCOPPUSDM"),
+        ("metals_iron_ore", "PIORECRUSDM"),
+        ("metals_aluminum", "PALUMUSDM"),
+    ):
+        entry = series[key]
+        assert entry["provider"] == "fred"
+        assert entry["endpoint"] == "economy.fred_series"
+        assert entry["symbol"] == symbol
+        assert entry["units"] == "usd_per_metric_ton"
+        assert entry["frequency"] == "monthly"
