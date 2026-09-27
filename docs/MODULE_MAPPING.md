@@ -2380,3 +2380,59 @@ sweep), edited in its three homes — `test_sweep_sidecar_lifecycle.py` ×2 and
 (O-143), which is the mapping-level statement that the unit conversion has **one** source of
 truth.
 
+## D-119 — Module 9's `em_vulnerability_checklist`: §20's part B, a SIBLING file, and a source-family split (2026-09-29)
+
+**Tier 5 stays 15/23.** This is a **D-096 exception**: §20's heading
+(`AGENTS.md:2937`) and its reference implementation (`AGENTS.md:2948`) together
+**give the body**, so the increment is an **UPGRADE of a specified function** —
+and it **supersedes nothing**, because no Module 9 sibling computes a **country
+structural-vulnerability checklist**. The honest answer is the `cip_check` one:
+a **new capability**. Module 9 was CLOSED at D-118 (`intervention_capacity` was
+its fifth and last FX-parity slot); `em_vulnerability_checklist` is the
+**adjacent §20 part B**, so it does **not** reopen Module 9's parity branch.
+
+**A SIBLING file, not `fx_carry.py` and not `intervention.py`.** The reference
+impl's own comment says *"`# src/macro_engine/models/fx_carry.py (addition)`"*,
+but `fx_carry.py` is **swept** — adding to it makes old anchors ambiguous (the
+D-109/D-111/D-112/D-118 collision, which O-145 then demonstrated for real against
+`config.py`) — and the estimand is not FX-parity. So the function lives in a NEW
+**`src/macro_engine/models/em_vulnerability.py`**, applying the D-118 precedent
+(operator decision): **a module's file boundary is a claim about what the module
+IS.** `intervention.py` and `em_vulnerability.py` are two different estimands
+under the same §20 heading.
+
+**A source-family split, and the first CONFIRMED block.** Of the three inputs,
+two are **LIVE** (`current_account_pct_gdp` via `BN.CAB.XOKA.GD.ZS`, a PER CENT
+series; `reserves_to_short_term_external_debt` **DERIVED** from `FI.RES.TOTL.CD`
+÷ `DT.DOD.DSTC.CD`) and one — `usd_denominated_debt_share` — is **GENUINELY
+BLOCKED**, measured against the full 20 000-entry World Bank indicator catalogue.
+`source_family` therefore resolves **per run**: `WORLD_BANK` when any leg is
+fetched, `MANUAL_ASSESSMENT` when all are supplied. This is the **first CONFIRMED
+block after four FALSE ones** — the counting is the mapping-level fact: the class
+*FALSE BLOCK (D-043)* has four members and the class *CONFIRMED BLOCK* has, until
+now, none.
+
+**New data-layer routes, same client.** Unlike D-118, this increment needed **no
+new client** — it extended `data_layer/world_bank_client.py` (D-117's) with three
+indicator constants, an `IndicatorReading`, and a shared newest-non-null-year
+parser that `fetch_ppp_conversion_factor` now **delegates to**, so the two routes
+cannot drift. The derived ratio is **performed, not assumed** (D-109).
+
+**Reachability moved — SCRIPT-ONLY count 14 → 15.** `em_vulnerability_checklist`'s
+only caller is `scripts/live_em_vulnerability_check.py`, so it classifies
+**SCRIPT-ONLY — Tier 5**, taking the SCRIPT-ONLY Tier-5 count from **14 to 15**.
+The **total** stays **PASS 58/58** — a new Tier-5 function joins the SCRIPT-ONLY
+bucket rather than adding a total row. The three new indicator routes are methods,
+not targets.
+
+**Also recorded:** the sweep census moved **46 → 47** (`mutation_em_vulnerability.py`
+is the 47th sweep), in its three homes — `test_sweep_sidecar_lifecycle.py` ×2
+(the function name and the assertion) and
+`test_sweep_health_leftover_predicate.py` ×1 (plus two docstring mentions). And
+**adding a function to `config.py` broke a DIFFERENT sweep's anchors** (O-145):
+the new `EMVulnerabilitySettings` bodies are byte-identical to
+`InterventionSettings`', so `mutation_intervention.py`'s `N1a`/`N1b`/`N4a` were
+widened with distinguishing neighbours — the mapping-level statement that
+**sweeps over shared files have a shared anchor namespace**.
+
+

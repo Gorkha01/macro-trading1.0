@@ -5480,6 +5480,170 @@ class InterventionSettings(BaseModel):
         return self
 
 
+class EMVulnerabilitySettings(BaseModel):
+    """Module 9's EM-vulnerability leaves (Section 20's part B).
+
+    Section 20's reference implementation ships its three thresholds and its
+    four verdict strings as **bare literals** inside the function body
+    (``-0.03``, ``0.50``, ``1.0``; the four ``*_VULNERABILITY`` names), plus a
+    bare ``confidence=0.65``. Section 22.8 forbids the confidence literal and
+    the same reasoning applies to the thresholds: a reader must be able to find
+    every number the verdict turns on without reading the function.
+
+    ``reliability_cap`` is a **model-specific confidence CAP**, the
+    D-112/D-114/D-118 precedent, and it is deliberately the **lowest in the FX
+    family** (below ``intervention.reliability_cap`` 0.12, ``ppp_reliability_cap``
+    0.2 and ``uip_reliability_cap`` 0.15). The ordering is the claim: this
+    function's verdict is famously the weakest kind of evidence in the module —
+    three crash-style rules of thumb, uncalibrated, applied to one country-year —
+    and its SPECIFICATION ships the MOST confident number in Module 9 (0.65,
+    above every parity model). The cap is not carried forward, for the same
+    reason ``intervention_capacity``'s 0.8/0.7 were not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    current_account_deficit_threshold_pct_gdp: CalibratedValue
+    usd_debt_share_threshold: CalibratedValue
+    reserves_to_st_debt_threshold: CalibratedValue
+    low_label: CalibratedValue
+    moderate_label: CalibratedValue
+    high_label: CalibratedValue
+    critical_label: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``em_vulnerability_checklist`` reports.
+
+        Section 20 ships ``confidence=0.65`` as a literal, which Section 22.8
+        refuses, and 0.65 would make this the most confident function in Module 9
+        — above every parity relation. That is backwards: the three checks are
+        **conventional EM-stress benchmarks, not fitted values** (the reference
+        implementation says so itself), the function performs **no estimation at
+        all** beyond three threshold comparisons, and the verdict it produces is
+        a **rule of thumb published in textbooks about crises that already
+        happened.** A careful reader of ``0.65`` would infer the opposite.
+
+        Deliberately **below every other FX cap** — see the class docstring.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is a calibrated figure rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` on every call, so
+        the computed half of the confidence prices the leaf's own status rather
+        than assuming it. ``CalibratedValue.is_trustworthy`` is False for
+        ``uncalibrated_illustrative``, which is what this leaf is.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def current_account_deficit_value(self) -> float:
+        """The current-account/GDP ratio, in PERCENT, below which the check fails.
+
+        A **negative** magnitude (``-3.0`` = a deficit deeper than 3 % of GDP).
+        Section 20's literal is ``-0.03``, a FRACTION; the sibling thresholds in
+        this repository are quoted in the unit the data arrives in, and the World
+        Bank's ``BN.CAB.XOKA.GD.ZS`` publishes **per cent** (measured: Türkiye
+        2024 = ``-0.77``), so a leaf left as ``-0.03`` would compare a fraction
+        against a percentage and fail the check only for catastrophically
+        large deficits. The unit is in the name for that reason.
+        """
+        return float(self.current_account_deficit_threshold_pct_gdp.value)
+
+    @property
+    def usd_debt_share_value(self) -> float:
+        """The USD-denominated share of external debt above which the check fails.
+
+        A FRACTION in ``[0, 1]`` (``0.50`` = a majority), matching the input's own
+        unit rather than a percentage — there is no external source to convert
+        from, because this input is the one genuinely BLOCKED leg (see the
+        model's docstring) and a caller states it directly.
+        """
+        return float(self.usd_debt_share_threshold.value)
+
+    @property
+    def reserves_to_st_debt_value(self) -> float:
+        """The coverage ratio below which the check fails.
+
+        ``1.0`` = reserves exactly cover short-term external debt. A pure ratio of
+        two same-unit stocks, so it is unitless and needs no unit in its name.
+        """
+        return float(self.reserves_to_st_debt_threshold.value)
+
+    @property
+    def low_verdict(self) -> str:
+        """The verdict for zero failed checks."""
+        return str(self.low_label.value)
+
+    @property
+    def moderate_verdict(self) -> str:
+        """The verdict for exactly one failed check."""
+        return str(self.moderate_label.value)
+
+    @property
+    def high_verdict(self) -> str:
+        """The verdict for exactly two failed checks."""
+        return str(self.high_label.value)
+
+    @property
+    def critical_verdict(self) -> str:
+        """The verdict for all three failed checks."""
+        return str(self.critical_label.value)
+
+    @model_validator(mode="after")
+    def _validate_thresholds_and_cap(self) -> EMVulnerabilitySettings:
+        """Refuse a cap outside ``[0, 1]`` and thresholds on the wrong side.
+
+        The cap check mirrors the sibling settings blocks: ``ModelResult``'s own
+        field constraint refuses a value outside ``[0, 1]``, so a leaf outside it
+        would raise at the FIRST call rather than at load, turning a config error
+        into a runtime failure of a model.
+
+        The threshold signs are checked because every comparison in the model has
+        a DIRECTION, and a leaf whose sign is inverted makes its check fire on
+        exactly the good cases: a positive current-account threshold would fail
+        every surplus country, a negative USD-share threshold would fail every
+        country including those with no dollar debt, and a negative coverage
+        threshold would make the coverage check unreachable for every real
+        ratio — dead vocabulary of the class D-037 names.
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"em_vulnerability.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — the same ModelResult field "
+                f"constraint applies as on the sibling FX caps, and refusing at "
+                f"load turns a runtime failure into a config error."
+            )
+        if self.current_account_deficit_value >= 0.0:
+            raise ValueError(
+                f"em_vulnerability.current_account_deficit_threshold_pct_gdp is "
+                f"{self.current_account_deficit_value}. The check fails on a "
+                f"deficit, so the threshold must be NEGATIVE (Section 20's "
+                f"conventional -3 % of GDP); a non-negative one would fail every "
+                f"country with a surplus and flip the check's meaning."
+            )
+        if not 0.0 < self.usd_debt_share_value <= 1.0:
+            raise ValueError(
+                f"em_vulnerability.usd_debt_share_threshold is "
+                f"{self.usd_debt_share_value}. The input is a SHARE in (0, 1]; a "
+                f"non-positive threshold would fail every country including those "
+                f"with no dollar debt, and one above 1.0 would make the check "
+                f"unreachable (dead vocabulary, D-037's class)."
+            )
+        if self.reserves_to_st_debt_value <= 0.0:
+            raise ValueError(
+                f"em_vulnerability.reserves_to_st_debt_threshold is "
+                f"{self.reserves_to_st_debt_value}. The check fails BELOW this "
+                f"ratio, so a non-positive threshold makes it unreachable for "
+                f"every real coverage figure (dead vocabulary, D-037's class)."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5522,6 +5686,7 @@ class Settings(BaseModel):
     econometrics: EconometricsSettings
     fx_carry: FxCarrySettings
     intervention: InterventionSettings
+    em_vulnerability: EMVulnerabilitySettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

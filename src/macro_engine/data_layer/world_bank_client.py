@@ -93,13 +93,19 @@ import httpx
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CURRENT_ACCOUNT_PCT_GDP_INDICATOR",
+    "IndicatorReading",
     "PPPFactor",
+    "RESERVES_TOTAL_USD_INDICATOR",
+    "SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR",
     "WorldBankError",
     "WorldBankReadError",
     "WorldBankUnavailableError",
+    "fetch_indicator_reading",
     "fetch_ppp_conversion_factor",
     "fetch_ppp_implied_rate",
     "implied_rate_from_factors",
+    "reserves_to_short_term_debt",
 ]
 
 #: The provenance string this route stamps onto what it returns. Kept as an
@@ -123,6 +129,25 @@ WORLD_BANK_SERIES_URL = (
 #: The indicator this module fetches: "PPP conversion factor, GDP (LCU per
 #: international $)". Named once; the registry points at this same code.
 PPP_CONVERSION_FACTOR_INDICATOR = "PA.NUS.PPP"
+
+#: "Current account balance (% of GDP)". The first of
+#: ``em_vulnerability_checklist``'s two reachable legs (D-119). Section 21.1
+#: lists it LIVE on the same *"direct, not OpenBB"* route as the PPP factor, so
+#: this module is its third consumer rather than a new dependency class.
+CURRENT_ACCOUNT_PCT_GDP_INDICATOR = "BN.CAB.XOKA.GD.ZS"
+
+#: "Total reserves (includes gold, current US$)". The NUMERATOR of
+#: ``reserves_to_short_term_external_debt``. Denominated in **current USD**, not
+#: millions — unlike ``reserves_client``'s FRED series, so the two routes to a
+#: reserve stock do NOT share a unit and must never be substituted for one
+#: another (D-116's lesson: a unit is not a label).
+RESERVES_TOTAL_USD_INDICATOR = "FI.RES.TOTL.CD"
+
+#: "Short-term external debt on residual maturity basis (current US$)". The
+#: DENOMINATOR of ``reserves_to_short_term_external_debt``. Both legs are
+#: current USD, so the ratio is a pure number — no unit conversion is needed and
+#: none is performed.
+SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR = "DT.DOD.DSTC.CD"
 
 #: Measured-good UA (D-087.25). Identical to `alfred_client._REQUEST_HEADERS`
 #: on purpose — see the module docstring.
@@ -178,6 +203,41 @@ class PPPFactor:
     * ``last_updated`` — the **publication** date of the series. **This is what
       makes the value a disclosed vintage rather than a live price**, and it is
       the field a caller must surface rather than swallow.
+    """
+
+    iso3: str
+    indicator: str
+    year: int
+    value: float
+    last_updated: date
+
+    @property
+    def vintage_label(self) -> str:
+        """A one-line provenance string for ``limitations`` and log output."""
+        return (
+            f"World Bank {self.indicator} ({self.iso3}), {self.year} figure, "
+            f"published {self.last_updated.isoformat()}"
+        )
+
+
+@dataclass(frozen=True)
+class IndicatorReading:
+    """One country's reading of one World Bank indicator, as published.
+
+    The general sibling of :class:`PPPFactor`. Kept as a SEPARATE type rather
+    than widening ``PPPFactor``'s name: the two carry identical fields today, but
+    ``PPPFactor``'s docstring and its ``value`` unit ("LCU per international $")
+    are specific to the PPP estimand, and a shared class would mean a future
+    unit-bearing field on one silently changing the other. A rename with no
+    behavioural difference is cheaper than a type whose meaning depends on which
+    caller is asking.
+
+    Carries what a caller needs to judge usability rather than the number alone:
+    ``iso3``/``indicator`` say WHAT was read (making a wrong-country error
+    visible), ``year`` is the observation period — an ANNUAL label, not a date —
+    ``value`` is the published reading in the indicator's own unit, and
+    ``last_updated`` is the publication date, which is what makes the figure a
+    **disclosed vintage rather than a live price**.
     """
 
     iso3: str
@@ -261,62 +321,21 @@ def _parse_payload(body: Any, *, iso3: str, indicator: str) -> tuple[list[Any], 
     return rows, last_updated
 
 
-def fetch_ppp_conversion_factor(
+def _parse_rows_to_reading(
     iso3: str,
-    *,
-    indicator: str = PPP_CONVERSION_FACTOR_INDICATOR,
-    timeout: float = 30.0,
-) -> PPPFactor:
-    """Fetch the LATEST published PPP conversion factor for one country.
+    indicator: str,
+    rows: list[Any],
+    last_updated: date,
+) -> IndicatorReading:
+    """Select the newest populated YEAR from parsed rows and build a reading.
 
-    *Latest*, not a vintage: the World Bank REST API offers no point-in-time
-    selector (see the module docstring). The returned ``PPPFactor.last_updated``
-    is the publication date, and a caller must disclose it.
-
-    Raises ``WorldBankUnavailableError`` for a malformed argument or an
-    unusable response, and ``WorldBankReadError`` for a transport failure after
-    the retry budget. **Never returns an empty result in place of a failure** —
-    an empty series means the country genuinely has no published points, which
-    for the EMU aggregate is the measured truth.
+    Split out of the transport path at D-119 so the row-selection rule — the
+    part that is a fact about the DATA rather than about HTTP — can be exercised
+    against fabricated rows without patching a network client. The rule is the
+    same one the PPP route has always used: rows arrive newest-first but that
+    order is not a documented contract, so the newest non-null YEAR is selected
+    explicitly, and a null value is a suppressed observation rather than a zero.
     """
-    code = _parse_iso3(iso3)
-    url = WORLD_BANK_SERIES_URL.format(iso3=code, indicator=indicator)
-
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            with httpx.Client(timeout=timeout, http2=False) as client:
-                response = client.get(url, headers=_REQUEST_HEADERS)
-            if response.status_code != 200:
-                raise WorldBankReadError(
-                    f"World Bank returned HTTP {response.status_code} for {code}/{indicator}"
-                )
-            body = json.loads(response.text)
-            rows, last_updated = _parse_payload(body, iso3=code, indicator=indicator)
-        except (httpx.HTTPError, json.JSONDecodeError, WorldBankReadError) as exc:
-            last_exc = exc
-            logger.warning(
-                "World Bank read for %s/%s attempt %s/%s failed: %s",
-                code,
-                indicator,
-                attempt,
-                _MAX_ATTEMPTS,
-                exc,
-            )
-            if attempt < _MAX_ATTEMPTS:
-                time.sleep(_BACKOFF_SECONDS * attempt)
-            continue
-        break
-    else:
-        raise WorldBankReadError(
-            f"World Bank read for {code}/{indicator} failed after "
-            f"{_MAX_ATTEMPTS} attempts: {last_exc}"
-        )
-
-    # Rows arrive newest-first, but that ORDER is not part of the documented
-    # contract, so the newest non-null YEAR is selected explicitly rather than
-    # by position. `date` is a string year ("2025"); a row with a null value is
-    # a suppressed observation, not a zero.
     populated: list[tuple[int, float]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -334,19 +353,53 @@ def fetch_ppp_conversion_factor(
 
     if not populated:
         raise WorldBankUnavailableError(
-            f"World Bank returned no populated {indicator} points for {code}. "
+            f"World Bank returned no populated {indicator} points for {iso3}. "
             f"This is a genuine empty series (the EMU aggregate measures 0 "
             f"points), not a transport failure — a caller must not read it as a "
             f"value."
         )
 
     year, value = max(populated, key=lambda pair: pair[0])
-    return PPPFactor(
-        iso3=code,
+    return IndicatorReading(
+        iso3=iso3,
         indicator=indicator,
         year=year,
         value=value,
         last_updated=last_updated,
+    )
+
+
+def fetch_ppp_conversion_factor(
+    iso3: str,
+    *,
+    indicator: str = PPP_CONVERSION_FACTOR_INDICATOR,
+    timeout: float = 30.0,
+) -> PPPFactor:
+    """Fetch the LATEST published PPP conversion factor for one country.
+
+    *Latest*, not a vintage: the World Bank REST API offers no point-in-time
+    selector (see the module docstring). The returned ``PPPFactor.last_updated``
+    is the publication date, and a caller must disclose it.
+
+    Raises ``WorldBankUnavailableError`` for a malformed argument or an
+    unusable response, and ``WorldBankReadError`` for a transport failure after
+    the retry budget. **Never returns an empty result in place of a failure** —
+    an empty series means the country genuinely has no published points, which
+    for the EMU aggregate is the measured truth.
+
+    Since D-119 this delegates to :func:`_fetch_latest_reading`, which holds the
+    retry budget, the newest-year selection, and the empty-versus-failed
+    distinction. Those are facts about the World Bank API rather than about the
+    PPP estimand, and one definition is what keeps a second caller from drifting
+    from this one.
+    """
+    reading = _fetch_latest_reading(iso3, indicator, timeout=timeout)
+    return PPPFactor(
+        iso3=reading.iso3,
+        indicator=reading.indicator,
+        year=reading.year,
+        value=reading.value,
+        last_updated=reading.last_updated,
     )
 
 
@@ -405,3 +458,123 @@ def fetch_ppp_implied_rate(
         f"{foreign.last_updated.isoformat()} respectively."
     )
     return rate, disclosure
+
+
+def _fetch_latest_reading(
+    iso3: str,
+    indicator: str,
+    *,
+    timeout: float,
+) -> IndicatorReading:
+    """Fetch the LATEST populated point of one indicator, with retries.
+
+    The shared transport/staleness core behind :func:`fetch_indicator_reading`
+    and (via the same shape) ``fetch_ppp_conversion_factor``. Extracted at D-119
+    when a second caller appeared: the retry budget, the "newest non-null YEAR
+    selected explicitly rather than by position" rule, and the
+    empty-series-versus-transport-failure distinction are all facts about the
+    World Bank API, and two copies of a fact drift.
+
+    ``indicator`` is passed as an argument rather than defaulted, so this helper
+    can never be called without the caller naming which series it wanted — the
+    defect class where a default silently substitutes one series for another.
+    """
+    code = _parse_iso3(iso3)
+    url = WORLD_BANK_SERIES_URL.format(iso3=code, indicator=indicator)
+
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            with httpx.Client(timeout=timeout, http2=False) as client:
+                response = client.get(url, headers=_REQUEST_HEADERS)
+            if response.status_code != 200:
+                raise WorldBankReadError(
+                    f"World Bank returned HTTP {response.status_code} for {code}/{indicator}"
+                )
+            body = json.loads(response.text)
+            rows, last_updated = _parse_payload(body, iso3=code, indicator=indicator)
+        except (httpx.HTTPError, json.JSONDecodeError, WorldBankReadError) as exc:
+            last_exc = exc
+            logger.warning(
+                "World Bank read for %s/%s attempt %s/%s failed: %s",
+                code,
+                indicator,
+                attempt,
+                _MAX_ATTEMPTS,
+                exc,
+            )
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(_BACKOFF_SECONDS * attempt)
+            continue
+        break
+    else:
+        raise WorldBankReadError(
+            f"World Bank read for {code}/{indicator} failed after "
+            f"{_MAX_ATTEMPTS} attempts: {last_exc}"
+        )
+
+    return _parse_rows_to_reading(code, indicator, rows, last_updated)
+
+
+def fetch_indicator_reading(
+    iso3: str,
+    indicator: str,
+    *,
+    timeout: float = 30.0,
+) -> IndicatorReading:
+    """Fetch the latest published reading of any World Bank indicator.
+
+    *Latest*, not a vintage: the World Bank REST API offers no point-in-time
+    selector (the module docstring records the measurement), so the result is a
+    **disclosed vintage** and a caller must surface ``last_updated``.
+
+    Public because ``em_vulnerability_checklist`` (D-119) needs three unrelated
+    indicators and had no reason to reach a private helper. Raises the same two
+    errors as :func:`fetch_ppp_conversion_factor`, on the same
+    empty-versus-failed distinction.
+    """
+    return _fetch_latest_reading(iso3, indicator, timeout=timeout)
+
+
+def reserves_to_short_term_debt(iso3: str, *, timeout: float = 30.0) -> tuple[float, str]:
+    """Reserves divided by short-term external debt, plus its disclosure.
+
+    The second of ``em_vulnerability_checklist``'s reachable checks. Section
+    21.1 calls this input **DERIVED** — *"IMF reserves / World Bank ST external
+    debt"* — and DERIVED means the division is **performed here, never assumed**
+    (D-109). Both legs are the World Bank's own current-USD series, so the ratio
+    is a pure number and **no unit conversion happens**; that is a property of
+    these two indicators, not a general rule, which is why the units are named
+    on the disclosure.
+
+    Returns ``(ratio, disclosure)``. The disclosure names both legs' values,
+    years and publication dates, because the ratio is a statement about two
+    independently-refreshed series and a single date cannot describe it — the
+    same reasoning as :func:`fetch_ppp_implied_rate`.
+
+    A **zero denominator raises** rather than returning infinity: a short-term
+    external debt of zero makes the ratio undefined, and an infinite ratio would
+    read as "perfectly covered" to any caller that compared it against 1.0.
+    """
+    reserves = fetch_indicator_reading(iso3, RESERVES_TOTAL_USD_INDICATOR, timeout=timeout)
+    short_term = fetch_indicator_reading(
+        iso3, SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR, timeout=timeout
+    )
+    if short_term.value == 0.0:
+        raise WorldBankUnavailableError(
+            f"Short-term external debt for {short_term.iso3} is zero, so the "
+            f"reserves-to-ST-debt ratio is undefined. A zero denominator is not "
+            f"'perfectly covered' and must not be read as an infinite ratio."
+        )
+    ratio = reserves.value / short_term.value
+    disclosure = (
+        f"Reserves / short-term external debt from the World Bank, fetched as "
+        f"a disclosed vintage, NOT a live price and NOT a point-in-time vintage: "
+        f"reserves {reserves.value} ({reserves.year}, "
+        f"{RESERVES_TOTAL_USD_INDICATOR}) / ST debt {short_term.value} "
+        f"({short_term.year}, {SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR}); "
+        f"published {reserves.last_updated.isoformat()} and "
+        f"{short_term.last_updated.isoformat()} respectively. Both legs are "
+        f"current USD, so no unit conversion is performed."
+    )
+    return ratio, disclosure

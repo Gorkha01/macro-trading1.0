@@ -19760,3 +19760,137 @@ so the Tier 1–4 baseline is untouched.
 
 **Tier 5 = 15/23.** Re-derive the remaining names from §21.3's table *"and only
 that table"* — do NOT recall them. **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-119 — Module 9's `em_vulnerability_checklist`: a heading that was **HALF false** (the first CONFIRMED block after four false ones), a gate that REFUSES rather than guesses, and a D-118 rule held to the letter
+
+**Date:** 2026-09-29. **Tier 5 = 15/23** (unchanged: `em_vulnerability_checklist`
+is §20's part B, a **second D-096 exception** — the authority supplies the body,
+so it is an UPGRADE that **supersedes nothing**; the honest answer is the
+`cip_check` answer, **a new capability**). Target: **the new**
+`src/macro_engine/models/em_vulnerability.py`, **three new indicator routes** in
+`data_layer/world_bank_client.py`, and the **new** `EMVulnerabilitySettings`
+block in `src/macro_engine/config.py`. Section resolved with `grep -n`:
+`AGENTS.md:2937` is the §20 heading and `AGENTS.md:2948` carries the section's
+**reference implementation**. **Sweep census 46 → 47** in all **three** homes.
+
+### 1. The blocking claim was a CLAIM, and it was HALF FALSE — measure, do not trust
+
+§20's heading reads *"needs IMF/World Bank data"*. Under §21.1's default rule
+(*"any input not listed is BLOCKED"*) that reads as three blocked inputs. **The
+three were probed individually against the live World Bank REST API on
+2026-09-29, and the halves differ:**
+
+| input | verdict | evidence |
+|---|---|---|
+| `current_account_pct_gdp` | **LIVE** | `BN.CAB.XOKA.GD.ZS` — TR 2024 = **−0.77 %**, 2023 = −3.63 %, 2022 = −5.00 %. A **PER CENT** series, not a fraction. |
+| `reserves_to_short_term_external_debt` | **BOTH LEGS LIVE** | `FI.RES.TOTL.CD` (reserves, current USD) ÷ `DT.DOD.DSTC.CD` (short-term external debt, current USD). The **division is PERFORMED**, never assumed. |
+| `usd_denominated_debt_share` | **GENUINELY BLOCKED** | The **full 20 000-entry** World Bank indicator catalogue was scanned. No per-country currency-composition series exists. The only `DT.*` names matching "currency" are *"Currency and deposits"* — a debt **INSTRUMENT TYPE**, not a currency composition (the D-116 unit-is-not-a-label trap). |
+
+**This is the FIRST CONFIRMED block after four FALSE ones** (the repo had caught
+`ppp_implied_rate` at D-115/D-117 and `fx_reserves_usd_bn` at D-118). The
+sequence is the lesson: four false blocks did **not** make the fifth false, and
+the heading did **not** make any of them true. **A `BLOCKED` tag is a claim
+about the world; it is measured.**
+
+### 2. The refusal is the contract — a two-thirds answer must not read as a whole one
+
+The operator chose, from three offered options, **"refuse to assess unless
+supplied"**: if `usd_denominated_debt_share` is absent and the other two legs are
+not both supplied, `em_vulnerability_checklist` raises `ValueError` naming the
+missing legs. A caller who *has* the blocked number may pass all three and get a
+verdict; a caller who does not may not get a reassuring one. The verdict is
+`{0: low, 1: moderate, 2: high, 3: critical}` from `n_failed`, and the **gate is
+`blocks_fx_selection = n_failed >= 2`** — published as an explicit flag, with a
+warning at ≥2 that names the override. One safety mechanism, two surfaces,
+checked for **agreement** in the tests and the live check.
+
+### 3. The D-118 rule, held to the letter: the confidence is MULTIPLIED, and the check had to be fixed to prove it
+
+`em_vulnerability`'s cap is **0.10** — the lowest in the FX family — and the
+computed half is `compute_confidence(...)` with 0 / 1 / 2 fetched legs ⇒
+**0.25 / 0.30 / 0.60**. The published confidence is
+**`computed × cap`** ⇒ **0.025 / 0.03 / 0.06**, so neither half is dead code
+(`min()`, which the earlier `fx_carry`/`uip` family could use, would make the
+computed half inert here). The live check's first run **FAILED on this section**
+— it paired a two-fetched-leg `computed` (0.60) with the **fully-supplied** run's
+confidence (0.025). **That was a defect in the CHECK, not the model**: the two
+halves must come from the **same** run. Fixed by building a genuine fetched run
+inside the section and reading **both** halves off it, then measuring the D-118
+claim — a fetched run must publish **strictly higher** confidence than a
+supplied one (0.06 vs 0.025). **The model was right and the check was wrong** —
+the D-117 §9 / O-139 / O-144 shape.
+
+### 4. Two defects the FULL SUITE found, and one the SWEEP found against a DIFFERENT sweep
+
+* **O-141 restated:** adding `iso3`-style keys to `series_registry.yaml` makes
+  the **whole file** unparseable (both `RegistrySeries` and `SeriesRegistry` are
+  `extra="forbid"`). Three entries were added — `current_account_pct_gdp_world_bank`,
+  `reserves_total_usd_world_bank`, `short_term_external_debt_usd` — each checked
+  against the field list **before** writing. `usd_denominated_debt_share` is
+  **deliberately absent**: no source exists, and a registry entry would imply one.
+* **A sweep anchor went AMBIGUOUS against a DIFFERENT sweep** — the
+  D-109/D-111/D-112/D-118 class, tripped this time by my own config block.
+  `EMVulnerabilitySettings`' accessors and validator are **textually identical**
+  to `InterventionSettings`' (`return float(self.reliability_cap.value)`,
+  `return self.reliability_cap.is_trustworthy`,
+  `if not 0.0 <= self.reliability_value <= 1.0:` each now occur **TWICE**), so
+  `mutation_intervention.py`'s **`N1a`/`N1b`/`N4a`** became **AMBIGUOUS** and
+  `sweep_health.py` **FAILED with 3 failures**. Fixed by **WIDENING, never
+  deleting** (D-109): each anchor now carries a distinguishing **neighbour** that
+  exists only in `InterventionSettings` — the accessors take their docstring
+  tail, the validator takes its `intervention.reliability_cap` error-message
+  line. Re-run: **60/60 killed**, so all three still die. **Adding a function to
+  a swept module breaks the OLD anchors, and the break can be in a file you never
+  opened.**
+
+### 5. The first sweep's 9 survivors were all TESTS NOBODY WROTE
+
+**40/40 killed** on the second run; the first left **9** — `E6d`/`E9b` (model
+branches reachable **only via a fetched run**; no test drove one) and
+`G1a`/`G2a`-`G2c`/`G3a`-`G3c` (four config validators **never driven to fire**,
+three threshold accessors **never read in isolation**). None was an inert
+mutation; all were the D-118 `N4a`/`N4b` class — **a guard nobody measured**.
+`G3a`-`G3c` are the **`C6b` class in its purest form**: the mutation replaces an
+accessor's body with the literal the **shipped leaf already contains**, so the
+remedy is a **D-050 leaf-perturbation** test, never a weakened mutation. Fixed by
+adding the fetched-path tests and the config accessor/validator tests.
+
+### 6. The gate set — sequential, `sweep_health.py` LAST
+
+```
+ruff format --check src tests tools scripts   ->  276 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 276 source files
+reachability_audit.py --check-baseline        ->  PASS — baseline 58 = measured 58, no regressions
+full suite (--junitxml)                       ->  3689 tests / 0 failures / 0 errors / 1 skipped
+slow sweep-catalogue test (explicit)          ->  1 passed  (248.93 s, within the 600 s budget)
+mutation_em_vulnerability.py                  ->  40/40 killed   (first run: 31/40, then triaged)
+mutation_intervention.py (anchors widened)    ->  60/60 killed   (was 0-run: 3 AMBIGUOUS anchors)
+live_em_vulnerability_check.py                ->  PASS
+sweep_health.py  (LAST)                       ->  47 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**276 == 276** (D-035): 272 (D-118) **+ 4** = the four new files
+(`models/em_vulnerability.py`, `test_em_vulnerability.py`,
+`scripts/mutation_em_vulnerability.py`, `scripts/live_em_vulnerability_check.py`).
+The sweep census lives in **three places** and all three moved **46 → 47**.
+Reachability: `em_vulnerability_checklist` is **SCRIPT-ONLY — Tier 5**, so the
+Tier 1–4 baseline is untouched.
+
+### 7. A disclosed vintage mismatch, left standing on purpose
+
+The live run exposes a real fact worth stating: the coverage ratio compares
+reserves (WB **2025**, 185.6 bn) to short-term debt (WB **2024**, 178.1 bn) —
+**different vintages**, ratio **1.042** (vs 0.873 when both legs were 2024). The
+client's disclosure **names each leg's year and publication date**, so a caller
+who reads it knows the numerator is a year newer. The model does **not** silently
+"align" the years — it reports what the sources publish. **The disclosure is the
+honesty mechanism; a silent alignment would be the defect.**
+
+### Next
+
+**Tier 5 = 15/23.** Re-derive the remaining names from §21.3's table *"and only
+that table"* — do NOT recall them. The remaining 8 Tier-5 names are: 4 in Modules
+10–11 (`commodities.py` / `equity_macro.py`), the rest §20.9/sector/statement
+prose. **NOT mine:** the Tier-5 review/audit.

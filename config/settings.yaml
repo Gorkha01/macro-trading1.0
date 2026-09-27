@@ -4258,6 +4258,131 @@ intervention:
       property may not share a name in this codebase (the D-035 collision guard
       in `tests/test_infrastructure.py`).
 # ---------------------------------------------------------------------------
+# MODULE 9's EM VULNERABILITY CHECKLIST (Section 20's part B). Section 20's
+# reference implementation writes its three thresholds, its four verdict
+# strings and a `confidence=0.65` as BARE LITERALS inside the function body.
+# Section 22.8 refuses the confidence; the same reasoning moves the rest here,
+# because a reader must be able to find every number the verdict turns on
+# without reading the function.
+#
+# ⚠️ THE THRESHOLDS ARE CONVENTIONAL EM-STRESS BENCHMARKS, NOT FITTED VALUES —
+# the reference implementation says so itself, and that is exactly why the
+# specification's 0.65 is not carried forward. See the reliability_cap note.
+# ---------------------------------------------------------------------------
+em_vulnerability:
+  reliability_cap:
+    value: 0.10
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `em_vulnerability_checklist` reports. Section 20
+      supplies `confidence=0.65` as a literal, which Section 22.8 refuses.
+
+      ⚠️ THE SPECIFICATION'S NUMBER IS NOT CARRIED FORWARD, AND THE ORDERING IS
+      THE REASON. 0.65 would make this the MOST confident function in Module 9 —
+      above `intervention_capacity` (0.12), `uip_expected_move` (0.15),
+      `ppp_valuation` (0.2) and every parity relation — which is the opposite of
+      the truth. The parity models at least relate OBSERVABLE prices with EXACT
+      arithmetic; this one performs NO estimation at all beyond three threshold
+      comparisons, on thresholds its own specification calls conventional rather
+      than fitted, producing a verdict that is a rule of thumb about crises that
+      already happened. It is the LOWEST cap in the FX family, and the ordering
+      is the claim: a doctrine with no measured break-point is weaker evidence
+      than three uncalibrated stress heuristics, which are in turn weaker than a
+      relation between observable prices.
+
+      It is a model-specific CAP, not compute_confidence(), following the
+      D-112/D-114/D-118 precedent: the function applies compute_confidence() to
+      the INPUT half (a fetched country-year is better evidence than a
+      caller-typed one) and MULTIPLIES by this leaf, so both halves stay
+      load-bearing rather than one being dead code under `min()`.
+
+      Placeholder, not calibrated: calibrating it means measuring how often the
+      three checks jointly predicted a crisis, a small-sample historical
+      question this build does not attempt.
+  current_account_deficit_threshold_pct_gdp:
+    value: -3.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The current-account balance, in PER CENT OF GDP, below which the deficit
+      check FAILS. Negative, because the check fires on a deficit.
+
+      ⚠️ SECTION 20's LITERAL IS -0.03 (a FRACTION) AND THE UNIT IS THE
+      CORRECTION. The World Bank's `BN.CAB.XOKA.GD.ZS` — which Section 21.1 lists
+      LIVE for this exact input, and which the client fetches — publishes
+      **per cent**: Türkiye 2024 measured -0.77, 2023 -3.63. Comparing the
+      specification's -0.03 fraction against a percentage would leave the check
+      firing only for deficits deeper than 0.03 % of GDP, i.e. essentially never.
+      The unit is in the leaf's NAME so the mistake cannot be repeated silently.
+
+      -3 % of GDP is the conventional EM-stress benchmark the reference
+      implementation cites, not a fitted figure.
+  usd_debt_share_threshold:
+    value: 0.50
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The USD-denominated share of external debt above which the "original sin"
+      check FAILS. A FRACTION in (0, 1]: 0.50 = a strict majority, the
+      conventional benchmark (Eichengreen-Hausmann's original-sin literature
+      treats a majority-foreign-currency debt structure as the exposure).
+
+      ⚠️ THIS IS THE ONE INPUT WITH NO FREE SOURCE, AND THAT IS MEASURED, NOT
+      ASSUMED. The full World Bank indicator catalogue (20 000 entries) contains
+      no per-country currency-COMPOSITION series: the only `DT.*` names matching
+      "currency" are "... Currency and deposits ...", which is a debt INSTRUMENT
+      TYPE, not a denomination — the D-116 trap of a matching word with a
+      different meaning. So this threshold is stated by the CALLER rather than
+      fetched, and `em_vulnerability_checklist` refuses to assess at all when the
+      share is absent rather than scoring two checks out of three.
+
+      Kept as a leaf even though nothing fetches it: the threshold is a judgement
+      about where "too much dollar debt" begins, and a reader must be able to
+      find that judgement rather than infer it from an `if` statement.
+  reserves_to_st_debt_threshold:
+    value: 1.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The reserves-to-short-term-external-debt ratio below which the coverage
+      check FAILS. 1.0 = reserves exactly cover short-term external debt, the
+      Guidotti-Greenspan rule of thumb.
+
+      A pure ratio of two same-unit stocks (both World Bank current USD), so it
+      is unitless. DERIVED per Section 21.1, meaning the division is PERFORMED by
+      the client rather than assumed (D-109) — the two legs are fetched
+      independently and the ratio computed, so a future change of either leg
+      changes the ratio instead of being silently ignored.
+  low_label:
+    value: "LOW_VULNERABILITY"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The verdict for ZERO failed checks. Retained verbatim from Section 20's
+      reference implementation — the four verdict names state the count and the
+      severity directly and needed no correction (unlike Section 20.9's
+      "UNLIMITED_AMMUNITION_but_costly", which Section 22.11 renamed).
+
+      A string leaf rather than an in-body literal so the vocabulary a caller
+      keys on is declared once, where a reader can find it.
+  moderate_label:
+    value: "MODERATE_VULNERABILITY"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The verdict for exactly ONE failed check. Retained verbatim from
+      Section 20.
+  high_label:
+    value: "HIGH_VULNERABILITY"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The verdict for exactly TWO failed checks. Section 20's reference
+      implementation attaches its gating warning at this count ("2+ failing
+      checks OVERRIDE any favorable carry/cointegration signal"), so this is the
+      label at which the function changes from INFORMING a decision to GATING
+      one.
+  critical_label:
+    value: "CRITICAL_VULNERABILITY"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The verdict for all THREE failed checks. Retained verbatim from
+      Section 20.
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

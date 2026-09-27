@@ -1,7 +1,40 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-28** (after **D-118 — Module 9's `intervention_capacity`: a NEW module, a
+Last updated: **2026-09-29** (after **D-119 — Module 9's `em_vulnerability_checklist`: a heading
+that was HALF FALSE, the first CONFIRMED block after four false ones, and a gate that REFUSES
+rather than guesses.** Tier 5 = **15/23** (unchanged: §20's part B is a **second D-096 exception** —
+`AGENTS.md:2937` is the heading, `:2948` the reference implementation — so it **supersedes
+nothing**: the honest answer is the `cip_check` one, *a new capability*). **The blocking claim was
+a CLAIM, and it was measured:** §20's heading says *"needs IMF/World Bank data"*, which under
+§21.1's default rule would block all three inputs — **it is HALF false.** `current_account_pct_gdp`
+is **LIVE** (`BN.CAB.XOKA.GD.ZS`, TR 2024 = −0.77 %, a **PER CENT** series, not a fraction);
+`reserves_to_short_term_external_debt` has **BOTH LEGS LIVE** (`FI.RES.TOTL.CD` ÷
+`DT.DOD.DSTC.CD`, both current USD — the **division is PERFORMED**); only
+`usd_denominated_debt_share` is **GENUINELY BLOCKED** — the **full 20 000-entry** WB indicator
+catalogue was scanned and no per-country currency-composition series exists (the only `DT.*`
+"currency" matches are the *"Currency and deposits"* **instrument type**). **This is the FIRST
+CONFIRMED block after four FALSE ones** — four false did not make the fifth false, and the heading
+made none of them true. The function **REFUSES** (`ValueError` naming the missing legs) unless the
+blocked number is supplied — a two-of-three answer must not read as whole — and publishes
+`blocks_fx_selection = n_failed >= 2` as an explicit flag with a matching warning.
+**The D-118 confidence rule, held to the letter:** cap 0.10, computed half 0.25/0.30/0.60 for
+0/1/2 fetched legs ⇒ published **0.025/0.03/0.06** (a `min()` would make the computed half dead
+code). **The live check's first run FAILED here — and the defect was in the CHECK:** it paired a
+two-leg `computed` with the *supplied* run's confidence; fixed by building a fetched run inside the
+section and reading both halves off it, then measuring that a fetched run beats a supplied one
+(0.06 vs 0.025). **Two defects the FULL SUITE found:** O-141 restated (three registry entries added,
+each checked against the `RegistrySeries` field list; the blocked share is deliberately **absent**),
+and **a sweep anchor went AMBIGUOUS against a DIFFERENT sweep** — `EMVulnerabilitySettings`'
+accessors/validator are **textually identical** to `InterventionSettings`', so
+`mutation_intervention.py`'s `N1a`/`N1b`/`N4a` became ambiguous and `sweep_health.py` FAILED with 3
+failures; fixed by **WIDENING, never deleting** (D-109) with a distinguishing neighbour line, and
+re-run **60/60**. **The first sweep's 9 survivors were all tests nobody wrote** (`E6d`/`E9b` fetched
+branches; the `G*` validators and accessors — the `C6b` class, fixed by **D-050 leaf perturbation**).
+**Gates:** 276 == 276 (D-035) · **3689 tests / 0 failed / 0 errors / 1 skipped** (via `--junitxml`) ·
+reachability **PASS 58/58** · sweep **40/40** · `sweep_health.py` LAST → **47 sweeps, 0 leftovers,
+0 shapes, 0 committed, 0 failures, OK**.)
+Previous update: **2026-09-28** (after **D-118 — Module 9's `intervention_capacity`: a NEW module, a
 NEW data-layer client, a NEW config block, and a FOURTH FALSE BLOCK closed.** Tier 5 = **15/23**.
 §20.9 (`AGENTS.md:4861`; the reference implementation is at `:4904` — resolved with `grep -n`)
 specifies the function, so this is an **UPGRADE of a specified function in a NEW file**, and it
@@ -376,7 +409,7 @@ in Tier 4, not here.
 | **Tier 2** — depend on Tier 1 | 29 | 29 | **100%** | `████████████████████` |
 | **Tier 3** — synthesis | 15 | 15 | **100%** | `████████████████████` ✅ |
 | **Tier 4** — construction | 11 | 11 | **100%** | `████████████████████` ✅ |
-| **Tier 5** — Phase 5+ | 15 | 23 | **65%** | **UNDER WAY** — the newest is **D-118 `intervention_capacity`**; before it D-117 (PPP sourcing), D-114 `ppp_valuation`, D-112 `uip_expected_move`, D-110 `dollar_smile_regime`, D-109 `carry_score`, D-108 `cip_check`, D-106 `monte_carlo_var`, D-094 `test_stationarity`, D-092 `run_regression` |
+| **Tier 5** — Phase 5+ | 15 | 23 | **65%** | **UNDER WAY** — the newest is **D-119 `em_vulnerability_checklist`**; before it D-118 `intervention_capacity`, D-117 (PPP sourcing), D-114 `ppp_valuation`, D-112 `uip_expected_move`, D-110 `dollar_smile_regime`, D-109 `carry_score`, D-108 `cip_check`, D-106 `monte_carlo_var`, D-094 `test_stationarity`, D-092 `run_regression` |
 
 **The Tier-5 denominator is 23, per §21.3's own table — *"and only that table."*** The
 `20` this row carried until D-118 was one of the known three-way disagreements (23 = §21.3's

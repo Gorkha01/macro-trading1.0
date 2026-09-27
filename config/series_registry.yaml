@@ -1240,6 +1240,112 @@ series:
     plausible_range: [0.5, 2.0]
 
   # -------------------------------------------------------------------------
+  # EM VULNERABILITY inputs for `em_vulnerability_checklist` (Section 20's
+  # part B, D-119). Section 20's HEADING claims the function "needs IMF/World
+  # Bank data", which under Section 21.1's default rule would make all three
+  # inputs BLOCKED. MEASURED 2026-09-29, that claim is HALF FALSE: two of the
+  # three are reachable from this same World Bank host and the third is a
+  # GENUINE block — the first CONFIRMED one in this repository, after four
+  # FALSE ones (D-043's class: ppp_implied_rate at D-115/D-117, fx_reserves at
+  # D-118).
+  #
+  # THE THIRD INPUT IS DELIBERATELY ABSENT FROM THIS FILE. There is no
+  # `usd_denominated_debt_share` entry because no per-country source exists:
+  # the full World Bank indicator catalogue (20 000 entries) was scanned and
+  # the only `DT.*` names matching "currency" are "... Currency and deposits
+  # ...", a debt INSTRUMENT TYPE rather than a denomination — the D-116 trap
+  # of a right-sounding label on the wrong concept. Registering a fabricated
+  # source here would be the defect this comment exists to prevent.
+  #
+  # ⚠️ THE TWO UNITS DIFFER FROM THE FRED RESERVE ENTRIES ABOVE. These are
+  #     current USD (absolute), not millions, so neither needs the /1000 step
+  #     `reserves_client` performs. A unit is not a label (D-116): the two
+  #     routes to a reserve stock must never be substituted for one another.
+  #
+  # All three are `not_a_snapshot_field`: the model selects them by COUNTRY and
+  # the snapshot builder's one-field-one-series model does not shape a
+  # per-country lookup. They are registered so the SOURCE is auditable
+  # (Section 21.1's actual purpose), not so the builder fetches them.
+  # -------------------------------------------------------------------------
+  current_account_pct_gdp_world_bank:
+    provider: world_bank
+    symbol: BN.CAB.XOKA.GD.ZS
+    not_a_snapshot_field: true
+    description: >
+      Current account balance, PER CENT of GDP, annual, World Bank. Negative =
+      deficit. The first of `em_vulnerability_checklist`'s two reachable legs;
+      Section 21.1 already lists `current_account_pct_gdp` as LIVE on this
+      "direct, not OpenBB" route.
+
+      ⚠️ THE UNIT IS PER CENT, NOT A FRACTION, and that is the defect this
+      entry prevents: Section 20's reference implementation compares against
+      -0.03, a fraction, which against this series would fire only for deficits
+      deeper than 0.03% of GDP. Measured TUR: 2024 = -0.77, 2023 = -3.63,
+      2022 = -5.00 — so the conventional -3% benchmark is reached, and a
+      fraction comparison would not have been.
+
+      No point-in-time selector exists (the World Bank offers none), so this is
+      a DISCLOSED VINTAGE, not a live price.
+    frequency: annual
+    units: percent_of_gdp
+    status: verified
+    verified_on: 2026-09-29
+    verified_value: -0.77
+    verified_observation_date: 2024-01-01
+    plausible_range: [-30.0, 30.0]
+
+  reserves_total_usd_world_bank:
+    provider: world_bank
+    symbol: FI.RES.TOTL.CD
+    not_a_snapshot_field: true
+    description: >
+      Total reserves including gold, CURRENT US$ (absolute, not millions),
+      annual, World Bank. The NUMERATOR of `em_vulnerability_checklist`'s
+      DERIVED coverage ratio.
+
+      ⚠️ DO NOT CONFUSE WITH `fx_reserves_japan` AND SIBLINGS ABOVE, which are
+      FRED monthly series in MILLIONS of USD. These are absolute current USD on
+      an ANNUAL frequency. Same concept, different unit and different
+      frequency; substituting one for the other is a 1000x error that produces
+      a plausible-looking reserve stock at either scale (D-116 — a unit is not
+      a label).
+
+      Measured TUR 2024 = 155548682878.169; the ratio to the ST-debt leg below
+      is 0.873, a FAILING coverage check.
+    frequency: annual
+    units: current_usd
+    status: verified
+    verified_on: 2026-09-29
+    verified_value: 155548682878.169
+    verified_observation_date: 2024-01-01
+    plausible_range: [1.0e8, 1.0e13]
+
+  short_term_external_debt_usd:
+    provider: world_bank
+    symbol: DT.DOD.DSTC.CD
+    not_a_snapshot_field: true
+    description: >
+      Short-term external debt on a residual-maturity basis, CURRENT US$,
+      annual, World Bank. The DENOMINATOR of `em_vulnerability_checklist`'s
+      DERIVED coverage ratio. Section 21.1 calls that input "IMF reserves /
+      World Bank ST external debt" and marks it DERIVED — meaning the division
+      is PERFORMED by the client, never assumed (D-109).
+
+      Both legs are current USD, so the ratio is a pure number and NO unit
+      conversion happens. That is a property of these two specific indicators,
+      not a general rule, which is why `reserves_to_short_term_debt` names both
+      legs' units on the disclosure it returns.
+
+      Measured TUR 2024 = 178133840000.0.
+    frequency: annual
+    units: current_usd
+    status: verified
+    verified_on: 2026-09-29
+    verified_value: 178133840000.0
+    verified_observation_date: 2024-01-01
+    plausible_range: [1.0e7, 1.0e13]
+
+  # -------------------------------------------------------------------------
   # FX RESERVES for `intervention_capacity` (Section 20.9). Section 20.9's
   # reference implementation declares `fx_reserves_usd_bn` and
   # `reserves_to_gdp_pct` with NO source, and no entry existed here — which under

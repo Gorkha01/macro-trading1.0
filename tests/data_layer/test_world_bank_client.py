@@ -387,3 +387,158 @@ def test_the_registry_entries_declare_only_real_schema_fields() -> None:
     # And the registry as a whole must still load: the structural check above
     # proves no UNDECLARED key, this proves no validator rejects the entry.
     assert SeriesRegistry.model_validate(raw).series.keys() >= ppp_entries.keys()
+
+
+# ===========================================================================
+# D-119 — the general indicator reader and the DERIVED coverage ratio
+# ===========================================================================
+# `em_vulnerability_checklist` needed three indicators and a two-leg division,
+# so the transport core was extracted into a shared helper and two public
+# functions were added. These tests assert the properties that make the new
+# surface safe, in the same structural style as the PPP block above:
+#
+# (f) The shared helper is SHARED — `fetch_ppp_conversion_factor` must delegate
+#     to it, because two copies of "newest non-null year, empty is not failed"
+#     is how the two routes drift apart.
+# (g) The coverage ratio PERFORMED the division and did NOT convert units.
+# (h) A zero denominator raises rather than returning an infinite ratio, which
+#     would read as "perfectly covered" to any caller comparing against 1.0.
+# (i) The two indicators really are the ones Section 21.1 names.
+
+
+def _indicator_row(
+    year: str, value: float | None, *, indicator: str, iso3: str = "TUR"
+) -> dict[str, Any]:
+    """A real World Bank row for an arbitrary indicator."""
+    return {
+        "indicator": {"id": indicator, "value": indicator},
+        "country": {"id": "TR", "value": "Turkiye"},
+        "countryiso3code": iso3,
+        "date": year,
+        "value": value,
+        "unit": "",
+        "obs_status": "",
+        "decimal": 0,
+    }
+
+
+def test_the_indicator_codes_are_the_ones_the_authority_names() -> None:
+    """(i) A wrong indicator code returns a different series, not an error.
+
+    Section 21.1 names `BN.CAB.XOKA.GD.ZS` for the current account, and the
+    coverage ratio is DERIVED from reserves over short-term external debt. The
+    codes are asserted here so a typo that silently fetches an unrelated series
+    fails a test rather than producing a plausible-looking wrong number.
+    """
+    assert world_bank_client.CURRENT_ACCOUNT_PCT_GDP_INDICATOR == "BN.CAB.XOKA.GD.ZS"
+    assert world_bank_client.RESERVES_TOTAL_USD_INDICATOR == "FI.RES.TOTL.CD"
+    assert world_bank_client.SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR == "DT.DOD.DSTC.CD"
+
+
+def test_fetch_indicator_reading_returns_the_latest_non_null_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The newest YEAR wins, and a null in a newer row is skipped, not read as 0."""
+    rows = [
+        _indicator_row("2025", None, indicator="BN.CAB.XOKA.GD.ZS"),
+        _indicator_row("2024", -0.77, indicator="BN.CAB.XOKA.GD.ZS"),
+        _indicator_row("2023", -3.63, indicator="BN.CAB.XOKA.GD.ZS"),
+    ]
+    _patch_client(monkeypatch, _payload(rows))
+    reading = world_bank_client.fetch_indicator_reading("TUR", "BN.CAB.XOKA.GD.ZS")
+    assert reading.year == 2024
+    assert reading.value == -0.77
+    assert reading.iso3 == "TUR"
+
+
+def test_fetch_indicator_reading_raises_on_an_empty_series(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty series is a failure, never a zero (the EMU-aggregate lesson)."""
+    rows = [_indicator_row("2024", None, indicator="BN.CAB.XOKA.GD.ZS")]
+    _patch_client(monkeypatch, _payload(rows))
+    with pytest.raises(WorldBankUnavailableError, match="no populated"):
+        world_bank_client.fetch_indicator_reading("TUR", "BN.CAB.XOKA.GD.ZS")
+
+
+def test_fetch_ppp_conversion_factor_delegates_to_the_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(f) The PPP route must go through `_fetch_latest_reading`, not its own copy.
+
+    If this delegation is removed, the two routes can drift — the retry budget,
+    the newest-year rule and the empty/failed distinction would then exist twice
+    and diverge. Asserted by watching the helper, so a future re-inlining fails
+    here.
+    """
+    calls: list[tuple[str, str]] = []
+    original = world_bank_client._fetch_latest_reading
+
+    def _spy(iso3: str, indicator: str, *, timeout: float) -> Any:
+        calls.append((iso3, indicator))
+        return original(iso3, indicator, timeout=timeout)
+
+    monkeypatch.setattr(world_bank_client, "_fetch_latest_reading", _spy)
+    rows = [_indicator_row("2024", 32.5, indicator="PA.NUS.PPP", iso3="DEU")]
+    _patch_client(monkeypatch, _payload(rows))
+    world_bank_client.fetch_ppp_conversion_factor("DEU")
+    assert calls == [("DEU", "PA.NUS.PPP")]
+
+
+def test_the_coverage_ratio_divides_the_two_legs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(g) The DERIVED ratio performs the division — measured, not assumed.
+
+    Both legs are the same unit, so a mutant that hardcoded 1.0, or returned the
+    numerator, or divided the wrong way round, would produce a plausible-looking
+    coverage ratio. The expected value is computed from the two inputs here.
+    """
+    reserves = 155_548_682_878.169
+    short_term = 178_133_840_000.0
+    rows_a = [_indicator_row("2024", reserves, indicator="FI.RES.TOTL.CD")]
+    rows_b = [_indicator_row("2024", short_term, indicator="DT.DOD.DSTC.CD")]
+
+    def _fake(iso3: str, indicator: str, *, timeout: float = 30.0) -> Any:
+        rows = rows_a if indicator == "FI.RES.TOTL.CD" else rows_b
+        return world_bank_client._parse_rows_to_reading(iso3, indicator, rows, date(2026, 7, 13))
+
+    monkeypatch.setattr(world_bank_client, "fetch_indicator_reading", _fake)
+    ratio, disclosure = world_bank_client.reserves_to_short_term_debt("TUR")
+
+    assert ratio == pytest.approx(reserves / short_term, rel=1e-12)
+    assert ratio < 1.0
+    assert "FI.RES.TOTL.CD" in disclosure and "DT.DOD.DSTC.CD" in disclosure
+
+
+def test_a_zero_short_term_debt_raises_rather_than_returning_infinity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(h) An infinite ratio reads as 'perfectly covered' — refuse it instead."""
+    rows_a = [_indicator_row("2024", 1.0e11, indicator="FI.RES.TOTL.CD")]
+    rows_b = [_indicator_row("2024", 0.0, indicator="DT.DOD.DSTC.CD")]
+
+    def _fake(iso3: str, indicator: str, *, timeout: float = 30.0) -> Any:
+        rows = rows_a if indicator == "FI.RES.TOTL.CD" else rows_b
+        return world_bank_client._parse_rows_to_reading(iso3, indicator, rows, date(2026, 7, 13))
+
+    monkeypatch.setattr(world_bank_client, "fetch_indicator_reading", _fake)
+    with pytest.raises(WorldBankUnavailableError, match="undefined"):
+        world_bank_client.reserves_to_short_term_debt("TUR")
+
+
+def test_the_coverage_disclosure_names_both_legs_and_their_years(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ratio is a statement about two series; one date cannot describe it."""
+    rows_a = [_indicator_row("2024", 2.0e11, indicator="FI.RES.TOTL.CD")]
+    rows_b = [_indicator_row("2023", 1.0e11, indicator="DT.DOD.DSTC.CD")]
+
+    def _fake(iso3: str, indicator: str, *, timeout: float = 30.0) -> Any:
+        rows = rows_a if indicator == "FI.RES.TOTL.CD" else rows_b
+        return world_bank_client._parse_rows_to_reading(iso3, indicator, rows, date(2026, 7, 13))
+
+    monkeypatch.setattr(world_bank_client, "fetch_indicator_reading", _fake)
+    _, disclosure = world_bank_client.reserves_to_short_term_debt("TUR")
+    assert "2024" in disclosure and "2023" in disclosure
+    assert "no unit conversion" in disclosure

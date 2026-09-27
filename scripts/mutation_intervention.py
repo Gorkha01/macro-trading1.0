@@ -292,14 +292,39 @@ _R_CHANGE_LAG = "_CHANGE_LAG_MONTHS = 12"
 
 # --------------------------------------------------------------------------
 # N1-N4: the config.
+#
+# ⚠️ D-119: `EMVulnerabilitySettings` was added to config.py with accessors and
+# a validator whose bodies are TEXTUALLY IDENTICAL to InterventionSettings' —
+# `return float(self.reliability_cap.value)`,
+# `return self.reliability_cap.is_trustworthy`, and
+# `if not 0.0 <= self.reliability_value <= 1.0:` each occur TWICE now. Every
+# mutation that hardcodes a constant is a WEAK test (D-031). A name-grep is not
+# a coverage proxy (O-133) — and an anchor that matches two sites is not a
+# mutation, it is an ambiguity. Each of the three below is therefore WIDENED
+# with a distinguishing NEIGHBOUR line that exists only in InterventionSettings:
+# the accessors include their unique docstring tail, the validator includes its
+# `intervention.reliability_cap` error message. WIDEN, never delete (D-109).
 # --------------------------------------------------------------------------
 
-_N1_RELIABILITY_PROP = "        return float(self.reliability_cap.value)"
-_N1_CALIBRATED_READ = "        return self.reliability_cap.is_trustworthy"
+_N1_RELIABILITY_PROP = (
+    "        Deliberately **below** both parity caps — see the class docstring.\n"
+    '        """\n'
+    "        return float(self.reliability_cap.value)"
+)
+_N1_CALIBRATED_READ = (
+    "        of assuming it. ``CalibratedValue.is_trustworthy`` is False for\n"
+    "        ``uncalibrated_illustrative``, which is what this leaf is.\n"
+    '        """\n'
+    "        return self.reliability_cap.is_trustworthy"
+)
 _N2_UNCONSTRAINED_PROP = "        return str(self.unconstrained_label.value)"
 _N2_CONSTRAINED_PROP = "        return str(self.reserve_constrained_label_text.value)"
 _N3_BURN_PROP = "        return float(self.burn_alert_pct.value)"
-_N4_RELIABILITY_VALIDATOR = "        if not 0.0 <= self.reliability_value <= 1.0:"
+_N4_RELIABILITY_VALIDATOR = (
+    "        if not 0.0 <= self.reliability_value <= 1.0:\n"
+    "            raise ValueError(\n"
+    '                f"intervention.reliability_cap is {self.reliability_value}. A "'
+)
 _N4_BURN_VALIDATOR = "        if self.burn_alert_value <= 0.0:"
 
 

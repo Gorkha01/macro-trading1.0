@@ -10,6 +10,60 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-119 — Module 9's `em_vulnerability_checklist` (World Bank, live) (2026-09-29)
+
+A **function increment**: a heading that was **HALF false**, the first **CONFIRMED**
+block after four false ones, and a gate that **refuses** rather than guesses. Tier 5
+stays **15/23** — a **D-096 exception** (the authority supplies the body, so this is an
+UPGRADE that supersedes nothing: a *new capability*).
+
+**Added**
+
+- **`src/macro_engine/models/em_vulnerability.py`** — `em_vulnerability_checklist`,
+  Section 20's part B. Three checks (current-account deficit, majority-USD debt,
+  reserves below short-term external debt) → verdict
+  `{0: low, 1: moderate, 2: high, 3: critical}`, with the gate published as an explicit
+  **`blocks_fx_selection = n_failed >= 2`** flag and a matching override warning. A
+  two-of-three answer must not read as a whole one, so the function **REFUSES**
+  (`ValueError` naming the missing legs) unless the genuinely-blocked input is supplied.
+- **Three indicator routes** in `data_layer/world_bank_client.py` —
+  `BN.CAB.XOKA.GD.ZS` (current account, **per cent** of GDP), `FI.RES.TOTL.CD` and
+  `DT.DOD.DSTC.CD` (both current USD). A shared `IndicatorReading` and a
+  `reserves_to_short_term_debt` that **performs** the derived division (refusing a zero
+  denominator); `fetch_ppp_conversion_factor` now delegates to the same helper.
+- **`EMVulnerabilitySettings`** in `src/macro_engine/config.py` + the `em_vulnerability:`
+  YAML block — `reliability_cap` **0.10** (the lowest in the FX family),
+  `current_account_deficit_threshold_pct_gdp` **−3.0 PER CENT** (not the spec's `−0.03`
+  fraction), `usd_debt_share_threshold` 0.50, `reserves_to_st_debt_threshold` 1.0.
+- **Three registry entries** in `config/series_registry.yaml`; `usd_denominated_debt_share`
+  is **deliberately absent** — no source exists, and an entry would imply one.
+- **`tests/models/test_em_vulnerability.py`** (51 tests) and **7 new** in
+  `tests/data_layer/test_world_bank_client.py`.
+- **`scripts/mutation_em_vulnerability.py`** — a **40-mutation** sweep, **40/40 killed**.
+- **`scripts/live_em_vulnerability_check.py`** — the live wiring check, **PASS**.
+
+**Fixed**
+
+- **The heading's blocking claim was measured, and it is HALF false.** The **full
+  20 000-entry** World Bank indicator catalogue was scanned: no per-country
+  currency-composition series exists, so `usd_denominated_debt_share` is a **genuine**
+  block — the **first CONFIRMED one after four false** ones (O-145's sibling fact, D-043's
+  class).
+- **`mutation_intervention.py`'s `N1a`/`N1b`/`N4a` anchors became AMBIGUOUS** — three new
+  `EMVulnerabilitySettings` bodies are byte-identical to `InterventionSettings`', so
+  `sweep_health.py` reported 3 failures on an otherwise-green tree. Widened with a
+  distinguishing neighbour line; intervention re-run **60/60 killed** (now **O-145**).
+- **9 first-run sweep survivors**, all tests nobody wrote — the `E6d`/`E9b` fetched-only
+  branches and the `G*` validators/accessors (the `C6b` class, fixed by **D-050 leaf
+  perturbation**), never by weakening a mutation.
+
+**Changed**
+
+- The sweep census moves **46 → 47** in all three places it is asserted.
+- `docs/OPEN_ISSUES.md` normalised to LF on disk (it had been CRLF while `HEAD` is LF —
+  content proved identical); gains **O-145** and **O-146**.
+- `docs/DECISIONS.md` gains **D-119**.
+
 ### D-118 — Module 9's `intervention_capacity` (FRED reserves, live) (2026-09-27)
 
 A **function increment**: Tier 5 moves **14/23 → 15/23**. A new module, a new data-layer client,

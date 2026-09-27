@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_six_sweeps_to_cover() -> None:
+def test_there_are_forty_seven_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -471,10 +471,20 @@ def test_there_are_forty_six_sweeps_to_cover() -> None:
     `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two
     checks cover it. **Its first run left 14 survivors, all weak tests — one of
     which was a genuine CODE defect (an unused constant the conversion bypassed),
-    the rest tests that reproduced the code's own expression (D-050).**
+    the     rest tests that reproduced the code's own expression (D-050).**
+
+    **46 → 47 at D-119**, which added `mutation_em_vulnerability.py` — the sweep
+    over Module 9's `em_vulnerability_checklist`, the **third** NEW module created
+    by a Tier-5 increment (`models/em_vulnerability.py`), plus its new indicator
+    routes in `data_layer/world_bank_client.py` and its config block. It uses
+    `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two checks
+    cover it. **Its first run left 9 survivors (E6d/E9b model branches reachable
+    only via a FETCHED run; G1a/G2a-G2c validator guards never driven to fire;
+    G3a-G3c threshold accessors never read in isolation) — every one a test
+    nobody wrote, not an inert mutation.**
     """
     files = _sweep_files()
-    assert len(files) == 46, f"expected 46 sweeps, found {len(files)}"
+    assert len(files) == 47, f"expected 47 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)
