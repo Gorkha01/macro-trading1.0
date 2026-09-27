@@ -10452,3 +10452,76 @@ against `REGIME_STATES`, and the confidence is the product of both halves from *
   `REFERENCE.md`, the skill, and `OPEN_ISSUES.md`; the sidecar diff is the standing control.
 
 **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-124 (2026-09-27) — `duration_sensitivity` (§6.9) + `factor_tilt_prior` (§20.20-E), **Module 11 COMPLETE**
+
+**Tier 5 = 22/23** (moved **20 → 22**; MEASURED 2026-09-27 from `AGENTS.md:5541–5550` against
+`src/`: **22** have a real `def`, **1** does not — `statement_text_diff`). `AGENTS.md:1111` and
+`AGENTS.md:3089` supply complete reference bodies ⇒ the **seventh and eighth D-096 exceptions**;
+both **supersede nothing** — the `cip_check` answer, *new capability*. **NO new OpenBB commands** —
+neither reads market data (a stated rate move + a style; a regime label) ⇒ the command census **stays
+6**. This increment **extends an existing file** (`models/equity_macro.py`, created at D-123) and an
+existing config block.
+
+### Step 1–2 — the economic questions and the inputs
+
+* **`duration_sensitivity`** — the growth-vs-value **discount-rate channel**: a growth equity's cash
+  flows sit further out, so a rate move hits it harder. Inputs: `style`
+  (`Literal["growth","value"]`) and `rate_change_bp` (gated to a config band).
+* **`factor_tilt_prior`** — regime-conditional **style-factor** tilts. Input: `regime_state`
+  (the classifier's `RegimeState` `Literal`).
+
+### Step 3 — the arithmetic and the table
+
+`est_pct_move = -proxy_duration * (rate_change_bp / 10000)`, proxies `15`/`5` from config. Growth at
+`+100bp` → `-15.0%`; value → `-5.0%`; the ratio is the specification's 15:5. `FACTOR_REGIME_MAP` is
+Section 20.20-E's nine-regime × five-factor table **verbatim** and **already exhaustive**, so **no
+extension rows** (unlike §6.9's sector map).
+
+### Step 4 — the defect classes corrected
+
+1. `is_growth: bool` → a named style `Literal` (a boolean's meaning depends on which way `True`
+   reads).
+2. `regime_state: str` → the classifier's imported `RegimeState` `Literal` (D-046).
+3. Both hardcoded confidences (`0.3`, `0.35`) → the §22.8 product (→ `0.165`, `0.1925`).
+4. The rate move gated to a config band — a unit error is amplified ×15 into a headline otherwise.
+
+### Step 5 — the tests (80 in the file; +47 this increment)
+
+Coverage (both maps exhaustive over `REGIME_STATES`), the factor table verbatim against
+Section 20.20-E, the vocabulary refusals, the arithmetic (sign, linearity, the 3:1 ratio, the zero
+move, the band edges), the **confidence product with each half proved load-bearing** (D-050 leaf
+perturbation), the momentum-crash warning, and the config validators. All pass.
+
+### Step 6–7 — the sweep and its ambiguity
+
+`mutation_equity_macro.py` **30 → 58** (+28). ⚠️ **NINE pre-existing anchors broke** when the two new
+functions put three `compute_confidence` blocks and three `ModelResult` returns in one module
+(`E2a`, `E4c`, `E4e`, `E4f`, `E5b`, `E6a`, `E6c`, `E6d` ambiguous; `N3a` whose literal moved into a
+loop). Each **WIDENED**, never deleted (D-109/O-145, third firing). `--check-targets` = **58
+mutations, 0 problems**; sweep = **58/58 killed**.
+
+### Step 8 — the real-data check (extended to 6 sections)
+
+`scripts/live_equity_macro_check.py`: real FRED → `classify_regime_rule_based` → **both** priors +
+`duration_sensitivity` on a **real** `DFF` move. ⚠️ The **first** run exposed the check's own
+degenerate input (one daily `DFF` step = `+0.0bp` ⇒ vacuous sign check); fixed with a ~3-month window
+(live: `+25.0bp` → growth `-3.75%`, value `-1.25%`, ratio 3.000) and an honest zero-move branch.
+Verdict **OK**.
+
+### Step 9 — the records
+
+`docs/DECISIONS.md` (D-124), `docs/MODULE_MAPPING.md`, `docs/BUILD_STATE.md`, `docs/CHANGELOG.md`,
+and the memory files.
+
+### Gates (MEASURED)
+
+`ruff check` clean (2 passes: RUF022 + 4×E501 at implementation; N802 + 3-file reformat at close) ·
+`ruff format --check` == `mypy --strict` == **287** · live check **OK** (6 sections) ·
+reachability Tier 1-4 **PASS 58/58** (`SCRIPT-ONLY — Tier 5` **20**, `NO CALLER — Tier 5` **1**) ·
+suite (junitxml) **4023 tests / 0 failed / 0 errors / 1 skipped** · sweep **58/58** ·
+`sweep_health.py` **49 sweeps · OK** (0 leftovers, 0 shapes, 0 committed, 0 failures; census
+unchanged). ⚠️ The pre-close draft carried "290" and "18" — both were CARRIED numbers; the measured
+values are **287** and **20** (D-035: the count is MEASURED).

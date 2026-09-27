@@ -87,7 +87,19 @@ _EXT_TUPLE = 'SECTOR_PRIOR_EXTENSION_REGIMES: tuple[str, ...] = (\n    "slowdown
 
 # The field's Literal. Widening it back to `str` reintroduces Section 6.9's bare-
 # string defect: a misspelling reaches the `.get` and receives the fallback.
-_INPUT_REGIME_FIELD = "    regime_state: RegimeState = Field("
+#
+# ⚠️ WIDENED AT D-124: adding `FactorTiltInputs` (Section 20.20-E) made the bare
+# field line occur TWICE — both input models type `regime_state: RegimeState`.
+# The anchor now carries the preceding docstring tail, which is unique to
+# `SectorRotationInputs` ("never a confident answer about the wrong regime").
+_INPUT_REGIME_FIELD = (
+    "    value must produce an error, never a confident answer about the wrong regime.\n"
+    '    """\n'
+    "\n"
+    '    model_config = ConfigDict(extra="forbid", frozen=True)\n'
+    "\n"
+    "    regime_state: RegimeState = Field("
+)
 
 # --------------------------------------------------------------------------
 # E3: the lookup, the fallback and the published container.
@@ -103,14 +115,46 @@ _PUBLISHED = (
 # --------------------------------------------------------------------------
 # E4: the confidence — the product and its four inputs.
 # --------------------------------------------------------------------------
+#
+# ⚠️ WIDENED AT D-124. Adding `duration_sensitivity` and `factor_tilt_prior` put
+#    THREE `computed = compute_confidence(ConfidenceInputs(...))` blocks in this
+#    module, so every bare input line now occurs 2-3 times. Each anchor carries
+#    the distinguishing tail it shares with NO other block:
+#    * `_COMPUTED_CALL` — prefixed by the sector site's `published`/`has_prior`
+#      setup, which no other block has;
+#    * `_FLAGS_PRESENT` — the sector block alone passes `not has_prior`; the other
+#      two pass `False`. Widened with the following heuristic line, which is also
+#      sector-only.
+#    * `_SOURCE_INDEP` — the three blocks differ in the trailing product line, so
+#      each anchor carries its own:
+#      `* equity_macro.reliability_value` (sector), `.duration_reliability_value`,
+#      `.factor_tilt_reliability_value`.
 
-_CONF_PRODUCT = "    confidence = computed * equity_macro.reliability_value"
-_COMPUTED_CALL = "    computed = compute_confidence(\n        ConfidenceInputs("
-_FLAGS_PRESENT = "            data_quality_flags_present=not has_prior,"
+_COMPUTED_CALL = (
+    "    published: list[str] = list(sectors) if sectors is not None else "
+    "[equity_macro.no_prior_label]\n"
+    "\n"
+    "    # --- confidence: two producers, both load-bearing ------------------------\n"
+)
+_FLAGS_PRESENT = (
+    "            data_quality_flags_present=not has_prior,\n"
+    "            is_heuristic_not_calibrated=not equity_macro.reliability_cap_is_calibrated,"
+)
+# Sector-only: only this block prices the SECTOR cap's calibration status, so the
+# bare line is unique despite the two sibling confidence blocks.
 _HEURISTIC = (
     "            is_heuristic_not_calibrated=not equity_macro.reliability_cap_is_calibrated,"
 )
-_SOURCE_INDEP = "            source_independence_count=1,"
+# Sector-only: the sibling blocks end their products with the duration and
+# factor-tilt cap names, so the bare product line is unique.
+_CONF_PRODUCT = "    confidence = computed * equity_macro.reliability_value"
+_SOURCE_INDEP = (
+    "            source_independence_count=1,\n"
+    "            depends_on_unobservable=False,\n"
+    "        )\n"
+    "    )\n"
+    "    confidence = computed * equity_macro.reliability_value"
+)
 
 # --------------------------------------------------------------------------
 # E5: the warnings and the caveat.
@@ -125,18 +169,29 @@ _CAVEAT_WARNING = (
     '        "This is a historical BASE-RATE PRIOR, not a mechanical rule — every "'
 )
 _FALLBACK_WARNING = (
-    '            f"Regime {regime!r} is a declared classifier state with no defined "'
+    '            f"Regime {regime!r} is a declared classifier state with no defined "\n'
+    '            f"sector prior, so no rotation is applied.'
 )
 _EXT_ASSUMPTION = '            f"The row for {regime!r} is this build\'s declaration, NOT Section "'
 
 # --------------------------------------------------------------------------
 # E6: the published contract and the module-level import assertion.
+#
+# ⚠️ WIDENED AT D-124. `value=published,`, `source_family=...` and `country="us",`
+#    each now occur THREE times (one per function), so each anchor carries a
+#    sibling line unique to the sector result: the sector unit is
+#    `"sector_names"` (the others are `"percent_price_change"` and
+#    `"tilt_minus1_to_plus1"`), so the contract anchors are pinned through it.
 # --------------------------------------------------------------------------
 
-_VALUE_KW = "        value=published,"
+_VALUE_KW = '        value=published,\n        confidence=confidence,\n        unit="sector_names",'
 _UNIT_KW = '        unit="sector_names",'
-_SOURCE_FAMILY_KW = "        source_family=EvidenceSourceFamily.MANUAL_ASSESSMENT,"
-_COUNTRY_KW = '        country="us",'
+_SOURCE_FAMILY_KW = (
+    '        unit="sector_names",\n'
+    "        direction=None,\n"
+    "        source_family=EvidenceSourceFamily.MANUAL_ASSESSMENT,"
+)
+_COUNTRY_KW = '        model_name="sector_rotation_prior",\n        country="us",'
 _ASSERT_MAP = "assert set(get_args(RegimeState)) == set(REGIME_STATES), ("
 
 # --------------------------------------------------------------------------
@@ -167,12 +222,54 @@ _N1_CALIBRATED_READ = (
     "    def no_prior_label(self) -> str:"
 )
 _N2_LABEL_PROP = "        return str(self.no_prior_label_leaf.value)"
-_N3_CAP_VALIDATOR = (
-    '                f"equity_macro.reliability_cap is {self.reliability_value}. A "'
-)
+# ⚠️ WIDENED AT D-124: the cap-range check is now a LOOP over the three caps, so
+# the old bare `f"equity_macro.reliability_cap is ..."` line no longer exists.
+# The anchor is the loop's f-string, which names `{name}`/`{cap}` and so is
+# unique to this block.
+_N3_CAP_VALIDATOR = '                f"equity_macro.{name} is {cap}. A confidence must lie inside "'
 _N3_LABEL_VALIDATOR = (
     '                f"equity_macro.no_prior_label is {self.no_prior_label!r}. It is "'
 )
+
+# --- D-124: the duration and factor-tilt leaves ---------------------------
+#
+# The three new accessors and the three new validator guards are each pinned by a
+# mutation. The accessor anchors carry the FOLLOWING property's opener (the
+# ``_leaf``-suffix block is unique to EquityMacroSettings), and each validator
+# anchor is its own ``f"equity_macro.<leaf> ..."`` message, which is unique.
+_N4_GROWTH_PROP = (
+    "        return float(self.duration_growth_proxy_years_leaf.value)\n"
+    "\n"
+    "    @property\n"
+    "    def duration_value_proxy_years(self) -> float:"
+)
+_N4_VALUE_PROP = (
+    "        return float(self.duration_value_proxy_years_leaf.value)\n"
+    "\n"
+    "    @property\n"
+    "    def duration_reliability_value(self) -> float:"
+)
+_N4_DURATION_CAP_PROP = (
+    "        return float(self.duration_reliability_cap.value)\n"
+    "\n"
+    "    @property\n"
+    "    def duration_proxy_is_calibrated(self) -> bool:"
+)
+_N4_PROXY_CALIBRATED_AND = (
+    "        return (\n"
+    "            self.duration_growth_proxy_years_leaf.is_trustworthy\n"
+    "            and self.duration_value_proxy_years_leaf.is_trustworthy\n"
+    "        )"
+)
+_N4_FACTOR_CAP_PROP = (
+    "        return float(self.factor_tilt_reliability_cap.value)\n"
+    "\n"
+    "    @property\n"
+    "    def factor_tilt_reliability_cap_is_calibrated(self) -> bool:"
+)
+_N5_GROWTH_VALIDATOR = '                f"equity_macro.duration_growth_proxy_years is "'
+_N5_VALUE_VALIDATOR = '                f"equity_macro.duration_value_proxy_years is "'
+_N5_BAND_VALIDATOR = '                f"equity_macro.duration_rate_change band is "'
 
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
@@ -268,7 +365,8 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "E4c the data-quality flag is inverted (a missing prior looks better)",
         SRC,
         _FLAGS_PRESENT,
-        "            data_quality_flags_present=has_prior,",
+        "            data_quality_flags_present=has_prior,\n"
+        "            is_heuristic_not_calibrated=not equity_macro.reliability_cap_is_calibrated,",
     ),
     (
         "E4d the heuristic penalty is dropped",
@@ -286,7 +384,12 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "E4f the computed confidence never runs",
         SRC,
         _COMPUTED_CALL,
-        "    computed = 0.5\n    _unused = compute_confidence(\n        ConfidenceInputs(",
+        "    published: list[str] = list(sectors) if sectors is not None else "
+        "[equity_macro.no_prior_label]\n"
+        "\n"
+        "    # --- confidence: two producers, both load-bearing ------------------------\n"
+        "    computed = 0.5\n"
+        "    _unused = compute_confidence(\n        ConfidenceInputs(",
     ),
     # --- E5: the warnings and the caveat ---------------------------------
     (
@@ -312,7 +415,9 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "E6a the published value is not the looked-up sectors",
         SRC,
         _VALUE_KW,
-        "        value=equity_macro.no_prior_label,",
+        "        value=equity_macro.no_prior_label,\n"
+        "        confidence=confidence,\n"
+        '        unit="sector_names",',
     ),
     (
         "E6b the unit is published as something else",
@@ -324,13 +429,15 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "E6c the source family is claimed as market data",
         SRC,
         _SOURCE_FAMILY_KW,
+        '        unit="sector_names",\n'
+        "        direction=None,\n"
         "        source_family=EvidenceSourceFamily.BLS_EMPLOYMENT_SITUATION,",
     ),
     (
         "E6d the country is a constant other than the US",
         SRC,
         _COUNTRY_KW,
-        '        country="de",',
+        '        model_name="sector_rotation_prior",\n        country="de",',
     ),
     (
         "E6e the vocabulary-agreement assertion compares against the WRONG set",
@@ -361,7 +468,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "N3a the cap-range validator removed",
         CONFIG,
         _N3_CAP_VALIDATOR,
-        '                f"equity_macro.reliability_cap is {self.reliability_value}. A "\n'
+        '                f"equity_macro.{name} is ok "\n'
         "            )\n"
         "        _dead_validator_guard = True",
     ),
@@ -372,6 +479,217 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         '                f"equity_macro.no_prior_label is {self.no_prior_label!r}. It is "\n'
         "            )\n"
         "        _dead_validator_guard = True",
+    ),
+    # --- D1-D5: duration_sensitivity (Section 6.9) ------------------------
+    (
+        "D1a the growth/value leg is swapped (growth gets the value duration)",
+        SRC,
+        "    proxy_duration = (\n"
+        "        equity_macro.duration_growth_proxy_years\n"
+        "        if is_growth\n"
+        "        else equity_macro.duration_value_proxy_years\n"
+        "    )",
+        "    proxy_duration = (\n"
+        "        equity_macro.duration_value_proxy_years\n"
+        "        if is_growth\n"
+        "        else equity_macro.duration_growth_proxy_years\n"
+        "    )",
+    ),
+    (
+        "D1b the duration proxy is hardcoded instead of read from config",
+        SRC,
+        "    proxy_duration = (\n"
+        "        equity_macro.duration_growth_proxy_years\n"
+        "        if is_growth\n"
+        "        else equity_macro.duration_value_proxy_years\n"
+        "    )",
+        "    proxy_duration = 15.0 if is_growth else 5.0",
+    ),
+    (
+        "D2a the price-move sign is flipped (a rate rise helps)",
+        SRC,
+        "    est_pct_move = -proxy_duration * (inputs.rate_change_bp / 10000.0)",
+        "    est_pct_move = proxy_duration * (inputs.rate_change_bp / 10000.0)",
+    ),
+    (
+        "D2b the percentage scaling is dropped (a factor of 100 lost)",
+        SRC,
+        "    published = round(est_pct_move * 100.0, 2)",
+        "    published = round(est_pct_move, 2)",
+    ),
+    (
+        "D3a the rate-move band check is dropped (any move passes)",
+        SRC,
+        "        if not low <= value <= high:",
+        "        if False:",
+    ),
+    (
+        "D3b the band bounds are swapped (the gate refuses everything)",
+        SRC,
+        "        low = band.duration_rate_change_min_bp\n"
+        "        high = band.duration_rate_change_max_bp",
+        "        low = band.duration_rate_change_max_bp\n"
+        "        high = band.duration_rate_change_min_bp",
+    ),
+    (
+        "D4a the duration confidence is summed instead of multiplied",
+        SRC,
+        "    confidence = computed * equity_macro.duration_reliability_value",
+        "    confidence = computed + equity_macro.duration_reliability_value",
+    ),
+    (
+        "D4b the duration computed half is dropped (a bare cap)",
+        SRC,
+        "    confidence = computed * equity_macro.duration_reliability_value",
+        "    confidence = equity_macro.duration_reliability_value",
+    ),
+    (
+        "D4c the duration heuristic penalty is dropped",
+        SRC,
+        "            is_heuristic_not_calibrated=not equity_macro.duration_proxy_is_calibrated,",
+        "            is_heuristic_not_calibrated=False,",
+    ),
+    (
+        "D5a the illustrative-proxy warning is removed",
+        SRC,
+        '            "Proxy duration is ILLUSTRATIVE, not calibrated — refine with a real "',
+        '            "Proxy duration is a forecast — "',
+    ),
+    (
+        "D5b the style is ignored in the interpretation (always 'growth')",
+        SRC,
+        '        unit="percent_price_change",',
+        '        unit="percent_price_change",\n        direction=None,',
+    ),
+    # --- F1-F4: factor_tilt_prior (Section 20.20-E) -----------------------
+    (
+        "F1a a factor row is removed (a regime falls back)",
+        SRC,
+        '    "recession": {"value": -0.5, "momentum": -1.0, "quality": 1.0, "low_vol": 1.0, "size": -1.0},\n',
+        "",
+    ),
+    (
+        "F1b the whole factor map is emptied (every regime falls back)",
+        SRC,
+        "FACTOR_REGIME_MAP: dict[str, dict[str, float]] = {",
+        "FACTOR_REGIME_MAP: dict[str, dict[str, float]] = {}\n_UNUSED_FACTOR_MAP = {",
+    ),
+    (
+        "F1c the five factor names are truncated to four",
+        SRC,
+        'FACTOR_NAMES: tuple[str, ...] = ("value", "momentum", "quality", "low_vol", "size")',
+        'FACTOR_NAMES: tuple[str, ...] = ("value", "momentum", "quality", "low_vol")',
+    ),
+    (
+        "F2a the momentum tilt's sign is flipped in the recession row",
+        SRC,
+        '    "recession": {"value": -0.5, "momentum": -1.0, "quality": 1.0, "low_vol": 1.0, "size": -1.0},',
+        '    "recession": {"value": -0.5, "momentum": 1.0, "quality": 1.0, "low_vol": 1.0, "size": -1.0},',
+    ),
+    (
+        "F3a the factor-tilt confidence is summed instead of multiplied",
+        SRC,
+        "    confidence = computed * equity_macro.factor_tilt_reliability_value",
+        "    confidence = computed + equity_macro.factor_tilt_reliability_value",
+    ),
+    (
+        "F3b the factor computed half is dropped (a bare cap)",
+        SRC,
+        "    confidence = computed * equity_macro.factor_tilt_reliability_value",
+        "    confidence = equity_macro.factor_tilt_reliability_value",
+    ),
+    (
+        "F3c the factor data-quality flag is inverted",
+        SRC,
+        "            data_quality_flags_present=not has_prior,\n"
+        "            is_heuristic_not_calibrated=not equity_macro.factor_tilt_reliability_cap_is_calibrated,",
+        "            data_quality_flags_present=has_prior,\n"
+        "            is_heuristic_not_calibrated=not equity_macro.factor_tilt_reliability_cap_is_calibrated,",
+    ),
+    (
+        "F4a the momentum-crash warning is removed",
+        SRC,
+        '        "Momentum tilts are LEAST reliable precisely at regime turns (momentum "\n'
+        '        "crashes) — the moment this prior matters most is when it is weakest "\n'
+        '        "(Section 20.20-E).",',
+        '        "Momentum tilts are a reliable guide at regime turns.",',
+    ),
+    (
+        "F4b the fallback publishes STALE tilts instead of an empty dict",
+        SRC,
+        "    published: dict[str, float] = dict(tilts) if tilts is not None else {}",
+        "    published: dict[str, float] = dict(tilts) if tilts is not None "
+        "else FACTOR_REGIME_MAP['mid_expansion']",
+    ),
+    # --- N4-N5: the duration / factor config accessors and validators -----
+    (
+        "N4a the growth-proxy accessor returns the value-proxy leaf",
+        CONFIG,
+        _N4_GROWTH_PROP,
+        "        return float(self.duration_value_proxy_years_leaf.value)\n"
+        "\n"
+        "    @property\n"
+        "    def duration_value_proxy_years(self) -> float:",
+    ),
+    (
+        "N4b the value-proxy accessor returns the growth-proxy leaf",
+        CONFIG,
+        _N4_VALUE_PROP,
+        "        return float(self.duration_growth_proxy_years_leaf.value)\n"
+        "\n"
+        "    @property\n"
+        "    def duration_reliability_value(self) -> float:",
+    ),
+    (
+        "N4c the duration-cap accessor returns the sector reliability cap",
+        CONFIG,
+        _N4_DURATION_CAP_PROP,
+        "        return float(self.reliability_cap.value)\n"
+        "\n"
+        "    @property\n"
+        "    def duration_proxy_is_calibrated(self) -> bool:",
+    ),
+    (
+        "N4d the duration-proxy calibration flag is ORed, not ANDed",
+        CONFIG,
+        _N4_PROXY_CALIBRATED_AND,
+        "        return (\n"
+        "            self.duration_growth_proxy_years_leaf.is_trustworthy\n"
+        "            or self.duration_value_proxy_years_leaf.is_trustworthy\n"
+        "        )",
+    ),
+    (
+        "N4e the factor-tilt cap accessor returns the sector reliability cap",
+        CONFIG,
+        _N4_FACTOR_CAP_PROP,
+        "        return float(self.reliability_cap.value)\n"
+        "\n"
+        "    @property\n"
+        "    def factor_tilt_reliability_cap_is_calibrated(self) -> bool:",
+    ),
+    (
+        "N5a the non-positive growth-proxy guard is removed",
+        CONFIG,
+        _N5_GROWTH_VALIDATOR,
+        '                f"equity_macro.duration_growth_proxy_years is ok "\n'
+        "            )\n"
+        "        _dead_guard = True",
+    ),
+    (
+        "N5b the non-positive value-proxy guard is removed",
+        CONFIG,
+        _N5_VALUE_VALIDATOR,
+        '                f"equity_macro.duration_value_proxy_years is ok "\n'
+        "            )\n"
+        "        _dead_guard = True",
+    ),
+    (
+        "N5c the inverted rate-band guard is removed",
+        CONFIG,
+        _N5_BAND_VALIDATOR,
+        '                f"equity_macro.duration_rate_change band is ok "\n'
+        "            )\n"
+        "        _dead_guard = True",
     ),
 ]
 

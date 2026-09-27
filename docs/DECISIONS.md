@@ -20582,3 +20582,204 @@ recall them. The remaining **3** Tier-5 names, MEASURED (2026-09-27) from `AGENT
 against `src/`, are: `duration_sensitivity`, `factor_tilt_prior` (Module 11's remaining two →
 `models/equity_macro.py`, now created), and `statement_text_diff` (§20.4). **All three have NO
 definition anywhere in `src/`.**
+
+## D-124 — Module 11 **COMPLETED**: `duration_sensitivity` (§6.9) and `factor_tilt_prior` (§20.20-E), the reference bodies' **hardcoded confidences replaced by the §22.8 product**, and **NINE pre-existing sweep anchors WIDENED** when the new functions made them ambiguous (the O-145 shape, third firing)
+
+**Date:** 2026-09-27 (session clock). **Tier 5 = 22/23** (moved **20 → 22**; MEASURED 2026-09-27 from
+`§21.3`'s table at `AGENTS.md:5541–5550` against `src/`, not recalled — the O-147 discipline).
+Target: the **existing** `src/macro_engine/models/equity_macro.py` (created at D-123) and the
+**existing** `EquityMacroSettings` block in `src/macro_engine/config.py`. Sections resolved with
+`grep -n`: **§6.9** (`AGENTS.md:1111` — `duration_sensitivity`'s reference body) and **§20.20's
+part E** (`AGENTS.md:3089` — "Module 11 — Factor Tilt Engine", header literally
+``# src/macro_engine/models/equity_macro.py (addition)``). **NO new OpenBB commands** — both
+functions read **no market data** (`duration_sensitivity` reads a stated rate move + a style;
+`factor_tilt_prior` reads a regime label), so the **command census stays 6**. Two Tier-5 names in
+**one** increment, explicitly grouped by the operator ("Only 21 and 22 need pushing right now"),
+which is the ONE deviation from the standing ONE-FUNCTION-PER-INCREMENT rule — recorded below.
+
+### 1. Authority and what was built
+
+**`duration_sensitivity`** — Section 6.9's second Module 11 function. The reference body
+(`AGENTS.md:1111`) is:
+
+```python
+def duration_sensitivity(is_growth: bool, rate_change_bp: float) -> ModelResult:
+    proxy_duration = 15 if is_growth else 5  # illustrative, calibrate against real data later
+    est_pct_move = -proxy_duration * (rate_change_bp / 10000)
+    return ModelResult(..., value=round(est_pct_move * 100, 2), confidence=0.3, ...)
+```
+
+Three corrections, none of them cosmetic:
+
+1. **`is_growth: bool` → a named `EquityStyle = Literal["growth", "value"]` field.** A bare boolean
+   is a two-valued field whose meaning depends entirely on which way ``True`` is read; the two
+   styles are the model's entire distinction, so the label is what a caller keys on (D-029/D-046).
+2. **The rate move is gated to a plausible band.** A `rate_change_bp` arrives from a caller or a
+   scenario; a unit error (`2500` for `25`, or a rate *level* where a *change* was meant) is
+   amplified ×15 into a headline percentage, with no second chance to notice. The band
+   (`±1000bp`, config) refuses it — the `intervention_capacity` input-validation class (D-118).
+3. **`confidence=0.3` → the §22.8 product** `compute_confidence(...) × duration_reliability_cap`
+   (`= 0.55 × 0.30 = 0.165`). The hardcoded literal is FORBIDDEN by §22.8.
+
+The two duration proxies (`15`/`5`) move to config as `uncalibrated_illustrative` leaves — the
+specification's OWN status (its comment: *"illustrative, calibrate against real data later"*; its
+warning: *"Proxy duration is illustrative, not calibrated"*). This is the ONE Module 11 function
+whose output is a **number**, so the illustrative disclosure is load-bearing, not decoration: it is
+published in `context` AND `warnings` on every path.
+
+**`factor_tilt_prior`** — Section 20.20-E. The reference body's `FACTOR_REGIME_MAP` is a
+**nine-regime × five-factor** table (`value`/`momentum`/`quality`/`low_vol`/`size`, tilts in
+`[-1,+1]`). Two corrections:
+
+1. **`regime_state: str` → the classifier's imported `RegimeState` `Literal`** (D-046), so a typo
+   cannot fall through the `.get` into the "unknown regime" branch.
+2. **`confidence=0.35` → the §22.8 product** (`= 0.55 × 0.35 = 0.1925`).
+
+**⚠️ THE SPECIFICATION'S FACTOR TABLE IS KEPT VERBATIM — EVERY VALUE.** Unlike Section 6.9's sector
+map, Section 20.20-E's table is **already exhaustive over the nine** regimes, so this build adds
+**NO extension rows**: `FACTOR_REGIME_MAP` is the specification's declared prior, in its own order,
+with its own key spelling (`low_vol`, not `low_volatility`). The header comment records that so a
+future edit cannot mistake an invented row for a specified one, and a test pins
+`len(FACTOR_REGIME_MAP) == len(REGIME_STATES) == 9`.
+
+### 2. The defect this increment DID NOT have (and the one it did)
+
+**No coverage hole.** D-123's `sector_rotation_prior` closed a hole (Section 6.9 covers six of nine
+states). Section 20.20-E's factor table covers all nine, so `factor_tilt_prior` is **the second
+Tier-5 function in Module 11 that closes nothing** — it completes the module. The exhaustiveness
+assertions are still present (`FACTOR_REGIME_MAP == REGIME_STATES`, module-level AND by test) as a
+**drift guard**, not a repair.
+
+**The defect that DID appear is in the SWEEP, not the model — the O-145 shape, THIRD FIRING.**
+Adding two functions to `equity_macro.py` put **three** `computed = compute_confidence(...)` blocks
+and **three** `ModelResult(...)` returns in one module. Measured with `str.count()` before the sweep:
+**NINE pre-existing anchors became ambiguous or broken** —
+
+| Anchor | Was | Why it broke |
+|---|---|---|
+| `E2a` (input field) | 1 | `FactorTiltInputs` types the same field line → **2** |
+| `E4c` (data-quality flag) | 1 | sector passes `not has_prior`; siblings pass `False` — the FOLLOWING heuristic line made it ambiguous → **2** |
+| `E4e` (independence credit) | 1 | three identical `source_independence_count=1,` → **3** |
+| `E4f` (computed never runs) | 1 | three `computed = compute_confidence(` → **3** |
+| `E5b` (fallback warning) | 1 | the factor fallback warning shares its prefix → **2** |
+| `E6a` (`value=published,`) | 1 | three returns → **3** |
+| `E6c` (`source_family=`) | 1 | three returns → **3** |
+| `E6d` (`country="us",`) | 1 | three returns → **3** |
+| `N3a` (cap validator) | 1 | the validator became a **loop**; the old literal message no longer exists → **0** |
+
+Every one was **WIDENED with a distinguishing neighbour, never deleted** (D-109/O-145): `E2a` gained
+the sector-only docstring tail ("never a confident answer about the wrong regime"); `E4c` gained its
+heuristic line; `E4e`/`E6c`/`E6d` gained the sector-only `unit="sector_names"` / `model_name=` line;
+`N3a` was retargeted to the loop's `f"equity_macro.{name} is ..."` string. **`--check-targets` was
+the gate that answered this**: it reported **58 mutations, 0 problems** only after the widening.
+⚠️ The check-targets mode is cheap and MUST run before the sweep — it is the tool built for exactly
+this.
+
+### 3. Two places the confidence product had to be DISTINGUISHED, not duplicated
+
+Each function's `compute_confidence` block now differs from its siblings in exactly the fields that
+matter, and the tests prove each half load-bearing (D-050 leaf perturbation, the same-run rule of
+D-119):
+
+* **`duration_sensitivity`** passes `data_quality_flags_present=False` (a rate move and a duration
+  proxy are both stated numbers — no missing input) and `is_heuristic_not_calibrated=not
+  duration_proxy_is_calibrated` — where `duration_proxy_is_calibrated` is the **AND** of BOTH
+  proxies' statuses (one illustrative leg makes the whole estimate illustrative). A mutation that
+  ORed them (`N4d`) is killed by `test_the_duration_proxy_calibration_status_is_load_bearing`.
+* **`factor_tilt_prior`** passes `data_quality_flags_present=not has_prior` (mirroring the sector
+  function: a MISSING row is the input-quality defect) and the factor cap's own status.
+
+Both keep the D-118 lesson: `min()` was rejected because both factors sit in `[0,1]` — `min()` would
+make one half dead code. The product keeps both load-bearing and neither silently dead.
+
+### 4. The live check — and a real weakness it exposed in itself
+
+`scripts/live_equity_macro_check.py` was extended from 5 to **6 sections**: it now drives BOTH priors
+end to end (real FRED → `classify_regime_rule_based` → both lookups) and runs
+`duration_sensitivity` on a **REAL rate move** (`DFF`, the effective fed funds series).
+
+⚠️ **THE FIRST RUN EXPOSED A DEGENERATE CHECK.** The rate move was computed as the change between the
+last **two daily** `DFF` observations, which was **`+0.0 bp`** — so every impact was `0.00`, the
+growth/value ratio was `nan`, and the sign assertion was VACUOUS. A check that passes only on a zero
+input establishes nothing about the sign. **Fixed two ways:** (a) the window is now a **~3-month**
+(63-observation) change, which on live data produced **`+25.0 bp`** → growth `-3.75%`, value
+`-1.25%`, ratio **exactly 3.000**; and (b) a genuine `0.0` move is now **disclosed and re-checked on
+a declared `+25bp` probe**, never silently `nan`. Live verdict: **OK**, all six sections.
+
+### 5. Gates (all MEASURED this session)
+
+* `ruff check` FIRST (`src tests tools scripts`) → **clean**. Two passes across the increment
+  (D-119's lesson: `ruff check` runs BEFORE format and CI short-circuits on it): the implementation
+  pass fixed RUF022 (`__all__` re-sorted) + 4×E501, none `noqa`-ed; the close-out pass fixed 1×N802
+  (the `test_..._AND_...` name → `..._conjunction_...`) and reformatted 3 files. `ruff check` was
+  re-run AFTER the reformat → **All checks passed**.
+* `ruff format --check` == `mypy --strict` == **287** over `src tests tools scripts` (measured;
+  `ruff format --check` reports "287 files already formatted" and `mypy --strict` reports
+  "no issues found in 287 source files"). ⚠️ This **corrects** the count this file carried before
+  the close (the pre-measurement draft said "290 / +3" — a RECALLED number, not a measured one; the
+  D-035 discipline is that the count is MEASURED, and 287 is the measurement).
+* `scripts/live_equity_macro_check.py` → **OK**, 6 sections, live state `'recession'`, real rate move
+  `+25.0 bp` (window = 63 observations ≈ 3 months).
+* Reachability: Tier 1-4 **PASS 58/58** (unchanged); `SCRIPT-ONLY — Tier 5` **20** + `NO CALLER —
+  Tier 5: 1` (`oil_balance_signal`) = **21** unwired Tier-5. Derivation, MEASURED: **17** at D-122 →
+  **18** at D-123 (`sector_rotation_prior`; its committed live check is a caller) → **20** here
+  (`duration_sensitivity` + `factor_tilt_prior`). All three Module 11 names resolve under
+  `SCRIPT-ONLY — Tier 5`.
+* Full suite (DEFAULT markers, via `--junitxml`): **4023 tests / 0 failed / 0 errors / 1 skipped**
+  (was 3938 at D-122; **+85**).
+* `mutation_equity_macro.py` = **58/58 killed** (30 → 58; **+28**), `--check-targets` = **58
+  mutations, 0 problems**. Canary required KILLED and was. (First run = 55/58; three survivors
+  triaged per D-031 — one BROKEN mutation `F4a`, one EQUIVALENT `F4b`, one WEAK TEST `N4d`; see §7.)
+* `sweep_health.py` **LAST** → **OK**: 49 sweeps checked, **0** leftovers, **0** mutant shapes on
+  disk, **0** committed mutants, **0** failures; `mutation_equity_macro.py` reports **58 mutations**.
+
+### 6. Close-out (measured)
+
+Filled at the end of the session once every gate had run (this file is append-only; the numbers
+below are the measured close, not an estimate).
+
+**Close-out, 2026-09-27, HEAD `ec060e0` (= `origin/main`, the D-123 commit), tree = the 11 intended
+files.**
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | **All checks passed** (1 N802 `test_..._AND_...` name lowercased to `..._conjunction_...`; 3 files reformatted) |
+| `ruff format --check` | **287 files already formatted** |
+| `mypy --strict` | **no issues found in 287 source files** |
+| `live_equity_macro_check.py` | **OK** (6 sections; real move +25.0 bp; growth −3.75%, value −1.25%, ratio 3.000) |
+| Reachability | Tier 1-4 **PASS 58/58**; Tier-5 SCRIPT-ONLY **20** + NO CALLER **1** |
+| Full suite (`--junitxml`) | **4023 / 0 failed / 0 errors / 1 skipped** |
+| `mutation_equity_macro.py` | **58/58 killed**; `--check-targets` **58, 0 problems** |
+| `sweep_health.py` (LAST) | **OK** — 49 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures |
+
+**Two sidecars** were left by the safe-delete hook (`equity_macro.py.sweepbackup`,
+`config.py.sweepbackup`; the known `exit=1` leak, NOT a sweep failure). Both were **byte-verified
+IDENTICAL** to their live files (`cmp -s`) before removal — a stale sidecar would have silently
+reverted the edits on the next run.
+
+⚠️ **A post-sweep ORDERING fact:** `ruff format` rewrote `scripts/mutation_equity_macro.py` (the
+sweep SCRIPT, not the swept source), so `--check-targets` was **re-run after the reformat** and
+returned **58 mutations, 0 problems** — the anchors survived. The 58/58 verdict predates the
+reformat but is unaffected: reformatting is behaviour-preserving for both the mutation script and
+`tests/models/test_equity_macro.py` (re-run green, **81 passed**).
+
+### 7. The three survivors of the first sweep run — D-031 triage
+
+The first full run was **55/58** with three survivors. Each was triaged by the D-031 taxonomy, and
+NONE was fixed by weakening the mutation (the discipline):
+
+* **`F4a` — a BROKEN mutation.** It replaced only the FIRST of two concatenated momentum-warning
+  string lines, leaving the tail `"crashes)"` in place — so the mutated source still contained the
+  warning and the test rightly passed. **Retargeted** to the full three-line warning string.
+* **`F4b` — an EQUIVALENT mutation.** It appended `# noqa: E501` to a line, which is
+  behaviour-identical. **Retargeted** to publish stale tilts (`FACTOR_REGIME_MAP['mid_expansion']`)
+  on the fallback path — now a real behaviour change the fallback test catches.
+* **`N4d` — a WEAK TEST (the D-050 class).** It ORed the two proxy-calibration legs
+  (`growth OR value` instead of `AND`); the distinction is only observable when EXACTLY ONE leg is
+  calibrated, and the existing test calibrated BOTH (so AND and OR agreed). **Fixed by ADDING a test**
+  that calibrates only the growth leg and asserts the flag stays `False` —
+  `test_the_duration_proxy_flag_is_the_conjunction_of_both_legs` (renamed from `..._AND_...` to
+  satisfy N802). Never weaken the mutation to make it die.
+
+All three were then **hand-verified KILLED** in a throwaway harness, and the full re-run measured
+**58/58**.

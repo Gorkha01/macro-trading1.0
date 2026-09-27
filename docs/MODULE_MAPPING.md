@@ -2690,3 +2690,52 @@ sweep script**, so the catalogue is **49**. The count is asserted in
 `test_sweep_sidecar_lifecycle.py` (**twice** — the function NAME `test_there_are_forty_nine_sweeps_to_cover`
 and its assertion) and `test_sweep_health_leftover_predicate.py` (**once**), and all three were edited
 together — the rule D-025 established when the census first drifted.
+
+---
+
+## D-124 — Module 11 **COMPLETE** (`duration_sensitivity` §6.9, `factor_tilt_prior` §20.20-E)
+
+**Module 11's three functions now ALL exist** in `models/equity_macro.py`: `sector_rotation_prior`
+(D-123), `duration_sensitivity` and `factor_tilt_prior` (this increment). The tier table's Module 11
+row (`AGENTS.md:1783`) is fully satisfied.
+
+| Function | Section | Domain | Reads |
+|---|---|---|---|
+| `sector_rotation_prior` | §6.9 | 9 regimes → ordered sector lists | a regime label |
+| `duration_sensitivity` | §6.9 | (style, rate_bp) → %-price move | a stated rate move + a style |
+| `factor_tilt_prior` | §20.20-E | 9 regimes → 5 factor tilts in [-1,+1] | a regime label |
+
+**⚠️ `duration_sensitivity` IS THE ONE MODULE 11 FUNCTION WHOSE OUTPUT IS A NUMBER, so its
+`uncalibrated_illustrative` status is load-bearing.** Section 6.9 calls its own duration proxy
+"illustrative, calibrate against real data later"; the config leaves carry that status, the computed
+confidence prices it (heuristic penalty ON), and the published result states it in `context` AND
+`warnings`. A reader who takes `-15.0%` as a calibrated forecast has misread the model.
+
+**⚠️ `factor_tilt_prior`'s table is Section 20.20-E's VERBATIM — no extension rows.** Unlike
+§6.9's six-key sector map (which needed three extension rows for `slowdown`/`recovery`/`reflation`),
+§20.20-E's `FACTOR_REGIME_MAP` is **already exhaustive over the nine** regimes. This build adds
+nothing to it; the exhaustiveness assertions are a **drift guard**, not a repair. A test pins
+`len(FACTOR_REGIME_MAP) == len(REGIME_STATES) == 9` so an invented row fails loudly.
+
+**Command census UNCHANGED at 6.** Neither function reads market data — `duration_sensitivity` reads
+a stated rate move, `factor_tilt_prior` a regime label — so no OpenBB command is added.
+
+**⚠️ THE SWEEP-AMBIGUITY TRAP FIRED A THIRD TIME (the O-145 shape).** Adding two functions to a
+SWEPT module put **three** `compute_confidence` blocks and **three** `ModelResult` returns in one
+file, which made **NINE pre-existing anchors** in `mutation_equity_macro.py` ambiguous (`E2a`, `E4c`,
+`E4e`, `E4f`, `E5b`, `E6a`, `E6c`, `E6d`) or broken (`N3a`, whose literal moved into a loop). Every
+one was **WIDENED with a distinguishing neighbour, never deleted** (D-109). **The mapping-level
+rule: adding ANY function to a SWEPT module requires re-measuring EVERY anchor's `str.count() == 1`
+BEFORE the sweep**, and `--check-targets` is the gate that answers it — it reported **58 mutations,
+0 problems** only after the widening. `mutation_equity_macro.py` grew **30 → 58**.
+
+**Reachability — Tier 1-4 PASS 58/58 (unchanged).** `SCRIPT-ONLY — Tier 5` is now **20** (MEASURED,
+not recalled: 17 at D-122 → +1 for D-123's `sector_rotation_prior` → +2 for this increment's
+`duration_sensitivity` + `factor_tilt_prior` = **20**), and `NO CALLER — Tier 5` stays **1**
+(`oil_balance_signal`). All three Module 11 names appear in the SCRIPT-ONLY list, since the live
+check is their only caller. ⚠️ An earlier draft of this file said "stays 18" — that was a CARRIED
+number; the tool's heading is the authority and reads **20**.
+
+**The sweep census stays 49** — this increment EXTENDED an existing sweep
+(`mutation_equity_macro.py`), so no new script and no census bump (the D-120/121/122 shape, not the
+D-123 shape).

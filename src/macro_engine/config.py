@@ -6099,6 +6099,33 @@ class EquityMacroSettings(BaseModel):
     reliability_cap: CalibratedValue
     no_prior_label_leaf: CalibratedValue
 
+    # --- duration_sensitivity (Section 6.9's second function) ----------------
+    #
+    # ⚠️ THE TWO DURATION PROXIES ARE ``uncalibrated_illustrative``, AND THAT IS
+    # THE POINT. Section 6.9 inlines ``15 if is_growth else 5`` with the comment
+    # "illustrative, calibrate against real data later" — the specification says
+    # outright that these are placeholders. They are therefore read from config
+    # with their status recorded, so the confidence's computed half PRICES the
+    # placeholder (`duration_proxy_is_calibrated` feeds the heuristic penalty)
+    # rather than assuming it away. The values are Section 6.9's own; refusing
+    # them would be typing different unevidenced figures into config.
+    duration_growth_proxy_years_leaf: CalibratedValue
+    duration_value_proxy_years_leaf: CalibratedValue
+    duration_reliability_cap: CalibratedValue
+    duration_rate_change_min_bp_leaf: CalibratedValue
+    duration_rate_change_max_bp_leaf: CalibratedValue
+
+    # --- factor_tilt_prior (Section 20.20-E) --------------------------------
+    #
+    # Section 20.20-E hardcodes ``confidence=0.35``, which Section 22.8 forbids.
+    # The reference value is KEPT (as with ``reliability_cap`` above): a factor
+    # tilt is the same class of artefact as a sector prior — a historical base
+    # rate — so refusing the spec's number would be unevidenced. 0.35 is
+    # marginally below the sector cap's 0.4 because the specification's own
+    # warning is sharper here: momentum tilts are least reliable exactly at
+    # regime turns, so the method is weak in the place it matters most.
+    factor_tilt_reliability_cap: CalibratedValue
+
     @property
     def reliability_value(self) -> float:
         """The RELIABILITY CEILING ``sector_rotation_prior`` reports.
@@ -6135,33 +6162,147 @@ class EquityMacroSettings(BaseModel):
         """
         return str(self.no_prior_label_leaf.value)
 
+    # --- duration_sensitivity accessors --------------------------------------
+
+    @property
+    def duration_growth_proxy_years(self) -> float:
+        """The growth-equity duration proxy in years (Section 6.9's ``15``).
+
+        Section 6.9 inlines ``15 if is_growth else 5``. It is a config leaf so the
+        illustrative status travels with the number rather than living only in a
+        code comment; the spec's own value is kept.
+        """
+        return float(self.duration_growth_proxy_years_leaf.value)
+
+    @property
+    def duration_value_proxy_years(self) -> float:
+        """The value-equity duration proxy in years (Section 6.9's ``5``)."""
+        return float(self.duration_value_proxy_years_leaf.value)
+
+    @property
+    def duration_reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``duration_sensitivity`` reports.
+
+        Section 6.9 hardcodes ``0.3`` — the LOWEST of Module 11's three
+        confidences, which is the specification's own placement claim: turning a
+        rate move into a price move through a placeholder duration is the
+        weakest of the three methods (a prior is at least a frequency; a
+        heuristic proxy is not even that). The reference value is KEPT, read from
+        config rather than written in the body (Section 22.8).
+        """
+        return float(self.duration_reliability_cap.value)
+
+    @property
+    def duration_proxy_is_calibrated(self) -> bool:
+        """Whether the duration proxies are calibrated rather than placeholders.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated``. BOTH proxies must
+        be trustworthy for the pair to count as calibrated — one illustrative leg
+        makes the whole estimate illustrative, so the property is the AND rather
+        than a single leaf's status.
+        """
+        return (
+            self.duration_growth_proxy_years_leaf.is_trustworthy
+            and self.duration_value_proxy_years_leaf.is_trustworthy
+        )
+
+    @property
+    def duration_rate_change_min_bp(self) -> float:
+        """The lower bound of the admissible rate-move band, in basis points."""
+        return float(self.duration_rate_change_min_bp_leaf.value)
+
+    @property
+    def duration_rate_change_max_bp(self) -> float:
+        """The upper bound of the admissible rate-move band, in basis points."""
+        return float(self.duration_rate_change_max_bp_leaf.value)
+
+    # --- factor_tilt_prior accessors -----------------------------------------
+
+    @property
+    def factor_tilt_reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``factor_tilt_prior`` reports.
+
+        Section 20.20-E hardcodes ``0.35``. Section 22.8 forbids a hardcoded
+        confidence; the reference value is KEPT — a factor tilt is the same class
+        of artefact as a sector prior (a historical base rate), so it cannot be
+        refused as unevidenced. It sits just below the sector cap's 0.4 because
+        the specification's own warning is sharper here: momentum tilts are least
+        reliable precisely at regime turns.
+        """
+        return float(self.factor_tilt_reliability_cap.value)
+
+    @property
+    def factor_tilt_reliability_cap_is_calibrated(self) -> bool:
+        """Whether the factor-tilt cap is calibrated rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` so the computed
+        half prices the leaf's own status rather than assuming it.
+        """
+        return self.factor_tilt_reliability_cap.is_trustworthy
+
     @model_validator(mode="after")
     def _validate_cap_and_label(self) -> EquityMacroSettings:
-        """Refuse a cap outside ``[0, 1]`` and an empty no-prior label.
+        """Refuse a cap outside ``[0, 1]``, an empty no-prior label, or an
+        incoherent duration block.
 
         The cap check mirrors every sibling block: ``ModelResult`` refuses a
         confidence outside ``[0, 1]``, so a leaf outside it would raise at the
         FIRST call rather than at load — turning a config error into a runtime
-        failure of a model.
+        failure of a model. It is applied to all three Module 11 caps.
 
         The label must be non-empty because it is the published sector for an
         unknown regime: an empty string would put a blank sector into the thesis
         with no error anywhere, which is the silent-empty-value class this
         project refuses. The reference's own string is non-empty, so this guard
         protects a future edit rather than correcting the spec.
+
+        The duration block is checked for the two ways its leaves can contradict
+        each other: a non-positive proxy duration (which would flip or erase the
+        sign of the price move — a duration of zero makes ``-0 * x == 0`` for
+        every move), and an inverted rate band (a minimum above the maximum
+        refuses EVERY input, making the validator look defensive while accepting
+        nothing — the D-118 inverted-branch class).
         """
-        if not 0.0 <= self.reliability_value <= 1.0:
-            raise ValueError(
-                f"equity_macro.reliability_cap is {self.reliability_value}. A "
-                f"confidence must lie inside [0, 1] — the same ModelResult field "
-                f"constraint applies as on the sibling caps."
-            )
+        for name, cap in (
+            ("reliability_cap", self.reliability_value),
+            ("duration_reliability_cap", self.duration_reliability_value),
+            ("factor_tilt_reliability_cap", self.factor_tilt_reliability_value),
+        ):
+            if not 0.0 <= cap <= 1.0:
+                raise ValueError(
+                    f"equity_macro.{name} is {cap}. A confidence must lie inside "
+                    f"[0, 1] — the same ModelResult field constraint applies as on "
+                    f"the sibling caps."
+                )
         if not self.no_prior_label.strip():
             raise ValueError(
                 f"equity_macro.no_prior_label is {self.no_prior_label!r}. It is "
                 f"the published sector for a regime with no defined prior; an "
                 f"empty label would put a blank sector into the thesis with no "
                 f"error anywhere."
+            )
+        if self.duration_growth_proxy_years <= 0.0:
+            raise ValueError(
+                f"equity_macro.duration_growth_proxy_years is "
+                f"{self.duration_growth_proxy_years}. A non-positive proxy "
+                f"duration erases the price-move sign (a zero duration makes "
+                f"`-0 * x == 0` for every rate move, so the model would answer "
+                f"'no impact' unconditionally)."
+            )
+        if self.duration_value_proxy_years <= 0.0:
+            raise ValueError(
+                f"equity_macro.duration_value_proxy_years is "
+                f"{self.duration_value_proxy_years}. A non-positive proxy "
+                f"duration erases the price-move sign (see the growth proxy)."
+            )
+        if self.duration_rate_change_min_bp >= self.duration_rate_change_max_bp:
+            raise ValueError(
+                f"equity_macro.duration_rate_change band is "
+                f"[{self.duration_rate_change_min_bp}, "
+                f"{self.duration_rate_change_max_bp}] — the minimum is not below "
+                f"the maximum, so the band admits no rate move at all. An "
+                f"inverted band is the D-118 inverted-branch class: a guard that "
+                f"refuses everything reads as defensive while validating nothing."
             )
         return self
 

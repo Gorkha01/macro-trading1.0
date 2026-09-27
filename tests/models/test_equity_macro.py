@@ -1,27 +1,38 @@
-"""Tests for Module 11's ``sector_rotation_prior`` (Section 6.9).
+"""Tests for Module 11's ``sector_rotation_prior`` / ``duration_sensitivity`` /
+``factor_tilt_prior`` (Section 6.9, Section 20.20-E).
 
-The function is a *lookup*, so the hazards are not arithmetic ones. They are:
+The functions are *lookups and a proxy*, so the hazards are not arithmetic ones
+alone. They are:
 
-* **coverage.** Section 6.9's reference map is keyed on SIX regime strings, but
-  the classifier in ``models/regime.py`` declares and (after D-037) emits NINE.
-  Under the reference body, ``slowdown`` / ``recovery`` / ``reflation`` would
-  silently return the generic fallback. The tests therefore pin that the map is
-  **exhaustive over ``REGIME_STATES``**, which is the assertion that keeps the
-  hole from reopening if the classifier's vocabulary grows.
-* **the partition between the specification's rows and this build's.** Three rows
-  are additions. A reader must be able to tell which is which, so the constants
-  are asserted to partition the vocabulary and the extension rows are named.
-* **the vocabulary refusal.** Section 6.9's signature is ``str``; a typo under a
-  ``.get`` receives the generic fallback rather than an error. The field is a
-  ``Literal`` here, so the tests pin that an out-of-vocabulary value raises.
-* **the confidence.** It is the PRODUCT of a computed value and a config cap, so
-  BOTH factors must be shown to move the published number — a test that only read
-  the cap would pass on a build where the computed half was dead code (D-118's
-  `min()` defect, restated).
-* **the caveat.** The prior-not-rule qualification is the model's central claim
-  about itself; a build that dropped it would read as a recommendation.
+* **coverage.** Section 6.9's reference sector map is keyed on SIX regime
+  strings, but the classifier in ``models/regime.py`` declares and (after D-037)
+  emits NINE. Under the reference body, ``slowdown`` / ``recovery`` /
+  ``reflation`` would silently return the generic fallback. The tests therefore
+  pin that BOTH regime-keyed maps are **exhaustive over ``REGIME_STATES``**,
+  which is the assertion that keeps the hole from reopening if the classifier's
+  vocabulary grows.
+* **the partition between the specification's rows and this build's.** Three
+  sector rows are additions. A reader must be able to tell which is which, so the
+  constants are asserted to partition the vocabulary and the extension rows are
+  named. The factor map has NO extension rows (Section 20.20-E is already
+  exhaustive), and that is asserted too.
+* **the vocabulary refusal.** Section 6.9's signatures are ``str``; a typo under
+  a ``.get`` receives the generic fallback rather than an error. Both fields are
+  ``Literals`` here, so the tests pin that an out-of-vocabulary value raises.
+* **the confidence.** Each is the PRODUCT of a computed value and a config cap,
+  so BOTH factors must be shown to move the published number — a test that only
+  read the cap would pass on a build where the computed half was dead code
+  (D-118's `min()` defect, restated).
+* **the caveat.** The prior-not-rule qualification is the models' central claim
+  about themselves; a build that dropped it would read as a recommendation. For
+  ``factor_tilt_prior`` the specification adds a sharper, momentum-specific
+  warning that must survive.
+* **the duration arithmetic and its disclosure.** ``duration_sensitivity`` is the
+  one Module 11 function whose output is a NUMBER, so its sign, its linearity,
+  the growth/value ratio (3:1), the gate band and the illustrative-not-calibrated
+  disclosure are all pinned.
 
-The confidence and the caveat are asserted by READING THE OUTPUT, never by
+The confidence and the caveats are asserted by READING THE OUTPUT, never by
 recomposing the model's own expression (the ``C6b`` / D-050 defect: a test that
 reproduces the code cannot fail when the code is wrong).
 """
@@ -39,10 +50,16 @@ from macro_engine.models.contracts import (
     compute_confidence,
 )
 from macro_engine.models.equity_macro import (
+    FACTOR_NAMES,
+    FACTOR_REGIME_MAP,
     SECTOR_PRIOR_EXTENSION_REGIMES,
     SECTOR_ROTATION_PRIOR,
     SPECIFICATION_REGIMES,
+    DurationSensitivityInputs,
+    FactorTiltInputs,
     SectorRotationInputs,
+    duration_sensitivity,
+    factor_tilt_prior,
     sector_rotation_prior,
 )
 from macro_engine.models.regime import REGIME_STATES, RegimeState
@@ -469,5 +486,536 @@ def test_an_empty_no_prior_label_is_refused() -> None:
         _settings_with(
             no_prior_label_leaf=CalibratedValue(
                 value="   ", calibration_status="institutional_convention"
+            )
+        )
+
+
+# ===========================================================================
+# duration_sensitivity — Section 6.9's second function
+# ===========================================================================
+
+
+def _dur(style: str = "growth", bp: float = 100.0) -> DurationSensitivityInputs:
+    """An input model for a named style and rate move."""
+    return DurationSensitivityInputs(style=style, rate_change_bp=bp)  # type: ignore[arg-type]
+
+
+def _factor(regime: str = "mid_expansion") -> FactorTiltInputs:
+    """An input model for a named regime."""
+    return FactorTiltInputs(regime_state=regime)  # type: ignore[arg-type]
+
+
+def test_the_rate_rise_moves_a_growth_equity_down() -> None:
+    """A rate RISE is a negative price impact — the model's sign.
+
+    100bp on a 15-year-duration growth equity is ``-15 * (100/10000) * 100`` =
+    ``-15.0`` percent. Asserted against the arithmetic written out here, not
+    against the model's own expression.
+    """
+    result = duration_sensitivity(_dur("growth", 100.0))
+    assert result.value == pytest.approx(-15.0, abs=1e-9)
+    assert result.direction == "down"
+
+
+def test_the_growth_value_ratio_is_three_to_one() -> None:
+    """Growth (15yr) falls three times as far as value (5yr) for one move.
+
+    This is the whole content of the growth-vs-value duration trade
+    (``AGENTS.md:2198``): the ratio is the specification's 15:5.
+    """
+    growth = duration_sensitivity(_dur("growth", 100.0)).value
+    value = duration_sensitivity(_dur("value", 100.0)).value
+    assert isinstance(growth, float) and isinstance(value, float)
+    assert value == pytest.approx(-5.0, abs=1e-9)
+    assert growth == pytest.approx(3.0 * value, abs=1e-9)
+
+
+def test_a_rate_fall_moves_the_equity_up() -> None:
+    """A rate FALL is a positive price impact, and the direction flips."""
+    result = duration_sensitivity(_dur("growth", -50.0))
+    assert result.value == pytest.approx(7.5, abs=1e-9)
+    assert result.direction == "up"
+
+
+def test_a_zero_rate_move_is_flat_with_no_direction() -> None:
+    """A zero move publishes 0.0 and a null direction, not a guessed sign."""
+    result = duration_sensitivity(_dur("growth", 0.0))
+    assert result.value == pytest.approx(0.0, abs=1e-12)
+    assert result.direction is None
+
+
+def test_the_response_is_linear_in_the_rate_move() -> None:
+    """Doubling the move doubles the price impact — no convexity term."""
+    single = duration_sensitivity(_dur("value", 25.0)).value
+    double = duration_sensitivity(_dur("value", 50.0)).value
+    assert isinstance(single, float) and isinstance(double, float)
+    assert double == pytest.approx(2.0 * single, abs=1e-9)
+
+
+def test_the_proxies_are_the_specifications_15_and_5() -> None:
+    """The two proxies are Section 6.9's own values, read from SHIPPED config."""
+    settings = get_settings().equity_macro
+    assert settings.duration_growth_proxy_years == 15.0
+    assert settings.duration_value_proxy_years == 5.0
+
+
+@pytest.mark.parametrize("style", ["growth", "value"])
+def test_the_illustrative_disclosure_is_published_on_every_path(style: str) -> None:
+    """The proxy is ILLUSTRATIVE — the qualification is in context and warnings.
+
+    Section 6.9's own warning says "Proxy duration is illustrative, not
+    calibrated". A reader who takes the number as a calibrated forecast has
+    misread the model, so the output must make that hard.
+    """
+    result = duration_sensitivity(_dur(style, 100.0))
+    assert "ILLUSTRATIVE" in result.context.upper() or "illustrative" in result.context
+    assert any("ILLUSTRATIVE" in w.upper() for w in result.warnings)
+
+
+def test_an_out_of_vocabulary_style_is_refused() -> None:
+    """A style that is not growth/value RAISES; it does not default."""
+    with pytest.raises(ValidationError, match="style"):
+        DurationSensitivityInputs(style="blend", rate_change_bp=100.0)  # type: ignore[arg-type]
+
+
+def test_a_rate_move_outside_the_band_is_refused() -> None:
+    """A move past the band RAISES — a unit error must not publish a headline."""
+    high = get_settings().equity_macro.duration_rate_change_max_bp
+    with pytest.raises(ValidationError, match="rate_change_bp"):
+        DurationSensitivityInputs(style="growth", rate_change_bp=high + 1.0)
+
+
+def test_a_rate_move_below_the_band_is_refused() -> None:
+    """The lower edge is symmetric."""
+    low = get_settings().equity_macro.duration_rate_change_min_bp
+    with pytest.raises(ValidationError, match="rate_change_bp"):
+        DurationSensitivityInputs(style="growth", rate_change_bp=low - 1.0)
+
+
+def test_the_band_edges_are_admitted() -> None:
+    """The band is INCLUSIVE: a value exactly on an edge is accepted."""
+    low = get_settings().equity_macro.duration_rate_change_min_bp
+    high = get_settings().equity_macro.duration_rate_change_max_bp
+    assert duration_sensitivity(_dur("growth", low)).value is not None
+    assert duration_sensitivity(_dur("growth", high)).value is not None
+
+
+def test_the_growth_proxy_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Perturbing the growth proxy moves the published value (D-050).
+
+    A build that hardcoded ``15`` would fail here. The leaf is perturbed in
+    place, never compared against its own literal.
+    """
+    leaf = get_settings().equity_macro.duration_growth_proxy_years_leaf
+    monkeypatch.setattr(leaf, "value", 30.0, raising=False)
+    moved = duration_sensitivity(_dur("growth", 100.0)).value
+    assert moved == pytest.approx(-30.0, abs=1e-9), (
+        "doubling the growth proxy must double the growth equity's price impact"
+    )
+    # The value-equity leg is INDEPENDENT of the growth leaf.
+    assert duration_sensitivity(_dur("value", 100.0)).value == pytest.approx(-5.0, abs=1e-9)
+
+
+def test_the_value_proxy_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The value proxy moves the value leg and not the growth leg."""
+    leaf = get_settings().equity_macro.duration_value_proxy_years_leaf
+    monkeypatch.setattr(leaf, "value", 10.0, raising=False)
+    moved = duration_sensitivity(_dur("value", 100.0)).value
+    assert moved == pytest.approx(-10.0, abs=1e-9)
+    assert duration_sensitivity(_dur("growth", 100.0)).value == pytest.approx(-15.0, abs=1e-9)
+
+
+def test_the_duration_cap_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Halving the cap halves the published confidence (D-050)."""
+    base = duration_sensitivity(_dur("growth", 100.0)).confidence
+    cap = get_settings().equity_macro.duration_reliability_cap
+    monkeypatch.setattr(cap, "value", float(cap.value) / 2.0, raising=False)
+    moved = duration_sensitivity(_dur("growth", 100.0)).confidence
+    assert moved == pytest.approx(base / 2.0, abs=1e-12)
+
+
+def test_the_accrued_interest_confidence_is_the_product_of_both_halves() -> None:
+    """The published confidence is ``compute_confidence(...) * cap``, same run.
+
+    Both halves are read FROM THE SAME RUN (the D-119 lesson).
+    """
+    settings = get_settings().equity_macro
+    expected_computed = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=False,
+            is_heuristic_not_calibrated=not settings.duration_proxy_is_calibrated,
+            source_independence_count=1,
+            depends_on_unobservable=False,
+        )
+    )
+    result = duration_sensitivity(_dur("growth", 100.0))
+    assert result.confidence == pytest.approx(
+        expected_computed * settings.duration_reliability_value, abs=1e-12
+    )
+
+
+def test_the_duration_proxy_calibration_status_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Marking the proxies calibrated RELEASES the heuristic penalty (D-050).
+
+    The shipped proxies ARE ``uncalibrated_illustrative`` (so the penalty is ON);
+    the load-bearing direction to prove is the release, which must RAISE the
+    published confidence by the configured penalty scaled by the cap.
+    """
+    settings = get_settings()
+    shipped = duration_sensitivity(_dur("growth", 100.0)).confidence
+    assert not settings.equity_macro.duration_proxy_is_calibrated, (
+        "this test proves the release direction, which only exists while the "
+        "shipped proxies are uncalibrated"
+    )
+    monkeypatch.setattr(
+        settings.equity_macro.duration_growth_proxy_years_leaf,
+        "calibration_status",
+        "mechanical_rule",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        settings.equity_macro.duration_value_proxy_years_leaf,
+        "calibration_status",
+        "mechanical_rule",
+        raising=False,
+    )
+    released_flag: bool = settings.equity_macro.duration_proxy_is_calibrated
+    assert released_flag, "the calibration status leaves did not move"
+
+    released = duration_sensitivity(_dur("growth", 100.0)).confidence
+    penalty_times_cap = settings.confidence.heuristic_penalty.value * (
+        settings.equity_macro.duration_reliability_value
+    )
+    assert released > shipped
+    assert released - shipped == pytest.approx(penalty_times_cap, abs=1e-12)
+
+
+def test_the_duration_proxy_flag_is_the_conjunction_of_both_legs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ONE illustrative leg makes the whole estimate illustrative (AND, not OR).
+
+    The shipped pair is BOTH ``uncalibrated_illustrative``, so an AND and an OR
+    agree on the shipped config and on a config where BOTH are calibrated (the
+    two cases ``test_the_duration_proxy_calibration_status_is_load_bearing``
+    exercises). The AND and the OR differ on exactly ONE case — one leg
+    calibrated, the other not — which is what this test constructs. If the flag
+    were an OR, calibrating a single leg would release the heuristic penalty for
+    an estimate that still rests on an illustrative leg.
+    """
+    settings = get_settings()
+    assert not settings.equity_macro.duration_proxy_is_calibrated, (
+        "the shipped pair must start uncalibrated for this split test to mean anything"
+    )
+    # Calibrate ONLY the growth leg. The flag must stay False: the value leg is
+    # still illustrative, so the estimate as a whole is still illustrative.
+    monkeypatch.setattr(
+        settings.equity_macro.duration_growth_proxy_years_leaf,
+        "calibration_status",
+        "mechanical_rule",
+        raising=False,
+    )
+    split_flag: bool = settings.equity_macro.duration_proxy_is_calibrated
+    assert split_flag is False, (
+        "one calibrated leg and one illustrative leg must report NOT calibrated — "
+        "an OR would wrongly release the penalty here"
+    )
+
+
+def test_the_duration_result_is_a_model_result_with_the_expected_identity() -> None:
+    """The contract: model name, country, unit, source family."""
+    result = duration_sensitivity(_dur("growth", 100.0))
+    assert isinstance(result, ModelResult)
+    assert result.model_name == "duration_sensitivity"
+    assert result.country == "us"
+    assert result.unit == "percent_price_change"
+    assert result.source_family == EvidenceSourceFamily.MANUAL_ASSESSMENT
+    assert result.inputs_used == ["style", "rate_change_bp"]
+
+
+def test_the_default_duration_cap_is_the_specifications_value() -> None:
+    """The shipped cap is Section 6.9's ``0.3``, Module 11's lowest."""
+    assert get_settings().equity_macro.duration_reliability_value == 0.3
+
+
+def test_a_cap_outside_the_unit_interval_is_refused_for_the_duration_block() -> None:
+    """The settings validator refuses a duration cap outside ``[0, 1]``."""
+    with pytest.raises(ValueError, match="duration_reliability_cap"):
+        _settings_with(
+            duration_reliability_cap=CalibratedValue(
+                value=1.2, calibration_status="uncalibrated_illustrative"
+            )
+        )
+
+
+def test_a_non_positive_growth_proxy_is_refused() -> None:
+    """A zero-growth proxy is refused: it would erase the price-move sign."""
+    with pytest.raises(ValueError, match="duration_growth_proxy_years"):
+        _settings_with(
+            duration_growth_proxy_years_leaf=CalibratedValue(
+                value=0.0, calibration_status="uncalibrated_illustrative"
+            )
+        )
+
+
+def test_a_non_positive_value_proxy_is_refused() -> None:
+    """A negative value proxy is refused for the same reason."""
+    with pytest.raises(ValueError, match="duration_value_proxy_years"):
+        _settings_with(
+            duration_value_proxy_years_leaf=CalibratedValue(
+                value=-1.0, calibration_status="uncalibrated_illustrative"
+            )
+        )
+
+
+def test_an_inverted_rate_band_is_refused() -> None:
+    """A minimum at or above the maximum is refused (the inverted-branch class)."""
+    base = dict(get_settings().equity_macro.model_dump())
+    with pytest.raises(ValueError, match="band"):
+        _settings_with(
+            duration_rate_change_min_bp_leaf=CalibratedValue(
+                value=500.0, calibration_status="institutional_convention"
+            ),
+            duration_rate_change_max_bp_leaf=CalibratedValue(
+                value=-500.0, calibration_status="institutional_convention"
+            ),
+        )
+    assert base  # the shipped block is unchanged (structural fixture, D-114)
+
+
+# ===========================================================================
+# factor_tilt_prior — Section 20.20-E's part E
+# ===========================================================================
+
+
+def test_the_factor_map_is_exhaustive_over_the_classifier_vocabulary() -> None:
+    """EVERY declared regime state has a factor row.
+
+    Section 20.20-E's table is already exhaustive over the nine, so this is a
+    guard against drift rather than a closed hole: if the classifier's vocabulary
+    grows, a row must follow.
+    """
+    missing = set(REGIME_STATES) - set(FACTOR_REGIME_MAP)
+    assert not missing, f"regimes with no factor prior: {sorted(missing)}"
+
+
+def test_no_factor_map_key_is_outside_the_classifier_vocabulary() -> None:
+    """The factor map introduces no regime the classifier cannot emit."""
+    extra = set(FACTOR_REGIME_MAP) - set(REGIME_STATES)
+    assert not extra, f"factor-map keys outside REGIME_STATES (dead rows): {sorted(extra)}"
+
+
+def test_every_factor_row_tilts_exactly_the_five_factors() -> None:
+    """Each row publishes the same five factors — no row is short or wider."""
+    for regime, row in FACTOR_REGIME_MAP.items():
+        assert set(row) == set(FACTOR_NAMES), f"{regime} does not tilt the five factors"
+
+
+def test_every_tilt_lies_in_the_closed_unit_interval() -> None:
+    """Every tilt is in ``[-1, +1]`` — the specification's scale."""
+    for regime, row in FACTOR_REGIME_MAP.items():
+        for factor, tilt in row.items():
+            assert -1.0 <= tilt <= 1.0, f"{regime}/{factor} tilt {tilt} is out of range"
+
+
+def test_the_factor_map_has_no_extension_rows() -> None:
+    """The factor table is Section 20.20-E's own — unlike the sector map.
+
+    Section 6.9's sector map covers six of nine states (three extension rows);
+    Section 20.20-E's factor table covers all nine, so this build adds NOTHING.
+    Asserted so a future edit cannot smuggle an invented row in silently.
+    """
+    assert len(FACTOR_REGIME_MAP) == len(REGIME_STATES) == 9
+
+
+@pytest.mark.parametrize(
+    ("regime", "expected"),
+    [
+        (
+            "early_expansion",
+            {"value": 1.0, "momentum": 0.5, "quality": -0.5, "low_vol": -1.0, "size": 0.5},
+        ),
+        (
+            "recession",
+            {"value": -0.5, "momentum": -1.0, "quality": 1.0, "low_vol": 1.0, "size": -1.0},
+        ),
+        (
+            "recovery",
+            {"value": 1.0, "momentum": 0.0, "quality": -0.5, "low_vol": -1.0, "size": 1.0},
+        ),
+        (
+            "stagflation",
+            {"value": 0.5, "momentum": -0.5, "quality": 1.0, "low_vol": 0.5, "size": -1.0},
+        ),
+    ],
+)
+def test_factor_rows_match_section_20_20_e(regime: str, expected: dict[str, float]) -> None:
+    """Four rows are Section 20.20-E's own, verbatim.
+
+    Written out here rather than imported so the assertion cannot pass by
+    reading the value under test. The other five rows are covered by the
+    exhaustiveness and range tests above.
+    """
+    assert factor_tilt_prior(_factor(regime)).value == expected
+
+
+def test_a_misspelled_regime_is_refused_at_construction() -> None:
+    """A typo RAISES; it does not receive the 'unknown regime' branch."""
+    with pytest.raises(ValidationError, match="regime_state"):
+        FactorTiltInputs(regime_state="recesion")  # type: ignore[arg-type]
+
+
+def test_the_factor_field_literal_is_the_classifiers_own() -> None:
+    """The field is typed as the classifier's ``RegimeState``, imported not copied."""
+    from typing import get_args
+
+    annotation = FactorTiltInputs.model_fields["regime_state"].annotation
+    assert set(get_args(annotation)) == set(get_args(RegimeState))
+
+
+def test_the_factor_fallback_is_unreachable_today() -> None:
+    """The generic fallback cannot fire for any declared regime (map exhaustive)."""
+    for regime in REGIME_STATES:
+        assert factor_tilt_prior(_factor(regime)).value != {}
+
+
+def test_the_factor_fallback_publishes_an_empty_dict_when_forced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forcing an uncovered regime publishes ``{}`` and the disclosure warning."""
+    import macro_engine.models.equity_macro as mod
+
+    patched = {k: v for k, v in FACTOR_REGIME_MAP.items() if k != "recession"}
+    monkeypatch.setattr(mod, "FACTOR_REGIME_MAP", patched)
+    missing = factor_tilt_prior(_factor("recession"))
+    assert missing.value == {}
+    assert any("no defined factor prior" in w for w in missing.warnings)
+    covered = factor_tilt_prior(_factor("mid_expansion")).confidence
+    assert covered > missing.confidence
+
+
+def test_the_momentum_crash_warning_is_published_on_every_path() -> None:
+    """Section 20.20-E's momentum warning survives on every regime.
+
+    This is the specification's sharpest caveat — "momentum tilts are least
+    reliable precisely at regime turns" — and a build that dropped it would
+    present a ``-1.0`` momentum tilt as an instruction.
+    """
+    for regime in REGIME_STATES:
+        result = factor_tilt_prior(_factor(regime))
+        assert any("momentum" in w.lower() and "crash" in w.lower() for w in result.warnings), (
+            f"{regime} published no momentum-crash warning"
+        )
+
+
+def test_the_factor_prior_not_rule_caveat_is_published_on_every_path() -> None:
+    """The base-rate qualification is in context and a warning, always."""
+    for regime in REGIME_STATES:
+        result = factor_tilt_prior(_factor(regime))
+        assert "Base-rate priors" in result.context
+        assert any("NOT mechanical rules" in w for w in result.warnings)
+
+
+def test_the_factor_confidence_is_the_product_of_computed_and_cap() -> None:
+    """The published confidence equals ``compute_confidence(...) * cap``, one run."""
+    settings = get_settings().equity_macro
+    expected_computed = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=False,
+            is_heuristic_not_calibrated=not settings.factor_tilt_reliability_cap_is_calibrated,
+            source_independence_count=1,
+            depends_on_unobservable=False,
+        )
+    )
+    result = factor_tilt_prior(_factor("mid_expansion"))
+    assert result.confidence == pytest.approx(
+        expected_computed * settings.factor_tilt_reliability_value, abs=1e-12
+    )
+
+
+def test_the_factor_tilt_cap_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Halving the factor-tilt cap halves the published confidence (D-050)."""
+    base = factor_tilt_prior(_factor("mid_expansion")).confidence
+    cap = get_settings().equity_macro.factor_tilt_reliability_cap
+    monkeypatch.setattr(cap, "value", float(cap.value) / 2.0, raising=False)
+    moved = factor_tilt_prior(_factor("mid_expansion")).confidence
+    assert moved == pytest.approx(base / 2.0, abs=1e-12)
+
+
+def test_the_factor_computed_half_is_load_bearing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing row lowers the confidence — the computed half is not dead code."""
+    import macro_engine.models.equity_macro as mod
+
+    covered = factor_tilt_prior(_factor("mid_expansion"))
+    patched = {k: v for k, v in FACTOR_REGIME_MAP.items() if k != "mid_expansion"}
+    monkeypatch.setattr(mod, "FACTOR_REGIME_MAP", patched)
+    missing = factor_tilt_prior(_factor("mid_expansion"))
+    assert missing.value == {}
+    assert missing.confidence < covered.confidence
+
+
+def test_the_factor_calibration_status_leaf_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Marking the factor cap calibrated RELEASES the heuristic penalty (D-050)."""
+    settings = get_settings()
+    shipped = factor_tilt_prior(_factor("mid_expansion")).confidence
+    assert not settings.equity_macro.factor_tilt_reliability_cap_is_calibrated
+    monkeypatch.setattr(
+        settings.equity_macro.factor_tilt_reliability_cap,
+        "calibration_status",
+        "mechanical_rule",
+        raising=False,
+    )
+    released_flag: bool = settings.equity_macro.factor_tilt_reliability_cap_is_calibrated
+    assert released_flag
+    released = factor_tilt_prior(_factor("mid_expansion")).confidence
+    penalty_times_cap = settings.confidence.heuristic_penalty.value * (
+        settings.equity_macro.factor_tilt_reliability_value
+    )
+    assert released > shipped
+    assert released - shipped == pytest.approx(penalty_times_cap, abs=1e-12)
+
+
+def test_the_factor_confidence_stays_within_the_unit_interval() -> None:
+    """Every regime publishes a confidence in ``[0, 1]``."""
+    for regime in REGIME_STATES:
+        assert 0.0 <= factor_tilt_prior(_factor(regime)).confidence <= 1.0
+
+
+def test_the_factor_result_is_a_model_result_with_the_expected_identity() -> None:
+    """The contract: model name, country, unit, source family."""
+    result = factor_tilt_prior(_factor("mid_expansion"))
+    assert isinstance(result, ModelResult)
+    assert result.model_name == "factor_tilt_prior"
+    assert result.country == "us"
+    assert result.unit == "tilt_minus1_to_plus1"
+    assert result.source_family == EvidenceSourceFamily.MANUAL_ASSESSMENT
+    assert result.inputs_used == ["regime_state"]
+
+
+def test_the_factor_value_is_a_fresh_dict_not_the_map_row() -> None:
+    """Mutating the result must not corrupt the module's own map."""
+    result = factor_tilt_prior(_factor("mid_expansion"))
+    assert isinstance(result.value, dict)
+    result.value["__MUTANT__"] = 99.0
+    assert factor_tilt_prior(_factor("mid_expansion")).value == dict(
+        FACTOR_REGIME_MAP["mid_expansion"]
+    )
+
+
+def test_the_default_factor_tilt_cap_is_the_specifications_value() -> None:
+    """The shipped cap is Section 20.20-E's ``0.35``."""
+    assert get_settings().equity_macro.factor_tilt_reliability_value == 0.35
+
+
+def test_a_factor_tilt_cap_outside_the_unit_interval_is_refused() -> None:
+    """The settings validator refuses a factor-tilt cap outside ``[0, 1]``."""
+    with pytest.raises(ValueError, match="factor_tilt_reliability_cap"):
+        _settings_with(
+            factor_tilt_reliability_cap=CalibratedValue(
+                value=-0.2, calibration_status="uncalibrated_illustrative"
             )
         )

@@ -10,6 +10,33 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-124 — Module 11 COMPLETE: `duration_sensitivity` + `factor_tilt_prior`, the §22.8 confidence product, and NINE sweep anchors widened (2026-09-27)
+
+**Tier 5 = 22/23** (moved 20 → 22). Module 11's three functions now all exist.
+
+- **Added** `duration_sensitivity()` (Section 6.9) — the growth-vs-value discount-rate channel.
+  Estimates a %-price impact from a stated rate move through an illustrative duration proxy
+  (growth ≈ 15yr, value ≈ 5yr, both config leaves marked `uncalibrated_illustrative` — the
+  specification's OWN status). The reference body's bare `is_growth: bool` becomes a typed
+  `EquityStyle = Literal["growth", "value"]` field; the rate move is gated to a config band
+  (`±1000bp`) so a unit error cannot be amplified into a headline number.
+- **Added** `factor_tilt_prior()` (Section 20.20-E) — regime-conditional tilts for five style
+  factors (`value`/`momentum`/`quality`/`low_vol`/`size`) in `[-1,+1]`. `FACTOR_REGIME_MAP` is the
+  specification's table **verbatim** and is already exhaustive over the nine regimes, so this build
+  adds **no extension rows**. The momentum-crash warning is published on every path.
+- **Changed** both reference bodies' hardcoded confidences (`0.3`, `0.35`) to the Section 22.8
+  product `compute_confidence(...) × cap` (→ `0.165`, `0.1925`). `EquityMacroSettings` gains five
+  duration leaves and one factor-tilt cap, plus new accessors and validator guards
+  (non-positive proxy durations, an inverted rate band).
+- **Fixed** the live check's own degenerate input: it measured the rate move over one daily `DFF`
+  step (`+0.0bp`, making the sign check vacuous). Now a ~3-month window (live: `+25.0bp` → growth
+  `-3.75%`, value `-1.25%`, ratio exactly 3.000), and a true zero move is disclosed and re-checked
+  on a declared probe rather than silently `nan`.
+- **Fixed** NINE pre-existing anchors in `scripts/mutation_equity_macro.py` that the two new
+  functions made ambiguous (`E2a`, `E4c`, `E4e`, `E4f`, `E5b`, `E6a`, `E6c`, `E6d`) or broke (`N3a`) —
+  each WIDENED with a distinguishing neighbour, never deleted (D-109/O-145, third firing). Sweep grew
+  **30 → 58**; `--check-targets` = 58 mutations, 0 problems; **58/58 killed**.
+
 ### D-123 — Module 11 OPENS: `sector_rotation_prior`, a silent-coverage hole, and a SIGTERM'd sweep that left a live mutation (2026-09-27)
 
 A **function increment** that **creates a file**: `src/macro_engine/models/equity_macro.py` did not

@@ -4720,6 +4720,105 @@ equity_macro:
 
       The em dash (—) is preserved from the specification so the published string
       matches the document a reader checks it against.
+
+  # --- duration_sensitivity (Section 6.9's second Module 11 function) --------
+  #
+  # ⚠️ BOTH PROXIES ARE `uncalibrated_illustrative`, WHICH IS THE SPECIFICATION'S
+  #    OWN STATUS. Section 6.9 inlines `15 if is_growth else 5` with the comment
+  #    "illustrative, calibrate against real data later" and its own warning says
+  #    "Proxy duration is illustrative, not calibrated". The values are the
+  #    spec's; what is new is that the STATUS travels with them, so the model's
+  #    computed confidence prices the placeholder instead of assuming it away.
+  duration_growth_proxy_years_leaf:
+    value: 15.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The duration proxy for a GROWTH equity, in years. Section 6.9 inlines `15`
+      as the long-duration leg: a growth equity's cash flows sit further out, so
+      a discount-rate move hits it harder — the equity analog of a long-duration
+      bond.
+
+      ⚠️ ILLUSTRATIVE, BY THE SPECIFICATION'S OWN STATEMENT. Section 6.9's inline
+      comment is "illustrative, calibrate against real data later". Calibrating
+      it means measuring the empirical sensitivity of a growth index's price to a
+      unit rate move — a sector-level regression this build does not attempt. The
+      value is the spec's own; typing a different one would be an unevidenced
+      figure in config (D-043/D-047).
+  duration_value_proxy_years_leaf:
+    value: 5.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The duration proxy for a VALUE equity, in years. Section 6.9 inlines `5` as
+      the short-duration leg: a value equity's cash flows are closer in, so the
+      same rate move moves it roughly a third as far as a growth equity (5 vs 15).
+
+      ⚠️ ILLUSTRATIVE, as the growth proxy above. Both legs share the status, so
+      `duration_proxy_is_calibrated` is the AND of the two — one illustrative leg
+      makes the whole estimate illustrative.
+  duration_reliability_cap:
+    value: 0.3
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `duration_sensitivity` reports. Section 6.9
+      supplies `confidence=0.3` as a literal, which Section 22.8 refuses.
+
+      ⚠️ 0.3 IS MODULE 11'S LOWEST OF THE THREE, AND THE PLACEMENT IS THE CLAIM.
+      The sector prior (0.4) is a historical frequency; the factor tilt (0.35) is
+      also a frequency, with a sharper caveat; this number is a HEURISTIC
+      DURATION PROXY — not even a frequency. It therefore sits BELOW both: turning
+      a rate move into a price move through a placeholder duration is the weakest
+      method Module 11 carries. The spec's own value is kept; what is new is that
+      it is read from config and its status is carried.
+
+      Placeholder, not calibrated: calibrating it means backtesting the proxy
+      against realised growth-vs-value rate sensitivity, which this build does
+      not attempt.
+  duration_rate_change_min_bp_leaf:
+    value: -1000.0
+    calibration_status: institutional_convention
+    note: >
+      The LOWER bound of the admissible rate-move input, in basis points. A move
+      more negative than this is almost certainly a unit error (a rate level, or
+      a percentage where bp were meant), and the duration multiplier would publish
+      it as a headline percentage with no second chance to notice.
+
+      ±1000bp is a whole-percentage-point-of-rate range either side of zero: it
+      admits every plausible single-meeting-to-single-year move and refuses the
+      mistyped ones. It is a modelling band, not a fact, hence
+      `institutional_convention`.
+  duration_rate_change_max_bp_leaf:
+    value: 1000.0
+    calibration_status: institutional_convention
+    note: >
+      The UPPER bound of the admissible rate-move input, in basis points. See the
+      minimum above: the two bound the band the input validator enforces. The
+      validator also refuses min >= max, which is the inverted-branch class (a
+      band that admits nothing).
+
+  # --- factor_tilt_prior (Section 20.20-E) -----------------------------------
+  #
+  # ⚠️ SECTION 20.20-E HARDCodes `confidence=0.35`, WHICH SECTION 22.8 FORBIDS.
+  #    The value is KEPT: a factor tilt is the same class of artefact as a sector
+  #    prior — a historical base rate — so refusing it would be typing a different
+  #    unevidenced figure into config.
+  factor_tilt_reliability_cap:
+    value: 0.35
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `factor_tilt_prior` reports. Section 20.20-E
+      supplies `confidence=0.35` as a literal, which Section 22.8 refuses.
+
+      ⚠️ IT SITS JUST BELOW THE SECTOR CAP'S 0.4, AND THE GAP IS THE
+      SPECIFICATION'S OWN WARNING. Section 20.20-E says momentum tilts are "least
+      reliable precisely at regime turns (momentum crashes) — the moment this
+      prior matters most is when it's weakest". A prior that is weakest exactly
+      when it is most consulted cannot be worth quite as much as one without that
+      flaw, so 0.35 < 0.4. The spec's own value is kept; what is new is that it is
+      read from config and its status is carried into the computed half.
+
+      Placeholder, not calibrated: calibrating it means measuring how often a
+      regime-conditional factor tilt beat an unconditional one, a multi-decade
+      backtest this build does not attempt.
   # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
