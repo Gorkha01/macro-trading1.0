@@ -33,6 +33,7 @@ __all__ = [
     "CountrySettings",
     "CrossMarketRVSettings",
     "DrawdownTier",
+    "GoldDriverSettings",
     "InvalidationSettings",
     "KellySettings",
     "LeadingIndicatorSettings",
@@ -5763,6 +5764,149 @@ class OilBalanceSettings(BaseModel):
         return self
 
 
+class GoldDriverSettings(BaseModel):
+    """Module 10.2's gold-driver leaves (Section 6.8's Module 10, Appendix D).
+
+    Appendix D's reference implementation ships a bare ``confidence=0.35``, a
+    bare ``abs(change) > 10`` threshold, and no crisis threshold at all (its
+    ``crisis_indicator`` is a caller-supplied boolean). Section 22.8 forbids the
+    confidence literal, and the same "every number must be findable" reasoning
+    applies to the thresholds: a reader must be able to see the basis-point
+    boundary that makes the real-yield layer fire, and the VIX level that turns a
+    fetch into the boolean the framework consumes.
+
+    ``reliability_cap`` is a **model-specific confidence CAP**, the
+    D-112/D-114/D-118/D-119/D-120 precedent. It sits **just above** the
+    oil-balance cap (0.30), because the primary driver here is a CHANGE in an
+    observed market yield over a short window with an independent secondary
+    confirmation (VIX), whereas the oil model is a single sign flip on one
+    observation — but it stays **well below** the Module 9 FX caps, because the
+    method still classifies into one of three discrete layers on uncalibrated
+    thresholds rather than computing a relation between prices. The ordering is
+    the claim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    value_decimals_leaf: CalibratedValue
+    yield_change_threshold_materiality_bp: CalibratedValue
+    crisis_vix_spike_level: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``gold_driver_attribution`` reports.
+
+        Appendix D ships ``confidence=0.35`` as a literal, which Section 22.8
+        refuses. The cap is not carried forward at face value: the method is a
+        three-branch attribution over two uncalibrated thresholds, so it stays
+        low. It sits ABOVE ``oil_balance``'s 0.30 because the primary input is a
+        CHANGE in an observed market yield with an independent second leg,
+        rather than a single observation converted by a sign flip; it sits BELOW
+        every Module 9 FX cap because those relate two observable prices with
+        exact arithmetic.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is calibrated rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` so the computed
+        half prices the leaf's own status rather than assuming it.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def value_decimals(self) -> int:
+        """The decimal places the published real-yield change is rounded to.
+
+        The change is in BASIS POINTS from a series published in per cent to two
+        decimals, so the underlying resolution is 1 bp and extra decimals would
+        imply precision the source does not have. Kept at ``1`` — enough to show
+        that a change like 9.0 bp is not exactly zero, coarse enough not to imply
+        more.
+        """
+        return int(self.value_decimals_leaf.value)
+
+    @property
+    def yield_change_threshold_bp(self) -> float:
+        """The ``|change|`` in bp above which the real-yield layer fires.
+
+        Appendix D inlines ``> 10``. It is a conventional materiality boundary,
+        not a fitted break-point — the specification's own choice, preserved
+        here so the model and the specification agree on when the primary layer
+        is considered active.
+        """
+        return float(self.yield_change_threshold_materiality_bp.value)
+
+    @property
+    def crisis_vix_threshold_value(self) -> float:
+        """The VIX level at or above which ``crisis_indicator`` is True.
+
+        Appendix D leaves this to the caller entirely (its
+        ``crisis_indicator`` is an input, and the comment glosses it as
+        *"VIX spike / credit blowout / confidence event"*). A threshold is
+        therefore REQUIRED by this build to resolve the leg from a live VIX
+        level, and it is published here so the number that makes the acute layer
+        fire is discoverable rather than buried in the fetch.
+        """
+        return float(self.crisis_vix_spike_level.value)
+
+    @model_validator(mode="after")
+    def _validate_cap_decimals_and_thresholds(self) -> GoldDriverSettings:
+        """Refuse a cap outside ``[0, 1]``, non-positive decimals, or bad thresholds.
+
+        The cap check mirrors the sibling blocks: ``ModelResult`` refuses a
+        confidence outside ``[0, 1]``, so a leaf outside it would raise at the
+        FIRST call rather than at load, turning a config error into a runtime
+        failure of a model.
+
+        The decimals leaf must be non-negative because ``round`` accepts a
+        negative ``ndigits`` (rounding to tens, hundreds, ...), which would
+        silently publish a change far coarser than the contract implies.
+
+        **The two thresholds must be POSITIVE, and the reason differs enough to
+        state separately.** A non-positive ``yield_change_threshold_bp`` would
+        make ``abs(change) > threshold`` true for any non-zero change — including
+        a 0.01 bp wiggle — so the primary layer would fire on noise and the
+        threshold would stop discriminating (dead vocabulary, D-037's class). A
+        non-positive ``crisis_vix_threshold`` would make ``level >= threshold``
+        true on EVERY reading, so ``crisis_indicator`` would be permanently True
+        and the acute layer would never be absent — the same dead-vocabulary
+        failure with a worse consequence, because a permanently-firing crisis
+        layer is a permanently-misattributed gold move.
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"gold_driver.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — the same ModelResult field "
+                f"constraint applies as on the sibling caps."
+            )
+        if self.value_decimals < 0:
+            raise ValueError(
+                f"gold_driver.value_decimals is {self.value_decimals}. A negative "
+                f"`ndigits` makes `round` coarsen the figure, publishing a change "
+                f"far less precise than the declared contract implies."
+            )
+        if self.yield_change_threshold_bp <= 0.0:
+            raise ValueError(
+                f"gold_driver.yield_change_threshold_materiality_bp is "
+                f"{self.yield_change_threshold_bp}. A non-positive threshold makes "
+                f"`abs(change) > threshold` true for any non-zero change, so the "
+                f"primary layer would fire on noise — dead vocabulary (D-037)."
+            )
+        if self.crisis_vix_threshold_value <= 0.0:
+            raise ValueError(
+                f"gold_driver.crisis_vix_spike_level is "
+                f"{self.crisis_vix_threshold_value}. A non-positive VIX threshold "
+                f"makes `level >= threshold` true on every reading, so "
+                f"crisis_indicator would be permanently True and the acute layer "
+                f"would never be absent — a permanent misattribution."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5807,6 +5951,7 @@ class Settings(BaseModel):
     intervention: InterventionSettings
     em_vulnerability: EMVulnerabilitySettings
     oil_balance: OilBalanceSettings
+    gold_driver: GoldDriverSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

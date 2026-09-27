@@ -1,7 +1,40 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-27** (after **D-120 — Module 10's `oil_balance_signal`: the repository's
+Last updated: **2026-09-29** (after **D-121 — Module 10's `gold_driver_attribution`: the increment's
+only real defect was SIX SHADOWED TESTS (an O-117 recurrence that let a mutant survive), plus a CRLF
+defect from an ad-hoc script.** Tier 5 = **18/23** — MEASURED 2026-09-29 from §21.3's table
+`AGENTS.md:5541–5550` against `src/` (`18` have a real `def`, `5` do not), not recalled — the
+**O-147** discipline. §15.20 Addendum 2 section D (`AGENTS.md:3046`) supplies the reference body,
+making this the **fourth D-096 exception**; it **supersedes nothing** — the `cip_check` answer,
+*a new capability*. **The existing** `models/commodities.py` and `data_layer/commodities_client.py`
+were extended (no new module, **no new OpenBB commands** — the command census stays **6**; both gold
+legs reuse `economy.fred_series`). **Two live legs:** `real_yield_change_bp` via **`DFII10`**
+(10-Year TIPS, **per cent**, two vintages differenced ×100 to bp) and `crisis_indicator` via
+**`VIXCLS`** (a **level** in points vs a config threshold) — **BOTH FRED, so the independence count
+is 1, not 2: two legs, ONE provider.** `central_bank_net_purchases_trend` is a **MEASURED CONFIRMED
+block** (the **second** after `usd_denominated_debt_share`): the World Bank **publishes**
+`FI.RES.GOLD.CD` in its **29 544-id** catalogue, but its **DATA route refuses the id** (message
+**id 175**, "not found. It may have been deleted or archived") — **"in the catalogue" and "serves
+data" are different claims**, and the decisive evidence is the data route, **not** the client's
+"missing `lastupdated`" error (a **symptom** the metadata route shows for a working indicator too).
+That mechanism was **corrected mid-increment** after re-probing the raw API **with a control**. The
+CB layer **degrades to INACTIVE**; the primary and crisis layers **RAISE** when unresolvable.
+**⚠️ THE REAL DEFECT, and it was not in the model:** the first sweep was **63/64**, the survivor
+being `M6a` — which was **impossible**, since `test_the_result_carries_its_contract_fields` asserts
+the mutated string. **The gold block had reused six generic test names from the oil block**, so
+Python bound the LAST definition and **six OIL tests were dead code** while `pytest` reported a
+healthy **106** (O-117). The guard for this **already existed and was simply not run**
+(`test_source_hygiene.py::test_no_module_defines_a_top_level_name_twice` — verified to fire on this
+very duplicate). Fixed by **renaming the six gold twins** (never deleting, no mutation touched) ⇒
+**112 passed** and the sweep re-ran **64/64**. The same hygiene run also caught **a CRLF defect**
+from my own ad-hoc `write_text` (1220 CRLF pairs; `git` cannot see it — D-061/O-151), repaired at
+the byte level. **NEW** `scripts/live_gold_driver_check.py` (7 sections; **PASSED**: `DFII10` +9.0 bp
+— *inside* the 10 bp threshold — `VIXCLS` 14.21, **no layer fires**, confidence **0.1925** =
+0.55 × 0.35). **Gates:** **282 == 282** (D-035) · **3857 tests / 0 failed / 0 errors / 1 skipped**
+(via `--junitxml`) · reachability **PASS 58/58** · sweep **64/64** · `sweep_health.py` LAST →
+**48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK**.
+Previous update: **2026-09-27** (after **D-120 — Module 10's `oil_balance_signal`: the repository's
 FIRST increment to add NEW OpenBB commands (census 4 → 6), a FIFTH FALSE BLOCK (both inputs LIVE),
 and a `fetch_series` trap that forced a NEW transport.** Tier 5 = **17/23** — MEASURED 2026-09-27
 from §21.3's table `AGENTS.md:5541–5550` against `src/` (`17` have a real `def`, `6` do not), not

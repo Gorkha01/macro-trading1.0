@@ -145,22 +145,51 @@ def test_no_local_openbb_host_literal() -> None:
     assert "6901" not in source
 
 
-def test_the_module_uses_fetch_records_not_fetch_series() -> None:
-    """``fetch_series`` drops the ``symbol`` column, so it cannot be used here.
+def test_the_oil_table_path_uses_fetch_records_not_fetch_series() -> None:
+    """The EIA MULTI-SYMBOL tables must go through ``fetch_records``.
 
     Measured 2026-09-29: the PPS ``stocks`` table returns 34 428 rows across 19
     symbols; ``fetch_series`` folds them into ONE date/value frame and the last
-    row is total stocks, not the wanted crude level. Asserted on the AST — a
-    *call* to ``fetch_series`` fails, while a docstring that merely NAMES it (to
-    explain why it is not used) is fine.
+    row is total stocks, not the wanted crude level.
+
+    ⚠️ SCOPED TO THE OIL PATH AT D-121. This test previously asserted the module
+    called ``fetch_series`` NOWHERE, which was true while the module served only
+    the EIA tables. The gold legs (``fetch_real_yield`` / ``fetch_vix_level``)
+    legitimately use ``fetch_series`` — they are ONE-series-per-call FRED routes,
+    the exact case ``fetch_series`` is correct for. Asserting on the module-level
+    call set would now forbid the right thing, so the assertion is retargeted to
+    the two OIL fetchers: their function bodies must call ``fetch_records`` and
+    must NOT call ``fetch_series``.
     """
     tree = ast.parse(inspect.getsource(commodities_client))
-    called: set[str] = set()
+    wanted = {"fetch_crude_inventories", "fetch_opec_spare_capacity"}
+    checked: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute):
-            called.add(node.attr)
-    assert "fetch_records" in called
-    assert "fetch_series" not in called
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            checked.add(node.name)
+            attrs = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+            assert "fetch_records" in attrs, f"{node.name} must use fetch_records"
+            assert "fetch_series" not in attrs, f"{node.name} must not use fetch_series"
+    assert checked == wanted
+
+
+def test_the_gold_legs_use_fetch_series_not_fetch_records() -> None:
+    """The gold legs are one-series-per-call, so ``fetch_series`` is CORRECT.
+
+    The inverse of the test above, and the reason that one had to be scoped: two
+    households with two legitimate transports. A future edit that "unified" them
+    onto one call would break one of the two — this pair pins which is which.
+    """
+    tree = ast.parse(inspect.getsource(commodities_client))
+    wanted = {"fetch_real_yield", "fetch_vix_level"}
+    checked: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            checked.add(node.name)
+            attrs = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+            assert "fetch_series" in attrs, f"{node.name} must use fetch_series"
+            assert "fetch_records" not in attrs, f"{node.name} must not use fetch_records"
+    assert checked == wanted
 
 
 # ---------------------------------------------------------------------------
@@ -454,10 +483,12 @@ def test_a_stub_client_is_not_closed_when_caller_owns_it() -> None:
 
 
 def test_the_registry_entries_declare_only_real_schema_fields() -> None:
-    """Both commodity entries must parse against ``RegistrySeries`` (O-141).
+    """Every commodity entry must parse against ``RegistrySeries`` (O-141).
 
     A registry key the schema forbids is a load-time failure, and the full-suite
     build is where it was caught last time — this test catches it incrementally.
+    The D-121 gold entries are included, because the increment added two new keys
+    to the same file and a typo there would redden the whole registry.
     """
     from pathlib import Path
 
@@ -467,9 +498,292 @@ def test_the_registry_entries_declare_only_real_schema_fields() -> None:
 
     root = Path(__file__).resolve().parent.parent.parent
     raw = yaml.safe_load((root / "config" / "series_registry.yaml").read_text(encoding="utf-8"))
-    for key in ("crude_inventory_weekly", "opec_spare_capacity"):
+    for key in (
+        "crude_inventory_weekly",
+        "opec_spare_capacity",
+        "gold_real_yield_10y",
+        "gold_crisis_vix",
+    ):
         entry = raw["series"][key]
         # Raises if any key is not a schema field.
         RegistrySeries(**entry)
         assert entry["not_a_snapshot_field"] is True
-        assert entry["provider"] == "eia"
+
+
+def test_the_blocked_gold_driver_has_no_registry_entry() -> None:
+    """The CB-purchases trend is a MEASURED BLOCK, so it must have NO entry.
+
+    A registry entry implies a source. Registering the blocked leg would be the
+    inverse of the D-043 defect: a claim of a source that does not exist. The
+    block is recorded as prose in the registry, and this test pins that there is
+    no accidental ``central_bank_net_purchases_trend`` entry.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent.parent
+    raw = yaml.safe_load((root / "config" / "series_registry.yaml").read_text(encoding="utf-8"))
+    assert "central_bank_net_purchases_trend" not in raw["series"]
+    assert "gold_cb_purchases" not in raw["series"]
+
+
+def test_the_gold_legs_are_fred_not_eia() -> None:
+    """The two live gold legs are FRED; the oil legs are EIA. Pinned so a route
+    swap is caught — and because the model's independence count (1) DEPENDS on
+    this being one provider."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent.parent
+    raw = yaml.safe_load((root / "config" / "series_registry.yaml").read_text(encoding="utf-8"))
+    for key in ("gold_real_yield_10y", "gold_crisis_vix"):
+        entry = raw["series"][key]
+        assert entry["provider"] == "fred"
+        assert entry["endpoint"] == "economy.fred_series"
+
+
+# =============================================================================
+# The GOLD DRIVERS (Appendix D, D-121): two live FRED legs + one block
+# =============================================================================
+
+
+class _SeriesStubClient:
+    """A stand-in supporting ``fetch_series`` for the two FRED gold legs.
+
+    Distinct from ``_StubClient`` (which serves ``fetch_records`` for the EIA
+    tables) because the gold legs go through the one-series-per-call FRED route
+    and therefore need the tidy-frame transport, not the record-level one. Having
+    both stubs is itself the assertion that the two households use different
+    routes.
+    """
+
+    def __init__(self, frame: Any = None, error: Exception | None = None) -> None:
+        self._frame = frame
+        self._error = error
+        self.calls: list[dict[str, Any]] = []
+        self.closed = False
+
+    def fetch_series(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        import pandas as pd
+
+        if self._frame is None:
+            return pd.DataFrame({"date": [], "value": []})
+        return self._frame
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _fred_frame(pairs: list[tuple[date, float]]) -> Any:
+    """A tidy FRED-shaped frame: ``date`` and ``value`` columns."""
+    import pandas as pd
+
+    return pd.DataFrame({"date": [d.isoformat() for d, _ in pairs], "value": [v for _, v in pairs]})
+
+
+def test_the_real_yield_uses_the_fred_route_and_symbol() -> None:
+    from macro_engine.data_layer.commodities_client import (
+        REAL_YIELD_SYMBOL,
+        fetch_real_yield,
+    )
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 23), 2.76), (date(2026, 9, 24), 2.85)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.symbol == REAL_YIELD_SYMBOL == "DFII10"
+    assert reading.yield_percent == 2.85
+    call = stub.calls[0]
+    assert call["provider"] == "fred"
+    assert call["endpoint"] == "economy.fred_series"
+    assert call["params"]["symbol"] == "DFII10"
+
+
+def test_the_vix_uses_the_fred_route_and_symbol() -> None:
+    from macro_engine.data_layer.commodities_client import (
+        VIX_SYMBOL,
+        fetch_vix_level,
+    )
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 22), 14.21)]))
+    reading = fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.symbol == VIX_SYMBOL == "VIXCLS"
+    assert reading.level == 14.21
+    assert stub.calls[0]["params"]["symbol"] == "VIXCLS"
+
+
+def test_the_real_yield_reading_carries_the_prior_point() -> None:
+    """Appendix D's input is a CHANGE, so the reading must carry two points."""
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 23), 2.76), (date(2026, 9, 24), 2.85)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.prior_observation_date == "2026-09-23"
+    assert reading.prior_yield_percent == 2.76
+
+
+def test_a_single_point_yield_series_has_no_prior() -> None:
+    """One observation cannot form a change — ``None``, never ``0.0`` (D-078)."""
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 24), 2.85)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.prior_yield_percent is None
+    assert reading.prior_observation_date is None
+
+
+def test_the_change_in_bp_is_the_level_difference_times_one_hundred() -> None:
+    """The conversion is a NAMED constant, not an inlined 100 (D-118's lesson)."""
+    from macro_engine.data_layer.commodities_client import (
+        BASIS_POINTS_PER_PERCENT,
+        fetch_real_yield,
+        real_yield_change_bp,
+    )
+
+    assert BASIS_POINTS_PER_PERCENT == 100.0
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 23), 2.76), (date(2026, 9, 24), 2.85)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert real_yield_change_bp(reading) == pytest.approx(9.0)
+
+
+def test_the_change_is_none_without_a_prior() -> None:
+    from macro_engine.data_layer.commodities_client import (
+        fetch_real_yield,
+        real_yield_change_bp,
+    )
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 24), 2.85)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert real_yield_change_bp(reading) is None
+
+
+def test_the_change_reverses_sign_on_a_falling_yield() -> None:
+    """A FALL is negative — the sign is the primary layer's whole content."""
+    from macro_engine.data_layer.commodities_client import (
+        fetch_real_yield,
+        real_yield_change_bp,
+    )
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 23), 2.85), (date(2026, 9, 24), 2.60)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert real_yield_change_bp(reading) == pytest.approx(-25.0)
+
+
+def test_the_real_yield_clips_future_dated_rows() -> None:
+    """An observation after ``as_of`` must be excluded (the O-134 discipline).
+
+    A caller passing an as-of in the past must get the answer true then, not the
+    newest row — the same clip the oil client applies to the STEO tail.
+    """
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+
+    stub = _SeriesStubClient(
+        _fred_frame(
+            [
+                (date(2026, 9, 20), 2.70),
+                (date(2026, 9, 21), 2.80),
+                (date(2026, 9, 25), 9.99),  # AFTER the as-of
+            ]
+        )
+    )
+    reading = fetch_real_yield(as_of=date(2026, 9, 22), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-09-21"
+    assert reading.yield_percent == 2.80
+
+
+def test_a_row_dated_exactly_on_the_as_of_is_kept() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 22), 2.80)]))
+    reading = fetch_real_yield(as_of=date(2026, 9, 22), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-09-22"
+
+
+def test_an_empty_fred_frame_raises() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+
+    stub = _SeriesStubClient(_fred_frame([]))
+    with pytest.raises(CommodityReadError):
+        fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_frame_without_the_tidy_columns_raises() -> None:
+    """A missing ``value`` column must refuse, never guess which column is which."""
+    import pandas as pd
+
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+
+    stub = _SeriesStubClient(pd.DataFrame({"date": ["2026-09-22"], "close": [14.21]}))
+    with pytest.raises(CommodityReadError, match="unexpected frame shape"):
+        fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+
+
+def test_all_rows_after_the_as_of_raises() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 10, 1), 20.0)]))
+    with pytest.raises(CommodityReadError, match="no observation at or before"):
+        fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_null_fred_value_is_dropped_not_repaired() -> None:
+    """A null in the frame is DROPPED before ordering, never turned into zero."""
+    import pandas as pd
+
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+
+    frame = pd.DataFrame({"date": ["2026-09-21", "2026-09-22"], "value": [None, 14.21]})
+    stub = _SeriesStubClient(frame)
+    reading = fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.level == 14.21
+
+
+def test_the_ordered_latest_wins_regardless_of_row_order() -> None:
+    """FRED returns ascending, but a reversed response must not pick the oldest."""
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 22), 14.21), (date(2026, 9, 21), 14.87)]))
+    reading = fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert reading.observation_date == "2026-09-22"
+    assert reading.level == 14.21
+
+
+def test_a_transport_failure_on_the_yield_is_wrapped() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_real_yield
+    from macro_engine.data_layer.openbb_client import OpenBBFetchError
+
+    stub = _SeriesStubClient(error=OpenBBFetchError("boom"))
+    with pytest.raises(CommodityReadError, match="could not be read"):
+        fetch_real_yield(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_transport_failure_on_the_vix_is_wrapped() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+    from macro_engine.data_layer.openbb_client import OpenBBFetchError
+
+    stub = _SeriesStubClient(error=OpenBBFetchError("boom"))
+    with pytest.raises(CommodityReadError, match="could not be read"):
+        fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+
+
+def test_a_gold_series_stub_is_not_closed_when_caller_owns_it() -> None:
+    from macro_engine.data_layer.commodities_client import fetch_vix_level
+
+    stub = _SeriesStubClient(_fred_frame([(date(2026, 9, 22), 14.21)]))
+    fetch_vix_level(as_of=date(2026, 9, 27), client=stub)  # type: ignore[arg-type]
+    assert stub.closed is False
+
+
+def test_the_two_gold_units_are_declared_distinctly() -> None:
+    """Percent and index points are different units and must not be conflated."""
+    from macro_engine.data_layer.commodities_client import (
+        REAL_YIELD_SOURCE_UNIT,
+        VIX_SOURCE_UNIT,
+    )
+
+    assert REAL_YIELD_SOURCE_UNIT == "percent"
+    assert VIX_SOURCE_UNIT == "index_points"
+    assert REAL_YIELD_SOURCE_UNIT != VIX_SOURCE_UNIT

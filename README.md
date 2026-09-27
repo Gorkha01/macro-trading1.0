@@ -43,10 +43,10 @@ No function may claim country-genericity it has not earned.
 |---|---|---|
 | 0 | Repo skeleton, `uv`, config, quality gates | **complete** — 8/8; 21/21 routes verified |
 | 1 | Data layer, `MacroDataSnapshot`, snapshot builder, thesis schema | **complete** — 9/9, live-validated |
-| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **95/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 17/23**; the **6** outstanding are all Tier 5 — **not a backlog** |
+| 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **96/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 18/23**; the **5** outstanding are all Tier 5 — **not a backlog** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **under way** — **Tier 5 = 17/23** (D-092 … D-120), one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. Multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **under way** — **Tier 5 = 18/23** (D-092 … D-121), one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. Multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded
@@ -72,9 +72,9 @@ uv run uvicorn macro_engine.api_layer.app:app --host 127.0.0.1 --port 8000
 
 ```bash
 uv run ruff check src tests tools scripts    # All checks passed!
-uv run ruff format --check .                 # 281 files already formatted
-uv run mypy --strict src tests tools scripts # Success: no issues found in 281 source files
-uv run pytest -q --junitxml=build/full.xml   # 3769 passed / 0 failed / 0 errors / 1 skipped
+uv run ruff format --check .                 # 282 files already formatted
+uv run mypy --strict src tests tools scripts # Success: no issues found in 282 source files
+uv run pytest -q --junitxml=build/full.xml   # 3857 passed / 0 failed / 0 errors / 1 skipped
 uv run pytest -m live                        # gated on tools/openbb_reachability.py; scheduled CI only
 uv run python tools/sweep_health.py          # run LAST: 48 sweeps, 0 leftovers, OK
 ```
@@ -100,7 +100,7 @@ This project uses **`uv` exclusively**. Do not use pip, poetry, or conda.
 
 ```bash
 uv sync --extra dev        # create .venv, install locked dependencies
-uv run pytest              # offline suite (3769 passed / 1 skipped; no network)
+uv run pytest              # offline suite (3857 passed / 1 skipped; no network)
 uv run pytest -m live      # live suite (real OpenBB/FRED calls, scheduled CI)
 uv run ruff check .        # lint
 uv run ruff format --check .

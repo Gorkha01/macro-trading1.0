@@ -111,7 +111,13 @@ ignore = [
 # Operator scripts print: their entire purpose is to show a human what the
 # live system returns (Section 21.0's real-data execution step). They are run
 # by hand, never imported, and excluded from the default test run.
-"scripts/*.py" = ["T20"]
+"scripts/*.py" = ["T20", "DTZ011", "S310"]
+# `DTZ011`/`S310`: an operator script's whole job is to read the REAL current
+# date and hit a REAL URL — that is the difference between a live check and a
+# unit test (Section 21.0). Scoping the two rules to this directory keeps them
+# live in `src/` and `tests/`, which is the D-067 pattern. `urllib` is used
+# directly in a few probes where the point is to BYPASS the project's client
+# and observe the provider's raw answer.
 "src/macro_engine/api_layer/*.py" = []
 # `test_release_calendar.py` asserts NAIVE datetimes on purpose. The provider's
 # wire format is a naive ISO string ("2026-08-13T08:30:00") and

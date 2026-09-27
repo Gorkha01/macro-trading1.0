@@ -10,6 +10,50 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-121 — Module 10's `gold_driver_attribution`, six SHADOWED tests, and a CRLF defect from an ad-hoc script (2026-09-29)
+
+A **function increment** whose only real defect was **not in the model**: appending a gold test
+block to an existing file reused **six oil test names**, so Python bound the later definitions and
+**six oil tests were silently deleted** while `pytest` reported a healthy count (O-117 → **O-150**,
+**O-151**). Tier 5 moves **17 → 18/23** — **MEASURED** against §21.3's table, not recalled (the
+O-147 discipline). A **D-096 exception** (the authority supplies the body ⇒ an UPGRADE that
+supersedes nothing — a *new capability*).
+
+### Added
+
+- **`gold_driver_attribution`** (`models/commodities.py`, extending D-120's file) — Appendix D's
+  **three-layer** gold framework (`real_yield` → `cb_diversification` → `crisis_confidence`), with
+  `dominant_layer` the first active layer. INFORMATIONAL ONLY (§6.8).
+- **`GoldDriverInputs`**, and the client's `fetch_real_yield` / `fetch_vix_level` /
+  `real_yield_change_bp` (`data_layer/commodities_client.py`) over **`DFII10`** and **`VIXCLS`** —
+  both FRED, **both reused routes; NO new OpenBB command (census stays 6)**.
+- **`GoldDriverSettings`** (`config.py` + `settings.yaml`) with four leaves, and **no new sweep**
+  (the existing `mutation_commodities.py` grew **35 → 64**).
+- **`scripts/live_gold_driver_check.py`** — a 7-section live wiring check, including a **control-
+  bearing** World Bank probe and a written plausibility assessment (§21.2 Step 7).
+
+### Fixed
+
+- **Six SHADOWED TESTS** — the six gold twins of six oil test names were **renamed**, recovering
+  **six silently-deleted oil tests** (`pytest` 106 → **112**). Nothing was deleted and no mutation
+  was touched. The sweep went **63/64 → 64/64**.
+- **A CRLF work tree** caused by an ad-hoc `write_text` without `newline=""` (1220 CRLF pairs;
+  **invisible to `git status`**) — repaired at the byte level.
+- **The recorded mechanism of the CB-layer block** — the raw World Bank data route refuses
+  `FI.RES.GOLD.CD` with **id 175** ("not found / deleted or archived"); the client's "missing
+  `lastupdated`" is a **symptom** a working indicator shows too. Corrected from "registered but
+  empty" to the measured form, with a **control** proving the probe method.
+- **`statement_text_diff`'s ledger note** — the claim that it "keeps its own
+  `NotImplementedError`" was **carried, not measured, and is FALSE**: it has **no `def` at all**.
+
+### Changed
+
+- `reachability_audit.py`: **SCRIPT-ONLY — Tier 5: 15 → 16** (`gold_driver_attribution`, whose live
+  check **is committed**). `oil_balance_signal` remains **`NO CALLER — Tier 5`** — D-120's live check
+  was **inline**, so its recorded `15 → 16` move **never happened**; corrected in MODULE_MAPPING.
+- Quality gates: **282 == 282** (D-035) · **3857 tests / 0 failed / 0 errors / 1 skipped** ·
+  sweep **64/64** · `sweep_health.py` → **48 sweeps, 0 failures, OK**.
+
 ### D-120 — Module 10 opens: `oil_balance_signal` (EIA, live) (2026-09-27)
 
 A **function increment**: the repository's **FIRST to add NEW OpenBB commands** (the command

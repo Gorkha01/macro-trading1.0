@@ -1450,6 +1450,139 @@ series:
     plausible_range: [-1.0, 15.0]
 
   # -------------------------------------------------------------------------
+  # GOLD DRIVERS for `gold_driver_attribution` (Appendix D, Module 10.2, D-121).
+  # Appendix D's `GoldDriverInputs` declares three fields with NO source, so
+  # under Section 21.1's default rule all three would read as BLOCKED.
+  # MEASURED 2026-09-27, the answer is a MIX — and it is the first increment
+  # where that is the honest reading rather than "all live" (D-120) or "one
+  # CONFIRMED block" (D-119):
+  #
+  #   real_yield_change_bp             LIVE   — FRED `DFII10`
+  #   crisis_indicator                 LIVE   — FRED `VIXCLS`
+  #   central_bank_net_purchases_trend BLOCKED — MEASURED and CONFIRMED
+  #
+  # ⚠️ THE TWO LIVE LEGS SHARE ONE PROVIDER — FRED. Two fetches, ONE independent
+  #     source family, so `gold_driver_attribution`'s confidence uses a source
+  #     independence count of 1, NOT 2. Counting legs where the model means
+  #     SOURCES would overstate the evidence, which is the double-counting class
+  #     Section 22.8 exists to prevent.
+  #
+  # ⚠️ NEITHER IS A SNAPSHOT FIELD, and neither is `fred_series`-shaped like the
+  #     reserves entries above — they are the same `economy.fred_series` route,
+  #     but selected by the model's own client rather than the snapshot builder,
+  #     so `not_a_snapshot_field: true` on both.
+  # -------------------------------------------------------------------------
+  gold_real_yield_10y:
+    provider: fred
+    endpoint: economy.fred_series
+    symbol: DFII10
+    not_a_snapshot_field: true
+    signed_series: true
+    description: >
+      Market Yield on U.S. Treasury Securities at 10-Year Constant Maturity,
+      Quoted on an Investment Basis, Inflation-Indexed — the 10-Year TIPS real
+      yield, in PER CENT, daily (FRED `DFII10`). This is Appendix D's
+      `real_yield_change_bp` source: the PRIMARY layer of the gold three-layer
+      framework.
+
+      ⚠️ THE SERIES IS A LEVEL; APPENDIX D'S INPUT IS A CHANGE. The client
+      (`commodities_client.fetch_real_yield`) returns the two most recent
+      observations and `real_yield_change_bp()` differences them, converting
+      per-cent levels to BASIS POINTS by the named constant
+      `BASIS_POINTS_PER_PERCENT` — a visible conversion, not an inlined 100
+      (the D-118 dead-constant lesson).
+
+      `signed_series: true` because the change is signed and its SIGN is the
+      whole content of the primary layer: a rise in real yields is a headwind
+      for gold, a fall a tailwind. The model compares `abs(change)` to the
+      config materiality threshold, so both directions fire the layer.
+
+      Measured 2026-09-27: 5 937 observations; latest 2026-09-24 = 2.85, prior
+      2026-09-23 = 2.76 ⇒ a +9.0 bp change (INSIDE the 10 bp threshold).
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 2.85
+    verified_observation_date: 2026-09-24
+    plausible_range: [-5.0, 15.0]
+
+  gold_crisis_vix:
+    provider: fred
+    endpoint: economy.fred_series
+    symbol: VIXCLS
+    not_a_snapshot_field: true
+    description: >
+      CBOE Volatility Index (VIX), a LEVEL in INDEX POINTS, daily (FRED
+      `VIXCLS`). This is the raw material for Appendix D's `crisis_indicator` —
+      the ACUTE layer of the gold three-layer framework.
+
+      ⚠️ THE SERIES IS A LEVEL; THE FRAMEWORK CONSUMES A BOOLEAN. The threshold
+      that turns the level into `crisis_indicator` lives in config
+      (`gold_driver.crisis_vix_spike_level` = 30.0), NOT here and NOT in the
+      fetch — so the number that makes the acute layer fire is discoverable.
+      A non-positive threshold would make the flag permanently True, which the
+      settings validator refuses.
+
+      ⚠️ THIS IS ONLY THE VIX LEG. Appendix D glosses the layer as "VIX spike /
+      credit blowout / confidence event" — a compound notion this build
+      measures through ONE series. A credit blowout with a calm VIX would not
+      fire the layer, and the model's assumptions say so rather than implying
+      the layer covers all three.
+
+      Measured 2026-09-27: 9 279 observations; latest 2026-09-22 = 14.21 —
+      BELOW the 30 threshold, so the acute layer does not fire in the current
+      calm market.
+    frequency: daily
+    units: index_points
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 14.21
+    verified_observation_date: 2026-09-22
+    plausible_range: [5.0, 90.0]
+
+  # -------------------------------------------------------------------------
+  # ⚠️ THE THIRD GOLD DRIVER IS A **MEASURED, CONFIRMED BLOCK** — RECORDED HERE
+  #    AS PROSE, WITH NO ENTRY, BECAUSE THERE IS NO SOURCE TO ENTER.
+  #
+  # Appendix D's `central_bank_net_purchases_trend` ("rising" | "flat" |
+  # "falling") is a DISCRETE trend label over central-bank net gold purchases.
+  # Unlike the five FALSE blocks this repository has caught, this one was
+  # PROBED and CONFIRMED, making it the SECOND CONFIRMED block (after
+  # `usd_denominated_debt_share`, D-119).
+  #
+  # MEASURED 2026-09-27, three separate facts, none of which is "no such series":
+  #
+  #   * The World Bank publishes `FI.RES.GOLD.CD` — "Gold Holdings at London
+  #     market price (US$ end period)" — in its indicator CATALOGUE (it appears
+  #     among the 29,544 ids returned by `api.worldbank.org/v2/indicator`), so a
+  #     NAME-GREP finds it and would call the leg sourced. **But the DATA route
+  #     refuses the id**: `/country/USA/indicator/FI.RES.GOLD.CD` answers with
+  #     message **id 175, "The indicator was not found. It may have been deleted
+  #     or archived."**, and no rows — the same for the `WLD` aggregate. A
+  #     control (`FI.RES.TOTL.CD`) returns populated points from the same route
+  #     and the same caller, so the refusal is about THIS id, not the request.
+  #     **"In the catalogue" and "serves data" are DIFFERENT CLAIMS**, which is
+  #     why the probe measured the PAYLOAD and not the name.
+  #   * The client's own error names a missing `lastupdated` date. That is the
+  #     SYMPTOM it detects, not the cause: the `/indicator/` metadata route
+  #     reports `lastupdated=None` for a WORKING indicator too (measured:
+  #     `FI.RES.TOTL.CD` as well). The decisive evidence is the data route's
+  #     id-175 refusal.
+  #   * `FI.RES.TOTL.GD.ZS` is **not a valid indicator id** — it is ABSENT from
+  #     the catalogue and the API rejects the id — so it is not a fallback.
+  #   * Even with data, `FI.RES.GOLD.CD` would be the WRONG ESTIMAND: it is a
+  #     USD VALUE at London market price, so a rise in it conflates a PRICE move
+  #     with a BUYING decision. Deriving a "purchases trend" from it would be a
+  #     category error — the same class as reading a stock level as a flow.
+  #
+  # The leg is therefore a MANUAL input with a discriminating disclosure. The
+  # model does NOT guess it from anything, and its absence is published as
+  # "inactive by data availability", explicitly NOT as "evidence that CB buying
+  # is flat".
+  # -------------------------------------------------------------------------
+
+  # -------------------------------------------------------------------------
   # FX RESERVES for `intervention_capacity` (Section 20.9). Section 20.9's
   # reference implementation declares `fx_reserves_usd_bn` and
   # `reserves_to_gdp_pct` with NO source, and no entry existed here — which under

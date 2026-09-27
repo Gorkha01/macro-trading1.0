@@ -2483,6 +2483,71 @@ parameter is not an applied one; the returned **row count** is the measurement t
 live commodity check, so it classifies **SCRIPT-ONLY — Tier 5**, taking that count from **15 to
 16**. The **total** stays **PASS 58/58**.
 
+> **⚠️ CORRECTED at D-121 (MEASURED, not recalled).** The paragraph above is **wrong**:
+> `reachability_audit.py` classifies **`oil_balance_signal` as `NO CALLER — Tier 5`**, because
+> D-120's live check was run **inline at the terminal and never committed as a script** — so the
+> tool cannot see a caller. At D-120 the true partition was therefore
+> `SCRIPT-ONLY — Tier 5: 15` + `NO CALLER — Tier 5: 1`, and the `15 → 16` move described above
+> **did not happen**; the count had been *asserted* from the intent to run a live check rather
+> than *measured* from the tree. This is the **O-133** class (*a name-grep, or an intention, is not
+> a caller*) and the **O-147** class (*a count is a claim*) in one sentence. The D-121 increment
+> moved `SCRIPT-ONLY` **15 → 16 for real** (its gold live-check script **is** committed), leaving
+> `oil_balance_signal` still `NO CALLER` — see D-121 below.
+
 **The sweep census moved 47 → 48** (`mutation_commodities.py` is the 48th sweep), in its three
 homes — `test_sweep_sidecar_lifecycle.py` ×2 (the function name and the assertion) and
 `test_sweep_health_leftover_predicate.py` ×1 (plus two docstring mentions).
+
+
+
+## D-121 — Module 10 EXTENDS: `gold_driver_attribution`, six SHADOWED tests, and a module file that now holds two households (2026-09-29)
+
+**Tier 5 = 18/23** (moved **17 → 18**; MEASURED from `AGENTS.md:5541–5550` against `src/` —
+**18 defined / 5 not** — not recalled, the O-147 discipline). This is a **D-096 exception**:
+§15.20 Addendum 2's **section D** (`AGENTS.md:3046`) **gives the body**, so the increment is an
+**UPGRADE of a specified function** — and it **supersedes nothing**, because Module 10's second
+function is a **new capability** (the `cip_check` answer).
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `gold_driver_attribution` | **10 — Commodities** | `models/commodities.py` (**EXTENDS** — Module 10's second function, beside `oil_balance_signal`) | `AGENTS.md:3046` (§15.20 Add. 2 §D) | **nothing** — a NEW capability | **IMPLEMENTED** (D-121) |
+
+**An EXTENSION, not a new file — and the mapping gains a shape.** D-120 created
+`models/commodities.py` whole; D-121 **appends a second household** to it. The mapping-level rule
+this establishes: **a Module file may hold SEVERAL functions, and the shared plumbing between them
+is a SHARED ANCHOR NAMESPACE** — the D-119/O-145 lesson. Adding `GoldDriverSettings` to `config.py`
+made **six pre-existing sweep anchors ambiguous** because the gold settings share byte-identical
+accessor and validator bodies with the oil ones; each was **WIDENED with a distinguishing
+neighbour**, never deleted (D-109/D-111). The sweep grew **35 → 64 mutations** in the **same**
+script rather than a new one, so the **sweep census stays 48**.
+
+**The command census does NOT move — `gold_driver_attribution` adds no OpenBB command.** Unlike
+D-120 (which moved **4 → 6**, the repository's only such move), both gold legs reuse the existing
+`economy.fred_series` route. The mapping-level fact: **a new function does not imply a new
+command**, and the census in `tests/test_openbb_command_inventory.py` stays at **6**.
+
+**A source-independence mapping rule: LEGS ARE NOT SOURCES.** Both live legs (`DFII10`, `VIXCLS`)
+are **FRED**, so `source_independence_count` is **1** with two legs fetched. A model that reported
+"two legs" as two independent sources would overstate its own evidence — the same error class as
+counting one signal twice (§15.20 Add. 2 §D's whole purpose). This is now a mapping-level rule, not
+just a code comment.
+
+**A blocked input with a MEASURED mechanism (O-150).** `central_bank_net_purchases_trend` is the
+**second CONFIRMED block** in the repository. The mapping gains the rule: **"present in the
+provider's catalogue" and "serves data" are DIFFERENT CLAIMS.** The World Bank publishes
+`FI.RES.GOLD.CD` in its **29 544-id** catalogue, but its **data route refuses the id** (message
+**id 175**). A **control indicator** is what settles it — and the client's own "missing
+`lastupdated`" error is a **symptom**, not the cause (a working indicator reports the same on the
+metadata route). **A block claim needs a control, exactly as a name-grep needs execution (O-133).**
+
+**Reachability moved — SCRIPT-ONLY count 15 → 16 (for real this time).**
+`gold_driver_attribution`'s caller is the **committed** `scripts/live_gold_driver_check.py`, so it
+classifies **SCRIPT-ONLY — Tier 5**. `oil_balance_signal` remains **`NO CALLER — Tier 5`** (see the
+correction above). The **total** stays **PASS 58/58**.
+
+**The test-namespace mapping rule (O-150): a test name is a BINDING, not a label.** Appending six
+gold tests that reused six oil test names **silently deleted six oil tests** (Python binds the
+last definition; `pytest` reported a healthy 106 while 112 existed). The mapping-level rule:
+**when extending an existing test file, a new test name must not collide with an existing one** —
+and `tests/test_source_hygiene.py::test_no_module_defines_a_top_level_name_twice` is the gate that
+enforces it. **It existed and was not run**, which is why the defect reached a sweep survivor.

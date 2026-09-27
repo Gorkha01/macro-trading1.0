@@ -4454,6 +4454,110 @@ oil_balance:
       fitted break-point. Measured 2026-09-29, the live `COPS_OPEC` series sits
       near 0.02 mb/d — an extremely tight reading — so the warning does NOT fire
       on current data, which is the expected behaviour for a buffer test.
+# ===========================================================================
+# gold_driver — Module 10.2, the Gold Three-Layer Framework (Appendix D, D-121)
+# ===========================================================================
+# Appendix D supplies a FULL reference body for `gold_driver_attribution` (the
+# FOURTH D-096 exception, after the Section 6.7 FX block, the Section 20.9 /
+# Section 20 part-B blocks, and Section 6.8's oil model). Its leaves live here
+# rather than inline, for the same reason as every sibling block: Section 22.8
+# forbids a bare confidence literal, and a threshold a reader cannot find is a
+# threshold a reader cannot audit.
+#
+# ⚠️ ANCHOR NOTE (D-119's O-145, restated): this block is a NEW config class.
+#    Adding it makes a DIFFERENT sweep's anchors ambiguous if any anchor's text
+#    is byte-identical to text here — the D-119 failure mode, where adding
+#    `EMVulnerabilitySettings` reddened `mutation_intervention.py`'s N1a/N1b/N4a.
+#    The mutation sweep for this increment (mutation_commodities.py) was extended
+#    and re-run for exactly this reason.
+gold_driver:
+  reliability_cap:
+    value: 0.35
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `gold_driver_attribution` reports. Appendix D
+      supplies `confidence=0.35` as a literal, which Section 22.8 refuses.
+
+      ⚠️ 0.35 IS NOT CARRIED FORWARD AT FACE VALUE — IT IS RE-JUSTIFIED, AND IT
+      LANDS IN THE SAME PLACE BY A DIFFERENT ROUTE. The ordering is the claim:
+      0.35 sits ABOVE `oil_balance`'s 0.30 because the primary input here is a
+      CHANGE in an observed market yield (two DFII10 points) reinforced by an
+      independent second leg (the VIX level), whereas the oil model is one
+      observation through a sign flip. It sits BELOW every Module 9 FX cap
+      (`ppp_valuation` 0.2 is the nearest below in that family; `uip_expected_move`
+      0.15, `intervention_capacity` 0.12) because those relate two observable
+      prices with EXACT arithmetic (CIP/UIP/PPP), whereas this function
+      CLASSIFIES into one of three discrete layers on uncalibrated thresholds.
+      So the publication order, strongest to weakest evidence, runs: relations
+      between observable prices > a change in an observable price with a second
+      leg (this) > a single observation sign-flipped (oil) > stress heuristics
+      (EM checklist).
+
+      ⚠️ IT IS A CAP, AND THE MODEL MULTIPLIES RATHER THAN `min()`-ing. The
+      function applies compute_confidence() to the INPUT half and multiplies by
+      this leaf (D-118/D-119/D-120), so both halves stay load-bearing and neither
+      becomes dead code — the defect D-118 removed.
+
+      Placeholder, not calibrated: calibrating it means measuring how often the
+      three-layer attribution correctly identified the durability of realised
+      gold moves, a small-sample question this build does not attempt.
+  value_decimals_leaf:
+    value: 1
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The decimal places the published real-yield CHANGE is rounded to. Appendix
+      D writes no rounding at all for this field (it compares the raw change to
+      an integer threshold), so the precision is this build's declaration.
+
+      It is 1 because the change is in BASIS POINTS derived from a series
+      published in PER CENT to two decimals (DFII10 = 2.85), so the underlying
+      resolution is 1 bp — a tenth of a bp. One decimal is enough to show that a
+      change like 9.0 bp is not exactly zero while not implying precision the
+      source does not have.
+
+      Kept as a leaf so the rounding is a declared property of the result rather
+      than a magic literal in the function body.
+  yield_change_threshold_materiality_bp:
+    value: 10.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The absolute real-yield CHANGE, in BASIS POINTS, above which the
+      `real_yield` layer fires. Appendix D inlines `abs(...) > 10`.
+
+      It is a conventional MATERIALITY boundary — "a real-yield move of more
+      than ~10 bp is large enough to be the story" — not a fitted break-point.
+      Preserved at the specification's own 10 so the model and Appendix D agree
+      on when the primary layer is considered active.
+
+      Measured 2026-09-27, the live DFII10 pair (2.85 on 2026-09-24 vs 2.76 on
+      2026-09-23) is a **+9.0 bp** change — INSIDE the threshold — so the
+      real-yield layer does NOT fire on current data, which is the expected
+      behaviour for a materiality test and is disclosed in the live check.
+  crisis_vix_spike_level:
+    value: 30.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The VIX LEVEL, in index points, at or above which `crisis_indicator` is
+      resolved True. Appendix D leaves this ENTIRELY to the caller — its
+      `crisis_indicator` is an input boolean and the comment only glosses it as
+      "VIX spike / credit blowout / confidence event". A threshold is therefore
+      REQUIRED for this build to resolve the leg from a live VIX level, and it is
+      published here so the number that makes the acute layer fire is
+      discoverable rather than buried in the fetch.
+
+      30 is the conventional "fear spike" line — the level above which the VIX is
+      usually described as signalling acute stress — not a fitted break-point.
+      It is deliberately well above the long-run VIX median (~17-19), so the
+      acute layer is ABSENT in normal markets rather than permanently firing.
+
+      ⚠️ A NON-POSITIVE THRESHOLD WOULD MAKE `level >= threshold` TRUE ON EVERY
+      READING, so `crisis_indicator` would be permanently True and the acute
+      layer would never be absent — a permanent misattribution. The settings
+      validator refuses a non-positive value for exactly this reason.
+
+      Measured 2026-09-27, the live VIX is **14.21** — BELOW the threshold — so
+      crisis_indicator resolves False and the acute layer does not fire, which is
+      the expected behaviour for a spike test in a calm market.
   # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the

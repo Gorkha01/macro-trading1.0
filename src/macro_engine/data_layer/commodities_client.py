@@ -71,6 +71,20 @@ it returns the **latest published revision** with its observation date attached
 and makes no claim about what was in force on an earlier date. ``alfred_client``
 remains the engine's one point-in-time route, and no EIA series implements it.
 
+Gold drivers (the second household, added by ``gold_driver_attribution``)
+-------------------------------------------------------------------------
+Appendix D's ``GoldDriverInputs`` names three inputs and no source. Two are LIVE
+on the ``fred`` route (``DFII10`` real yield, ``VIXCLS`` crisis level, both in a
+section further down this file) and one — ``central_bank_net_purchases_trend`` —
+is a **measured, CONFIRMED block**: the World Bank registers ``FI.RES.GOLD.CD``
+as *"Gold Holdings at London market price"* but it returns **no data points** and
+carries no ``lastupdated``, so it is a registered-but-empty indicator rather than
+a source. That leg is published as MANUAL with a discriminating disclosure.
+
+⚠️ **BOTH LIVE GOLD LEGS SHARE ONE PROVIDER (FRED).** Their independence count is
+ONE family, not two — the model discloses this rather than inflating its own
+confidence from a leg count.
+
 Transport
 ---------
 This module does **not** open its own HTTP connection. It goes through the
@@ -85,21 +99,32 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "BASIS_POINTS_PER_PERCENT",
     "INVENTORY_SOURCE_UNIT",
     "INVENTORY_SYMBOL",
+    "REAL_YIELD_SOURCE_UNIT",
+    "REAL_YIELD_SYMBOL",
     "SPARE_CAPACITY_SOURCE_UNIT",
     "SPARE_CAPACITY_SYMBOL",
+    "VIX_SOURCE_UNIT",
+    "VIX_SYMBOL",
     "CommodityReadError",
     "InventoryReading",
+    "RealYieldReading",
     "SpareCapacityReading",
+    "VixReading",
     "fetch_crude_inventories",
     "fetch_opec_spare_capacity",
+    "fetch_real_yield",
+    "fetch_vix_level",
+    "real_yield_change_bp",
 ]
 
 #: The EIA symbol for weekly U.S. ending stocks of crude oil EXCLUDING the SPR,
@@ -448,3 +473,321 @@ def _parse_value(raw: object, *, context: str) -> float:
             f"{context}: value {raw!r} is non-finite; a non-finite observation is never repaired."
         )
     return value
+
+
+# =============================================================================
+# Gold drivers (Section 6.8's Module 10, Appendix D — ``gold_driver_attribution``)
+# =============================================================================
+#
+# Appendix D's ``GoldDriverInputs`` declares three fields and names no source:
+#
+#     real_yield_change_bp            PRIMARY driver, 10yr TIPS yield change
+#     central_bank_net_purchases_trend  "rising" | "flat" | "falling"
+#     crisis_indicator                bool — VIX spike / credit blowout
+#
+# Under Section 21.1's default rule all three would read as BLOCKED. MEASURED
+# 2026-09-27, the first TWO are LIVE through this installation's ``fred`` route
+# and the third is GENUINELY BLOCKED — and the difference matters, because this
+# is the first increment where the honest answer is a MIX rather than "all live"
+# (D-120) or "one confirmed block" (D-119).
+#
+# The two live legs — measured 2026-09-27
+# ----------------------------------------
+# **Real yield** — ``economy.fred_series``, ``symbol=DFII10``, *"Market Yield on
+# U.S. Treasury Securities at 10-Year Constant Maturity, Quoted on an Investment
+# Basis, Inflation-Indexed"* — the 10-Year TIPS yield, in PER CENT:
+#
+#   * 5 937 observations; latest **2026-09-24 = 2.85** (prior 2026-09-23 = 2.76)
+#
+# **Crisis indicator** — ``economy.fred_series``, ``symbol=VIXCLS``, the CBOE
+# Volatility Index (a LEVEL, in index points, not a percentage):
+#
+#   * 9 279 observations; latest **2026-09-22 = 14.21**
+#
+# ⚠️ **THE TWO LEGS ARE THE *SAME* PROVIDER, WHICH IS A DISCLOSURE, NOT A
+# DETAIL.** Both come from FRED, so their ``source_independence_count`` is ONE
+# family even when both are fetched. A model that counted "two legs fetched" as
+# two independent sources would overstate its own confidence; the model passes
+# the honest count and the docstring says why.
+#
+# The blocked leg — MEASURED, not inherited
+# -----------------------------------------
+# ``central_bank_net_purchases_trend`` is a DISCRETE trend label ("rising" /
+# "flat" / "falling") over central-bank net gold purchases. Unlike the five FALSE
+# blocks this repository has caught, this one was PROBED and CONFIRMED, so it is
+# the **second CONFIRMED block** (after ``usd_denominated_debt_share``, D-119) —
+# and it is confirmed for a subtler reason than "no such series":
+#
+#   * The World Bank DOES publish ``FI.RES.GOLD.CD`` in its indicator catalogue
+#     (*"Gold Holdings at London market price (US$ end period)"*) — it appears in
+#     the **29 544-entry** catalogue listing (measured 2026-09-27 via
+#     ``api.worldbank.org/v2/indicator``), so a name-grep finds it and calls it a
+#     source. **But the DATA route refuses it:** requesting
+#     ``/country/USA/indicator/FI.RES.GOLD.CD`` returns message **id=175
+#     "The indicator was not found. It may have been deleted or archived."**,
+#     with no rows at all — for ``USA`` and for the ``WLD`` aggregate alike.
+#     **"In the catalogue" and "serves data" are DIFFERENT claims**, and this
+#     indicator satisfies only the first. (A working control, ``FI.RES.TOTL.CD``,
+#     returns populated points from the same route and the same caller.)
+#   * The client's own error for this case names a missing ``lastupdated`` date —
+#     that is the SYMPTOM the client detects, not the cause: the
+#     ``/indicator/`` metadata route carries no ``lastupdated`` for a *working*
+#     indicator either (measured: ``FI.RES.TOTL.CD`` also reports
+#     ``lastupdated=None`` there). The decisive evidence is the data route's
+#     id-175 refusal, which ``scripts/live_gold_driver_check.py`` section 2
+#     re-measures on every run.
+#   * ``FI.RES.TOTL.GD.ZS`` is **not a valid indicator id at all** — it is absent
+#     from the catalogue and the API rejects the id — so it is not a fallback
+#     either.
+#   * Even had ``FI.RES.GOLD.CD`` carried data, it is a **USD VALUE at London
+#     market price**, not a physical tonnage and not a NET PURCHASE flow: a rise
+#     in it would conflate a price move with a buying decision. Deriving a
+#     "purchases trend" from it would be a category error, which the model's
+#     docstring records rather than silently performing.
+#
+# So the leg is published as a MANUAL input with a discriminating disclosure, and
+# the model's confidence prices that: a caller-supplied trend is not a fetched
+# one, and the published number says so.
+
+#: The FRED symbol for the 10-Year TIPS real yield, in PER CENT.
+REAL_YIELD_SYMBOL = "DFII10"
+
+#: The FRED symbol for the CBOE Volatility Index (a LEVEL in index points).
+VIX_SYMBOL = "VIXCLS"
+
+#: The unit each route returns ``value`` in, named so the model's declared unit
+#: and this reading cannot drift apart. FRED serves both series in the units the
+#: provider publishes; neither is converted here.
+REAL_YIELD_SOURCE_UNIT = "percent"
+VIX_SOURCE_UNIT = "index_points"
+
+#: The FRED route both legs go through. Named as a constant so the provider and
+#: the endpoint travel together — and so the model can state, in one place, that
+#: the two legs share a provider (the independence disclosure above).
+_FRED_ENDPOINT = "economy.fred_series"
+_FRED_PROVIDER = "fred"
+
+
+@dataclass(frozen=True)
+class RealYieldReading:
+    """A TIPS real-yield observation, plus the prior point needed for a CHANGE.
+
+    ``yield_percent`` is the level the provider publishes (PER CENT), NOT the
+    change. The change is computed by :func:`real_yield_change_bp`, because
+    Appendix D's input is a *change in basis points* and the conversion from
+    percentage-point levels to basis points is a claim that should be visible
+    (D-118's dead-constant lesson) rather than implicit in the fetch.
+
+    ``prior_observation_date`` / ``prior_yield_percent`` are ``None`` — never
+    ``0.0`` — when the series carries fewer than two observations, because a
+    fabricated zero prior would make a CHANGE read as a LEVEL (the D-078 class).
+    """
+
+    symbol: str
+    observation_date: str
+    yield_percent: float
+    prior_observation_date: str | None
+    prior_yield_percent: float | None
+    source_unit: str = REAL_YIELD_SOURCE_UNIT
+    observation_count: int = 0
+
+
+@dataclass(frozen=True)
+class VixReading:
+    """A VIX observation — the level, in index points, at the as-of date."""
+
+    symbol: str
+    observation_date: str
+    level: float
+    source_unit: str = VIX_SOURCE_UNIT
+    observation_count: int = 0
+
+
+#: Basis points per percentage point. Named because Appendix D's input is in bp
+#: while the FRED series is in per cent; the conversion is a multiplication by
+#: this constant, which is the D-118 lesson applied (a conversion the reader can
+#: find, not a magic 100 inlined at the call site).
+BASIS_POINTS_PER_PERCENT = 100.0
+
+
+def fetch_real_yield(
+    *,
+    as_of: date,
+    client: OpenBBClient | None = None,
+) -> RealYieldReading:
+    """Fetch the latest 10-Year TIPS real yield at or before ``as_of``.
+
+    Returns a :class:`RealYieldReading` carrying the latest observation AND the
+    one before it, because Appendix D's input is a change. The series is clipped
+    to observations at or before ``as_of`` so a caller controlling the as-of date
+    gets a deterministic answer — the O-134 lesson (a test whose verdict depends
+    on the wall clock is a clock, not a test) applied to the fetch itself.
+
+    Raises :class:`CommodityReadError` when the transport fails, the series is
+    empty, the frame lacks the client's tidy ``date``/``value`` columns, or no
+    observation falls at or before ``as_of``.
+    """
+    own_client = client is None
+    active = client if client is not None else OpenBBClient()
+    try:
+        frame = active.fetch_series(
+            provider=_FRED_PROVIDER,
+            endpoint=_FRED_ENDPOINT,
+            params={"symbol": REAL_YIELD_SYMBOL},
+            series_label="gold_real_yield",
+        )
+    except OpenBBFetchError as exc:
+        raise CommodityReadError(
+            f"real-yield series {REAL_YIELD_SYMBOL} could not be read: {exc}"
+        ) from exc
+    finally:
+        if own_client:
+            active.close()
+
+    observed = _observed_pairs(
+        frame,
+        symbol=REAL_YIELD_SYMBOL,
+        as_of=as_of,
+        label="real-yield",
+    )
+    if not observed:
+        raise CommodityReadError(
+            f"real-yield series {REAL_YIELD_SYMBOL} had no observation at or "
+            f"before {as_of.isoformat()}."
+        )
+
+    latest_date, latest_value = observed[-1]
+    if len(observed) >= 2:
+        prior_date, prior_value = observed[-2]
+        prior_iso: str | None = prior_date.isoformat()
+        prior_val: float | None = prior_value
+    else:
+        prior_iso = None
+        prior_val = None
+
+    return RealYieldReading(
+        symbol=REAL_YIELD_SYMBOL,
+        observation_date=latest_date.isoformat(),
+        yield_percent=latest_value,
+        prior_observation_date=prior_iso,
+        prior_yield_percent=prior_val,
+        observation_count=len(observed),
+    )
+
+
+def fetch_vix_level(
+    *,
+    as_of: date,
+    client: OpenBBClient | None = None,
+) -> VixReading:
+    """Fetch the latest CBOE VIX level at or before ``as_of``.
+
+    The VIX is a LEVEL in index points (not a percentage), and it is the raw
+    material for Appendix D's ``crisis_indicator``. This function returns the
+    level; the THRESHOLD that turns a level into a boolean is a model decision
+    and lives in config, not here — so a reader can find the number that makes
+    the indicator fire without reading a fetch (the same split the oil client
+    uses between a reading and a threshold).
+
+    Raises :class:`CommodityReadError` on the same conditions as
+    :func:`fetch_real_yield`.
+    """
+    own_client = client is None
+    active = client if client is not None else OpenBBClient()
+    try:
+        frame = active.fetch_series(
+            provider=_FRED_PROVIDER,
+            endpoint=_FRED_ENDPOINT,
+            params={"symbol": VIX_SYMBOL},
+            series_label="gold_crisis_vix",
+        )
+    except OpenBBFetchError as exc:
+        raise CommodityReadError(f"VIX series {VIX_SYMBOL} could not be read: {exc}") from exc
+    finally:
+        if own_client:
+            active.close()
+
+    observed = _observed_pairs(
+        frame,
+        symbol=VIX_SYMBOL,
+        as_of=as_of,
+        label="VIX",
+    )
+    if not observed:
+        raise CommodityReadError(
+            f"VIX series {VIX_SYMBOL} had no observation at or before {as_of.isoformat()}."
+        )
+
+    latest_date, latest_value = observed[-1]
+    return VixReading(
+        symbol=VIX_SYMBOL,
+        observation_date=latest_date.isoformat(),
+        level=latest_value,
+        observation_count=len(observed),
+    )
+
+
+def real_yield_change_bp(reading: RealYieldReading) -> float | None:
+    """The change in the TIPS real yield, in BASIS POINTS, or ``None``.
+
+    Appendix D's ``real_yield_change_bp`` is *"10yr TIPS yield change"* — a
+    CHANGE, in basis points. The FRED series reports LEVELS in per cent, so this
+    performs the conversion explicitly:
+
+        change_bp = (latest_percent - prior_percent) * BASIS_POINTS_PER_PERCENT
+
+    Returns ``None`` when the reading carries no prior observation, because a
+    change from a fabricated zero prior is not a change (D-078's class). The
+    caller decides whether that absence is fatal — the same split the oil model
+    uses for its two legs.
+    """
+    if reading.prior_yield_percent is None:
+        return None
+    return (reading.yield_percent - reading.prior_yield_percent) * BASIS_POINTS_PER_PERCENT
+
+
+def _observed_pairs(
+    frame: Any,
+    *,
+    symbol: str,
+    as_of: date,
+    label: str,
+) -> list[tuple[date, float]]:
+    """Reduce a tidy ``date``/``value`` frame to sorted pairs at or before ``as_of``.
+
+    Shared by both gold legs so the clipping rule is stated once. Both the
+    ordering and the clip matter, and for different reasons:
+
+    * **Ordering** — ``iloc[-1]`` must be the latest OBSERVATION, not the last
+      row the provider happened to emit. FRED returns ascending order, but the
+      sort is cheap and a reversed response would silently turn "latest" into
+      "oldest".
+    * **Clip** — an observation dated after ``as_of`` is excluded, matching the
+      oil client's projection-tail discipline. FRED series carry no forecast
+      tail, but a caller passing an as-of in the past must get the answer that
+      was true then, not the newest row.
+    """
+    if frame is None or getattr(frame, "empty", True):
+        raise CommodityReadError(f"{label} series {symbol} returned no observations.")
+    if "date" not in frame.columns or "value" not in frame.columns:
+        raise CommodityReadError(
+            f"{label} series {symbol} returned an unexpected frame shape "
+            f"(columns: {sorted(frame.columns)}); expected the client's tidy "
+            "`date`/`value` columns. Refusing rather than guessing which column "
+            "is the value."
+        )
+
+    cleaned = frame.loc[:, ["date", "value"]].dropna(subset=["value"])
+    if cleaned.empty:
+        raise CommodityReadError(f"{label} series {symbol} returned only missing values.")
+
+    pairs: list[tuple[date, float]] = []
+    for raw_date, raw_value in zip(
+        cleaned["date"].tolist(), cleaned["value"].tolist(), strict=True
+    ):
+        when = _parse_date(raw_date, context=f"{symbol} {label} row")
+        if when > as_of:
+            continue
+        pairs.append((when, _parse_value(raw_value, context=f"{symbol} {label} row @ {when}")))
+    pairs.sort(key=lambda item: item[0])
+    return pairs

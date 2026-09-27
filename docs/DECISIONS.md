@@ -20021,3 +20021,190 @@ against `src/`, are: `gold_driver_attribution`, `metals_complex_divergence` (Mod
 `sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior` (Module 11 → a new
 `models/equity_macro.py`), and `statement_text_diff` (§20.4 — the one name whose spec body **keeps
 its own `NotImplementedError`**).
+
+---
+
+## D-121 — Module 10's `gold_driver_attribution`: the increment's only real defect was **SIX SHADOWED TESTS** (an O-117 recurrence that made a mutant survive), plus a **CRLF defect from an ad-hoc script**
+
+**Date:** 2026-09-29. **Tier 5 = 18/23** (moved **17 → 18**; MEASURED 2026-09-29 from
+`AGENTS.md:5541–5550` against `src/`, not recalled — the O-147 discipline). Target: the **existing**
+`src/macro_engine/models/commodities.py` (a **gold household** appended beside D-120's oil one) and
+the **existing** `src/macro_engine/data_layer/commodities_client.py` (two new FRED legs). Section
+resolved with `grep -n`: the authority is **§15.20 Addendum 2, section D** (`AGENTS.md:3046`), the
+"Module 10 — Gold Three-Layer Framework" block whose own heading says *"Phase 5+, informational
+only"*. **NO new OpenBB commands** — the gold legs reuse the existing `economy.fred_series`, so the
+command census **stays 6**.
+
+### 1. What the authority said, and what was built
+
+`AGENTS.md:3046–3086` gives a **complete reference body** (the tier's **fourth** such body, after
+§6.7's FX block, §20.9/§20's part B, and §6.8), so this is a **D-096 exception** as well as an
+**upgrade**. Applied in the §22.1 order, the D-096 question *"what does this supersede?"* has the
+honest answer: **nothing is superseded — this is a NEW CAPABILITY** (Module 10's second function).
+
+The spec's decision order is preserved exactly: layers are appended `real_yield` →
+`cb_diversification` → `crisis_confidence`, and `dominant = layers[0][0] if layers else
+"none_identified"` — so the **tie-break is "the primary channel wins"**, a claim the docstring now
+states rather than leaves to be inferred from the append order. The threshold is
+`abs(change_bp) > 10` in the spec; the literal moved to
+`config/settings.yaml:gold_driver.yield_change_threshold_materiality_bp` with the **comparison left
+strictly `>`** (a `<=` mutant is killed by a fixture sitting ON the threshold, per D-031).
+
+### 2. Two deviations, both logged BEFORE they were written
+
+1. **`value` is a DICT, not the bare string the reference returns.** The reference publishes
+   `value={"dominant_layer": …}` with the winner and discards which other layers fired; that makes
+   the reading *unauditable at the point of use* — a consumer cannot tell "real_yield alone" from
+   "real_yield plus a crisis". The published `value` therefore also carries `active_layers`,
+   the resolved `real_yield_change_bp` (rounded to the configured leaf), the CB trend, and the
+   crisis flag. **Supersedes nothing; it only stops the reference from throwing away information it
+   already computed.**
+2. **Confidence is a PRODUCT, and the independence count is 1, not 2.** The reference hardcodes
+   `confidence=0.35`. §22.8 forbids a bare literal, so the cap lives in config
+   (`gold_driver.reliability_cap = 0.35`) and is multiplied by a `compute_confidence(...)` result —
+   the D-118/D-119 rule. **Both live legs (`DFII10`, `VIXCLS`) are FRED**, so
+   `source_independence_count = 1` when both are fetched: **two legs, ONE provider.** Reporting
+   `fetched_legs` as the count would overstate the evidence, and it is the same class of error as
+   counting one signal twice. `min()` was rejected because it would publish the cap on **every**
+   path here, making the computed half **dead code** — exactly the defect D-118 removed.
+
+### 3. The three inputs, and a CONFIRMED block (the SECOND one)
+
+* `real_yield_change_bp` — **LIVE.** `DFII10` (10-Year TIPS, **PER CENT**) at two vintages, then
+  differenced and **×100** to bp by the named constant `BASIS_POINTS_PER_PERCENT`.
+* `crisis_indicator` — **LIVE.** `VIXCLS` (a **LEVEL** in index points) compared against
+  `gold_driver.crisis_vix_spike_level = 30.0`. The spec's compound phrase ("VIX spike / credit
+  blowout / confidence event") is honoured for the **VIX leg only**, and the model's `assumptions`
+  says so.
+* `central_bank_net_purchases_trend` — **BLOCKED, and the block is MEASURED with a CONTROL.**
+  **The mechanism was corrected during this increment.** The first draft recorded it as "registered
+  but carries no `lastupdated`". Re-probing the **raw** World Bank route showed that framing was
+  wrong about the *cause*:
+  * `FI.RES.GOLD.CD` **IS in the catalogue** — it appears among the **29 544** ids returned by
+    `api.worldbank.org/v2/indicator` (the first scan saw only page 1 of 2 and wrongly concluded it
+    might be absent).
+  * **But its DATA route refuses the id**: `/country/USA/indicator/FI.RES.GOLD.CD` answers
+    **`id=175`, "The indicator was not found. It may have been deleted or archived."** with **no
+    rows** — for `USA` and `WLD` alike. **"In the catalogue" and "serves data" are DIFFERENT
+    CLAIMS.**
+  * The **control** settles it: `FI.RES.TOTL.CD` returns populated points from the same route and
+    the same caller, so the refusal is about **this id**, not about the request.
+  * The client's own error names a missing `lastupdated` — a **SYMPTOM**, not the cause: the
+    `/indicator/` metadata route reports `lastupdated=None` for a **working** indicator too
+    (measured on `FI.RES.TOTL.CD`).
+  * `FI.RES.TOTL.GD.ZS` is **not a valid id at all** (absent from the catalogue), so it is not a
+    fallback.
+  * Even with data it would be the **wrong estimand** — a USD **value** at London price, so a rise
+    conflates a **price move** with a **buying decision**.
+
+  Because there is no source, the CB layer **degrades to INACTIVE** rather than raising, and the
+  disclosure says it is *"inactive by data availability, NOT by evidence that CB buying is flat"*.
+  The **primary** and **crisis** layers DO raise when unresolvable: "VIX could not be read" and "VIX
+  is calm" are different claims.
+
+### 4. ⚠️ THE INCREMENT'S REAL DEFECT WAS NOT IN THE MODEL — six tests were SILENTLY SHADOWED (O-117 / O-150)
+
+The first sweep killed **63/64**, with one survivor: **`M6a the unit mislabelled`**. The mutation
+rewrote the oil `unit="thousand_barrels_seasonal_deviation"` to `"thousand_barrels"`, and
+`test_the_result_carries_its_contract_fields` asserts that exact string — so the survivor should have
+been impossible. The triage is the record:
+
+1. The mutant was re-applied **by hand** and confirmed **LIVE** (`unit == 'thousand_barrels'`).
+2. The named test was run **alone** under the live mutant — it **PASSED**.
+3. A **fresh** test file with the **identical assertion** **FAILED** — localising the fault to
+   *that named test*, not to the module or to pytest.
+4. `grep` showed **two definitions**: line **430** (oil) and line **1031** (gold).
+
+**The gold block had reused six generic test names from the oil block above it.** Python binds the
+**last** definition, so the six **oil** bodies were **dead code**, and `pytest` reported a healthy
+**106**. **This is O-117 exactly, and the guard against it ALREADY EXISTED AND WAS NOT RUN:**
+`tests/test_source_hygiene.py::test_no_module_defines_a_top_level_name_twice` fires correctly on this
+very duplicate — verified by re-introducing it, which produced
+`1 module-level name(s) are defined more than once: ['tests\\models\\test_commodities.py::test_the_result_carries_its_contract_fields']`.
+**The defect was a SKIPPED gate, not a missing one** — the hygiene file was not in the two
+increment-local selections, and no sweep reads prose.
+
+**Fix: RENAME the six gold twins (never delete, never touch a mutation).**
+
+| oil name (kept) | gold name (renamed) |
+| --- | --- |
+| `test_extra_input_fields_are_refused` | `test_gold_extra_input_fields_are_refused` |
+| `test_a_fully_supplied_run_never_reaches_the_fetchers` | `test_a_fully_supplied_gold_run_never_reaches_the_fetchers` |
+| `test_confidence_is_the_product_of_the_computed_half_and_the_cap` | `test_gold_confidence_is_the_product_of_the_computed_half_and_the_cap` |
+| `test_confidence_is_not_the_cap_alone` | `test_gold_confidence_is_not_the_cap_alone` |
+| `test_a_fetched_run_reports_higher_confidence_than_a_fully_supplied_one` | `test_a_fetched_gold_run_reports_higher_confidence_than_a_fully_supplied_one` |
+| `test_the_result_carries_its_contract_fields` | `test_the_gold_result_carries_its_contract_fields` |
+
+Result: **112 passed** (up from 106 — the six recovered oil tests), a tree-wide scan of **96 test
+files** shows **ZERO duplicate names**, and the sweep re-ran **64/64 killed**. **O-150** records it.
+
+### 5. ⚠️ A SECOND defect, found in the same run: an ad-hoc `write_text` made the file CRLF (D-061 / O-151)
+
+Running `tests/test_source_hygiene.py` for the first time in the increment surfaced **two** problems,
+not one: the duplicate above, and
+`test_no_source_file_contains_a_carriage_return` reporting
+`['tests\\models\\test_commodities.py']`. Measured: **1220 CRLF pairs, 1220 LF, ZERO lone CRs** — a
+pure `\n` → `\r\n` translation. **The writer was mine:** the O-150 rename was applied by an ad-hoc
+`pathlib.write_text(...)` heredoc that omitted `newline=""`. The D-061 fix protects every
+`write_text` **inside the sweeps**; it cannot protect a script typed at the terminal mid-session.
+`git` normalises through `.gitattributes`, so a CRLF work tree is **invisible to `git status` and
+`git diff`** — and the sweeps read the **work tree**. The gate's own instruction was followed
+("find the writer, do not just re-save the file"): the writer was identified as the ad-hoc script,
+and the repair was done at the **byte** level (`data.replace(b"\r\n", b"\n")` then `open("wb")`) so
+no encoding round-trip could re-translate. After: **CR 0, LF 1220**, all 5 hygiene gates pass, and a
+tree-wide scan confirms this was the **only** file affected.
+
+### 6. Live verification (§21.2 Steps 6–7) — `scripts/live_gold_driver_check.py` (NEW)
+
+Seven sections, each re-measuring rather than asserting: the two legs' **published units**; the CB
+block **with a working control**; the **bp conversion** re-derived from the two raw levels; the
+**threshold comparison** on live numbers; the **layer order**; the **confidence product** and the
+one-provider disclosure; and a written **plausibility assessment**. Measured 2026-09-27:
+
+```
+DFII10 : 2.76 -> 2.85 %   (+9.0 bp)      obs 2026-09-24, prior 2026-09-23
+VIXCLS : 14.21            (threshold 30.0) obs 2026-09-22
+dominant_layer = none_identified   active_layers = []
+confidence = 0.1925   (cap 0.35 x computed 0.55)
+```
+
+**Assessment, in words (§21.2 Step 7):** the real-yield change is **+9.0 bp — INSIDE the 10 bp
+threshold** — and the VIX at **14.21 is well below 30**, so **no layer fires**. That is the
+economically sensible reading for a quiet week: gold is not being driven by an acute confidence
+event, and a 9 bp real-yield move is noise rather than a repricing. The `none_identified` result is
+therefore a **reading, not a failure** — and the model's own warning says exactly that, because the
+tempting misreading is "gold is unattributed and therefore random". The CB layer is additionally
+**unavailable** (§3), so a real CB-driven move **could not be seen** by this function today — a
+limitation the output states rather than hides. **INFORMATIONAL ONLY: no commodity positions.**
+
+### 7. Gates (all green, run SEQUENTIALLY — `ruff check` FIRST, `sweep_health.py` LAST)
+
+* `ruff check src tests tools scripts` — **clean** (5 errors found and fixed first: 2 × `I001`
+  import order, 1 × `E501`, 2 × `N802` ALL-CAPS test names; then 4 more in the new script, including
+  **`RUF100` for a `noqa` on a code the config does not enable** — the trap the memory file warns
+  about).
+* `ruff format --check` = **282** == `mypy --strict` = **282** (D-035 matched). One `type: ignore`
+  removed as **unused** — the project does not keep an ignore it does not need.
+* Reachability: Tier 1-4 = **58** (36 SCRIPT-ONLY + 22 true orphans), unchanged; the Tier-5
+  partition is `SCRIPT-ONLY — Tier 5: 16` (was 15 — `gold_driver_attribution` joins it, because the
+  new committed live-check script **is** a caller) + `NO CALLER — Tier 5: 1`
+  (`oil_balance_signal` — D-120's live check was run **inline** and never committed, so the tool
+  sees no caller; an **O-133-adjacent** observation, left standing rather than fixed in this
+  increment). Total **PASS 58/58** either way.
+* Full suite (DEFAULT markers, via `--junitxml`): **3857 passed / 0 failed / 0 errors / 1 skipped**
+  (245.76 s) — up from 3769, i.e. **+6 recovered** tests and the new gold tests.
+* Changed `slow` test run **explicitly**: `-m slow` → **1 passed** (359.05 s, inside the 600 s bound).
+* `mutation_commodities.py` = **64/64 killed** (35 → 64 at D-120 → **64** here, the gold block adding
+  29 mutations); `--check-targets` = **64 mutations, 0 problems**.
+* `sweep_health.py` **LAST** → **48 sweeps · 0 leftovers · 0 shapes · 0 committed mutants ·
+  0 failures · OK**.
+
+### Next
+
+**Tier 5 = 18/23.** Re-derive the remaining names from §21.3's table *"and only that table"* — do NOT
+recall them. The remaining **5** Tier-5 names, MEASURED (2026-09-29) from `AGENTS.md:5541–5550`
+against `src/`, are: `metals_complex_divergence` (Module 10), `sector_rotation_prior`,
+`duration_sensitivity`, `factor_tilt_prior` (Module 11 → a new `models/equity_macro.py`), and
+`statement_text_diff` (§20.4). **All five have NO definition anywhere in `src/`** — the earlier note
+that `statement_text_diff` "keeps its own `NotImplementedError`" was **carried, not measured, and is
+FALSE**: there is no `def` at all.

@@ -97,7 +97,16 @@ _ROUND = "    rounded_tightness = round(tightness, decimals)"
 # --------------------------------------------------------------------------
 
 _CONF_PRODUCT = "    confidence = computed * oil.reliability_value"
-_CONF_DQ = "            data_quality_flags_present=fetched_legs < 2,"
+# ⚠️ WIDENED at D-121: `            data_quality_flags_present=fetched_legs < 2,`
+#     is byte-identical in the gold model too (measured 2). The distinguishing
+#     neighbour is the OIL-only next line, which uses `fetched_legs` as the
+#     independence count; the gold model uses `independent_providers`. Widened
+#     form measured: 1.
+_CONF_DQ = (
+    "            data_quality_flags_present=fetched_legs < 2,\n"
+    "            is_heuristic_not_calibrated=not oil.reliability_cap_is_calibrated,\n"
+    "            source_independence_count=fetched_legs,"
+)
 _CONF_IND = "            source_independence_count=fetched_legs,"
 
 # --------------------------------------------------------------------------
@@ -111,7 +120,18 @@ _MISSING_REFUSAL = "    if missing:"
 # --------------------------------------------------------------------------
 
 _UNIT = '        unit="thousand_barrels_seasonal_deviation",'
-_FAMILY = "            EvidenceSourceFamily.MARKET_COMMODITY"
+# ⚠️ WIDENED at D-121: `            EvidenceSourceFamily.MARKET_COMMODITY` was
+#     measured at TWO sites once the gold model landed (oil + gold). The
+#     distinguishing neighbour is the OIL-only `value` dict entry above it —
+#     the gold model's is `dominant_layer`. Widened form: 1.
+_FAMILY = (
+    "            EvidenceSourceFamily.MARKET_COMMODITY\n"
+    "            if fetched_legs > 0\n"
+    "            else EvidenceSourceFamily.MANUAL_ASSESSMENT\n"
+    "        ),\n"
+    "        interpretation=(\n"
+    "            f\"Oil market {'tightening' if tightness > 0 else 'loosening'} \""
+)
 
 # --------------------------------------------------------------------------
 # M7: the disclosure.  measured: 1
@@ -143,12 +163,24 @@ _SYM_INV = '    selected = [r for r in records if r.get("symbol") == INVENTORY_S
 _SYM_SPARE = '    selected = [r for r in records if r.get("symbol") == SPARE_CAPACITY_SYMBOL]'
 
 # --------------------------------------------------------------------------
-# C3/C4: the projection-tail clip.  Each `if when > as_of:` was measured at 2
-# sites, so each is WIDENED with its own body line (inventory `continue`,
-# spare `projection_rows_dropped += 1`).  Each widened form: 1.
+# C3/C4: the projection-tail clip.
+#
+# ⚠️ WIDENED AGAIN at D-121. `        if when > as_of:` was measured at TWO
+#     sites before (inventory `continue`, spare `projection_rows_dropped += 1`)
+#     and at THREE after the gold pair-reader was added — because the gold reader
+#     uses the SAME `continue`-only body as the inventory clip (measured 2
+#     occurrences of `if when > as_of:\n            continue`). So the widened
+#     form is widened AGAIN with the inventory clip's own preceding parse line,
+#     which is the only one that names INVENTORY_SYMBOL. Final widened form: 1.
+#     The spare form loses nothing: its body (`projection_rows_dropped += 1`)
+#     remains unique.
 # --------------------------------------------------------------------------
 
-_FUTURE_INV = "        if when > as_of:\n            continue"
+_FUTURE_INV = (
+    '        when = _parse_date(row.get("date"), context=f"{INVENTORY_SYMBOL} inventory row")\n'
+    "        if when > as_of:\n"
+    "            continue"
+)
 _FUTURE_SPARE = "        if when > as_of:\n            projection_rows_dropped += 1"
 
 # --------------------------------------------------------------------------
@@ -192,15 +224,163 @@ _CAP_ACCESSOR = (
     '        """\n'
     "        return float(self.reliability_cap.value)"
 )
-_DECIMALS_ACCESSOR = "        return int(self.value_decimals_leaf.value)"
+_DECIMALS_ACCESSOR = (
+    "        thousand. The leaf is kept at the specification's ``2`` for\n"
+    "        comparability, but the note records that the last digit is not\n"
+    "        informative.\n"
+    '        """\n'
+    "        return int(self.value_decimals_leaf.value)"
+)
 _SPARE_THRESHOLD_ACCESSOR = "        return float(self.tight_spare_threshold_mbd.value)"
 _CAP_VALIDATOR = (
     "        if not 0.0 <= self.reliability_value <= 1.0:\n"
     "            raise ValueError(\n"
     '                f"oil_balance.reliability_cap is {self.reliability_value}. A "'
 )
-_DECIMALS_VALIDATOR = "        if self.value_decimals < 0:"
+_DECIMALS_VALIDATOR = (
+    "        if self.value_decimals < 0:\n"
+    "            raise ValueError(\n"
+    '                f"oil_balance.value_decimals is {self.value_decimals}. A negative "'
+)
 _SPARE_THRESHOLD_VALIDATOR = "        if self.tight_spare_threshold_value < 0.0:"
+
+# --------------------------------------------------------------------------
+# GM1-GM8: the GOLD model (D-121, Appendix D).
+#
+# ⚠️ EVERY ANCHOR HERE WAS MEASURED IN PYTHON BEFORE BEING WRITTEN DOWN, and
+#     five had to be WIDENED because the gold model and the oil model share
+#     byte-identical plumbing (O-145's lesson, D-119). The measurements:
+#
+#       `            data_quality_flags_present=fetched_legs < 2,`   -> 2
+#       `    if trend == "rising":`            -> 2 (model + _active_layers)
+#       `    if change_bp is None:`            -> 2 (resolve guard + refusal)
+#       `    if crisis is None:`               -> 2
+#       `            EvidenceSourceFamily.MARKET_COMMODITY`  -> 2
+#
+#     Each is widened with a DISTINGUISHING NEIGHBOUR that occurs once; the
+#     widened form's count is asserted in the comment. NEVER delete a mutation
+#     to resolve an ambiguity — widen it.
+# --------------------------------------------------------------------------
+
+# The `abs(change_bp) > threshold_bp` predicate lives in `_active_layers`.
+_GOLD_ABS = "    if abs(change_bp) > threshold_bp:"
+
+# `if trend == "rising":` occurs TWICE (the model's warning branch and the
+# helper's layer append). Widened with the helper's own append body: 1.
+_GOLD_TREND = '    if trend == "rising":\n        layers.append('
+
+# `dominant = layers[0][0] if layers else "none_identified"` measured: 1.
+_GOLD_DOMINANT = '    dominant = layers[0][0] if layers else "none_identified"'
+
+_GOLD_CONF = "    confidence = computed * gold.reliability_value"
+
+# `data_quality_flags_present=fetched_legs < 2,` occurs TWICE (oil + gold).
+# Widened with the gold-only `independent_providers` neighbour line: 1.
+_GOLD_DQ = (
+    "            data_quality_flags_present=fetched_legs < 2,\n"
+    "            is_heuristic_not_calibrated=not gold.reliability_cap_is_calibrated,\n"
+    "            source_independence_count=independent_providers,"
+)
+
+_GOLD_IND = "            source_independence_count=independent_providers,"
+
+# `if change_bp is None:` occurs TWICE (the resolve guard and the refusal).
+# Widened with the refusal's own first message line: 1.
+_GOLD_PRIMARY_REFUSAL = (
+    "    if change_bp is None:\n"
+    "        raise ValueError(\n"
+    '            "gold_driver_attribution cannot resolve the PRIMARY layer: no "'
+)
+
+# `if crisis is None:` occurs TWICE (the resolve guard and the refusal).
+# Widened with the refusal's own first message line: 1.
+_GOLD_CRISIS_REFUSAL = (
+    "    if crisis is None:\n"
+    "        raise ValueError(\n"
+    '            "gold_driver_attribution cannot resolve the CRISIS layer: the VIX "'
+)
+
+_GOLD_UNIT = '        unit="layer_attribution",'
+
+# `EvidenceSourceFamily.MARKET_COMMODITY` occurs TWICE (oil + gold). Widened
+# with the gold-only `gold_driver_attribution` docstring line above it: 1.
+_GOLD_FAMILY = (
+    "        source_family=(\n"
+    "            EvidenceSourceFamily.MARKET_COMMODITY\n"
+    "            if fetched_legs > 0\n"
+    "            else EvidenceSourceFamily.MANUAL_ASSESSMENT\n"
+    "        ),\n"
+    '        interpretation=f"Gold move most likely driven by: {dominant}",'
+)
+
+_GOLD_CB_DISCLOSURE = (
+    '            "central_bank_net_purchases_trend NOT RESOLVED — no free live source "'
+)
+
+_GOLD_CHANGE_RULE = (
+    "    return (reading.yield_percent - reading.prior_yield_percent) * BASIS_POINTS_PER_PERCENT"
+)
+
+# --------------------------------------------------------------------------
+# GC1-GC3: the GOLD client (D-121).
+#
+# ⚠️ `        if when > as_of:` occurred at 3 sites after the gold addition (the
+#     two oil clips and the gold shared pair-reader). Widened with the gold
+#     reader's own `continue` body — the oil inventory clip uses the SAME body,
+#     so the widened form was measured at 2 and is widened again with the
+#     surrounding pair-append line: 1 (asserted below).
+# --------------------------------------------------------------------------
+
+_BP_CONST = "BASIS_POINTS_PER_PERCENT = 100.0"
+
+_GOLD_CLIP = (
+    "        if when > as_of:\n"
+    "            continue\n"
+    '        pairs.append((when, _parse_value(raw_value, context=f"{symbol} {label} row @ {when}")))'
+)
+
+_GOLD_WINDOW = "    if len(observed) >= 2:"
+
+# --------------------------------------------------------------------------
+# GG1-GG4: the GOLD config leaves (D-121).
+#
+# ⚠️ `        return float(self.reliability_cap.value)` occurred at FOUR sites
+#     after the gold addition (Intervention/EMVulnerability/OilBalance/Gold).
+#     Widened with the gold block's own preceding line — the accessor's closing
+#     docstring sentence, which is gold-specific. Same treatment for the
+#     decimals accessor (2 sites): each widened form measured at 1.
+# --------------------------------------------------------------------------
+
+_GOLD_CAP_ACCESSOR = (
+    '        exact arithmetic.\n        """\n        return float(self.reliability_cap.value)'
+)
+
+_GOLD_DECIMALS_ACCESSOR = (
+    '        more.\n        """\n        return int(self.value_decimals_leaf.value)'
+)
+
+# These two accessors are unique by construction (their leaf names occur once).
+_GOLD_YIELD_ACCESSOR = "        return float(self.yield_change_threshold_materiality_bp.value)"
+_GOLD_VIX_ACCESSOR = "        return float(self.crisis_vix_spike_level.value)"
+
+# The gold validators. `if not 0.0 <= self.reliability_value <= 1.0:` occurs at
+# FOUR sites; widened with the gold block's error-message prefix: 1.
+_GOLD_CAP_VALIDATOR = (
+    "        if not 0.0 <= self.reliability_value <= 1.0:\n"
+    "            raise ValueError(\n"
+    '                f"gold_driver.reliability_cap is {self.reliability_value}. A "'
+)
+
+# `        if self.value_decimals < 0:` occurs at TWO sites; widened with the
+# gold error-message prefix: 1.
+_GOLD_DECIMALS_VALIDATOR = (
+    "        if self.value_decimals < 0:\n"
+    "            raise ValueError(\n"
+    '                f"gold_driver.value_decimals is {self.value_decimals}. A negative "'
+)
+
+_GOLD_YIELD_VALIDATOR = "        if self.yield_change_threshold_bp <= 0.0:"
+_GOLD_VIX_VALIDATOR = "        if self.crisis_vix_threshold_value <= 0.0:"
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
     # --- CANARY (O-72/D-051): a syntax error the selection MUST catch --------
@@ -428,6 +608,183 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "G4c the spare-threshold validator neutralised",
         CONFIG,
         _SPARE_THRESHOLD_VALIDATOR,
+        "        if False:",
+    ),
+    # --- GM1-GM8: the GOLD model (D-121) -------------------------------------
+    (
+        "GM1a the abs() dropped, so only RATE RISES fire the primary layer",
+        MODEL,
+        _GOLD_ABS,
+        "    if change_bp > threshold_bp:",
+    ),
+    (
+        "GM1b the threshold comparison loosened to >= (the boundary fires)",
+        MODEL,
+        _GOLD_ABS,
+        "    if abs(change_bp) >= threshold_bp:",
+    ),
+    (
+        "GM2a the trend predicate accepts any non-flat value",
+        MODEL,
+        _GOLD_TREND,
+        '    if trend != "flat":',
+    ),
+    (
+        "GM2b the trend predicate inverted to the fall direction",
+        MODEL,
+        _GOLD_TREND,
+        '    if trend == "falling":',
+    ),
+    (
+        "GM3a the dominant layer becomes the LAST active one",
+        MODEL,
+        _GOLD_DOMINANT,
+        '    dominant = layers[-1][0] if layers else "none_identified"',
+    ),
+    (
+        "GM3b the dominant layer becomes a fixed literal",
+        MODEL,
+        _GOLD_DOMINANT,
+        '    dominant = "real_yield"',
+    ),
+    (
+        "GM4a the confidence product becomes the cap alone",
+        MODEL,
+        _GOLD_CONF,
+        "    confidence = gold.reliability_value",
+    ),
+    (
+        "GM4b the confidence product becomes a min()",
+        MODEL,
+        _GOLD_CONF,
+        "    confidence = min(computed, gold.reliability_value)",
+    ),
+    (
+        "GM5a the independence count uses the raw fetched-leg count (2, not 1)",
+        MODEL,
+        _GOLD_IND,
+        "            source_independence_count=fetched_legs,",
+    ),
+    (
+        "GM5b the gold quality flag never set",
+        MODEL,
+        _GOLD_DQ,
+        "            data_quality_flags_present=False,",
+    ),
+    (
+        "GM6a the primary-layer refusal removed (degrades silently)",
+        MODEL,
+        _GOLD_PRIMARY_REFUSAL,
+        "    if False:",
+    ),
+    (
+        "GM6b the crisis-layer refusal removed ('could not read' becomes 'calm')",
+        MODEL,
+        _GOLD_CRISIS_REFUSAL,
+        "    if False:",
+    ),
+    (
+        "GM7a the gold unit mislabelled",
+        MODEL,
+        _GOLD_UNIT,
+        '        unit="thousand_barrels_seasonal_deviation",',
+    ),
+    (
+        "GM7b the gold family always MANUAL_ASSESSMENT",
+        MODEL,
+        _GOLD_FAMILY,
+        "            EvidenceSourceFamily.MANUAL_ASSESSMENT",
+    ),
+    (
+        "GM7c the CB-layer absence disclosed as a fetched value",
+        MODEL,
+        _GOLD_CB_DISCLOSURE,
+        '            "central_bank_net_purchases_trend SUPPLIED BY THE CALLER "',
+    ),
+    (
+        "GM8a the change rule drops the bp conversion",
+        CLIENT,
+        _GOLD_CHANGE_RULE,
+        "    return reading.yield_percent - reading.prior_yield_percent",
+    ),
+    (
+        "GM8b the change rule inverts the sign",
+        CLIENT,
+        _GOLD_CHANGE_RULE,
+        "    return (reading.prior_yield_percent - reading.yield_percent) * BASIS_POINTS_PER_PERCENT",
+    ),
+    # --- GC1-GC3: the GOLD client --------------------------------------------
+    (
+        "GC1a the bp conversion constant becomes 1 (levels not bp)",
+        CLIENT,
+        _BP_CONST,
+        "BASIS_POINTS_PER_PERCENT = 1.0",
+    ),
+    (
+        "GC2a the future-row clip removed in the shared pair reader",
+        CLIENT,
+        _GOLD_CLIP,
+        "        if False:\n            continue",
+    ),
+    (
+        "GC2b the future-row clip boundary flipped to >= (drops the as-of row)",
+        CLIENT,
+        _GOLD_CLIP,
+        "        if when >= as_of:\n            continue",
+    ),
+    (
+        "GC3a the two-point window loosened to one (a prior of None)",
+        CLIENT,
+        _GOLD_WINDOW,
+        "    if len(observed) >= 1:",
+    ),
+    # --- GG1-GG4: the GOLD config leaves -------------------------------------
+    (
+        "GG1a the gold reliability accessor returns a literal",
+        CONFIG,
+        _GOLD_CAP_ACCESSOR,
+        '        """\n        return 0.35',
+    ),
+    (
+        "GG2a the gold decimals accessor returns a literal",
+        CONFIG,
+        _GOLD_DECIMALS_ACCESSOR,
+        "        return 1",
+    ),
+    (
+        "GG3a the gold yield-threshold accessor returns a literal",
+        CONFIG,
+        _GOLD_YIELD_ACCESSOR,
+        "        return 10.0",
+    ),
+    (
+        "GG3b the gold VIX-threshold accessor returns a literal",
+        CONFIG,
+        _GOLD_VIX_ACCESSOR,
+        "        return 30.0",
+    ),
+    (
+        "GG4a the gold cap validator neutralised",
+        CONFIG,
+        _GOLD_CAP_VALIDATOR,
+        "        if False:",
+    ),
+    (
+        "GG4b the gold decimals validator neutralised",
+        CONFIG,
+        _GOLD_DECIMALS_VALIDATOR,
+        "        if False:",
+    ),
+    (
+        "GG4c the gold yield-threshold validator neutralised",
+        CONFIG,
+        _GOLD_YIELD_VALIDATOR,
+        "        if False:",
+    ),
+    (
+        "GG4d the gold VIX-threshold validator neutralised",
+        CONFIG,
+        _GOLD_VIX_VALIDATOR,
         "        if False:",
     ),
 ]
