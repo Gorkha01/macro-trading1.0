@@ -22,13 +22,15 @@ from macro_engine.config import (
     CalibratedValue,
     QEStanceBaseRates,
     QEStanceSettings,
+    StatementTextSettings,
     get_settings,
 )
-from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
+from macro_engine.models.contracts import ConfidenceInputs, ModelResult, compute_confidence
 from macro_engine.models.policy_rules import (
     BalanceSheetInputs,
     FirstDifferenceInputs,
     PolicyRuleResult,
+    StatementTextInputs,
     TaylorRuleInputs,
     balanced_approach_rule,
     canonical_policy_gap,
@@ -36,6 +38,7 @@ from macro_engine.models.policy_rules import (
     first_difference_rule,
     policy_rule_ensemble,
     qe_qt_stance,
+    statement_text_diff,
     taylor_rule,
 )
 from tests.helpers import as_bool, as_float, as_int, as_str
@@ -957,3 +960,579 @@ def test_the_levels_are_published_and_not_merely_declared() -> None:
     result = qe_qt_stance(_bs(level=6_740_619.0, reserves=2_991_310.0))
     assert as_float(result, key="balance_sheet_level") == pytest.approx(6_740_619.0)
     assert as_float(result, key="reserve_balances") == pytest.approx(2_991_310.0)
+
+
+# ---------------------------------------------------------------------------
+# Module 4.3 — statement_text_diff
+# ---------------------------------------------------------------------------
+
+# A prior statement and a current one whose marker moves are known by
+# construction, so every assertion below names exactly which phrase moved.
+_PRIOR = (
+    "The Committee decided to maintain the target range. Inflation remains "
+    "elevated and the Committee is prepared to raise rates if needed."
+)
+_CURRENT_DOVISH = (
+    "The Committee decided to maintain the target range. Inflation has eased "
+    "and the Committee judges that it is prepared to adjust as needed."
+)
+
+
+def _st_settings() -> StatementTextSettings:
+    return get_settings().statement_text
+
+
+def _diff_prior_to_dovish() -> ModelResult:
+    """The standard ``_PRIOR`` -> ``_CURRENT_DOVISH`` diff, kept on one call site.
+
+    Several tests need only a well-formed result whose direction is known
+    (MORE_DOVISH); naming the fixture once keeps those lines inside the line
+    budget and makes the shared input obvious.
+    """
+    return statement_text_diff(
+        StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH),
+    )
+
+
+def _as_list(result: object, key: str) -> list[str]:
+    """Narrow a list entry of a dict-valued ``ModelResult.value``.
+
+    ``helpers`` has no list accessor (its ``as_dict`` is keyed float mappings),
+    and indexing the union directly is a type error under ``--strict``. A cast
+    would hide a result that returned a bare scalar where a list was promised.
+    """
+    value = result.value  # type: ignore[attr-defined]
+    assert isinstance(value, dict), f"expected a dict value, got {type(value).__name__}"
+    entry = value[key]
+    assert isinstance(entry, list), f"value[{key!r}] is {type(entry).__name__}, not a list"
+    for item in entry:
+        assert isinstance(item, str), f"value[{key!r}] holds a non-str: {item!r}"
+    return [str(item) for item in entry]
+
+
+def test_a_pure_hawkish_addition_reads_more_hawkish() -> None:
+    """One hawkish phrase entering, nothing else moving, is MORE_HAWKISH."""
+    prior = "The Committee met today and discussed the outlook."
+    current = (
+        "The Committee met today and discussed the outlook. The Committee "
+        "judges that additional policy firming may be appropriate."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_str(result, key="direction") == "MORE_HAWKISH"
+    assert as_float(result, key="net_tilt") == pytest.approx(1.0)
+    assert _as_list(result, "hawkish_entered") == ["additional policy firming"]
+    assert _as_list(result, "hawkish_left") == []
+
+
+def test_a_pure_dovish_addition_reads_more_dovish() -> None:
+    prior = "The Committee met today and discussed the outlook."
+    current = (
+        "The Committee met today and discussed the outlook. The Committee "
+        "notes that inflation has eased and sees sustainable progress."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_str(result, key="direction") == "MORE_DOVISH"
+    assert as_float(result, key="net_tilt") == pytest.approx(-1.0)
+
+
+def test_a_hawkish_removal_is_a_dovish_move() -> None:
+    """Removing a hawkish phrase is dovish — the phrase that MOVED is the signal.
+
+    This is the case Section 20.4's premise is about: the level of hawkish words
+    fell, so the guidance moved dovish, and the direction must say so. It is
+    also the increment's one genuine MODEL defect: an earlier reduction keyed on
+    "the dovish side did not move" and read this as MORE_HAWKISH. The net is
+    -1 and the direction must follow the MOVEMENT, not the side that is zero.
+    """
+    prior = "The Committee is prepared to raise rates. Inflation is elevated."
+    current = "The Committee is attentive to inflation risks."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") == -1, "the hawkish phrase left"
+    assert as_int(result, key="dovish_net") == 0
+    assert as_str(result, key="direction") == "MORE_DOVISH"
+    assert "prepared to raise" in _as_list(result, "hawkish_left")
+
+
+def test_a_dovish_removal_is_a_hawkish_move() -> None:
+    """Removing a dovish phrase is hawkish — the mirror of the case above.
+
+    Only the doveshed phrase moved, so the direction is MORE_HAWKISH on the
+    strength of a REMOVAL. A reduction that drops "dovish removed is
+    hawkish-ward" sends this to the tilt label instead.
+    """
+    prior = "The Committee notes inflation has eased and remains attentive."
+    current = "The Committee remains attentive to the outlook."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="dovish_net") == -1, "the dovish phrase left"
+    assert as_int(result, key="hawkish_net") == 0
+    assert as_str(result, key="direction") == "MORE_HAWKISH"
+    assert "has eased" in _as_list(result, "dovish_left")
+
+
+def test_identical_texts_move_nothing() -> None:
+    """The UNCHANGED branch: no marker entered or left."""
+    result = statement_text_diff(StatementTextInputs(prior_text=_PRIOR, current_text=_PRIOR))
+    assert as_str(result, key="direction") == "UNCHANGED"
+    assert as_float(result, key="net_tilt") == pytest.approx(0.0)
+    assert _as_list(result, "hawkish_entered") == []
+    assert _as_list(result, "dovish_entered") == []
+    assert _as_list(result, "hawkish_left") == []
+    assert _as_list(result, "dovish_left") == []
+
+
+def test_matching_is_case_folded() -> None:
+    """A marker the Fed capitalizes must still match the lower-cased vocabulary.
+
+    Removing the case-folding (mutation M1a/M2b) makes every capitalized marker
+    miss, so a statement that plainly adds "Prepared To Raise" would read as
+    UNCHANGED.
+    """
+    prior = "The Committee met."
+    current = "The Committee met. The Committee is PREPARED TO RAISE rates."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_str(result, key="direction") == "MORE_HAWKISH", (
+        "a capitalized marker must match — matching is case-folded"
+    )
+    assert "prepared to raise" in _as_list(result, "hawkish_entered")
+
+
+def test_the_count_is_per_occurrence() -> None:
+    """A phrase that appears twice and drops to once has LEFT one occurrence.
+
+    A membership test (mutation M1b) would read the doubled-then-single phrase
+    as UNCHANGED, because it is still present at all.
+    """
+    prior = "Remains elevated and remains elevated again — the Committee worries."
+    current = "Remains elevated once — the Committee worries."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") == -1, (
+        "two occurrences dropping to one is a net change of -1, not zero"
+    )
+    assert "remains elevated" in _as_list(result, "hawkish_left")
+
+
+def test_a_pure_addition_is_caught_by_the_union_of_keys() -> None:
+    """A marker present ONLY in the current text must count as ENTERED.
+
+    Mutation D2a uses only the prior's keys, which drops every pure addition.
+    """
+    prior = "The Committee met today."
+    current = "The Committee met today and is prepared to adjust."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert "prepared to adjust" in _as_list(result, "dovish_entered"), (
+        "a marker absent from the prior text must still be seen to ENTER"
+    )
+    assert as_str(result, key="direction") == "MORE_DOVISH"
+
+
+def test_the_tilt_is_bounded_and_signed() -> None:
+    """The tilt is a ratio in [-1, +1], not a raw count.
+
+    Adding two hawkish and one dovish phrase gives h=2, d=1, so the tilt is
+    (2-1)/(2+1) = 1/3 — bounded, where the raw numerator (mutation D3a) would
+    report 1.0 and make a two-phrase statement indistinguishable from a
+    one-phrase one.
+    """
+    prior = "The Committee met today."
+    current = (
+        "The Committee met today. It remains elevated and prepared to raise, "
+        "and it notes inflation has eased."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    tilt = as_float(result, key="net_tilt")
+    assert as_int(result, key="hawkish_net") == 2
+    assert as_int(result, key="dovish_net") == 1
+    # The model publishes net_tilt rounded to 4dp, so the coarser side's
+    # precision (5e-5) is the only tolerance this comparison may claim.
+    assert tilt == pytest.approx((2 - 1) / (2 + 1), abs=5e-5), "the tilt is the bounded ratio"
+    assert -1.0 <= tilt <= 1.0
+
+
+def test_the_tilt_sign_is_hawkish_positive() -> None:
+    """A hawkish net must produce a POSITIVE tilt (mutation D3b inverts it)."""
+    prior = "The Committee met today."
+    current = "The Committee is prepared to raise, and expects further tightening."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_float(result, key="net_tilt") > 0.0
+    assert as_str(result, key="direction") == "MORE_HAWKISH"
+
+
+def test_both_sides_moving_the_same_way_names_the_fuller_move() -> None:
+    """Hawkish added AND dovish removed is MORE_HAWKISH, not a tilt label.
+
+    Both sides moved hawkish-ward, so there is no opposing move to name.
+    """
+    prior = "Inflation has eased and we see sustainable progress on prices."
+    current = "The Committee is prepared to raise and expects further tightening."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_str(result, key="direction") == "MORE_HAWKISH"
+    assert as_int(result, key="dovish_net") < 0, "dovish phrases left"
+    assert as_int(result, key="hawkish_net") > 0, "hawkish phrases entered"
+
+
+def test_opposing_moves_with_a_hawkish_net_name_the_removal() -> None:
+    """Both directions moved and the net is hawkish: the label names the removal.
+
+    One hawkish phrase left and TWO dovish phrases left, so the language moved
+    in both directions, yet the net is hawkish (the dovish side shed more). The
+    direction therefore names the removal rather than collapsing to a bare
+    MORE_HAWKISH — the phrase that MOVED is the signal (Section 20.4).
+    """
+    prior = (
+        "The Committee is prepared to raise. Inflation has eased and we see sustainable progress."
+    )
+    current = "The Committee met today and reviewed conditions."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") == -1, "one hawkish phrase left"
+    assert as_int(result, key="dovish_net") == -2, "two dovish phrases left"
+    assert as_float(result, key="net_tilt") > 0.0, "shedding more dovish language is net hawkish"
+    assert as_str(result, key="direction") == "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+
+
+def test_an_exact_cancellation_is_not_reported_as_a_tilt() -> None:
+    """Two equal-and-opposite moves cancel: the tie branch names it (mutation D4a).
+
+    Collapsing the tie branch into the `else` sends this case to
+    DOVISH_TILT_WITH_HAWKISH_REMOVALS — a confident one-sided answer to a
+    question the input does not settle.
+    """
+    prior = "The Committee met today."
+    current = (
+        "The Committee met today. It remains elevated and prepared to raise, "
+        "and it notes inflation has eased and sustainable progress is evident."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") == 2
+    assert as_int(result, key="dovish_net") == 2
+    assert as_float(result, key="net_tilt") == pytest.approx(0.0)
+    assert as_str(result, key="direction") == "MIXED_BOTH_DIRECTIONS_NET_FLAT", (
+        "an exact cancellation has no tilt to name"
+    )
+
+
+def test_every_direction_is_reachable() -> None:
+    """All six direction values are producible — none is dead code (D-040/D-037).
+
+    Enumerating the implementation over constructed inputs is the technique that
+    found D-040's dead branch, kept here as the guard for the direction
+    vocabulary.
+    """
+    cases = {
+        "MORE_HAWKISH": (
+            "The Committee met.",
+            "The Committee met. It is prepared to raise.",
+        ),
+        "MORE_DOVISH": (
+            "The Committee met.",
+            "The Committee met. Inflation has eased and sustainable progress is evident.",
+        ),
+        "HAWKISH_TILT_WITH_DOVISH_REMOVALS": (
+            # Both directions move; the dovish side sheds more, so the net is
+            # hawkish and the label records that it came from dovish removals.
+            "The Committee is prepared to raise. Inflation has eased and we see "
+            "sustainable progress.",
+            "The Committee met today and reviewed conditions.",
+        ),
+        "DOVISH_TILT_WITH_HAWKISH_REMOVALS": (
+            # The mirror: both directions move; the hawkish side sheds more.
+            "The Committee is prepared to raise and expects further tightening. "
+            "Inflation has eased.",
+            "The Committee met today and reviewed conditions.",
+        ),
+        "MIXED_BOTH_DIRECTIONS_NET_FLAT": (
+            "The Committee met today.",
+            "It is prepared to raise and inflation has eased.",
+        ),
+        "UNCHANGED": (_PRIOR, _PRIOR),
+    }
+    seen = set()
+    for expected, (prior, current) in cases.items():
+        got = as_str(
+            statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current)),
+            key="direction",
+        )
+        assert got == expected, f"for {expected!r} the model said {got!r}"
+        seen.add(got)
+    assert seen == set(cases), "every direction must be constructible"
+
+
+def test_the_confidence_is_the_capped_product() -> None:
+    """The confidence is min(compute_confidence(...), cap) — both halves loaded.
+
+    Section 22.8: never hardcode. The product reads the SAME run's factors, and
+    the cap is applied AFTER the formula, so an uncapped value would break this.
+    """
+    settings = _st_settings()
+    result = _diff_prior_to_dovish()
+    expected_uncapped = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,
+            source_independence_count=0,
+        )
+    )
+    assert as_float(result, key="confidence_cap") == pytest.approx(settings.confidence_cap)
+    assert result.confidence == pytest.approx(min(expected_uncapped, settings.confidence_cap))
+    assert result.confidence <= settings.confidence_cap
+
+
+def test_the_confidence_cap_is_load_bearing() -> None:
+    """Perturbing the cap LEAF must move the published confidence (D-050).
+
+    If the cap were dead code (e.g. the raw formula published instead), shrinking
+    it would change nothing. The cap is set BELOW the uncapped formula on this
+    run, so the published value tracks the leaf.
+    """
+    settings = _st_settings()
+    uncapped = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,
+            source_independence_count=0,
+        )
+    )
+    assert settings.confidence_cap < uncapped, (
+        "this test is only meaningful while the cap binds below the formula"
+    )
+    probe = CalibratedValue(
+        value=settings.confidence_cap / 2.0,
+        calibration_status="fitted_assumption",
+        note="probe — half the shipped cap, chosen to be distinct",
+    )
+    lowered = settings.model_copy(update={"confidence_cap_value": probe})
+    # Read the perturbed value BEFORE patching: `lowered` is an instance of the
+    # same class, so a property that reads `lowered.confidence_cap` inside the
+    # patch would re-enter itself (RecursionError).
+    lowered_cap = lowered.confidence_cap
+    assert lowered_cap != settings.confidence_cap, "the probe must actually move the leaf"
+    with patch.object(type(settings), "confidence_cap", property(lambda self: lowered_cap)):
+        result = statement_text_diff(
+            StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
+        )
+    assert result.confidence == pytest.approx(round(lowered_cap, 3))
+
+
+def test_the_heuristic_factor_is_load_bearing() -> None:
+    """Flipping the vocabulary-calibration flag must RAISE the confidence.
+
+    The vocabularies ship uncalibrated, so `is_heuristic_not_calibrated` is True
+    and the heuristic penalty is applied. Pretending they are calibrated removes
+    the penalty, so the formula's value rises by exactly that penalty.
+    """
+    settings = _st_settings()
+    assert not settings.vocabularies_are_calibrated, "vocabularies ship illustrative"
+
+    hawkish = CalibratedValue(
+        value=list(settings.hawkish_markers),
+        calibration_status="fitted_assumption",
+        note="probe — claimed calibrated",
+    )
+    dovish = CalibratedValue(
+        value=list(settings.dovish_markers),
+        calibration_status="fitted_assumption",
+        note="probe — claimed calibrated",
+    )
+    truthful = compute_confidence(
+        ConfidenceInputs(is_heuristic_not_calibrated=False, source_independence_count=0)
+    )
+    untruthful = compute_confidence(
+        ConfidenceInputs(is_heuristic_not_calibrated=True, source_independence_count=0)
+    )
+    assert truthful > untruthful, (
+        "claiming the vocabulary is calibrated must RAISE the uncapped formula"
+    )
+    # And the AND-flag must track BOTH legs: calibrating only one keeps it False.
+    half = settings.model_copy(update={"hawkish_markers_value": hawkish})
+    assert half.vocabularies_are_calibrated is False, (
+        "one illustrative leg makes the whole diff illustrative (the AND)"
+    )
+    both = settings.model_copy(
+        update={"hawkish_markers_value": hawkish, "dovish_markers_value": dovish}
+    )
+    assert both.vocabularies_are_calibrated is True
+
+    # And the flag must be load-bearing on the PUBLISHED confidence, not only on
+    # the formula: under the shipped cap (0.35) both values are clipped to the
+    # same number, so hardcoding the factor (mutation C1b) would be invisible.
+    # Lifting the cap above the formula makes the flag observable end to end.
+    both_cap = CalibratedValue(
+        value=1.0,
+        calibration_status="fitted_assumption",
+        note="probe — cap lifted so the heuristic penalty is not clipped away",
+    )
+    lifted = settings.model_copy(
+        update={
+            "hawkish_markers_value": hawkish,
+            "dovish_markers_value": dovish,
+            "confidence_cap_value": both_cap,
+        }
+    )
+    lifted_cap = lifted.confidence_cap
+    with patch.object(type(settings), "confidence_cap", property(lambda self: lifted_cap)):
+        with patch.object(
+            type(settings),
+            "vocabularies_are_calibrated",
+            property(lambda self: False),
+        ):
+            honest = statement_text_diff(
+                StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
+            )
+        with patch.object(
+            type(settings),
+            "vocabularies_are_calibrated",
+            property(lambda self: True),
+        ):
+            claimed = statement_text_diff(
+                StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
+            )
+    assert claimed.confidence > honest.confidence, (
+        "claiming the vocabulary is calibrated must RAISE the published confidence "
+        "once the cap no longer clips it — otherwise the flag is not load-bearing"
+    )
+
+
+def test_a_blank_statement_is_refused() -> None:
+    """An empty text is a failed retrieval, not a statement that says nothing."""
+    with pytest.raises(ValueError, match="blank"):
+        StatementTextInputs(prior_text="   ", current_text=_CURRENT_DOVISH)
+    with pytest.raises(ValueError, match="blank"):
+        StatementTextInputs(prior_text=_PRIOR, current_text="")
+
+
+def test_a_sub_floor_statement_is_refused() -> None:
+    """A statement below the token floor is a partial input (D-054).
+
+    With the shipped floor of 1 this only triggers on the empty string, which the
+    input model already refuses — so the guard is exercised by lowering the floor
+    to 2 in a probe, proving the function's own check is present.
+    """
+    settings = _st_settings()
+    probe = CalibratedValue(
+        value=2,
+        calibration_status="institutional_convention",
+        note="probe — floor raised to 2 to exercise the function's guard",
+    )
+    lowered = settings.model_copy(update={"min_tokens_value": probe})
+    # Read the perturbed floor BEFORE patching (see the cap test: `lowered` is
+    # an instance of the same class, so reading it inside the property loops).
+    raised_floor = lowered.min_tokens
+    assert raised_floor == 2, "the probe must actually raise the leaf"
+    floor_property = property(lambda self: raised_floor)
+    with (
+        patch.object(type(settings), "min_tokens", floor_property),
+        pytest.raises(ValueError, match=r"below the .*min_tokens floor of 2"),
+    ):
+        statement_text_diff(StatementTextInputs(prior_text="Short.", current_text=_CURRENT_DOVISH))
+
+
+def test_the_weak_evidence_and_vocabulary_disclosures_are_published() -> None:
+    """The model's two central caveats are in `warnings` on every path."""
+    for current in (_CURRENT_DOVISH, _PRIOR):
+        result = statement_text_diff(StatementTextInputs(prior_text=_PRIOR, current_text=current))
+        joined = " ".join(result.warnings)
+        assert "WEAK evidence" in joined, "the weak-evidence disclosure must ship"
+        assert "uncalibrated_illustrative" in joined, "the vocabulary disclosure must ship"
+
+
+def test_the_unchanged_branch_discloses_what_it_does_not_say() -> None:
+    """UNCHANGED is not "the guidance did not change", and the warning says so."""
+    result = statement_text_diff(StatementTextInputs(prior_text=_PRIOR, current_text=_PRIOR))
+    assert any("NOT a claim that the guidance did not change" in w for w in result.warnings)
+
+
+def test_both_sides_moving_warns_that_the_net_understates() -> None:
+    """Phrases leaving BOTH sides make the single net tilt an understatement.
+
+    The prior carries a hawkish AND a dovish phrase; the current carries
+    neither, so both leave. A statement edited in two directions is understated
+    by a single net number, and the warning must say so.
+    """
+    prior = "The Committee is prepared to raise amid risks, and inflation has eased."
+    current = "The Committee met today and reviewed conditions."
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") < 0, "a hawkish phrase left"
+    assert as_int(result, key="dovish_net") < 0, "a dovish phrase left"
+    assert any("left BOTH sides" in w for w in result.warnings)
+
+
+def test_the_published_contract_is_complete_and_recomputable() -> None:
+    """Every published field a consumer needs to re-derive the direction ships."""
+    result = _diff_prior_to_dovish()
+    assert result.model_name == "statement_text_diff"
+    assert set(result.inputs_used) == {"prior_text", "current_text"}
+    # `value` is a union under --strict, so narrow to a mapping before the
+    # membership checks rather than indexing the union (which is a type error).
+    published = result.value
+    assert isinstance(published, dict), "value must be a mapping for these keys"
+    for key in (
+        "direction",
+        "net_tilt",
+        "hawkish_entered",
+        "hawkish_left",
+        "dovish_entered",
+        "dovish_left",
+        "hawkish_net",
+        "dovish_net",
+        "prior_tokens",
+        "current_tokens",
+        "confidence_cap",
+    ):
+        assert key in published, f"{key} must be published"
+
+
+def test_the_vocabularies_are_disjoint() -> None:
+    """No phrase may sit on both sides — it would cancel itself."""
+    settings = _st_settings()
+    assert set(settings.hawkish_markers).isdisjoint(settings.dovish_markers)
+
+
+def test_the_disjointness_guard_fires_on_an_overlap() -> None:
+    """The guard must REFUSE overlapping vocabularies, not merely tolerate them.
+
+    The shipped lists are disjoint, so the guard never fires on the shipped
+    data and removing it (mutation N2a) is invisible. This drives the refusal
+    path directly by copying the settings with a phrase shared by both sides.
+    """
+    settings = _st_settings()
+    overlapping = CalibratedValue(
+        value=[*settings.hawkish_markers, settings.dovish_markers[0]],
+        calibration_status="fitted_assumption",
+        note="probe — introduces a phrase on BOTH sides",
+    )
+    with pytest.raises(ValueError, match="must be disjoint"):
+        StatementTextSettings.model_validate(
+            {
+                "hawkish_markers_value": overlapping,
+                "dovish_markers_value": settings.dovish_markers_value,
+                "confidence_cap_value": settings.confidence_cap_value,
+                "min_tokens_value": settings.min_tokens_value,
+            }
+        )
+
+
+def test_the_hawkish_accessor_lower_cases_a_capitalised_marker() -> None:
+    """A stored Capitalised marker must be published lower-cased (N1a).
+
+    The shipped list is already lower-case, so dropping `.lower()` (mutation
+    N1a) is invisible on the shipped data while still being a real defect: the
+    matcher case-folds the text, so a Capitalised stored marker would never
+    match. This drives the accessor with a Capitalised entry.
+    """
+    settings = _st_settings()
+    capitalised = CalibratedValue(
+        value=["Prepared To Raise"],
+        calibration_status="fitted_assumption",
+        note="probe — Capitalised, to prove the accessor normalizes",
+    )
+    probe = settings.model_copy(update={"hawkish_markers_value": capitalised})
+    assert probe.hawkish_markers == ("prepared to raise",), (
+        "the accessor must lower-case the stored marker so the matcher can see it"
+    )
+
+
+def test_no_reachable_not_implemented_error() -> None:
+    """Section 20.4 shipped a `raise NotImplementedError`; it must be GONE.
+
+    The function is called for real here — if the stub were restored, this
+    raises rather than returning a result.
+    """
+    result = _diff_prior_to_dovish()
+    assert result.model_name == "statement_text_diff"

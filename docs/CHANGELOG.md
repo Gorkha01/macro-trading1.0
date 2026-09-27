@@ -10,6 +10,35 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-125 — TIER 5 COMPLETE (23/23): `statement_text_diff` (§20.4), a real direction defect, and two sweep-harness defects (2026-09-28)
+
+**Tier 5 = 23/23** (moved 22 → 23). Every name in Section 21.3's table now has a real `def` in `src/`.
+
+- **Added** `statement_text_diff()` (Section 20.4) — FOMC-statement language shift. Case-folded,
+  per-occurrence marker counting over config vocabularies; publishes a signed, bounded
+  `net_tilt = (h − d) / (|h| + |d|)` and a six-value direction `Literal` (`MORE_HAWKISH`,
+  `MORE_DOVISH`, `HAWKISH_TILT_WITH_DOVISH_REMOVALS`, `DOVISH_TILT_WITH_HAWKISH_REMOVALS`,
+  `MIXED_BOTH_DIRECTIONS_NET_FLAT`, `UNCHANGED` — all reachable). A **pure function of two supplied
+  texts**: the reference body's `NotImplementedError` is about the FOMC-statement *feed*, not the
+  algorithm, so **no network** and **no new OpenBB command** (census stays 6).
+- **Fixed** a genuine model defect in the direction block: `dovish_side == 0` was conflated with "the
+  move is hawkish", so a hawkish **REMOVAL** was labelled `MORE_HAWKISH`. The reduction is now over
+  *movement* direction (`hawkish_ward = h > 0 or d < 0`; `dovish_ward = h < 0 or d > 0`). Caught by
+  `test_a_hawkish_removal_is_a_dovish_move`, written from the spec rather than the code.
+- **Changed** the reference body's hardcoded confidence to the Section 22.8 product capped by a
+  config leaf; free-text vocabulary to config leaves with a **disjointness** validator (an overlapping
+  marker would double-count).
+- **Fixed** two sweep-harness defects: **O-155** — the sweep's local leftover-repair used a
+  one-condition predicate (`new in text`) that false-positived on a prefix collision and on
+  legitimate sibling branches; the local repair was deleted (the shared lifecycle heals from the
+  sidecar). **O-156** — an ad-hoc harness SIGTERM'd mid-loop left the `C1a` mutation applied, so the
+  sweep read it as baseline and reported a **FALSE SURVIVOR** (O-131 class).
+- **Added** `scripts/mutation_statement_text.py` (30 mutations; `--check-targets` = 30, 0 problems;
+  **30/30 killed**) and `scripts/live_statement_text_check.py` (6 sections, declared text). Five
+  survivors of the first clean run triaged per D-031: one equivalent mutant retargeted, three weak
+  tests fixed by adding observable tests (never by weakening a mutation).
+- **Changed** the sweep census **49 → 50**, edited in its **three** homes.
+
 ### D-124 — Module 11 COMPLETE: `duration_sensitivity` + `factor_tilt_prior`, the §22.8 confidence product, and NINE sweep anchors widened (2026-09-27)
 
 **Tier 5 = 22/23** (moved 20 → 22). Module 11's three functions now all exist.

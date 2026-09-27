@@ -2739,3 +2739,47 @@ number; the tool's heading is the authority and reads **20**.
 **The sweep census stays 49** — this increment EXTENDED an existing sweep
 (`mutation_equity_macro.py`), so no new script and no census bump (the D-120/121/122 shape, not the
 D-123 shape).
+
+---
+
+## D-125 — **TIER 5 COMPLETE (23/23)**: `statement_text_diff` (§20.4), Module 4 EXTENDS, and the sweep census 49 → 50 (2026-09-28)
+
+**The Tier-5 list of §21.3 (`AGENTS.md:5541–5550`) has 23 names and EVERY one now resolves to a
+`def` in `src/`** — MEASURED 2026-09-28 with `grep -rln "def <name>(" src/`, one name at a time, not
+recalled (the O-147 discipline). This increment is the LAST: `statement_text_diff` was the only
+remaining name.
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `statement_text_diff` | **4 — Policy Rules** | `models/policy_rules.py` (**extended**; holds `qe_qt_stance` since D-097) | `AGENTS.md:4350` (§20.4; header literally `# src/macro_engine/models/policy_rules.py (additions)`) | **nothing named** — Phase 0–4 had no statement diff; the authority's own body ends in a `NotImplementedError` scoped to the FEED, not the algorithm | **IMPLEMENTED** (D-125) |
+
+**A thirteenth mapping rule — a module number and a file can DISAGREE with the section's own
+header, and the header is the authority.** §20.4 is titled "Policy Statement Text Diff" and its
+reference body is annotated `# src/macro_engine/models/policy_rules.py (additions)`, so the home is
+**Module 4's** file even though the *section number* (§20.x) is in the Module 17–18 range. The
+mapping question is answered by the header's own path, resolved with `grep -n`, not by the section
+number. The same discipline that resolved §15.20-F (D-095) and `yield_curve_pca`'s module (D-100).
+
+**Command census UNCHANGED at 6.** The function reads **no market data at all** — its only inputs
+are two supplied statement texts — so no OpenBB command is added, and the network stays out of the
+model (this is what makes the diff unit-testable offline and the live check runnable with declared
+text).
+
+**Reachability — Tier 1-4 PASS 58/58 (unchanged).** `SCRIPT-ONLY — Tier 5` is now **21** (MEASURED:
+20 at D-124 → +1 for `statement_text_diff` = **21**), and `NO CALLER — Tier 5` stays **1**
+(`oil_balance_signal`). Total unwired Tier 5 = **22**. `statement_text_diff` appears in the
+SCRIPT-ONLY list, since its live check is its only caller.
+
+**The sweep census 49 → 50.** This increment ADDED a sweep (`scripts/mutation_statement_text.py`) —
+the D-123 shape, not the D-120/121/122/124 shape — so the census was bumped in its **three**
+places: `tests/test_sweep_sidecar_lifecycle.py` (the function name
+`test_there_are_fifty_sweeps_to_cover` AND the assertion) and
+`tests/test_sweep_health_leftover_predicate.py` (the assertion). `mutation_statement_text.py` covers
+`policy_rules.py` and `config.py` and carries the CANARY1 refusal gate.
+
+**⚠️ ADDING A FUNCTION TO A SWEPT MODULE — the O-145 hazard, checked and CLEAR this time.**
+`statement_text_diff` was added to `policy_rules.py`, which `mutation_qe_stance.py` also sweeps. A
+full run of `mutation_qe_stance.py` was therefore executed as a **hazard check**: it measured
+**28/28 killed**, proving the addition did not make any of its anchors ambiguous. (Note:
+`mutation_qe_stance.py` predates the `--check-targets` flag, so the flag is ignored by it and it
+runs the full sweep — which is the stronger evidence.)

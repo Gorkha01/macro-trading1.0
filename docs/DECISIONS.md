@@ -20783,3 +20783,200 @@ NONE was fixed by weakening the mutation (the discipline):
 
 All three were then **hand-verified KILLED** in a throwaway harness, and the full re-run measured
 **58/58**.
+
+---
+
+## D-125 — Section 20.4's `statement_text_diff`: **TIER 5 COMPLETE (23/23)**, the increment's one genuine **MODEL defect** (a hawkish REMOVAL read as hawkish), a **prefix-collision** that made the sweep's own repair corrupt a clean tree, and an **O-131 FALSE SURVIVOR** from a leftover my own harness left on disk
+
+**Date:** 2026-09-28 (session clock). **Tier 5 = 23/23 — COMPLETE** (moved **22 → 23**; MEASURED
+2026-09-28 from §21.3's table at `AGENTS.md:5541–5550` against `src/`, not recalled — every one of
+the 23 names resolves to a `def` with `grep -rln "def <name>(" src/`; the O-147 discipline).
+Target: the **existing** `src/macro_engine/models/policy_rules.py` (Module 4's home, already
+holding `qe_qt_stance`) and a **new** `StatementTextSettings` block in `src/macro_engine/config.py`.
+Section resolved with `grep -n`: **§20.4** (`AGENTS.md:4350–4399`). **NO new OpenBB commands** — the
+function reads **no market data at all**; its only inputs are two supplied statement texts — so the
+**command census stays 6**.
+
+### 1. Authority and what was built
+
+**`statement_text_diff(prior_text: str, current_text: str) -> ModelResult`** — the **eighth D-096
+exception** (the authority supplies a reference body). §20.4's header is literally
+``# src/macro_engine/models/policy_rules.py (additions)``, so the home is Module 4. The reference
+body ends in ``raise NotImplementedError("Phase 5+ — requires FOMC statement text feed")``, and its
+docstring states the premise verbatim:
+
+> desks run word-level diffs on FOMC statements seconds after release. Removal or addition of
+> specific conditional phrases is the signal — the CURRENT rate decision is usually already priced;
+> the forward-looking language is where surprise lives.
+
+**D-096 supersession answer: nothing named supersedes it — this is a NEW CAPABILITY.** The
+`NotImplementedError` is about the **feed**, not the algorithm: the diff is a **pure function of two
+supplied texts**, so the network stays out of the model (matching every Tier-5 model, and why the
+live check can drive it with declared text and no fetch).
+
+Corrections to the reference body (none cosmetic):
+
+1. **The `HAWKISH_MARKERS` / `DOVISH_MARKERS` literals → a config leaf** (`StatementTextSettings`),
+   because the Committee's vocabulary is not a constant: *"transitory"* was dovish until it was
+   retired in 2021; *"additional policy firming"* appeared in 2022–23 and left with the cycle. A
+   frozen list would keep scoring a word the Fed no longer says. Both lists ship
+   `uncalibrated_illustrative`, and a validator enforces that they are **non-empty and disjoint**
+   (a phrase on both sides would cancel itself and the net tilt would miss exactly the change the
+   model exists to detect).
+2. **A signed, bounded net tilt.** Let `h = |entered hawkish| − |left hawkish|` and
+   `d = |entered dovish| − |left dovish|`; the tilt is `(h − d) / (|h| + |d|)` (else `0.0`). Signed
+   (positive is hawkish) and bounded, so a long statement's tilt is comparable to a short one's
+   without a raw count masquerading as intensity.
+3. **A total direction vocabulary** — six values, every one reachable:
+   `MORE_HAWKISH` · `MORE_DOVISH` · `HAWKISH_TILT_WITH_DOVISH_REMOVALS` ·
+   `DOVISH_TILT_WITH_HAWKISH_REMOVALS` · `MIXED_BOTH_DIRECTIONS_NET_FLAT` · `UNCHANGED`.
+4. **Two refusals**: a **blank** text (input model — an empty statement is not one that says
+   nothing, it is one that was not retrieved; diffing it would report every marker as newly
+   entered, the D-054 shape) and a **sub-floor** text (the function — a truncated statement is a
+   partial retrieval, D-054).
+5. **The §22.8 product, capped.** `confidence = round(min(compute_confidence(...), cap), 3)` — never
+   hardcoded (the reference body hardcodes `confidence=0.3`). The heuristic factor is
+   `not settings.vocabularies_are_calibrated`, and `source_independence_count=0` (one institution's
+   own text diffed against its own prior text).
+
+### 2. ⚠️ THE INCREMENT'S ONE GENUINE **MODEL** DEFECT — a hawkish REMOVAL was read as hawkish
+
+The first implementation reduced each side's sign and named the direction with:
+
+```python
+if dovish_side == 0 or (hawkish_side > 0 and dovish_side < 0):
+    direction = "MORE_HAWKISH"          # <-- WRONG when hawkish_net < 0
+```
+
+The `dovish_side == 0` disjunct conflates **"the dovish side did not move"** with **"the move is
+toward hawkish"**. So a statement whose ONLY move was a hawkish phrase **leaving** (`h = −1, d = 0`)
+read **`MORE_HAWKISH`** — the exact inversion of §20.4's premise that *the phrase that MOVED is the
+signal*. It was caught by `test_a_hawkish_removal_is_a_dovish_move` (written from the spec's premise,
+not from the code — the ONLY reason it was not reproduced as correct).
+
+**Fix — reduce over DIRECTION OF MOVEMENT, not over which side is non-zero:**
+
+```python
+hawkish_ward = hawkish_net > 0 or dovish_net < 0   # hawkish entered OR dovish left
+dovish_ward = hawkish_net < 0 or dovish_net > 0    # hawkish left  OR dovish entered
+if hawkish_ward and not dovish_ward:   MORE_HAWKISH
+elif dovish_ward and not hawkish_ward: MORE_DOVISH
+elif tilt > 0:  HAWKISH_TILT_WITH_DOVISH_REMOVALS
+elif tilt < 0:  DOVISH_TILT_WITH_HAWKISH_REMOVALS
+else:           MIXED_BOTH_DIRECTIONS_NET_FLAT
+```
+
+The reduction is **exhaustive and total** (a non-zero net always sets at least one flag). This defect
+is now guarded by **two** mutations — `D6a` (drop "a hawkish removal is dovish-ward") and `D6b` (drop
+"a dovish removal is hawkish-ward") — and by `test_a_dovish_removal_is_a_hawkish_move` (the mirror).
+
+### 3. ⚠️ THE SWEEP'S OWN REPAIR WAS UNSOUND — a **prefix collision** corrupted a clean tree (the O-150 class)
+
+The first draft of `mutation_statement_text.py` hand-rolled a leftover-repair predicate:
+
+```python
+if new in texts.get(target, ""):   # <-- one condition, NOT two
+```
+
+Several of this sweep's `new` strings are **substrings of legitimate code**: `D2a`'s `new`
+(`    keys = set(prior_counts)`) is a **prefix** of the real `_net_marker_change` line
+(`    keys = set(prior_counts) | set(current_counts)`), and `D4a`/`D4b`'s `new` values are the
+legitimate `direction = ...` assignments of sibling branches. The repair therefore "reverted" **four
+mutations that were never applied**, mutating a clean tree and then **refusing on the ambiguity it
+had just created** (`D4a`/`D4b` reported AMBIGUOUS — 2 occurrences). **The fix is the canonical
+two-condition predicate** (`old not in text and new in text` — the `mutation_gdp_nowcast.py` rule)
+**and deleting the local repair entirely**: this sweep feeds the shared `sweep_lifecycle`, which heals
+from the **sidecar**, so a local second-guess is both redundant and hazardous. The repair now also
+**writes back immediately** rather than deferring to the sweep's `finally`, because the caller can
+REFUSE before the loop.
+
+### 4. ⚠️ AN **O-131 FALSE SURVIVOR** — a leftover my own harness left on disk
+
+The sweep's **first** full run reported **`C1a` SURVIVED**. That was **false**: an ad-hoc reproduction
+harness of mine had been **SIGTERM'd mid-loop** and left the `C1a` mutation applied
+(`confidence = 0.35` / `_dead_conf = compute_confidence(`) in `policy_rules.py`. The sweep read that
+mutated file as its baseline, so the hardcoding it tests for was **already there** — a survivor
+manufactured by the harness, not by a weak test (the O-131 shape: *a leftover mutation manufactures
+a FALSE SURVIVOR*). The lesson restated: **ad-hoc mutation harnesses must restore in a `finally`
+that a SIGTERM cannot skip** — on win32 nothing does; the sidecar is the only defence that works.
+After the leftover was reverted and the tree re-verified clean (sidecar absent, no mutation markers
+by grep), the sweep was **re-run from scratch**.
+
+### 5. The five survivors of the first (clean) run — D-031 triage
+
+After the C1a leftover was removed, the re-run measured **25/30** with **five** survivors. Each was
+triaged by the D-031 taxonomy; **none was fixed by weakening the mutation**:
+
+* **`M2a` — an EQUIVALENT mutation.** It dropped the `if occurrences:` guard in
+  `_count_marker_occurrences`. That guard only decides whether a **zero** enters an internal dict
+  that is then compared with `>`/`<` and summed — **both zero-insensitive** — so **no observable
+  field changes**. Replaced with an **observable** mutant: `occurrences = 2 * folded.count(marker)`
+  (a wrong multiplicity that moves the published `hawkish_net`/`dovish_net`/`net_tilt`).
+* **`C1b` — a WEAK TEST (the D-050 class).** It hardcoded `is_heuristic_not_calibrated=False`
+  (claiming the vocabulary is calibrated). Under the shipped cap (**0.35**) both the penalised and
+  the unpenalised formula clip to the SAME published number, so the flag was **invisible end to
+  end**. **Fixed by ADDING an assertion** to `test_the_heuristic_factor_is_load_bearing` that
+  **lifts the cap above the formula** (patched property) and asserts the published confidence
+  **rises** when the flag flips — making the factor load-bearing on the published output, not merely
+  on the formula. Never weaken the mutation.
+* **`N1a` — a WEAK TEST.** The hawkish accessor dropped `.lower()`. The shipped markers are already
+  lower-case, so the call is inert on shipped data — while the defect is real (the matcher case-folds
+  the text, so a **Capitalised** stored marker would never match). **Fixed by ADDING**
+  `test_the_hawkish_accessor_lower_cases_a_capitalised_marker`, which pins a Capitalised entry via a
+  leaf perturbation.
+* **`N2a` — a WEAK TEST.** The disjointness guard was `set()`-ed. The shipped vocabularies ARE
+  disjoint, so the guard never fires and the **refusal path was untested**. **Fixed by ADDING**
+  `test_the_disjointness_guard_fires_on_an_overlap`, which constructs overlapping vocabularies and
+  asserts the validator raises (with a `match=` on the message, per O-127).
+* **`C1a`** was the false survivor of §4, killed on the clean re-run.
+
+All five were then **hand-verified** in a throwaway harness (`/tmp/repro_one.py`, `finally`-guarded,
+one mutation per invocation) — each now FAILS its intended test — and the authoritative re-run
+measured **30/30**.
+
+### 6. Gates (measured 2026-09-28)
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | **All checks passed** |
+| `ruff format --check` | **289 files already formatted** |
+| `mypy --strict` | **no issues found in 289 source files** |
+| `live_statement_text_check.py` | **OK** (6 sections; all six directions reachable; capped product 0.350000) |
+| Reachability | Tier 1-4 **PASS 58/58**; Tier-5 SCRIPT-ONLY **21** + NO CALLER **1** = **22** unwired |
+| Full suite (`--junitxml`) | **4054 / 0 failed / 0 errors / 1 skipped** |
+| `mutation_statement_text.py` | **30/30 killed**; `--check-targets` **30, 0 problems** |
+| `mutation_qe_stance.py` (O-145 check) | **28/28 killed** — adding to the shared `policy_rules.py` did NOT break its anchors |
+| `sweep_health.py` (LAST) | **OK** — **50** sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures |
+
+**The `ruff format` rewrite of `src/macro_engine/config.py`** joined the two-line
+`vocabularies_are_calibrated` `and` expression onto one line, which **broke the sweep's `_VOCAB_AND`
+anchor** (measured `str.count() == 0`). The anchor was **re-measured to the new form** (`count() ==
+1`) and `N3a` re-pointed — the `--check-targets` gate caught it before any sweep ran.
+
+### 7. Close-out — Tier 5 is COMPLETE
+
+**§21.3's Tier-5 table has 23 names; all 23 now resolve to a `def` in `src/`** (measured, not
+recalled). D-118→D-125 delivered the final eleven in order: `intervention_capacity`,
+`em_vulnerability_checklist`, `oil_balance_signal`, `gold_driver_attribution`,
+`metals_complex_divergence`, `sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior`,
+and now `statement_text_diff`, plus the earlier D-106..D-113 batch. **There is no remaining Tier-5
+name.** The next work is whatever §21.3 assigns above Tier 5 (wiring the unwired Tier-5 functions
+into the thesis pipeline is the standing **22**-function obligation this increment did NOT close —
+it is a *different* task, deliberately not in scope here).
+
+### 8. The close-out hazard — a gate run CONCURRENTLY with a sweep (D-114, re-learned)
+
+During THIS close-out the full suite was launched **in the same message** as the mutation sweep
+(`run_in_background` on both). The suite reported **6 failures**, all of the form `assert -2 == -1`
+and `assert 4 == 2` in `tests/models/test_policy_rules.py`. The signature is the **exact** shape of
+mutation **`M2a`** (`occurrences = 2 * folded.count(marker)`), and that is what it was: the sweep
+**rewrites its target between runs** (D-114), so the concurrent suite read
+`policy_rules.py` **with `M2a` applied**. The clean re-run of the identical command, with nothing
+else running, measured **4054 / 0 failed / 0 errors / 1 skipped** — the D-125 baseline.
+
+**The rule, restated because it just fired: NO gate may run while a sweep is running.** The sweep is
+mutually exclusive with every other measurement — ruff, mypy, pytest, and the live check all read
+the same files the sweep mutates. **Sequence them; never overlap them.** A "failure" seen only
+during a sweep is the sweep, not the code — but the cheap defence is to not create the condition.
+(This is the D-114 trap, and it is the reason the D-125 gate list below is the **sequential**
+re-measurement, not the first interleaved one.)

@@ -10525,3 +10525,92 @@ suite (junitxml) **4023 tests / 0 failed / 0 errors / 1 skipped** · sweep **58/
 `sweep_health.py` **49 sweeps · OK** (0 leftovers, 0 shapes, 0 committed, 0 failures; census
 unchanged). ⚠️ The pre-close draft carried "290" and "18" — both were CARRIED numbers; the measured
 values are **287** and **20** (D-035: the count is MEASURED).
+
+---
+
+## D-125 (2026-09-28) — `statement_text_diff` (§20.4), **TIER 5 COMPLETE (23/23)**
+
+**Tier 5 = 23/23** (moved **22 → 23**; MEASURED 2026-09-28 from `AGENTS.md:5541–5550` against
+`src/`: **all 23** names now have a real `def`). `AGENTS.md:4350–4399` supplies a reference body ⇒
+the **eighth D-096 exception**; it **supersedes nothing** — the `cip_check` answer, *new capability*.
+**NO new OpenBB commands** — the diff is a **pure function of two supplied texts** (the
+`NotImplementedError` in the authority is about the FOMC-statement **feed**, not the algorithm) ⇒ the
+command census **stays 6**. This increment **extends an existing file**
+(`models/policy_rules.py`, home of Module 4's `qe_qt_stance`) and an existing config module.
+
+### Step 1–2 — the economic question and the inputs
+
+* **`statement_text_diff`** — FOMC-statement **language shift**: hawkish/dovish markers entering and
+  leaving the text between two releases. Input: `prior_text` / `current_text` (declared text, no
+  network — a `_reject_blank_text` validator refuses empty strings; the token floor is config).
+
+### Step 3 — the arithmetic and the vocabulary
+
+Case-folded + whitespace-collapsed (`" ".join(text.lower().split())`), per-occurrence `.count()` over
+the config vocabularies. Per side, the **net** marker change; the published
+`tilt = (h − d) / (|h| + |d|)` — signed and bounded to `[-1, 1]`, else `0.0`. Six-value direction
+`Literal`: `MORE_HAWKISH`, `MORE_DOVISH`, `HAWKISH_TILT_WITH_DOVISH_REMOVALS`,
+`DOVISH_TILT_WITH_HAWKISH_REMOVALS`, `MIXED_BOTH_DIRECTIONS_NET_FLAT`, `UNCHANGED` — all reachable.
+Confidence = `round(min(compute_confidence(...), settings.confidence_cap), 3)`; the heuristic factor is
+`not settings.vocabularies_are_calibrated` (**AND** of both legs, D-124 shape).
+
+### Step 4 — the defect classes corrected
+
+1. **The one genuine MODEL defect:** the direction block originally read
+   `if dovish_side == 0 or (hawkish_side > 0 and dovish_side < 0): MORE_HAWKISH`, conflating "the
+   dovish side didn't move" with "the move is hawkish" ⇒ a hawkish **REMOVAL** (h = −1) was read as
+   `MORE_HAWKISH`. Fixed by reducing over **movement** direction
+   (`hawkish_ward = h > 0 or d < 0`; `dovish_ward = h < 0 or d > 0`), then the tie-break on `tilt`.
+   Caught by `test_a_hawkish_removal_is_a_dovish_move`, written from the spec — not the code.
+2. Hardcoded confidence → the §22.8 product, capped.
+3. Free-text vocabulary → config leaves with a **disjointness** validator (an overlapping marker would
+   double-count).
+
+### Step 5 — the tests (81 in the file)
+
+Pure hawkish/dovish addition; **both removal mirrors** (the D-125 defect guards); identical →
+`UNCHANGED`; case-folding; per-occurrence counts; union-of-keys; bounded/signed tilt (`abs=5e-5` — the
+4-dp published precision); sign; both-sides-same-way; opposing-moves naming; exact-cancellation tie;
+`test_every_direction_is_reachable` (all six); the capped product; the cap proved load-bearing (read
+`lowered` BEFORE patching to avoid `RecursionError`); the heuristic-factor flag proved load-bearing
+(extend the cap to lift it into the published value); blank + sub-floor refusals; the two disclosures;
+contract completeness; the disjointness guard; the accessor lower-casing; and
+`test_no_reachable_not_implemented_error`. All pass.
+
+### Step 6–7 — the sweep and its two harness defects
+
+New `mutation_statement_text.py` — **30 mutations** over `policy_rules.py` + `config.py`.
+⚠️ **`--check-targets` = 30, 0 problems**; sweep = **30/30 killed**. Two harness defects found and
+fixed:
+
+* **O-155** — the sweep's local leftover-repair used a one-condition predicate (`new in text`), which
+  false-positived on a **prefix collision** (`D2a`) and on legitimate sibling branches (`D4a`/`D4b`),
+  "reverting" never-applied mutations. Deleted the local repair entirely — the shared `sweep_lifecycle`
+  heals from the **sidecar** (the authority).
+* **O-156** — an ad-hoc reproduction harness SIGTERM'd mid-loop left the `C1a` mutation applied; the
+  sweep read it as baseline ⇒ a **FALSE SURVIVOR** (O-131 class). Reverted, re-verified clean, re-ran.
+* The five survivors of the first clean run, triaged per D-031: `M2a` **EQUIVALENT** → retargeted to an
+  observable double-count; `C1b`/`N1a`/`N2a` **WEAK TESTS** → fixed by **adding observable tests**
+  (never weakening a mutation); `C1a` was the false survivor.
+* ⚠️ **O-145 check (third firing of the class, clear here):** `mutation_qe_stance.py` = **28/28
+  killed** — the new code did **not** make the pre-existing `qe_qt_stance` anchors ambiguous.
+
+### Step 8 — the real-data check
+
+`scripts/live_statement_text_check.py` — 6 sections on **declared** statement text (no network, by
+design): vocabulary vs `settings.yaml`; direction (a phrase entering / leaving); coverage (all six
+directions); the capped §22.8 product (0.350000); the refusals; the caveats. Verdict **OK**.
+
+### Step 9 — the records
+
+`docs/DECISIONS.md` (D-125), `docs/OPEN_ISSUES.md` (O-155, O-156), `docs/MODULE_MAPPING.md`,
+`docs/BUILD_STATE.md`, `docs/CHANGELOG.md`, and the memory files.
+
+### Gates (MEASURED)
+
+`ruff check` clean · `ruff format --check` == `mypy --strict` == **289** · live check **OK** (6
+sections) · reachability Tier 1-4 **PASS 58/58** (`SCRIPT-ONLY — Tier 5` **21**, `NO CALLER — Tier 5`
+**1** ⇒ **22** unwired) · suite (junitxml) **4054 tests / 0 failed / 0 errors / 1 skipped** · new sweep
+**30/30** · `mutation_qe_stance.py` **28/28** · `sweep_health.py` **50 sweeps · OK** (0 leftovers, 0
+shapes, 0 committed, 0 failures; census **49 → 50**, edited in its **three** homes). ⚠️ The sweep
+census is the one count that lives in more than one file — all three were edited together.

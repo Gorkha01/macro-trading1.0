@@ -2047,6 +2047,74 @@ qe_qt:
         an exceptional one, so the flag on its own is weak evidence and must be
         read with the ON RRP level beside it.
 
+statement_text:
+  # Module 4.3 -- the forward-guidance marker diff (AGENTS.md Section 20.4).
+  #
+  # The two lists are the specification's own HAWKISH_MARKERS / DOVISH_MARKERS,
+  # verbatim and in its order. They are externalized from Python because the
+  # Committee's vocabulary is not a constant: "transitory" was dovish until it
+  # was retired in late 2021; "additional policy firming" appeared in 2022-23
+  # and left with the tightening cycle. A frozen list would keep scoring a word
+  # the Fed no longer says.
+  hawkish_markers_value:
+    value:
+      - "additional policy firming"
+      - "further tightening"
+      - "remains elevated"
+      - "prepared to raise"
+      - "insufficient progress"
+    calibration_status: uncalibrated_illustrative
+    source_reference: "AGENTS.md Section 20.4 (HAWKISH_MARKERS)"
+    note: >
+      Conditional forward-guidance phrases whose ADDITION to a statement is read
+      as hawkish. Section 20.4 states the desk practice: the CURRENT rate
+      decision is usually already priced, and the forward-looking language is
+      where the surprise lives -- so the signal is a phrase ENTERING or LEAVING
+      the text, not the level of any word in it.
+
+      `uncalibrated_illustrative`: the phrases are the specification's own, but
+      no study here has measured which of them actually moved rates on release.
+      The list is a starting vocabulary, not a validated one.
+  dovish_markers_value:
+    value:
+      - "not expected to be appropriate"
+      - "has eased"
+      - "prepared to adjust"
+      - "reduce restriction"
+      - "sustainable progress"
+    calibration_status: uncalibrated_illustrative
+    source_reference: "AGENTS.md Section 20.4 (DOVISH_MARKERS)"
+    note: >
+      The dovish mirror of the list above: forward-guidance phrases whose
+      ADDITION is read as dovish. Kept SEPARATE and disjoint from the hawkish
+      list -- a phrase on both sides would cancel itself, and the net tilt would
+      miss exactly the change this model exists to detect. The disjointness is
+      enforced by a validator, not by reading.
+  confidence_cap_value:
+    value: 0.35
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Hard ceiling on this model's confidence. A word-level diff of two
+      statements is WEAK evidence about policy: the Committee deliberately
+      writes language that resists being read mechanically, the same phrase can
+      mean different things across regimes, and the market has usually read the
+      statement before our parse of it. This cap says so rather than letting the
+      §22.8 formula's base rate imply more certainty than the input earns.
+
+      0.35 is the specification's own order of magnitude for its text models;
+      it is illustrative, not fitted, and is disclosed as such on every output.
+  min_tokens_value:
+    value: 1
+    calibration_status: institutional_convention
+    note: >
+      The fewest whitespace tokens a statement must carry for the diff to run.
+      One is the floor that admits any real sentence while refusing the empty
+      string. It is config rather than a literal so the refusal threshold is
+      visible; raising it would make the model refuse a very short (e.g.
+      truncated or failed-to-fetch) statement instead of diffing it as if it
+      were complete -- which is the D-054 shape (a partial input read as a full
+      one).
+
 probability:
   uninformative_lr_band_value:
     value: 0.25

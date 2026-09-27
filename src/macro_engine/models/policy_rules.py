@@ -50,6 +50,8 @@ __all__ = [
     "MarketPricingGap",
     "PolicyRuleResult",
     "QEStance",
+    "StatementDiffDirection",
+    "StatementTextInputs",
     "TaylorRuleInputs",
     "balanced_approach_rule",
     "canonical_policy_gap",
@@ -57,6 +59,7 @@ __all__ = [
     "first_difference_rule",
     "policy_rule_ensemble",
     "qe_qt_stance",
+    "statement_text_diff",
     "taylor_rule",
 ]
 
@@ -1058,3 +1061,297 @@ def qe_qt_stance(inputs: BalanceSheetInputs) -> ModelResult:
 def _qe_stance_calibrated() -> bool:
     """Whether Module 4.1's neutral band is calibrated or an illustrative placeholder."""
     return get_settings().is_calibrated("qe_qt.neutral_band_pct_value")
+
+
+# ---------------------------------------------------------------------------
+# Module 4.3 — the forward-guidance text diff
+# ---------------------------------------------------------------------------
+
+#: The direction of the forward-guidance change, as a closed vocabulary (D-029).
+#: ``MORE_HAWKISH`` / ``MORE_DOVISH`` when one side's phrases net-enter, the
+#: ``_TILT_*`` values when both sides move with one dominating, ``UNCHANGED``
+#: when the marker set did not move at all, and ``MIXED_BOTH_DIRECTIONS_NET_FLAT``
+#: when both sides moved and cancelled exactly.
+StatementDiffDirection = Literal[
+    "MORE_HAWKISH",
+    "MORE_DOVISH",
+    "HAWKISH_TILT_WITH_DOVISH_REMOVALS",
+    "DOVISH_TILT_WITH_HAWKISH_REMOVALS",
+    "MIXED_BOTH_DIRECTIONS_NET_FLAT",
+    "UNCHANGED",
+]
+
+
+class StatementTextInputs(BaseModel):
+    """Two FOMC statements to diff: the prior release and the current one.
+
+    **Both texts are required and neither may be blank.** Section 20.4's
+    signature is ``(prior_text: str, current_text: str)``; a missing or empty
+    text is not a statement that says nothing, it is a statement that was not
+    retrieved — and a diff against it would report *every* marker as newly
+    entered on one side. That is the D-054 shape (a partial input read as a
+    complete one), so the input model refuses it rather than diffing it.
+
+    The texts are NOT normalized beyond case-folding and whitespace collapse at
+    comparison time; the raw strings are kept for the token count that gates
+    them, so the published token counts describe what was actually supplied.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prior_text: str = Field(
+        description=(
+            "The earlier FOMC statement, as released (raw text; whitespace and "
+            "case are handled at comparison time)."
+        ),
+    )
+    current_text: str = Field(
+        description=(
+            "The later FOMC statement, as released. The diff is prior -> current, "
+            "so a phrase PRESENT here and ABSENT from ``prior_text`` is an ADDITION."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _reject_blank_text(self) -> StatementTextInputs:
+        """Refuse a blank statement: it means the text was not retrieved (D-054)."""
+        for name in ("prior_text", "current_text"):
+            if not getattr(self, name).strip():
+                raise ValueError(
+                    f"{name} is blank. An empty statement is not a statement that "
+                    f"says nothing — it is one that was not retrieved, and diffing "
+                    f"against it would report every marker as newly entered. "
+                    f"Refusing rather than guessing (AGENTS.md Section 20.4, "
+                    f"Section 21.0 rule 3)."
+                )
+        return self
+
+
+def _count_marker_occurrences(text: str, markers: tuple[str, ...]) -> dict[str, int]:
+    """Count each marker phrase's occurrences in ``text``, case-folded.
+
+    Returns a mapping of marker -> count for the markers that occur at least
+    once, so a caller can report exactly WHICH phrases moved rather than only
+    how many. Substring matching over the case-folded text is deliberate: the
+    specification's markers are multi-word conditional phrases, and the desk
+    signal is the phrase, not a tokenized bag of its words (a statement can
+    contain "prepared" and "raise" without containing "prepared to raise").
+    """
+    folded = " ".join(text.lower().split())
+    counts: dict[str, int] = {}
+    for marker in markers:
+        occurrences = folded.count(marker)
+        if occurrences:
+            counts[marker] = occurrences
+    return counts
+
+
+def _markers_entering_and_leaving(
+    prior_counts: dict[str, int],
+    current_counts: dict[str, int],
+) -> tuple[list[str], list[str]]:
+    """The markers that ENTERED and that LEFT, each including count CHANGES.
+
+    A phrase that happens to appear twice in one text and once in the other is
+    reported as having left *one* occurrence, not as unchanged — the diff is per
+    occurrence, because the desk question is "did the language move", and a
+    doubled phrase that drops to a single one moved.
+    """
+    ordered = sorted(set(prior_counts) | set(current_counts))
+    entered = [m for m in ordered if current_counts.get(m, 0) > prior_counts.get(m, 0)]
+    left = [m for m in ordered if current_counts.get(m, 0) < prior_counts.get(m, 0)]
+    return entered, left
+
+
+def _net_marker_change(prior_counts: dict[str, int], current_counts: dict[str, int]) -> int:
+    """The net change in occurrences of a marker set, summed per occurrence.
+
+    Positive means the side's language was ADDED to; negative means phrases of
+    that side left the statement. Summed over the union of both texts' keys so a
+    phrase present only in one text still contributes its full count.
+    """
+    keys = set(prior_counts) | set(current_counts)
+    return sum(current_counts.get(m, 0) - prior_counts.get(m, 0) for m in keys)
+
+
+def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
+    """Diff two FOMC statements for forward-guidance changes (Module 4.3, Section 20.4).
+
+    Section 20.4's premise, in its own words: *"the CURRENT rate decision is
+    usually already priced; the forward-looking language is where surprise
+    lives."* The signal is therefore the **entering and leaving of specific
+    conditional phrases**, not the sentiment of either text read alone.
+
+    **What this model is, and what it is not.** It is a *directional* read of
+    how the forward-guidance language moved between two supplied texts. It is
+    **not** a price forecast and it does **not** fetch the statements — the text
+    source is the caller's concern (Section 20.4 scopes the model to the diff,
+    and the Phase 5+ note is about the *feed*, not the arithmetic). Keeping the
+    network out of the model is why the diff is testable offline and why the
+    live check can drive it with declared text.
+
+    **The net tilt is a ratio in [-1, +1].** Let ``h = |entered hawkish| -
+    |left hawkish|`` and ``d = |entered dovish| - |left dovish|``. The tilt is
+    ``(h - d) / (|h| + |d|)`` when either is non-zero, else ``0.0``. It is
+    **signed** (positive is hawkish) and **bounded**, so it can be compared
+    across statements of different lengths without a raw count masquerading as
+    intensity. When **both directions** moved, the direction name says so
+    explicitly (``HAWKISH_TILT_WITH_DOVISH_REMOVALS``) because a hawkish net
+    that comes from *dropping dovish phrases* is a different trade from one that
+    comes from *adding hawkish ones* — and the specification's whole point is
+    that the phrase that MOVED is the signal. When only one **direction** moved,
+    the direction is simply ``MORE_HAWKISH`` / ``MORE_DOVISH``; note that a
+    hawkish phrase *leaving* is a move in the dovish direction, so it reads
+    ``MORE_DOVISH``, not ``MORE_HAWKISH``.
+
+    Confidence is computed from the stated factors (Section 22.8), never
+    asserted: a marker diff is a heuristic over a vocabulary that is itself
+    illustrative, and it is capped well below the policy rules' confidence for
+    that reason.
+    """
+    settings = get_settings().statement_text
+
+    # The token floor is a partial-input guard (D-054): a statement that came
+    # back truncated or half-fetched is not a statement that says little, and
+    # diffing it would report a spray of spurious additions/removals.
+    for name, text in (("prior_text", inputs.prior_text), ("current_text", inputs.current_text)):
+        if len(text.split()) < settings.min_tokens:
+            raise ValueError(
+                f"{name} has {len(text.split())} token(s), below the "
+                f"statement_text.min_tokens floor of {settings.min_tokens}. A "
+                f"statement this short is a partial or failed retrieval, not a "
+                f"complete release — refusing rather than diffing it as if it "
+                f"were whole (AGENTS.md Section 20.4, D-054)."
+            )
+
+    prior_hawkish = _count_marker_occurrences(inputs.prior_text, settings.hawkish_markers)
+    prior_dovish = _count_marker_occurrences(inputs.prior_text, settings.dovish_markers)
+    curr_hawkish = _count_marker_occurrences(inputs.current_text, settings.hawkish_markers)
+    curr_dovish = _count_marker_occurrences(inputs.current_text, settings.dovish_markers)
+
+    hawkish_entered, hawkish_left = _markers_entering_and_leaving(prior_hawkish, curr_hawkish)
+    dovish_entered, dovish_left = _markers_entering_and_leaving(prior_dovish, curr_dovish)
+
+    # Per-occurrence net on each side.
+    hawkish_net = _net_marker_change(prior_hawkish, curr_hawkish)
+    dovish_net = _net_marker_change(prior_dovish, curr_dovish)
+
+    if hawkish_net == 0 and dovish_net == 0:
+        direction: StatementDiffDirection = "UNCHANGED"
+        tilt = 0.0
+    else:
+        # Positive tilt is hawkish. A hawkish phrase ENTERING (hawkish_net > 0)
+        # adds; a dovish phrase ENTERING (dovish_net > 0) subtracts. Note that a
+        # dovish phrase LEAVING (dovish_net < 0) is a NEGATED subtraction, i.e.
+        # it adds to the hawkish tilt — which is the specification's point that
+        # the phrase that MOVED is the signal, in either direction.
+        tilt = (hawkish_net - dovish_net) / (abs(hawkish_net) + abs(dovish_net))
+
+        # The naming is over DIRECTION OF MOVEMENT, not over which side is
+        # non-zero. A side moving hawkish-ward is either HAWKISH language
+        # ENTERING (its net rises) or DOVISH language LEAVING (the mirror
+        # side's net falls); a side moving dovish-ward is the reverse. Reducing
+        # both sides to those two flags makes the classification exhaustive and
+        # total, and — crucially — keeps a hawkish phrase LEAVING (hawkish_net
+        # < 0) on the dovish side of the ledger, where it belongs. An earlier
+        # reduction keyed on "the dovish side did not move" instead, which read
+        # a hawkish REMOVAL as MORE_HAWKISH.
+        hawkish_ward = hawkish_net > 0 or dovish_net < 0
+        dovish_ward = hawkish_net < 0 or dovish_net > 0
+
+        if hawkish_ward and not dovish_ward:
+            # Every tracked phrase that moved moved hawkish-ward (hawkish
+            # entered, dovish left, or both).
+            direction = "MORE_HAWKISH"
+        elif dovish_ward and not hawkish_ward:
+            # Every tracked phrase that moved moved dovish-ward.
+            direction = "MORE_DOVISH"
+        elif tilt > 0:
+            # Language moved in BOTH directions and the net is hawkish. The
+            # side that produced the tilt is named, because a hawkish net built
+            # by dropping dovish phrases is a different trade from one built by
+            # adding hawkish ones (Section 20.4: the phrase that MOVED is the
+            # signal).
+            direction = "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+        elif tilt < 0:
+            direction = "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+        else:
+            # Both directions moved and they cancel exactly (the two nets are
+            # equal, e.g. one hawkish phrase added and one dovish phrase added).
+            # There is no tilt to name, so the direction says the language
+            # MOVED both ways without netting — labelling it as a one-sided
+            # tilt would be a confident answer to a question the input does not
+            # settle.
+            direction = "MIXED_BOTH_DIRECTIONS_NET_FLAT"
+
+    confidence = compute_confidence(
+        ConfidenceInputs(
+            # Both vocabularies are uncalibrated_illustrative: the marker list is
+            # a starting vocabulary, not a measured one.
+            is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,
+            # One institution's own text, diffed against its own prior text.
+            source_independence_count=0,
+        )
+    )
+    confidence = round(min(confidence, settings.confidence_cap), 3)
+
+    prior_tokens = len(inputs.prior_text.split())
+    current_tokens = len(inputs.current_text.split())
+
+    warnings = [
+        "A marker diff is WEAK evidence: the Committee writes language that "
+        "resists mechanical reading, the same phrase means different things "
+        "across regimes, and the market has usually read the statement before "
+        "this parse of it. The confidence cap reflects that (Section 20.4).",
+        f"The marker vocabulary is uncalibrated_illustrative: these are the "
+        f"specification's phrases ({len(settings.hawkish_markers)} hawkish, "
+        f"{len(settings.dovish_markers)} dovish), and no study here has measured "
+        f"which of them actually moved rates on release.",
+    ]
+    if direction == "UNCHANGED":
+        warnings.append(
+            "No tracked forward-guidance phrase entered or left the statement. "
+            "This is NOT a claim that the guidance did not change — only that it "
+            "did not change in the tracked vocabulary."
+        )
+    if hawkish_left and dovish_left:
+        warnings.append(
+            "Phrases left BOTH sides of the vocabulary "
+            f"(hawkish: {hawkish_left}; dovish: {dovish_left}) — the statement "
+            "was edited in more than one direction, so the single net tilt "
+            "understates how much the language moved."
+        )
+
+    return ModelResult(
+        model_name="statement_text_diff",
+        country="us",
+        as_of=utc_now(),
+        value={
+            "direction": direction,
+            "net_tilt": round(tilt, 4),
+            "hawkish_entered": hawkish_entered,
+            "hawkish_left": hawkish_left,
+            "dovish_entered": dovish_entered,
+            "dovish_left": dovish_left,
+            "hawkish_net": hawkish_net,
+            "dovish_net": dovish_net,
+            "prior_tokens": prior_tokens,
+            "current_tokens": current_tokens,
+            "confidence_cap": settings.confidence_cap,
+        },
+        confidence=confidence,
+        interpretation=(
+            f"Forward guidance moved {direction} (net tilt {tilt:+.3f}): "
+            f"{len(hawkish_entered)} hawkish phrase(s) entered, "
+            f"{len(hawkish_left)} left; {len(dovish_entered)} dovish entered, "
+            f"{len(dovish_left)} left."
+        ),
+        context=(
+            "Module 4.3 — desks diff FOMC statements word-by-word on release, "
+            "because the rate DECISION is usually priced while the forward "
+            "guidance is where surprise lives. The signal is the phrase that "
+            "moved, not the sentiment of either text."
+        ),
+        inputs_used=["prior_text", "current_text"],
+        warnings=warnings,
+    )

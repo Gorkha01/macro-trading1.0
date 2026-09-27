@@ -7026,3 +7026,69 @@ just demonstrated.
 Module 9 — a **threshold classifier**, so its increment is about **branch
 reachability and threshold units** (D-050's inert-by-composition hazard, and the
 `> 0` zero-case defect).
+
+---
+
+## D-125 — **TIER 5 COMPLETE (23/23)**: `statement_text_diff` (§20.4) (2026-09-28)
+
+**Tier 5 = 23/23 — COMPLETE.** `statement_text_diff` was the LAST name of §21.3's Tier-5 table
+(`AGENTS.md:5541–5550`); all **23** names now resolve to a `def` in `src/`, MEASURED 2026-09-28 with
+`grep -rln "def <name>(" src/`, not recalled (O-147). *(This appendix went quiet after D-110; the
+D-111…D-124 entries are in `docs/DECISIONS.md`, which is the authority for their detail.)*
+
+### What was built
+
+`statement_text_diff(prior_text, current_text) -> ModelResult` in the **existing**
+`models/policy_rules.py` (Module 4's home), plus a **new** `StatementTextSettings` block in
+`config.py`. §20.4's premise: *the CURRENT rate decision is usually already priced; the
+forward-looking language is where surprise lives*, so the signal is a forward-guidance phrase
+**entering or leaving** between two supplied texts. The authority's body ends in a
+`NotImplementedError` scoped to the **feed**, not the algorithm — a diff is a **pure function of two
+texts**, so the network stays out and the model is offline-testable. **NO new OpenBB commands**
+(census stays **6**).
+
+### ⚠️ The one genuine MODEL defect
+
+The first reduction named the direction off *which side was non-zero* (`if dovish_side == 0: …`),
+which read a hawkish phrase **LEAVING** as **`MORE_HAWKISH`** — the exact inversion of §20.4's
+premise. Caught by `test_a_hawkish_removal_is_a_dovish_move` (written from the spec, not the code).
+Fixed by reducing over **direction of movement**
+(`hawkish_ward = hawkish_net > 0 or dovish_net < 0`, and the mirror), now guarded by two mutations
+(`D6a`/`D6b`) and a mirror test.
+
+### ⚠️ Two sweep-harness defects (O-155, O-156)
+
+* **O-155** — the sweep's own leftover-repair matched the mutation's `new` text **alone**, and
+  `D2a`'s `new` is a **prefix** of a legitimate line, so it "reverted" four never-applied mutations
+  and refused on the ambiguity it had created. Fixed to the canonical
+  `old not in text and new in text`, and the local repair **deleted** (the sidecar is the authority).
+* **O-156** — an ad-hoc harness of mine was **SIGTERM'd mid-loop** and left a mutation on disk, which
+  the next sweep read as its baseline and reported as a **FALSE SURVIVOR** (`C1a`) — the O-131 shape.
+  The leftover was reverted, the tree re-verified clean, and the sweep re-ran to **30/30**.
+
+### The five survivors of the first clean run (D-031 triage)
+
+`M2a` EQUIVALENT (retargeted to an observable double-count) · `C1b`, `N1a`, `N2a` WEAK TESTS (each
+fixed by **adding** a test that makes the guard observable through the published output, never by
+weakening the mutation) · `C1a` the false survivor above.
+
+### Gate baseline after D-125 (measured 2026-09-28)
+
+| Gate | Result |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` | **289 files already formatted** |
+| `mypy --strict` | **no issues found in 289 source files** |
+| `live_statement_text_check.py` | **OK** — 6 sections, all six directions reachable, capped product 0.350000 |
+| Reachability | Tier 1-4 **PASS 58/58**; Tier-5 SCRIPT-ONLY **21** + NO CALLER **1** = **22** unwired |
+| Full suite (`--junitxml`) | **4054 / 0 failed / 0 errors / 1 skipped** |
+| `mutation_statement_text.py` | **30/30 killed**; `--check-targets` **30, 0 problems** |
+| `mutation_qe_stance.py` (O-145 check) | **28/28 killed** |
+| `sweep_health.py` (LAST) | **OK** — **50** sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures |
+
+### Next
+
+**Tier 5 has no remaining name.** The standing obligation is **wiring the unwired Tier-5 functions
+into the thesis pipeline** — the reachability audit currently reports **22** unwired (21 SCRIPT-ONLY
++ 1 NO CALLER, `oil_balance_signal`) — which is a *different* task from building Tier-5 functions and
+was deliberately NOT in scope here.

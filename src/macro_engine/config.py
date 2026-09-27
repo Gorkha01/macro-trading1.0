@@ -2989,6 +2989,113 @@ class QEStanceSettings(BaseModel):
         return float(self.rrp_drained_threshold_bn_value.value)
 
 
+class StatementTextSettings(BaseModel):
+    """Module 4.3's forward-guidance marker vocabulary and its confidence cap.
+
+    Section 20.4 hardcodes ``HAWKISH_MARKERS`` / ``DOVISH_MARKERS`` as module
+    literals. They live in config here for the usual reason (§22.8): the marker
+    list is a **claim about the language the Committee actually uses**, and the
+    Committee's vocabulary changes with its chair and its era. ``"transitory"``
+    was a dovish marker until it was retired in late 2021 and then became a
+    *liability* to use; a list frozen in Python would keep scoring the word as
+    dovish years after the Fed stopped saying it. Externalizing the vocabulary
+    means a change requires re-measuring, not a code edit.
+
+    **The markers are MATCHED CASE-FOLDED but otherwise literally.** Section
+    20.4's own markers are multi-word conditional phrases ("additional policy
+    firming", "not expected to be appropriate"), not single words — the signal
+    is the *phrase*, because a desk diffs for the phrase that was dropped, not
+    for the adjective inside it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hawkish_markers_value: CalibratedValue
+    dovish_markers_value: CalibratedValue
+    confidence_cap_value: CalibratedValue
+    min_tokens_value: CalibratedValue
+
+    @model_validator(mode="after")
+    def _validate_marker_vocabulary(self) -> StatementTextSettings:
+        """The two lists must be non-empty and mutually disjoint.
+
+        An empty list would make one side of the diff dead code (D-037): every
+        statement would read as unchanged on that side. An OVERLAP would make a
+        phrase count on BOTH sides, so its removal and its addition would
+        cancel and the net tilt would miss the change entirely — the one error
+        this model exists to detect.
+        """
+        hawkish = self.hawkish_markers
+        dovish = self.dovish_markers
+        if not hawkish or not dovish:
+            raise ValueError(
+                "statement_text.hawkish_markers and dovish_markers must both be "
+                "non-empty: an empty list makes one side of the diff dead code "
+                "(AGENTS.md Section 20.4, D-037)."
+            )
+        overlap = set(hawkish) & set(dovish)
+        if overlap:
+            raise ValueError(
+                f"statement_text markers must be disjoint; {sorted(overlap)} appear "
+                f"on BOTH sides, so their removal and addition would cancel and the "
+                f"net tilt would miss the change (AGENTS.md Section 20.4)."
+            )
+        if float(self.min_tokens_value.value) < 1:
+            raise ValueError(
+                f"statement_text.min_tokens ({self.min_tokens_value.value}) must be "
+                f">= 1: a token floor of zero would admit an empty statement as a "
+                f"valid input (AGENTS.md Section 20.4)."
+            )
+        if not 0.0 <= float(self.confidence_cap_value.value) <= 1.0:
+            raise ValueError(
+                f"statement_text.confidence_cap ({self.confidence_cap_value.value}) "
+                f"must lie in [0, 1]."
+            )
+        return self
+
+    @property
+    def hawkish_markers(self) -> tuple[str, ...]:
+        """The forward-guidance phrases whose ADDITION is hawkish.
+
+        Returned lower-cased: matching is case-folded, so the vocabulary is
+        stored in the canonical form the matcher uses rather than in the form
+        the Fed capitalized it.
+        """
+        return tuple(str(m).lower() for m in self.hawkish_markers_value.value)
+
+    @property
+    def dovish_markers(self) -> tuple[str, ...]:
+        """The forward-guidance phrases whose ADDITION is dovish."""
+        return tuple(str(m).lower() for m in self.dovish_markers_value.value)
+
+    @property
+    def confidence_cap(self) -> float:
+        """The ceiling on this model's confidence — a text diff is weak evidence."""
+        return float(self.confidence_cap_value.value)
+
+    @property
+    def min_tokens(self) -> int:
+        """Fewest whitespace tokens a statement must carry to be diffed at all."""
+        return int(self.min_tokens_value.value)
+
+    @property
+    def confidence_cap_is_calibrated(self) -> bool:
+        """Whether the confidence cap is a measured value or a placeholder."""
+        return self.confidence_cap_value.is_trustworthy
+
+    @property
+    def vocabularies_are_calibrated(self) -> bool:
+        """Whether BOTH marker vocabularies are calibrated rather than illustrative.
+
+        The **AND** of the two sides (the D-124 `duration_proxy_is_calibrated`
+        shape): one illustrative vocabulary makes the whole diff illustrative,
+        because the net tilt is only as trustworthy as the weaker side.
+        """
+        return (
+            self.hawkish_markers_value.is_trustworthy and self.dovish_markers_value.is_trustworthy
+        )
+
+
 class ProbabilitySettings(BaseModel):
     """Module 12.3/12.4's thresholds.
 
@@ -6338,6 +6445,7 @@ class Settings(BaseModel):
     convergence: ConvergenceSettings
     policy_mix: PolicyMixSettings
     qe_qt: QEStanceSettings
+    statement_text: StatementTextSettings
     minsky: MinskySettings
     probability: ProbabilitySettings
     leading_indicator: LeadingIndicatorSettings

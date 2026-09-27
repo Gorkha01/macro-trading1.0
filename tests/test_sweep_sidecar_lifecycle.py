@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_nine_sweeps_to_cover() -> None:
+def test_there_are_fifty_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -498,9 +498,16 @@ def test_there_are_forty_nine_sweeps_to_cover() -> None:
     label — so this is the first of the module-creating sweeps to cover a model
     and its config alone. It uses `sweep_lifecycle` and carries the CANARY1
     refusal gate, so the same two checks cover it.
+
+    **49 → 50 at D-125**, which added `mutation_statement_text.py` — the sweep
+    over Section 20.4's `statement_text_diff` (Module 4.3), the final Tier-5
+    name. It is a **text diff over two supplied strings**, so it has no new
+    client and reads no market data at all — like D-123's addition it covers a
+    model and its config block alone. It uses `sweep_lifecycle` and carries the
+    CANARY1 refusal gate, so the same two checks cover it.
     """
     files = _sweep_files()
-    assert len(files) == 49, f"expected 49 sweeps, found {len(files)}"
+    assert len(files) == 50, f"expected 50 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)
