@@ -18683,7 +18683,7 @@ live file BEFORE removal** — REFERENCE.md:1275 records that a **stale** sideca
 already-mutated text and the next heal **re-introduced corruption**". Both were pristine, so
 removal was **lossless**; the check is what made it safe, not the assumption.
 
-### A defect the GATES surfaced — O-140 (recorded, NOT fixed here)
+### A defect the GATES surfaced — O-140 (recorded at D-114; **FIXED at D-115**)
 
 **The full-suite gate reported `7 failed / 3525 passed / 1 skipped`, and every failure was in a
 harness test** (`test_sweep_sidecar_lifecycle.py` ×6, `test_sweep_health_leftover_predicate.py` ×1).
@@ -18705,13 +18705,46 @@ legitimately `unlink()` sidecars in `tmp_path`)"*). An isolated file deletes too
 it; the full suite does not. **A `dangerouslyDisableSandbox` run failed identically**, so that flag
 does not clear this hook.
 
-**Recorded as O-140 rather than fixed:** the remedy is a change to shared harness code
+**Recorded as O-140 (not at D-114):** the remedy is a change to shared harness code
 (`scripts/_sweep_gate.py`'s sidecar helpers, or a marker on the seven tests), which is **outside an
 increment's scope**, and the honest status is *"a known artefact with a measured proof of
 non-attribution"* — not *"green"*. **The gate verdict for D-114 is therefore: `3533 collected /
 **0 genuine failures** / 1 skipped`, with the 7 non-reproducible failures attributed to O-140 by a
 stashed-tree control.** A gate that reports seven phantoms every close is a gate an operator learns
 to ignore (**O-107's class**), so the exemption should become executable rather than prose.
+
+> **UPDATE — O-140 was FIXED at D-115 (2026-09-27).** The operator directed the fix despite the
+> scope objection above, and the recorded *root cause* was **corrected in the course of fixing it**:
+> the exempting hypothesis was that the sandbox's bulk-delete counter caused the failure, but the
+> measured mechanism is narrower — `sidecar.unlink()` raises **`SystemExit(1)`**, a `BaseException`
+> that escapes O-122's **`except OSError`**, and *inside* `sweep_lifecycle`'s `finally` that escape
+> **overrides the block's already-computed return value** (the canary test received `1` where it had
+> computed `3`). Fixed by catching `(OSError, SystemExit)` at **both** unlink sites — a **second,
+> bare** `sidecar.unlink()` in `restore_from_sidecar` was found with `grep -n unlink` and was not in
+> the original O-122 fix. Two new tests (`test_a_refused_delete_that_raises_systemexit_does_not_escape`,
+> `test_the_lifecycle_survives_a_systemexit_delete_refusal`) are **mutation-proved**: reverting the
+> catch to `OSError`-only fails **both, by name**. Measured `7 failed / 3525 passed` →
+> **`3535 passed / 0 failed / 1 skipped`**. Committed `39918dc`; CI run `36280668579` **green, every
+> step**. **The staleness this note repairs:** the section above said *"NOT fixed here"* and the
+> original mechanism guess attributed it to the delete *counter*; both are superseded. See
+> `docs/OPEN_ISSUES.md` O-140 (CLOSED 2026-09-26 by D-115) and skill lessons **5dq** (`except OSError`
+> does not catch `SystemExit`) and **5dp** (a `str.replace()` mutation proves nothing until the
+> replace LANDED — the first revert silently no-opped).
+
+### A second defect the re-probe surfaced — the `ppp_implied_rate` FALSE BLOCK (D-115)
+
+While fixing O-140 the operator separately asked whether `ppp_implied_rate`'s `BLOCKED → MANUAL`
+status was *really* a block. The re-probe (recorded in full in **`docs/PLAN_ppp_source.md`**) found
+**OpenBB carries 0 of 278 paths** touching PPP, and **FRED's conventional conversion-factor IDs are
+empty** — but the **World Bank REST API is reachable** (`PA.NUS.PPP`, DEU `0.709983` for 2025,
+published 2026-07-13). So §21.1's premise (*"no clean free API"*) is **very likely another FALSE
+BLOCK (D-043's class)**. D-114's hand-entered `0.72` is **within 1.4 %** of the fetched DEU 2025
+value, so the model's number was sound — the defect is the **registry's assertion**, not the number.
+**The registry `blocked:` reason was corrected at D-115**; **wiring the source is deliberately
+deferred to its own increment** (one function per increment). `PLAN_ppp_source.md` §6 additionally
+measures the four free sources the operator named (World Bank / IMF / OECD / Eurostat) and concludes
+**none can serve as an ALFRED-style vintage client** — none implements a point-in-time selector — so
+the ALFRED capability remains FRED-only.
 
 ### Next
 

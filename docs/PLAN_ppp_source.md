@@ -178,3 +178,144 @@ DEU's 2025 value), so the model's number is sound; but `ppp_implied_rate` is ver
 likely another **FALSE BLOCK** (D-043's class), and the honest next step is to
 correct the registry's claim and then decide — as its own increment — whether to
 wire the source.
+
+---
+
+## 6. The four user-named sources, measured (2026-09-27)
+
+The operator named four free PPP sources and asked whether one could serve as an
+**ALFRED-style client**. That is a **specific architectural claim**, and it is
+decided by one property, not by general reputation. This section measures all
+four — plus the one thing that actually decides between them.
+
+### 6.0 The criterion is NOT "does it have PPP data"
+
+The engine already has a vintage client:
+`src/macro_engine/data_layer/alfred_client.py`. Its contract is exact, and it is
+the contract a candidate must satisfy to be an ALFRED-style substitute:
+
+* `fetch_vintage_observations(series_id, as_of)` sets
+  **`realtime_start == realtime_end == as_of`** — a **point-in-time selector**,
+  returning *the values in force on that date* (measured: a date before
+  publication returns `{}`, an honest empty set — `alfred_client.py:71-86`).
+* `VintageUnavailableError` is **deliberately fatal**: *"a vintage that silently
+  degrades to 'latest' is worse than no vintage at all."*
+* The whole module exists because O-6 proved the OpenBB route **absorbs**
+  `realtime_start` silently and returns the latest revision with HTTP 200.
+
+So the deciding question is: **can the source return a specific past state, or
+only "latest"?** A source that returns only latest is *useful data* but **not an
+ALFRED-style client** — and wiring it as one would reproduce O-6's exact defect.
+
+### 6.1 Measurement table
+
+| Source | Reachable | Item is a **conversion factor**? | **Vintage / revision** retrieval | EMU aggregate |
+|---|---|---|---|---|
+| **World Bank** `PA.NUS.PPP` | **YES** (JSON REST) | **YES** — "PPP conversion factor, GDP (LCU per intl $)" | **NO** — latest only; `lastupdated` is a *publication* date, not a vintage selector | **EMPTY** (0 points) |
+| **World Bank** `PA.NUS.PRVT.PP` | **YES** | **YES** — private-consumption conversion factor, DEU `0.718883` (2025) | **NO** — same | EMPTY |
+| **IMF** `PPPEX` (DataMapper) | **YES** | **YES, by name** — "Implied PPP conversion rate" | **NO — and worse than NO** (see 6.3) | **ignored** (see 6.3) |
+| **IMF** `PPPGDP` / `PPPPC` / `PPPSH` | YES | NO — PPP-**denominated GDP** / per-capita / world share, **not** a conversion factor | NO | n/a |
+| **OECD** `DSD_PPP@DF_PPP` | **YES** (SDMX-JSON) | **YES** — `MEASURE=PPP`, `UNIT_MEASURE=XDC_USD`/`XDC_EUR`; DEU `0.701` base-USA (2023) | **NO** — latest only; a naive keyed query returned `NoRecordsFound` | **YES** — `EU27_2020` published (a *real* difference from World Bank) |
+| **Eurostat** `prc_ppp_ind` | **YES** (JSON-stat) | **NO** — it is a **price level INDEX** (`PLI_EU27_2020`, EU27=100), not a conversion factor | **NO** | EU27 (not EMU) |
+
+### 6.2 World Bank — the one to wire, and what it cannot do
+
+Two indicators, both reachable, both fetched with a `lastupdated` field:
+
+```
+PA.NUS.PPP        (GDP conversion factor)          lastupdated 2026-07-13
+  DEU 2025 -> 0.709983 | 2024 -> 0.700862 | 2023 -> 0.701054
+PA.NUS.PRVT.PP    (private consumption)             lastupdated 2026-07-13
+  DEU 2025 -> 0.718883 | 2024 -> 0.701547 | 2023 -> 0.702414
+```
+
+**It is the right *item* and it is fetchable.** What it is **not** is
+vintage-capable: `lastupdated` tells you *when the current figure was refreshed*,
+not *what the figure was on a chosen past date*. There is no
+`realtime_start`-equivalent on the World Bank REST API. **It is therefore Plan A's
+source (a `LIVE (direct, not OpenBB)` input), not an ALFRED-substitute.**
+
+### 6.3 IMF — right name, wrong content, and a silent-parameter trap
+
+The IMF DataMapper exposes `PPPEX`, labelled literally **"Implied PPP
+conversion rate"** — the *exact estimand name*. Two measured disqualifiers:
+
+1. **The values are WEO projections, not realizations.** DEU returns 52 points
+   through **2031** (`2025:0.723, 2026:0.722, 2027:0.724 … 2031:0.737`) — that is
+   a *forecast* of the conversion rate, which is not the same object as a
+   *published* one. Using it would put a projected number where the model
+   documents a vintage.
+2. **`?version=` is silently absorbed — O-6's exact defect, reproduced.**
+   Measured:
+
+   ```
+   GET /PPPEX/DEU                 2025 -> 0.723      (n=52)
+   GET /PPPEX/DEU?version=2025-04  -> NO DEU SERIES  (HTTP 200, "same as base": False)
+   GET /PPPEX/DEU?version=1990-01  -> NO DEU SERIES  (HTTP 200)
+   ```
+
+   The parameter does not select a vintage; it *corrupts* the read while returning
+   HTTP 200. **This is the same failure mode O-6 recorded for OpenBB**, and it is
+   the reason `alfred_client.py` forbids an OpenBB fallback path structurally.
+   The EMU/EA/EU "aggregates" return HTTP 200 but the payload is **the same
+   all-country block** — the code is ignored, not honoured. *(A 200 that means
+   "parameter ignored" is precisely the trap this ledger exists to record.)*
+
+**Verdict: IMF is the most dangerous of the four** — it has the right *label*, so
+a keyword-driven integration would wire it, and it would then silently serve
+latest-or-corrupted data behind a vintage-shaped API.
+
+### 6.4 OECD — the richest PPP dataset, but a different vintage semantics
+
+`DSD_PPP@DF_PPP` is genuinely large (44,064 series for 2022+), carries a real
+conversion factor (`MEASURE=PPP` + `UNIT_MEASURE=XDC_USD`), and — uniquely — a
+published **`EU27_2020` aggregate** (`XDC_USD` base-OECD `0.8`, base-USA `0.625`).
+Reference values measured base-USA:
+
+```
+DEU 0.701 (2023) | FRA 0.679 (2023) | GBR 0.661 (2023) | EU27_2020 0.625 (2023)
+```
+
+SDMX has a **`updatedAfter` parameter** (HTTP 200) that filters by *modification
+time* — but that is **not** a point-in-time vintage selector either: it answers
+"what changed since T", not "what was true at T". There is **no `NoRecordsFound`
+-free** path to a chosen past state, and a fully-keyed query returned
+`NoRecordsFound`. **Verdict: a strong live source, not an ALFRED-substitute.**
+
+### 6.5 Eurostat — wrong item
+
+`prc_ppp_ind` returns a **price level index** (`PLI_EU27_2020`, EU27=100; 30 time
+keys, `updated 2025-07-10`), **not** a conversion factor and **not** an implied
+PPP rate. Changing the *item* is not comparable to the estimand. **Verdict: not
+eligible** for `ppp_implied_rate`, whatever its vintage properties.
+
+### 6.6 The answer to "can we use one as an ALFRED-style client?"
+
+**No — none of the four can.** Not because they lack PPP data (three have it, in
+the right unit), but because **not one of them implements a specific-vintage
+selector**, which is the *only* property that makes `alfred_client`'s contract
+satisfiable. Wiring any of them as a vintage source would reproduce **O-6's
+silent-absorption defect** — the precise thing that module exists to prevent.
+
+**What they *can* do, and the correct sequencing:**
+
+* **Wire the World Bank as a `LIVE (direct, not OpenBB)` input** for
+  `ppp_implied_rate` — **Plan A**, unchanged by this section. It is the same
+  route §21.1 already sanctions for `current_account_pct_gdp`. It removes a
+  MANUAL input and it is honest about being *latest-with-a-publication-date*
+  rather than a vintage.
+* **Keep the MANUAL path as the declared fallback** (Plan A step 4) — the World
+  Bank's freshness guarantee is a *publication date*, and an annual series with a
+  publication lag is a **disclosed vintage**, not a live price.
+* **Do NOT route IMF `PPPEX`**, despite the attractive label: its content is a
+  WEO projection and its vintage parameter is silently absorbed.
+* **Use OECD only if the `EU27_2020` aggregate is needed** — it is the one
+  measured advantage (World Bank's EMU aggregate is empty). Treat it as a second
+  *live* source for the euro leg, decided in a later increment, **not** as a
+  vintage client.
+
+**Bottom line for the operator's question:** "use them as an ALFRED client" is
+**not available** — measured, not asserted. The ALFRED-style capability for this
+engine remains FRED/ALFRED-only (`alfred_client.py`), and the four sources are
+candidates for a **live input upgrade**, of which the **World Bank** is the right
+one and the **IMF is the one to avoid**.
