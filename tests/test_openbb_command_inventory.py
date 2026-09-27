@@ -18,6 +18,13 @@ broken; the *record* had drifted. That is the same class as the withdrawn
 surface**, where the costing is not the number but the next reader who plans
 work against it.
 
+**The count moved 4 -> 6 at D-120.** ``oil_balance_signal`` (Section 6.8) wired
+its two oil inputs to the ``commodity`` route family —
+``commodity.petroleum_status_report`` and ``commodity.short_term_energy_outlook``
+— the engine's FIRST new OpenBB commands since D-086. Both are **registry-derived**
+(they carry an ``endpoint`` and a ``symbol``), so the count is still derived and
+no source-literal set needed touching.
+
 **Why a test and not a docs edit.** The same reasoning as
 ``test_performance_record.py``: D-087.19 corrected that prose once and the old
 figures were *still* on five surfaces afterwards, because **nothing read the
@@ -28,7 +35,7 @@ two doc surfaces that state it as a live measurement are asserted to agree.
 **What is derived, and why not typed.** The inventory is computed from the two
 real sources of truth — the parsed registry (whose ``defaults:`` inheritance is
 applied by a model validator, so every entry carries its endpoint) and the
-endpoint literals actually present in ``src/``. A test that typed "4" would agree
+endpoint literals actually present in ``src/``. A test that typed "6" would agree
 with itself and disagree with the tree the first time someone adds a command,
 which is exactly how O-104 arose.
 
@@ -185,31 +192,38 @@ def test_the_disabled_calendar_is_not_counted_as_live() -> None:
 
 
 def test_the_recorded_live_count_matches_the_tree() -> None:
-    """The load-bearing assertion: 4 commands, derived, with no number typed.
+    """The load-bearing assertion: 6 commands, derived, with no number typed.
 
     Written as a comparison against the derivation rather than against a literal
     so that ADDING a command fails here and forces the record to move with the
     tree — which is the failure mode O-104 actually had, in reverse.
+
+    **The count moved 4 -> 6 at D-120** when ``oil_balance_signal`` (Section
+    6.8) wired its two inputs to the ``commodity`` route family — the engine's
+    FIRST new OpenBB commands since D-086. Both are registry-derived (they carry
+    an ``endpoint`` and a ``symbol``), so no source-literal set needed touching.
     """
     live = _live_commands()
-    assert len(live) == 4, (
-        f"the engine can now issue {len(live)} OpenBB commands, not 4: "
+    assert len(live) == 6, (
+        f"the engine can now issue {len(live)} OpenBB commands, not 6: "
         f"{sorted(live)}.\n"
         "If this is a NEW command, update the count on the live surfaces "
         "(docs/PROGRESS.md, docs/OPEN_ISSUES.md) in the same change -- a "
         "capability the record does not mention is the O-104 defect arriving "
         "from the other side. If a command was REMOVED, do the same."
     )
-    # The four, named, so a swap that keeps the count at 4 is still caught.
+    # The six, named, so a swap that keeps the count at 6 is still caught.
     assert live == frozenset(
         {
             "economy.fred_series",
             "economy.fred_search",
             "fixedincome.government.yield_curve",
             "economy.fomc_documents",
+            "commodity.petroleum_status_report",
+            "commodity.short_term_energy_outlook",
         }
     ), (
-        "the command SET changed while the count stayed 4 -- a substitution "
+        "the command SET changed while the count stayed 6 -- a substitution "
         f"hides behind an unmoved total. Derived: {sorted(live)}."
     )
 
@@ -251,9 +265,11 @@ def test_a_stale_count_is_not_stated_as_current(relpath: str) -> None:
 
     assert not offences, (
         f"{relpath} states a SUPERSEDED OpenBB command count as current.\n"
-        "The engine now issues 4 commands, not 2: `fred_series`, `fred_search`, "
-        "`fixedincome.government.yield_curve` (D-086 change 1) and "
-        "`economy.fomc_documents` (D-086 change 2). A superseded count left "
+        "The engine now issues 6 commands, not 2: `fred_series`, `fred_search`, "
+        "`fixedincome.government.yield_curve` (D-086 change 1), "
+        "`economy.fomc_documents` (D-086 change 2), and "
+        "`commodity.petroleum_status_report` / `commodity.short_term_energy_outlook` "
+        "(D-120). A superseded count left "
         "standing on a live surface is the D-087.23 defect class -- the next "
         "reader plans work against a number that is not true.\n"
         "If you are recording history, mark it in the same sentence (e.g. "

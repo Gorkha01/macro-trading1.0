@@ -1346,6 +1346,110 @@ series:
     plausible_range: [1.0e7, 1.0e13]
 
   # -------------------------------------------------------------------------
+  # OIL BALANCE inputs for `oil_balance_signal` (Section 6.8, D-120). Section
+  # 6.8's reference implementation declares `inventory_change_weekly` and
+  # `opec_spare_capacity_proxy` with NO source, so under Section 21.1's default
+  # rule ("any input not listed above is BLOCKED by default") both would read as
+  # BLOCKED. MEASURED 2026-09-29, that reading is FALSE — this is the FIFTH
+  # FALSE BLOCK this repository has caught (D-043's class, after
+  # `ppp_implied_rate` at D-115/D-117, `fx_reserves` at D-118 and the two
+  # EM-vulnerability legs at D-119).
+  #
+  # ⚠️ BOTH ARE `commodity.*` ROUTES, NOT `fred_series`, AND THEY ARE THE FIRST
+  #     TWO NEW OpenBB COMMANDS THE ENGINE HAS EVER ADDED (the command census in
+  #     tests/test_openbb_command_inventory.py moves 4 -> 6 in this same change).
+  #     The `provider` is `eia`, not `fred`.
+  #
+  # ⚠️ NEITHER IS A SNAPSHOT FIELD. `oil_balance_signal` fetches them through
+  #     its own live check (commodities_client) and they populate no
+  #     MacroDataSnapshot field, so `not_a_snapshot_field: true` on both — the
+  #     same "models' input provenance, not a snapshot field" intent the Module
+  #     7.3 leading indicators carry.
+  # -------------------------------------------------------------------------
+  crude_inventory_weekly:
+    provider: eia
+    endpoint: commodity.petroleum_status_report
+    symbol: WCESTUS1
+    not_a_snapshot_field: true
+    description: >
+      Weekly U.S. ending stocks of crude oil EXCLUDING the Strategic Petroleum
+      Reserve, Thousand Barrels, weekly (EIA Weekly Petroleum Status Report,
+      balance-sheet `stocks` table). Reached via category=balance_sheet &
+      table=stocks; the symbol is selected BY NAME from a response that carries
+      19 symbols at once (measured 2026-09-29, 34 428 rows over 2 295 dates back
+      to 1982-08-20).
+
+      ⚠️ DO NOT CONFUSE WITH `WCRSTUS1` (ending stocks INCLUDING the SPR), which
+      shares the same table. Section 6.8's "inventory" is the commercial stock
+      that reflects supply/demand, so the SPR-inclusive series is the wrong one;
+      `commodities_client` filters on `symbol == WCESTUS1` explicitly rather than
+      taking a row by position.
+
+      Section 6.8 declares its input as a DEVIATION from the 5-year seasonal
+      average, so the client computes `level - mean(same ISO week over the prior
+      5 years)`; this entry's `verified_value` is the raw LEVEL the deviation is
+      computed from.
+
+      The `stocks` table accepts `start_date` and honours it (measured: a narrow
+      window cut 34 428 rows to 57).
+
+      Measured latest observation 2026-09-18 = 426 398 (prior week 423 429, a
+      +2 969 build).
+    frequency: weekly
+    units: thousand_barrels
+    status: verified
+    verified_on: 2026-09-29
+    verified_value: 426398.0
+    verified_observation_date: 2026-09-18
+    plausible_range: [100000.0, 600000.0]
+
+  opec_spare_capacity:
+    provider: eia
+    endpoint: commodity.short_term_energy_outlook
+    symbol: COPS_OPEC
+    not_a_snapshot_field: true
+    forward_looking: true
+    description: >
+      OPEC Total Spare Crude Oil Production Capacity, MILLION BARRELS PER DAY,
+      monthly (EIA Short-Term Energy Outlook, table 03d "World Crude Oil
+      Production"). Reached via table=03d & symbol=COPS_OPEC; this route DOES
+      honour the `symbol` parameter server-side (measured: the unfiltered table
+      returns 35 symbols / 13 748 rows, the filtered call returns the 420
+      COPS_OPEC rows alone).
+
+      ⚠️ THE SERIES CARRIES A PROJECTION TAIL AND IT MUST NOT BE USED.
+      `forward_looking: true` is declared because the STEO legitimately publishes
+      FORECASTS: measured 2026-09-29 the series runs to 2027-12-01, and the 15
+      values from 2026-10-01 onward are projections, not observations. A
+      "latest value" fetch that took the last row would report a forecast as a
+      measurement — the D-116 vintage trap (the IMF PPPEX case).
+      `commodities_client.fetch_opec_spare_capacity` clips to observations at or
+      before the as-of date and COUNTS the rows it dropped, so the disclosure
+      states how much of the tail was projection.
+
+      ⚠️ `COPS_OPEC_R05` ("OPEC Middle East Surplus ...") and `COPS_OPEC_ROT`
+      ("OPEC Other Spare ...") are the Middle-East and Other COMPONENTS of this
+      total, not substitutes. Measured 2027-12-01: _R05 = 2.35 and _ROT = 0.03
+      sum to the COPS_OPEC total (2.38), which is how the split was identified
+      rather than assumed. Section 6.8 says "OPEC spare capacity", so the TOTAL
+      is the correct series.
+
+      Section 6.8's field name calls this a "proxy" and marks it "informational
+      only". The measured series is the ACTUAL spare capacity, so "proxy"
+      under-claims; the field keeps the specification's name but the model
+      labels it as the measured series it is.
+
+      Measured latest OBSERVATION (<= 2026-09-29) 2026-09-01 = 0.02 mb/d.
+    frequency: monthly
+    units: million_barrels_per_day
+    status: verified
+    verified_on: 2026-09-29
+    verified_value: 0.02
+    verified_observation_date: 2026-09-01
+    verified_curve: {observation_block_ends: 2026-09-01, projection_block_ends: 2027-12-01}
+    plausible_range: [-1.0, 15.0]
+
+  # -------------------------------------------------------------------------
   # FX RESERVES for `intervention_capacity` (Section 20.9). Section 20.9's
   # reference implementation declares `fx_reserves_usd_bn` and
   # `reserves_to_gdp_pct` with NO source, and no entry existed here — which under

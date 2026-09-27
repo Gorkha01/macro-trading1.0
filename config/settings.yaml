@@ -4383,6 +4383,78 @@ em_vulnerability:
       The verdict for all THREE failed checks. Retained verbatim from
       Section 20.
 # ---------------------------------------------------------------------------
+# Module 10's oil-balance leaves (Section 6.8, D-120).
+#
+# Section 6.8's reference implementation ships a bare `confidence=0.4` and a
+# bare `round(tightness, 2)` inside the function. Section 22.8 forbids the
+# confidence literal, and the same reasoning applies to the precision — a reader
+# must be able to find every number the published result turns on without
+# reading the function.
+#
+# ⚠️ THE SPECIFICATION'S 0.4 IS NOT CARRIED FORWARD AT FACE VALUE. The method is
+# one subtraction and a sign flip on two uncalibrated EIA inputs, so a generous
+# confidence would overstate it. See the reliability_cap note for the ordering.
+# ---------------------------------------------------------------------------
+oil_balance:
+  reliability_cap:
+    value: 0.30
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `oil_balance_signal` reports. Section 6.8 supplies
+      `confidence=0.4` as a literal, which Section 22.8 refuses.
+
+      ⚠️ THE ORDERING IS THE CLAIM. 0.30 sits BELOW every Module 9 FX cap
+      (`ppp_valuation` 0.2 is the nearest; `uip_expected_move` 0.15,
+      `intervention_capacity` 0.12) because those relate two OBSERVABLE prices
+      with EXACT arithmetic (CIP/UIP/PPP), whereas this function converts ONE
+      observation into a directional label with a sign flip. It sits ABOVE the
+      EM-vulnerability cap (0.10) because the two inputs are genuine government
+      OBSERVATIONS rather than a rule of thumb about crises that already
+      happened. So the publication order is: measured series through trivial
+      arithmetic (this) > uncalibrated stress heuristics (EM checklist) — but
+      below any relation between observable prices.
+
+      It is a model-specific CAP, not compute_confidence(), following the
+      D-112/D-114/D-118/D-119 precedent: the function applies
+      compute_confidence() to the INPUT half and MULTIPLIES by this leaf, so both
+      halves stay load-bearing rather than one being dead code under `min()`.
+
+      Placeholder, not calibrated: calibrating it means measuring how often the
+      inventory deviation and spare-capacity pair predicted realised inflation
+      surprises, a small-sample question this build does not attempt.
+  value_decimals_leaf:
+    value: 2
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The decimal places the published tightness and the inventory deviation are
+      rounded to. Retained at Section 6.8's `round(tightness, 2)` for
+      comparability with the specification.
+
+      ⚠️ THE LAST DIGIT IS NOT INFORMATIVE. The deviation is in THOUSAND BARRELS,
+      so two decimals implies a resolution of ten barrels — meaningless against a
+      weekly series whose provider reports to the nearest thousand. Two decimals
+      is kept rather than reduced because the specification names it and a
+      downstream consumer may key on the published shape, but a reader should not
+      treat the second decimal as signal.
+
+      Kept as a leaf so the rounding is a declared property of the result rather
+      than a magic literal in the function body.
+  tight_spare_threshold_mbd:
+    value: 2.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The OPEC spare-capacity level, in MILLION BARRELS PER DAY, at or above
+      which `oil_balance_signal` adds a "the market has buffer" warning. Purely
+      informational: when spare capacity is comfortable, the model warns that the
+      two inputs can DISAGREE (inventory tight, spare ample) and that the
+      disagreement is itself information a consumer should see.
+
+      ~2 mb/d is a conventional "comfortable buffer" reading for OPEC spare
+      capacity (the market is often described as tight below ~1-2 mb/d), not a
+      fitted break-point. Measured 2026-09-29, the live `COPS_OPEC` series sits
+      near 0.02 mb/d — an extremely tight reading — so the warning does NOT fire
+      on current data, which is the expected behaviour for a buffer test.
+  # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

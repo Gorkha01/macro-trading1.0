@@ -19904,3 +19904,120 @@ that table"* — do NOT recall them. The remaining **7** Tier-5 names, MEASURED
 11 → a new `models/equity_macro.py`), and `statement_text_diff` (§20.4 — the one
 name whose spec body **keeps its own `NotImplementedError`**, needing an FOMC
 text feed). **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-120 — Module 10's `oil_balance_signal`: the repository's **FIRST** increment to add NEW OpenBB commands (census 4 → 6), a **fifth FALSE BLOCK** (both inputs live), and a `fetch_series` trap that made a new transport necessary
+
+**Date:** 2026-09-27. **Tier 5 = 17/23** (moved **16 → 17**; MEASURED 2026-09-27 from
+`AGENTS.md:5541–5550` against `src/`, not recalled — the O-147 discipline). Target: the **new**
+`src/macro_engine/models/commodities.py` (Module 10's first function), the **new**
+`data_layer/commodities_client.py`, the **new public** `OpenBBClient.fetch_records` transport in
+`data_layer/openbb_client.py`, and the **new** `OilBalanceSettings` block in
+`src/macro_engine/config.py`. Section resolved with `grep -n`: `AGENTS.md:1059` is the §6.8 heading
+and `AGENTS.md:1068` carries the section's **reference implementation**. **Sweep census 47 → 48**
+in all **three** homes.
+
+### 1. The D-096 supersession question — answered FIRST, and the answer is "a NEW capability"
+
+Phase 5+ is an UPGRADE PASS (D-096): each Tier-5 name is a **replacement**, and the first question
+is *"what does this supersede?"* §6.8 supplies the implementation **body**, making this the **third
+D-096 exception** (after §6.7's FX block and §20.9 / §20's part B). Measured: `oil_balance_signal`
+**supersedes nothing** — Module 10 had no function at all. It is the same *"a new capability"*
+answer `cip_check`, `intervention_capacity` and `em_vulnerability_checklist` each gave. The
+function exists to feed the inflation/growth **transmission channel** (Module 10 → Module 5/7).
+
+### 2. A **fifth FALSE BLOCK** — the two named inputs are LIVE, measured before a line was written
+
+§6.8 names **no source** for either input, so under §21.1's default rule (*"any input not listed is
+BLOCKED"*) both read as BLOCKED. Probed against this installation's live OpenBB `commodity` routes
+on 2026-09-29:
+
+| input | verdict | evidence |
+|---|---|---|
+| `inventory_change_weekly` | **LIVE** | `commodity.petroleum_status_report`, `category=balance_sheet&table=stocks`, symbol **`WCESTUS1`**. Latest observation **2026-09-18 = 426 398** thousand bbl (prior 423 429 ⇒ **+2 969** build). 2 295 observations. Seasonal deviation vs the same ISO week over 5 prior years = **+7 761.2**. |
+| `opec_spare_capacity_proxy` | **LIVE** | `commodity.short_term_energy_outlook`, `table=03d&symbol=COPS_OPEC`. Latest observation **2026-09-01 = 0.02** mb/d. **15 future-dated projection rows discarded** (series runs to **2027-12**). |
+
+This is the **FIFTH FALSE BLOCK** (D-043's class) after `ppp_implied_rate` (D-115/D-117),
+`fx_reserves_usd_bn` (D-118) and the two EM-vulnerability legs (D-119). The only CONFIRMED block in
+the repository remains `usd_denominated_debt_share` (D-119).
+
+**The "proxy" in the field name is an under-claim.** §6.8 calls the input `opec_spare_capacity_proxy`
+and comments *"informational only"*. Measured, `COPS_OPEC` is the EIA's **actual** *"OPEC Total
+Spare Crude Oil Production Capacity"* series — a real quantity, not a stand-in. The field keeps the
+specification's name (the input contract is §6.8's), but the docstring and the output label it as
+the measured series it is. **`COPS_OPEC_R05` / `COPS_OPEC_ROT` are the Middle-East / Other
+COMPONENTS** (2.35 + 0.03 = 2.38 total), **not substitutes** — the D-116 unit-is-not-a-label trap.
+
+### 3. The transport defect: `fetch_series` **cannot** be used, so a new method was required
+
+The existing `OpenBBClient.fetch_series` **drops the `symbol` column** and folds a multi-symbol
+table into ONE date/value frame. Measured on the PPS `stocks` table: **34 428 rows across 19
+symbols**, and the **last row is total stocks, not `WCESTUS1`** — so a "latest value" through
+`fetch_series` would silently report an unrelated series. This is a NEW defect class, and the fix was
+a NEW public method, `OpenBBClient.fetch_records(*, provider, endpoint, params, series_label) -> list[dict]`,
+carrying the **same** retry / cross-path-fallback transport as `fetch_series`. Two further findings:
+
+* **The package and the local API return DIFFERENT row types.** The package path returns Pydantic
+  models (`EiaPetroleumStatusReportData`); the local API returns plain dicts. `_coerce_records` now
+  dumps any `model_dump()`-able object, so both paths agree. (The full suite caught this: the first
+  version refused a "non-mapping row" on the package path.)
+* **`petroleum_status_report` IGNORES the `symbol=` parameter server-side** (silently absorbed — the
+  O-138 shape), while STEO **honours** it. So the PPS symbol filter is **client-side** and the STEO
+  filter is **server-side**. Both routes HONOUR `start_date` (PPS 34 428 → 57 rows with a window), so
+  `window_filter_supported`'s default (`true`) is correct for both.
+
+### 4. Three corrections to the reference body, and the confidence held to the D-118/D-119 rule
+
+§6.8's body is one subtraction and a sign flip wrapped in a `ModelResult`. Three corrections:
+
+1. **The bare `confidence=0.4` is replaced (§22.8 forbids a confidence literal).** Published
+   confidence = `compute_confidence(...) × oil_balance.reliability_value`, the D-118/D-119
+   **product** shape. The cap is **0.30**; it sits **below** every Module 9 FX cap (the method is a
+   single sign flip on two uncalibrated EIA series) and **above** the EM-vulnerability cap (0.10,
+   because the inputs are measured series, not a rule of thumb). The product keeps both halves live —
+   `min()` would publish the cap everywhere and make the `compute_confidence()` branch **dead code**.
+2. **The bare `round(tightness, 2)` becomes a config-declared precision.** `value_decimals` is a
+   leaf; the disclosure (thousand barrels ⇒ two decimals implies ten-barrel resolution) is in the
+   leaf's note.
+3. **`inputs_used` names BOTH declared inputs.** §6.8 lists only `inventory_change_weekly` even
+   though `opec_spare_capacity_proxy` is a declared field — the D-037 shape (declared but never
+   named as used). Both are named; the spare value also travels in `value`.
+
+### 5. The refusal, and the sweep: 34 → 35 mutations, 7 first-run survivors ALL weak tests
+
+The model **refuses** (`ValueError` naming the missing legs) when a leg cannot be fetched and the
+caller supplied none — a tightness from one leg is a *different claim*, not a weaker one.
+
+The first sweep run was **27/34**: seven survivors, every one a **D-031 weak test**, not an inert
+mutation. All fixed by strengthening tests, none by weakening a mutation:
+
+* **`M3b`** (body hardcodes `round(_, 2)`) — the **shipped leaf IS `2`**, so the two rounding tests
+  could not distinguish `decimals` from a literal. Fixed by **perturbing the LEAF** to `4` and
+  asserting an **exact** match (D-050's remedy — the `C6b` class).
+* **`C3a`** (inventory future-date clip removed) — the projection tests covered only the SPARE path;
+  nothing planted a future-dated **inventory** row. Fixed with a mirror test.
+* **`G1a`/`G2a`/`G3a`** (accessors return literals) — no test read a **perturbed** leaf. Fixed with
+  per-accessor perturbation tests (the `test_em_vulnerability.py` pattern).
+* **`G4b`/`G4c`** (validators neutralised) — the decimals and spare-threshold validators were never
+  driven to fire. Fixed with `pytest.raises(..., match=...)`.
+
+**A new mutation `C3b`** (inventory clip `>` → `>=`, which would drop **today's own** observation)
+was added — a boundary the first sweep never covered. **Second run: 35/35 killed, CANARY1 killed, 0
+survivors.**
+
+### 6. The command census moved 4 → 6, cleanly
+
+Two genuinely NEW OpenBB commands were added (`commodity.petroleum_status_report`,
+`commodity.short_term_energy_outlook`), so the command census in
+`tests/test_openbb_command_inventory.py` and its two live doc surfaces
+(`docs/PROGRESS.md`, `docs/OPEN_ISSUES.md`) moved **4 → 6** together.
+
+### Next
+
+**Tier 5 = 17/23.** Re-derive the remaining names from §21.3's table *"and only that table"* — do NOT
+recall them. The remaining **6** Tier-5 names, MEASURED (2026-09-27) from `AGENTS.md:5541–5550`
+against `src/`, are: `gold_driver_attribution`, `metals_complex_divergence` (Module 10),
+`sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior` (Module 11 → a new
+`models/equity_macro.py`), and `statement_text_diff` (§20.4 — the one name whose spec body **keeps
+its own `NotImplementedError`**).

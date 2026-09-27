@@ -1,7 +1,32 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-29** (after **D-119 — Module 9's `em_vulnerability_checklist`: a heading
+Last updated: **2026-09-27** (after **D-120 — Module 10's `oil_balance_signal`: the repository's
+FIRST increment to add NEW OpenBB commands (census 4 → 6), a FIFTH FALSE BLOCK (both inputs LIVE),
+and a `fetch_series` trap that forced a NEW transport.** Tier 5 = **17/23** — MEASURED 2026-09-27
+from §21.3's table `AGENTS.md:5541–5550` against `src/` (`17` have a real `def`, `6` do not), not
+recalled — the **O-147** discipline. §6.8 (`AGENTS.md:1059` heading / `:1068` body) supplies the
+reference body, making this the **third D-096 exception**; it **supersedes nothing** — the
+`cip_check` answer, *a new capability*. **NEW files** `models/commodities.py` +
+`data_layer/commodities_client.py`, a **NEW public** `OpenBBClient.fetch_records` transport, and a
+**NEW** `OilBalanceSettings` block (`config.py` + `settings.yaml`) + two `series_registry.yaml`
+entries. **Both named inputs are LIVE** (the **fifth FALSE BLOCK**, D-043's class, after
+`ppp_implied_rate`, `fx_reserves_usd_bn` and the two EM-vulnerability legs):
+`inventory_change_weekly` via `commodity.petroleum_status_report` (`balance_sheet`/`stocks`, symbol
+**`WCESTUS1`**, obs **2026-09-18 = 426 398** kb, prior 423 429 ⇒ **+2 969**, seasonal deviation
+**+7 761.2** over 5 prior years); `opec_spare_capacity_proxy` via
+`commodity.short_term_energy_outlook` (`table=03d&symbol=COPS_OPEC` = **0.02** mb/d, obs
+**2026-09-01**, **15 future-dated projection rows discarded** — the D-116 vintage trap).
+**The transport finding:** `fetch_series` **drops the `symbol` column** and folds a 19-symbol table
+into one frame (34 428 rows; the last row is total stocks, not `WCESTUS1`), so a NEW public
+`fetch_records` was added; the package path returns Pydantic models and the local API returns dicts,
+so `_coerce_records` dumps both. **`petroleum_status_report` IGNORES `symbol=` server-side** (the
+O-138 shape) while STEO honours it. **Three corrections to §6.8's body:** `confidence=0.4` →
+`compute_confidence() × 0.30` (product, not `min()` — D-118/D-119); `round(_, 2)` → a config leaf;
+`inputs_used` names BOTH legs. **Gates:** 281 == 281 (D-035) · **3769 tests / 0 failed / 0 errors /
+1 skipped** (via `--junitxml`) · reachability **PASS 58/58** · sweep **35/35** ·
+`sweep_health.py` LAST → **48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK**.
+Previous update: **2026-09-29** (after **D-119 — Module 9's `em_vulnerability_checklist`: a heading
 that was HALF FALSE, the first CONFIRMED block after four false ones, and a gate that REFUSES
 rather than guesses.** Tier 5 = **16/23** — *corrected from 15/23; see **O-147*** (the running count
 had been recalled, not measured, and D-119's "the name was already counted" was a false step:
@@ -216,7 +241,8 @@ Module 3's `classify_regime_markov_switching`, **D-104** made two defects into g
 a harness increment, and the last MODEL function before those was **D-102 `yield_curve_pca`**.
 Previous update: **D-087.27 — O-104 and O-110 CLOSED, O-112(b)
 implemented, and a BROKEN `HEAD` REPAIRED.** O-104's residual defect was a **stale count**
-(the docs said *2 of 201*; the tree issues **4**) — corrected and made machine-checked
+(the docs said *2 of 201*; the tree then issued **4**, and issues **6** as of D-120) — corrected
+and made machine-checked
 (`tests/test_openbb_command_inventory.py` + `scripts/mutation_command_inventory.py`,
 6/6 killed). O-110(a) closed with a **derived** per-test bound (`--timeout=300`, clearing
 the measured 162 s worst case; `pytest-timeout` in both dependency tables;
@@ -251,10 +277,10 @@ Legend: `[x]` done · `[ ]` not started · `[~]` in progress / partially covered
 > The D-070 handoff below the Phase-4 pointer is older still and remains accurate
 > for what it describes.
 
-**WHERE WE ARE.** Phases **0 = 8/8 ✅ · 1 = 9/9 ✅ · 2 = 85/98 (13 outstanding, ALL
+**WHERE WE ARE.** Phases **0 = 8/8 ✅ · 1 = 9/9 ✅ · 2 = 86/98 (12 outstanding, ALL
 Tier 5 by §22.3) · 3 = 2/2 ✅ · 4 = 4/4 ✅ — CLOSED at D-073.** Tiers **1/2/3/4 =
-23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; **Tier 5 = 2/20 — STARTED at D-092**
-(`run_regression`), continued at D-094 (`test_stationarity`).
+23/23 · 29/29 · 15/15 · 11/11 — ALL COMPLETE**; **Tier 5 = 17/23 — the newest D-120
+(`oil_balance_signal`, Module 10).**
 **The front of the runway is now Phase 5 — and it has NOT been started, by
 explicit instruction.** Phase 5 begins with the 13 Tier-5 deferrals (§22.3), each
 of which needs its own registry, its own reaction function and its own instruments.
@@ -395,7 +421,7 @@ Tier 4 = construction · Tier 5 = deferred to Phase 5+.
 |---|---|---|---|
 | **Phase 0 — foundations** | 8 | 8 | **100%** |
 | **Phase 1 — data layer** | 9 | 9 | **100%** |
-| **Phase 2 — models layer (US scope)** | 85 | 98 | **87%** — see the Tier-5 note |
+| **Phase 2 — models layer (US scope)** | 86 | 98 | **88%** — see the Tier-5 note |
 | **Phase 3 — thesis + API** | 2 | 2 | **100%** ✅ |
 | **Phase 4 — instruments** | 4 | 4 | **100%** ✅ |
 | **Phases 5+** | — | — | stubs only by design |
@@ -415,7 +441,7 @@ in Tier 4, not here.
 | **Tier 2** — depend on Tier 1 | 29 | 29 | **100%** | `████████████████████` |
 | **Tier 3** — synthesis | 15 | 15 | **100%** | `████████████████████` ✅ |
 | **Tier 4** — construction | 11 | 11 | **100%** | `████████████████████` ✅ |
-| **Tier 5** — Phase 5+ | 15 | 23 | **65%** | **UNDER WAY** — the newest is **D-119 `em_vulnerability_checklist`**; before it D-118 `intervention_capacity`, D-117 (PPP sourcing), D-114 `ppp_valuation`, D-112 `uip_expected_move`, D-110 `dollar_smile_regime`, D-109 `carry_score`, D-108 `cip_check`, D-106 `monte_carlo_var`, D-094 `test_stationarity`, D-092 `run_regression` |
+| **Tier 5** — Phase 5+ | 17 | 23 | **74%** | **UNDER WAY** — the newest is **D-120 `oil_balance_signal`** (Module 10, the first to add NEW OpenBB commands); before it D-119 `em_vulnerability_checklist`, D-118 `intervention_capacity`, D-117 (PPP sourcing), D-114 `ppp_valuation`, D-112 `uip_expected_move`, D-110 `dollar_smile_regime`, D-109 `carry_score`, D-108 `cip_check`, D-106 `monte_carlo_var`, D-094 `test_stationarity`, D-092 `run_regression` |
 
 **The Tier-5 denominator is 23, per §21.3's own table — *"and only that table."*** The
 `20` this row carried until D-118 was one of the known three-way disagreements (23 = §21.3's
@@ -4396,7 +4422,7 @@ responses kept under `.workbuddy-ai/audit/probes/`.
 
 | measurement | result |
 | --- | --- |
-| OpenBB commands the engine uses | **4 of 201** — `fred_series`, `fred_search`, `fixedincome.government.yield_curve` (D-086 change 1), `economy.fomc_documents` (D-086 change 2) · *superseded: 2 of 201 as measured at D-084, before two of the five §8 changes were applied* |
+| OpenBB commands the engine uses | **6 of 201** — `fred_series`, `fred_search`, `fixedincome.government.yield_curve` (D-086 change 1), `economy.fomc_documents` (D-086 change 2), `commodity.petroleum_status_report` + `commodity.short_term_energy_outlook` (D-120) · *superseded: 4 of 201 at D-086/D-087.27; 2 of 201 as measured at D-084, before two of the five §8 changes were applied* |
 | registry series + curves routed through them | **45 + 2 curves (16 tenors)** · *superseded: the curve is now 1 call, not 11* |
 | macro-relevant commands unused | **~14 probed live, all `200`** |
 | dedicated command exists for a registry field | **at least 12** |

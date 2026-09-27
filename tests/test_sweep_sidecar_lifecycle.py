@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_seven_sweeps_to_cover() -> None:
+def test_there_are_forty_eight_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -482,9 +482,17 @@ def test_there_are_forty_seven_sweeps_to_cover() -> None:
     only via a FETCHED run; G1a/G2a-G2c validator guards never driven to fire;
     G3a-G3c threshold accessors never read in isolation) — every one a test
     nobody wrote, not an inert mutation.**
+
+    **47 → 48 at D-120**, which added `mutation_commodities.py` — the sweep over
+    Module 10's `oil_balance_signal`, the **fourth** NEW module created by a
+    Tier-5 increment (`models/commodities.py`), plus its new client
+    (`data_layer/commodities_client.py`), the new public `fetch_records` transport
+    in `data_layer/openbb_client.py`, and its config block. It uses
+    `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two checks
+    cover it.
     """
     files = _sweep_files()
-    assert len(files) == 47, f"expected 47 sweeps, found {len(files)}"
+    assert len(files) == 48, f"expected 48 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

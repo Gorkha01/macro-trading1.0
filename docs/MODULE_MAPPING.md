@@ -2441,3 +2441,48 @@ widened with distinguishing neighbours — the mapping-level statement that
 **sweeps over shared files have a shared anchor namespace**.
 
 
+
+## D-120 — Module 10 OPENS: `oil_balance_signal`, a module with no prior function, and a transport that could not be reused (2026-09-27)
+
+**Tier 5 = 17/23** (moved **16 → 17**; MEASURED from `AGENTS.md:5541–5550` against `src/` —
+**17 defined / 6 not** — not recalled, the O-147 discipline). This is a **D-096 exception**:
+§6.8's heading (`AGENTS.md:1059`) and its reference body (`AGENTS.md:1068`) together **give the
+body**, so the increment is an **UPGRADE of a specified function** — and it **supersedes
+nothing**, because **Module 10 had no function at all**. The honest answer is the `cip_check` one:
+a **new capability**. It feeds the inflation/growth **transmission channel** (Module 10 →
+Module 5/7), never a trade.
+
+| function | module | file | spec | supersedes | status |
+| --- | --- | --- | --- | --- | --- |
+| `oil_balance_signal` | **10 — Commodities** | `models/commodities.py` (**NEW** — Module 10's first function) | `AGENTS.md:1059` (§6.8) | **nothing** — Module 10 was empty; a NEW capability | **IMPLEMENTED** (D-120) |
+
+**A NEW file, not an extension.** Module 10 had no module file, so `models/commodities.py` is
+created whole. The data layer likewise gains a NEW `data_layer/commodities_client.py`; the
+**transport** had to grow a NEW public method.
+
+**The mapping-level fact: the command census moved 4 → 6 — the first such move in the
+repository.** Two genuinely NEW OpenBB commands are named — `commodity.petroleum_status_report`
+and `commodity.short_term_energy_outlook` — and the census in
+`tests/test_openbb_command_inventory.py` plus its two live doc surfaces
+(`docs/PROGRESS.md`, `docs/OPEN_ISSUES.md`) moved together, per the operator's explicit choice.
+
+**The transport is a mapping claim: `fetch_series` CANNOT be used (O-148).** `fetch_series`
+returns a `date`/`value` frame and **drops the `symbol` column**; the PPS `stocks` table carries
+**19 symbols at once** (34 428 rows), and `fetch_series` folded them into one frame whose **last
+row was total stocks, not `WCESTUS1`**. So the mapping gains a rule: **a per-symbol OpenBB table
+requires the NEW `OpenBBClient.fetch_records` + an explicit client-side symbol filter, never
+`fetch_series`.** A second transport finding: the **package** path returns Pydantic models and the
+**local API** returns dicts, so `_coerce_records` dumps both.
+
+**A parameter whose presence is not its application (O-149).** `commodity.petroleum_status_report`
+**ignores `symbol=` server-side** (the O-138 shape — a token accepted and absorbed), while
+`commodity.short_term_energy_outlook` **honours** it. The mapping-level rule: a documented
+parameter is not an applied one; the returned **row count** is the measurement that settles it.
+
+**Reachability moved — SCRIPT-ONLY count 15 → 16.** `oil_balance_signal`'s only caller is the
+live commodity check, so it classifies **SCRIPT-ONLY — Tier 5**, taking that count from **15 to
+16**. The **total** stays **PASS 58/58**.
+
+**The sweep census moved 47 → 48** (`mutation_commodities.py` is the 48th sweep), in its three
+homes — `test_sweep_sidecar_lifecycle.py` ×2 (the function name and the assertion) and
+`test_sweep_health_leftover_predicate.py` ×1 (plus two docstring mentions).

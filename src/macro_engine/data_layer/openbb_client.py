@@ -252,6 +252,180 @@ class OpenBBClient:
             f"after {self.config.max_retries} attempts: {last_exc}"
         )
 
+    def fetch_records(
+        self,
+        *,
+        provider: str,
+        endpoint: str,
+        params: dict[str, Any],
+        series_label: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch a MULTI-SYMBOL payload and return its RAW records, unfiltered.
+
+        Why this exists alongside :meth:`fetch_series`
+        ----------------------------------------------
+        ``fetch_series`` reduces a response to the tidy
+        ``[date, value, series_id, source, retrieved_at]`` contract and, in doing
+        so, **discards every column it does not name** — including the
+        provider's own ``symbol`` column. That is correct for a
+        one-series-per-call endpoint (every FRED route this engine uses), and it
+        is **wrong for a table endpoint**, which returns MANY symbols in one
+        response.
+
+        Measured 2026-09-29 on this installation's OpenBB service:
+
+        * ``commodity.petroleum_status_report`` with ``table=stocks`` returns
+          **34 428 rows across 19 symbols** in one call. ``fetch_series`` folds
+          them into a single date/value frame, so ``iloc[-1]`` is whichever
+          symbol the provider emits last — measured to be ``1 251 356`` (total
+          stocks incl. everything), **not** the ``WCESTUS1`` crude-stock level
+          the model asked for. A caller who fetched through ``fetch_series``
+          would publish a plausible number for the WRONG series, which is the
+          silent class Section 21.0 exists to catch.
+        * ``commodity.short_term_energy_outlook`` with ``table=03d`` returns
+          **13 748 rows across 35 symbols** — every country's crude production
+          plus the spare-capacity series — with the same failure mode.
+
+        So a caller that must select ONE symbol out of a table endpoint cannot
+        use ``fetch_series``. It needs the ``symbol`` column to survive, and
+        this method is the smallest change that lets it: the same transport,
+        retry policy and pinned User-Agent (D-087.25), returning the raw
+        ``results`` records so the caller can filter by whichever column the
+        provider sent.
+
+        Returns
+        -------
+        list[dict]
+            The provider's raw records, one dict per row, with every column the
+            provider emitted (``date``, ``symbol``, ``title``, ``value``,
+            ``unit``, ``table`` ...). NOT normalized: normalization is exactly
+            the step that loses the symbol, so it is deliberately skipped here.
+            Raises ``OpenBBFetchError`` on an empty or non-list result — an
+            empty table is a failed read, never "no data".
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self.config.max_retries + 1):
+            try:
+                if self.config.use_local_api_first:
+                    return self._fetch_records_via_local_api(
+                        provider, endpoint, params, series_label
+                    )
+                return self._fetch_records_via_package(endpoint, params, series_label)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "fetch_records attempt %s/%s failed for %s: %s",
+                    attempt,
+                    self.config.max_retries,
+                    series_label,
+                    exc,
+                )
+                if attempt < self.config.max_retries:
+                    time.sleep(self.config.backoff_seconds * attempt)
+                else:
+                    try:
+                        if self.config.use_local_api_first:
+                            return self._fetch_records_via_package(endpoint, params, series_label)
+                        return self._fetch_records_via_local_api(
+                            provider, endpoint, params, series_label
+                        )
+                    except Exception as fallback_exc:
+                        last_exc = fallback_exc
+                        logger.warning(
+                            "fetch_records cross-path fallback also failed for %s: %s",
+                            series_label,
+                            fallback_exc,
+                        )
+        raise OpenBBFetchError(
+            f"Failed to fetch records for {series_label} via both local API and "
+            f"package after {self.config.max_retries} attempts: {last_exc}"
+        )
+
+    def _fetch_records_via_local_api(
+        self, provider: str, endpoint: str, params: dict[str, Any], series_label: str
+    ) -> list[dict[str, Any]]:
+        """GET the raw ``results`` list from the local OpenBB Platform API."""
+        url = f"/api/v1/{endpoint.replace('.', '/')}"
+        query: dict[str, Any] = {"provider": provider, **params}
+        resp = self._http.get(url, params=query)
+        resp.raise_for_status()
+        payload = resp.json()
+        raw: Any = payload
+        if isinstance(payload, dict) and "results" in payload:
+            raw = payload["results"]
+        return self._coerce_records(raw, series_label)
+
+    def _fetch_records_via_package(
+        self, endpoint: str, params: dict[str, Any], series_label: str
+    ) -> list[dict[str, Any]]:
+        """Call the ``openbb`` package directly and return its raw records."""
+        obb = self._lazy_import_obb()
+        target: Any = obb
+        for part in endpoint.split("."):
+            try:
+                target = getattr(target, part)
+            except AttributeError as exc:
+                raise OpenBBFetchError(
+                    f"openbb package has no endpoint '{endpoint}' (failed at '{part}')"
+                ) from exc
+        result = target(**params)
+        raw: Any = result.results if hasattr(result, "results") else result
+        return self._coerce_records(raw, series_label)
+
+    @staticmethod
+    def _coerce_records(raw: Any, series_label: str) -> list[dict[str, Any]]:
+        """Validate a raw payload is a non-empty list of row mappings.
+
+        The two transport paths return DIFFERENT row types for the same route —
+        measured 2026-09-29 on ``commodity.petroleum_status_report``:
+
+        * the **local API** (``GET /api/v1/...``) returns plain ``dict`` rows;
+        * the **package** (``obb.commodity.petroleum_status_report``) returns
+          ``OBBject[T].results`` as a list of Pydantic models
+          (``EiaPetroleumStatusReportData``), one attribute per column.
+
+        Both carry the ``symbol`` column this method exists to preserve, so a
+        row that is a Pydantic model is converted with ``model_dump()`` rather
+        than refused. Anything that is neither a mapping nor a model is still
+        refused: a row whose columns cannot be named is exactly the case where
+        guessing a layout would publish the wrong series.
+
+        Refuses an empty payload rather than returning ``[]``: a caller that
+        then filters by symbol would find zero rows and could mistake a failed
+        fetch for a symbol the provider does not carry. Raising here keeps that
+        distinction at the transport boundary, where it is still knowable.
+        """
+        if isinstance(raw, pd.DataFrame):
+            records: list[Any] = raw.to_dict(orient="records")
+        elif isinstance(raw, list):
+            records = raw
+        else:
+            raise OpenBBFetchError(
+                f"Expected a list of records for {series_label}; got "
+                f"{type(raw).__name__}. A table endpoint must return a records "
+                f"list, not a single object."
+            )
+        if not records:
+            raise OpenBBFetchError(f"Provider returned no records for {series_label}")
+
+        # Normalise every row to a plain dict: a mapping passes through, a
+        # Pydantic model is dumped. A row that is neither is refused.
+        out: list[dict[str, Any]] = []
+        for row in records:
+            if isinstance(row, dict):
+                out.append(row)
+                continue
+            dump = getattr(row, "model_dump", None)
+            if callable(dump):
+                out.append(dict(dump()))
+                continue
+            raise OpenBBFetchError(
+                f"Expected every record for {series_label} to be a mapping or a "
+                f"Pydantic model; found {type(row).__name__}. Refusing rather "
+                f"than guessing a column layout."
+            )
+        return out
+
     def is_local_api_available(self) -> bool:
         """Probe the local API. Used by /health, never on the hot path.
 

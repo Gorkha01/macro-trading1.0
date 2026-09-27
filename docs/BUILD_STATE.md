@@ -10009,3 +10009,71 @@ client's disclosure **names each leg's year and publication date**, so the fact 
 **No silent alignment** — a silent alignment would be the defect.
 
 **NOT mine:** the Tier-5 review/audit.
+
+---
+
+## D-120 (2026-09-27) — `oil_balance_signal`, Module 10 (Section 6.8)
+
+**Tier 5 = 17/23** (moved **16 → 17**; MEASURED 2026-09-27 from `AGENTS.md:5541–5550` against
+`src/`: **17** have a real `def`, **6** do not — `gold_driver_attribution`,
+`metals_complex_divergence`, `sector_rotation_prior`, `duration_sensitivity`, `factor_tilt_prior`,
+`statement_text_diff`). §6.8 (`AGENTS.md:1059` heading / `:1068` reference body) supplies the body
+⇒ the **third D-096 exception**; it **supersedes nothing** — the `cip_check` answer, *a new
+capability*. **The repository's FIRST increment to add NEW OpenBB commands: the command census
+moved 4 → 6.**
+
+### The transport, and a FIFTH FALSE BLOCK
+
+`commodity.petroleum_status_report` (`balance_sheet`/`stocks`, symbol **`WCESTUS1`**): latest
+observation **2026-09-18 = 426 398** kb (prior 423 429 ⇒ **+2 969**), seasonal deviation
+**+7 761.2** vs the same ISO week over **5** prior years. `commodity.short_term_energy_outlook`
+(`table=03d&symbol=COPS_OPEC`): **0.02** mb/d, obs **2026-09-01**, **15 future-dated projection
+rows discarded** (series to 2027-12 — D-116's vintage trap). **Both inputs LIVE** — the **fifth
+FALSE BLOCK** (D-043's class) after `ppp_implied_rate`, `fx_reserves_usd_bn` and the two
+EM-vulnerability legs; the only confirmed block remains `usd_denominated_debt_share`.
+
+**`fetch_series` cannot be used (O-148):** it drops the `symbol` column and folds the 19-symbol
+table into one frame (34 428 rows; the last row is total stocks). A NEW public
+`OpenBBClient.fetch_records` preserves the raw rows; the package path returns **Pydantic models**
+and the local API returns **dicts**, so `_coerce_records` dumps both. **PPS ignores `symbol=`
+server-side (O-149)** — the filter is client-side; STEO honours it.
+
+### The model, and three corrections to §6.8's body
+
+`confidence=0.4` → `compute_confidence() × oil_balance.reliability_cap` (**0.30**, the
+D-118/D-119 **product**, not `min()` — a `min()` would publish the cap everywhere and make the
+computed branch dead code); `round(_, 2)` → a config leaf (`value_decimals`); `inputs_used` names
+**both** legs. The model **refuses** (`ValueError` naming the missing legs) when a leg cannot be
+fetched and none was supplied. `source_family` is `MARKET_COMMODITY` when any leg was fetched,
+else `MANUAL_ASSESSMENT`.
+
+### The first sweep, and the gate set
+
+**35/35 killed** on the second run; the first left **7** — every one a **D-031 weak test**:
+`M3b` (body hardcodes `round(_, 2)`; the shipped leaf IS `2`, so the tests could not tell them
+apart — fixed by **perturbing the LEAF** to `4`, D-050), `C3a` (no test planted a future-dated
+**inventory** row — the mirror of the spare-path tests), the three accessor mutants (`G1a`/`G2a`/
+`G3a` — no test read a **perturbed** leaf), and the two validator mutants (`G4b`/`G4c` — never
+driven to fire). Added `C3b` (the inventory clip `>` → `>=` boundary). Also added
+`OilBalanceSettings` to `config.__all__` (it was missing).
+
+```
+ruff check src tests tools scripts            ->  All checks passed!
+ruff format --check src tests tools scripts   ->  281 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 281 source files
+reachability_audit.py --check-baseline        ->  PASS — 58 = 58 (SCRIPT-ONLY Tier 5: 15 → 16)
+full suite (--junitxml)                       ->  3769 tests / 0 failures / 0 errors / 1 skipped
+slow sweep-catalogue test (explicit, -m slow) ->  1 passed  (562.56 s / 600 s budget)
+mutation_commodities.py                       ->  35/35 killed
+live commodity + model check                  ->  PASS (values match hand-verification)
+sweep_health.py  (LAST)                       ->  48 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**281 == 281** (D-035): 276 (D-119) **+ 5** = the five new files. The sweep census lives in
+**three** places and all three moved **47 → 48**.
+
+### Left standing on purpose
+
+None new. O-146 (the D-119 World Bank vintage mismatch) remains accepted-as-disclosed.
+
+**NOT mine:** the Tier-5 review/audit.

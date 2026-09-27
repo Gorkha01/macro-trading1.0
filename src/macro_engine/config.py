@@ -37,6 +37,7 @@ __all__ = [
     "KellySettings",
     "LeadingIndicatorSettings",
     "MarkovRegimeSettings",
+    "OilBalanceSettings",
     "OpenBBSettings",
     "RegimeBaseRates",
     "RegimeRateValues",
@@ -5644,6 +5645,124 @@ class EMVulnerabilitySettings(BaseModel):
         return self
 
 
+class OilBalanceSettings(BaseModel):
+    """Module 10's oil-balance leaves (Section 6.8).
+
+    Section 6.8's reference implementation ships a bare ``confidence=0.4`` and a
+    bare ``round(tightness, 2)`` inside the function body. Section 22.8 forbids
+    the confidence literal, and the same reasoning applies to the precision: a
+    reader must be able to find every number the published result turns on
+    without reading the function.
+
+    ``reliability_cap`` is a **model-specific confidence CAP**, the
+    D-112/D-114/D-118/D-119 precedent. It is deliberately **below** the Module 9
+    FX caps and near ``fx_carry``'s basket-scale leaf, because the method is a
+    single sign flip on two uncalibrated EIA inputs — but it is NOT the lowest
+    figure in the repository, because the two inputs are genuine OBSERVATIONS
+    from a government agency rather than a rule of thumb about past crises. The
+    ordering is the claim: a measured series fed through trivial arithmetic is
+    weaker evidence than a relation between observable prices, and stronger than
+    a textbook stress threshold.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    value_decimals_leaf: CalibratedValue
+    tight_spare_threshold_mbd: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``oil_balance_signal`` reports.
+
+        Section 6.8 ships ``confidence=0.4`` as a literal, which Section 22.8
+        refuses. The cap is not carried forward at face value: the method is
+        ONE subtraction and a sign flip on two uncalibrated EIA series, so a
+        generous figure would overstate it. It sits below every Module 9 FX cap
+        because those at least relate two observable prices with exact
+        arithmetic (CIP/UIP/PPP), whereas this converts one observation into a
+        label. It sits ABOVE the EM-vulnerability cap (0.10) because the inputs
+        are measured series, not a rule of thumb about historical crises.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is a calibrated figure rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` on every call, so
+        the computed half of the confidence prices the leaf's own status rather
+        than assuming it.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def value_decimals(self) -> int:
+        """The decimal places the published tightness and deviation are rounded to.
+
+        Section 6.8's reference writes ``round(tightness, 2)``. The deviation is
+        in THOUSAND BARRELS, so two decimals implies a resolution of ten barrels
+        — meaningless precision against a weekly series reported to the nearest
+        thousand. The leaf is kept at the specification's ``2`` for
+        comparability, but the note records that the last digit is not
+        informative.
+        """
+        return int(self.value_decimals_leaf.value)
+
+    @property
+    def tight_spare_threshold_value(self) -> float:
+        """The spare-capacity level (mb/d) at or above which a buffer warning fires.
+
+        Purely informational: when spare capacity is comfortable, the model warns
+        that the market has buffer even if the inventory deviation reads tight,
+        because the two inputs can disagree and a consumer should see the
+        disagreement rather than only the composite. The threshold is a
+        conventional reading, not a fitted break-point.
+        """
+        return float(self.tight_spare_threshold_mbd.value)
+
+    @model_validator(mode="after")
+    def _validate_cap_decimals_and_threshold(self) -> OilBalanceSettings:
+        """Refuse a cap outside ``[0, 1]``, non-positive decimals, or a bad threshold.
+
+        The cap check mirrors the sibling settings blocks: ``ModelResult``'s own
+        field constraint refuses a value outside ``[0, 1]``, so a leaf outside it
+        would raise at the FIRST call rather than at load, turning a config error
+        into a runtime failure of a model.
+
+        The decimals leaf must be non-negative because ``round`` accepts a
+        negative ``ndigits`` (rounding to tens, hundreds, ...), which would
+        silently publish a figure coarser than any reader would expect; and the
+        JSON-serialised ``value_decimals`` is typed ``int`` in the accessor, so a
+        non-integer would fail at the first call. The spare threshold is checked
+        non-negative because a negative spare capacity is a physical
+        impossibility — a negative threshold would make the buffer warning fire
+        on every real reading (dead vocabulary, D-037's class).
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"oil_balance.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — the same ModelResult field "
+                f"constraint applies as on the sibling caps, and refusing at load "
+                f"turns a runtime failure into a config error."
+            )
+        if self.value_decimals < 0:
+            raise ValueError(
+                f"oil_balance.value_decimals is {self.value_decimals}. A negative "
+                f"`ndigits` makes `round` coarsen the figure (to tens, hundreds, "
+                f"...), which would publish a tightness far less precise than the "
+                f"declared contract implies."
+            )
+        if self.tight_spare_threshold_value < 0.0:
+            raise ValueError(
+                f"oil_balance.tight_spare_threshold_mbd is "
+                f"{self.tight_spare_threshold_value}. Spare capacity cannot be "
+                f"negative, so a negative threshold would make the buffer warning "
+                f"fire on every real reading — dead vocabulary (D-037's class)."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5687,6 +5806,7 @@ class Settings(BaseModel):
     fx_carry: FxCarrySettings
     intervention: InterventionSettings
     em_vulnerability: EMVulnerabilitySettings
+    oil_balance: OilBalanceSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

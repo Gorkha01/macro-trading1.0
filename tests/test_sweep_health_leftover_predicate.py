@@ -357,7 +357,7 @@ def test_the_two_copies_agree_on_the_real_catalogue() -> None:
 
     Skipped when ``git`` is unavailable, since the ground truth depends on it.
 
-    **Marked ``slow``, re-measured at D-110 to ~350 s** — it must ``exec`` all 47
+    **Marked ``slow``, re-measured at D-110 to ~350 s** — it must ``exec`` all 48
     sweeps (each imports the engine) to obtain the real catalogue. The three fast
     structural guards above it catch the same regression class at ~0.01s each;
     this one is the exhaustive backstop, so deselect it with ``-m "not slow"`` on
@@ -366,8 +366,9 @@ def test_the_two_copies_agree_on_the_real_catalogue() -> None:
     # D-110: this test outgrew `--timeout=300`. The catalogue grew to 45 sweeps
     # AND `mutation_fx_carry.py` grew from 71 to 114 mutations, so the per-test
     # budget in `pyproject.toml` was raised to 600 s against a measured 349.78 s.
-    # Since then the catalogue is 47 (D-118 added one, D-119 added another), so
-    # the budget has more headroom, not less. A bound below the real worst case
+    # Since then the catalogue is 48 (D-118 added one, D-119 added another, D-120
+    # added a third), so the budget has more headroom, not less. A bound below the
+    # real worst case
     # kills a CORRECT test, which is why the measurement is recorded here next to
     # the marker that hides this test from a default run.
     # `git` is a fixed absolute-free argv with no shell and no user input, so the
@@ -893,7 +894,12 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # data_layer/world_bank_client.py + the config block) -- the THIRD sweep over
     # a module a Tier-5 increment created, and likewise a CANARY1 sweep, so
     # `missing == []` still holds without a second edit.
-    assert len(sweeps) == 47, f"expected 47 sweeps, found {len(sweeps)}"
+    # 47 -> 48 at D-120 (`mutation_commodities.py`, Module 10/
+    # models/commodities.py + data_layer/commodities_client.py + the new public
+    # fetch_records transport in data_layer/openbb_client.py + the config block) --
+    # the FOURTH sweep over a module a Tier-5 increment created, and likewise a
+    # CANARY1 sweep, so `missing == []` still holds without a second edit.
+    assert len(sweeps) == 48, f"expected 48 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "

@@ -10,6 +10,58 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-120 — Module 10 opens: `oil_balance_signal` (EIA, live) (2026-09-27)
+
+A **function increment**: the repository's **FIRST to add NEW OpenBB commands** (the command
+census moves **4 → 6**), a **FIFTH FALSE BLOCK** (both named inputs are LIVE), and a transport
+defect (`fetch_series` cannot carry a symbol column) that forced a **NEW public** client method.
+Tier 5 moves **16 → 17/23** — **MEASURED** against §21.3's table, not recalled (the O-147
+discipline). A **D-096 exception** (the authority supplies the body, so this is an UPGRADE that
+supersedes nothing — and Module 10 had no prior function, so it is a *new capability*).
+
+**Added**
+
+- **`src/macro_engine/models/commodities.py`** — `oil_balance_signal`, Section 6.8. One
+  subtraction and a sign flip (`tightness = -inventory_deviation`; a draw tightens) wrapped in a
+  `ModelResult` whose first warning scopes commodities **out of tradeable production logic**. The
+  function **REFUSES** (`ValueError` naming the missing legs) when a leg cannot be fetched and
+  none was supplied — a tightness from one leg is a different claim, not a weaker one.
+- **`src/macro_engine/data_layer/commodities_client.py`** — the EIA routes: `WCESTUS1` (weekly
+  crude stocks, thousand bbl) with a **seasonal deviation** against the same ISO week over 5
+  prior years, and `COPS_OPEC` (OPEC spare capacity, mb/d) with the **STEO projection tail
+  discarded** (15 future-dated rows; the D-116 vintage trap).
+- **`OpenBBClient.fetch_records`** in `data_layer/openbb_client.py` — a NEW public transport
+  preserving the raw rows (same retry / cross-path fallback as `fetch_series`), because
+  `fetch_series` **drops the `symbol` column** and folds a 19-symbol table into one frame whose
+  last row is total stocks, not `WCESTUS1` (**O-148**). `_coerce_records` also dumps Pydantic
+  models, since the package path returns models where the local API returns dicts.
+- **`OilBalanceSettings`** in `src/macro_engine/config.py` + the `oil_balance:` YAML block —
+  `reliability_cap` **0.30** (below every Module 9 FX cap, above the EM-vulnerability cap),
+  `value_decimals_leaf` **2**, `tight_spare_threshold_mbd` **2.0**.
+- **Two registry entries** in `config/series_registry.yaml` (`crude_inventory_weekly`,
+  `opec_spare_capacity`), each checked against the `RegistrySeries` field list.
+
+**Changed**
+
+- The published confidence is `compute_confidence(...) × oil_balance.reliability_value` — the
+  D-118/D-119 **product**, not `min()`, so neither half is dead code (§22.8 forbids the spec's
+  bare `confidence=0.4`).
+- `round(tightness, 2)` → `oil_balance.value_decimals` (a config leaf); `inputs_used` names
+  **both** declared legs (the spec named only one — the D-037 shape).
+- **The OpenBB command census moved 4 → 6** in `tests/test_openbb_command_inventory.py`,
+  `docs/PROGRESS.md` and `docs/OPEN_ISSUES.md`.
+- **The sweep census moved 47 → 48** (`scripts/mutation_commodities.py`) in its three homes.
+
+**Fixed**
+
+- **O-148** — `fetch_series` silently misreports a per-symbol table (closed by `fetch_records`).
+- **O-149** — `commodity.petroleum_status_report` ignores `symbol=` server-side (the O-138
+  shape); the filter is now client-side and asserted.
+
+**Gates:** `ruff check` clean · 281 == 281 (D-035) · **3769 tests / 0 failed / 0 errors / 1
+skipped** · reachability **PASS 58/58** (SCRIPT-ONLY Tier 5: 15 → 16) · `mutation_commodities.py`
+**35/35 killed** · live check PASS · `sweep_health.py` LAST → **48 sweeps, OK**.
+
 ### D-119 — Module 9's `em_vulnerability_checklist` (World Bank, live) (2026-09-29)
 
 A **function increment**: a heading that was **HALF false**, the first **CONFIRMED**
