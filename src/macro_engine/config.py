@@ -5342,6 +5342,144 @@ class FxCarrySettings(BaseModel):
         return self
 
 
+class InterventionSettings(BaseModel):
+    """Module 9's intervention-capacity leaves (Section 20.9).
+
+    Section 20.9's reference implementation ships two **bare literals**
+    (``confidence=0.8`` and ``confidence=0.7``) and hardcodes both capacity
+    strings inside the function body. Section 22.8 forbids the literals, and the
+    strings are vocabulary a caller reads, so both move here.
+
+    ``reliability_cap`` is a **model-specific confidence cap**, the D-112/D-114
+    precedent — and it is deliberately the **lowest in the FX family**, below
+    ``ppp_reliability_cap`` (0.2) and ``uip_reliability_cap`` (0.15). The
+    ordering is the claim: the parity relations at least relate observable
+    prices, whereas ``intervention_capacity``'s core content is a **doctrine
+    about mechanisms** with no measured estimate of when a bank abandons a
+    defence. Section 20.9's own ``0.8``/``0.7`` are higher than either parity
+    model's, which reads as *"this is the most trustworthy Module 9 function"*
+    — the opposite of the truth, and the reason the cap is not carried forward.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reliability_cap: CalibratedValue
+    burn_alert_pct: CalibratedValue
+    unconstrained_label: CalibratedValue
+    reserve_constrained_label_text: CalibratedValue
+
+    @property
+    def reliability_value(self) -> float:
+        """The RELIABILITY CEILING ``intervention_capacity`` reports.
+
+        Section 20.9 hardcodes ``0.8`` (weakening) and ``0.7`` (strengthening).
+        Section 22.8 forbids a hardcoded confidence, and the standard remedy —
+        :func:`~macro_engine.models.contracts.compute_confidence` — is applied
+        here for the **input-quality** half but cannot carry the whole value,
+        because what most limits this model is not its inputs: it is that the
+        **asymmetry doctrine contains no measured estimate of when a defence
+        fails**. ``compute_confidence()`` has no factor for "the method is
+        doctrine rather than estimation", so a cap is the mechanism by which
+        that is admitted when the inputs are good.
+
+        Deliberately **below** both parity caps — see the class docstring.
+        """
+        return float(self.reliability_cap.value)
+
+    @property
+    def reliability_cap_is_calibrated(self) -> bool:
+        """Whether the cap is a calibrated figure rather than a placeholder.
+
+        Feeds ``ConfidenceInputs.is_heuristic_not_calibrated`` on every call, so
+        the computed half of the confidence prices the leaf's own status instead
+        of assuming it. ``CalibratedValue.is_trustworthy`` is False for
+        ``uncalibrated_illustrative``, which is what this leaf is.
+        """
+        return self.reliability_cap.is_trustworthy
+
+    @property
+    def burn_alert_value(self) -> float:
+        """The twelve-month reserve DECLINE, in PERCENT, that triggers the warning.
+
+        A positive magnitude (``10.0`` = a 10 % fall). The model compares
+        ``change_12m_pct <= -burn_alert_value``, so the sign is handled once, in
+        the model, and a reader of this leaf does not have to work out which way
+        round a negative threshold runs.
+
+        It gates a WARNING, never a LABEL: a reserve burn is a matter of degree
+        and the capacity verdict is already decided by the direction's
+        mechanics. Section 20.9 supplies no such threshold at all, so this leaf
+        is an ADDITION — recorded as such rather than presented as specified.
+        """
+        return float(self.burn_alert_pct.value)
+
+    @property
+    def mechanically_unconstrained_label(self) -> str:
+        """The capacity literal for a weakening defence.
+
+        **Section 22.11's mandated rename** of Section 20.9's
+        ``"UNLIMITED_AMMUNITION_but_costly"``. The amendment's reason is that
+        "unlimited" reads as *risk-free* to a caller skimming a label, when what
+        is unconstrained is the MECHANISM and nothing else. Kept as a config leaf
+        rather than an in-body literal so the vocabulary a caller keys on is
+        declared once, where a reader can find it.
+
+        Naming note: the YAML key is ``unconstrained_label`` and the accessor is
+        this longer, explicit name. The split is deliberate — a field and a
+        property may not share a name in this codebase (the D-035 collision guard
+        in ``tests/test_infrastructure.py``), and the accessor says which side of
+        the asymmetry it labels.
+        """
+        return str(self.unconstrained_label.value)
+
+    @property
+    def reserve_constrained_label(self) -> str:
+        """The capacity literal for a strengthening defence.
+
+        Section 20.9's own string, unchanged: this side of the asymmetry was
+        never mis-worded, because "reserve-constrained" and "breakable" are
+        accurate. Only the weakening side needed §22.11's correction.
+
+        The same field/property naming split as the sibling above: the YAML key
+        is ``reserve_constrained_label_text`` and the accessor drops the suffix.
+        """
+        return str(self.reserve_constrained_label_text.value)
+
+    @model_validator(mode="after")
+    def _validate_cap_and_alert(self) -> InterventionSettings:
+        """Refuse a cap outside ``[0, 1]`` and a non-positive burn alert.
+
+        Both mirror the checks ``FxCarrySettings`` makes on its caps, for the
+        same reason: ``ModelResult``'s own field constraint refuses a value
+        outside ``[0, 1]``, so a leaf outside it would raise at the FIRST call
+        rather than at load. Refusing here makes the defect a config error, where
+        it can be seen, rather than a runtime failure of a model.
+
+        The burn alert is checked **strictly positive** because the model
+        compares against its negation: a zero alert would fire on every
+        non-positive change (making the warning unconditional) and a negative one
+        would make the condition unreachable for every real input — dead
+        vocabulary of the class D-037 names.
+        """
+        if not 0.0 <= self.reliability_value <= 1.0:
+            raise ValueError(
+                f"intervention.reliability_cap is {self.reliability_value}. A "
+                f"confidence must lie inside [0, 1] — see the "
+                f"fx_carry.uip_reliability_cap note; the same ModelResult field "
+                f"constraint applies, and refusing at load turns a runtime "
+                f"failure into a config error."
+            )
+        if self.burn_alert_value <= 0.0:
+            raise ValueError(
+                f"intervention.burn_alert_pct is {self.burn_alert_value}. The "
+                f"model fires the burn warning on 'change_12m_pct <= "
+                f"-burn_alert_pct', so a non-positive alert either makes the "
+                f"warning unconditional (zero) or unreachable for every real "
+                f"input (negative) — dead vocabulary (D-037's class)."
+            )
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -5383,6 +5521,7 @@ class Settings(BaseModel):
     confidence: ConfidenceSettings
     econometrics: EconometricsSettings
     fx_carry: FxCarrySettings
+    intervention: InterventionSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
 

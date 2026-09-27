@@ -4156,6 +4156,108 @@ fx_carry:
       half-life of real exchange-rate deviations from absolute PPP, which needs
       the same long real-rate panel `ppp_reliability_cap` would need.
 # ---------------------------------------------------------------------------
+# Module 9's intervention asymmetry (Section 20.9). Section 20.9's reference
+# implementation hardcodes two confidences (`0.8` / `0.7`) and both capacity
+# strings inside the function body; Section 22.8 forbids the literals, and the
+# strings are vocabulary a caller keys on, so all four live here.
+#
+# `burn_alert_pct` has NO counterpart in the specification at all — Section 20.9
+# carries the reserve stock but never its change. It is an ADDITION, recorded as
+# such, and it gates a WARNING rather than a label (a reserve burn is a matter of
+# degree; the capacity verdict is decided by the direction's mechanics).
+# ---------------------------------------------------------------------------
+intervention:
+  reliability_cap:
+    value: 0.12
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The RELIABILITY CEILING `intervention_capacity` reports. Section 20.9
+      supplies `confidence=0.8` (weakening) and `0.7` (strengthening) as
+      literals, which Section 22.8 refuses.
+
+      ⚠️ THE SPECIFICATION'S NUMBERS ARE NOT CARRIED FORWARD, AND THE REASON IS
+      THE ORDERING. 0.8/0.7 would make this the MOST confident Module 9
+      function — above `ppp_valuation` (0.2) and `uip_expected_move` (0.15) —
+      which is the opposite of the truth. The parity relations at least relate
+      OBSERVABLE prices with EXACT arithmetic; what `intervention_capacity`
+      asserts is a DOCTRINE about mechanisms (finite reserves can break, printed
+      currency cannot run out), and it contains no measured estimate of the one
+      quantity that would make it usable: the point at which a central bank
+      abandons a defence. The cap is therefore the LOWEST in the FX family —
+      below `uip_reliability_cap` (0.15) and `ppp_reliability_cap` (0.2) — and
+      the ordering is the claim: doctrine is weaker evidence than a
+      rejected-but-measurable relation, which is in turn weaker than a relation
+      whose failure is one of degree and horizon.
+
+      It is a model-specific CAP, not compute_confidence(), following the
+      D-112/D-114 precedent: the function applies compute_confidence() to the
+      INPUT half (a fetched reserve figure is better evidence than a typed one,
+      and the computed value reflects that), then takes the minimum with this
+      leaf. The cap is what admits the METHOD's weakness when the inputs are
+      good — `compute_confidence()` has no factor for "the method is doctrine".
+
+      Placeholder, not calibrated: calibrating it means measuring how often
+      reserve-constrained defences actually break, which is a small-sample
+      historical question this build does not attempt.
+  burn_alert_pct:
+    value: 10.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The TWELVE-MONTH reserve DECLINE, in PERCENT, at or above which
+      `intervention_capacity` warns that reserves are BURNING. A positive
+      magnitude: the model compares `change_12m_pct <= -burn_alert_pct`, so a
+      reader does not have to work out which way round a negative threshold runs.
+
+      ⚠️ THIS LEAF IS AN ADDITION — SECTION 20.9 HAS NO COUNTERPART. The
+      specification's `InterventionCapacityInputs` carries the reserve STOCK and
+      never its CHANGE, so its function cannot distinguish a bank sitting on
+      ammunition from one already spending it. The twelve-month change is that
+      observable, it is reachable from the same series (the client computes it
+      from the monthly points it already fetches), and it is the input
+      `check_trilemma_tension`'s `CRITICAL_PEG_STRESS` label depends on.
+
+      10 %/yr is chosen because it is roughly the rate at which a defence stops
+      being sustainable rather than merely active: the measured 2026-08 reading
+      for Japan is -11.98 %, which the warning SHOULD catch, while the UK's
+      +1.62 % and China's +2.89 % should not. It is a placeholder — a real
+      calibration would model the depletion path against a speculative-pressure
+      measure, which needs a positioning dataset this build does not fetch.
+  unconstrained_label:
+    value: "MECHANICALLY_UNCONSTRAINED_COST_BOUNDED"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The `capacity` literal for a WEAKENING defence. **This is Section 22.11's
+      mandated rename** of Section 20.9's reference value
+      `"UNLIMITED_AMMUNITION_but_costly"`, and Section 22.11 is the integrated
+      amendment, so it governs the code block rather than the other way round.
+
+      The amendment's reason: "unlimited" reads as RISK-FREE to a caller
+      skimming a label, whereas what is unconstrained is strictly the MECHANISM
+      (a central bank can create its own currency without limit). The policy is
+      bounded by cost — the SNB-2015 failure mode, abandonment by accumulated
+      loss rather than by exhaustion. The rename makes the label state the
+      mechanism and its bound, so no caller can read the word "unlimited" as a
+      promise.
+
+      A string leaf, not a numeric one, and `CalibratedValue` is the envelope for
+      it because the envelope's question ("is this a fact, a convention, or a
+      placeholder?") applies to a declared VOCABULARY too: this is a convention
+      fixed by the specification, hence `uncalibrated_illustrative`.
+  reserve_constrained_label_text:
+    value: "RESERVE_CONSTRAINED_breakable"
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The `capacity` literal for a STRENGTHENING defence, retained verbatim from
+      Section 20.9. This side of the asymmetry was never mis-worded:
+      "reserve-constrained" states the binding quantity (a finite stock) and
+      "breakable" states its consequence, which is what the Black Wednesday 1992
+      failure mode is. Only the weakening side needed Section 22.11's correction.
+
+      Naming note: the YAML key carries a `_text` suffix and the accessor is
+      `reserve_constrained_label`. The split is deliberate — a field and a
+      property may not share a name in this codebase (the D-035 collision guard
+      in `tests/test_infrastructure.py`).
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

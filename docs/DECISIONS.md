@@ -19578,3 +19578,185 @@ claim**), specified **immediately after** `ppp_valuation` in §20.9. §21.3's ta
 *"and only that table"* decides when a stub becomes IMPLEMENTED. **Re-derive the
 remaining 10 names from `src/`; do not recall the list.** **NOT mine:** the Tier-5
 review/audit.
+
+---
+
+## D-118 — Module 9's `intervention_capacity`: a **fourth FALSE BLOCK** wired to FRED reserves, a confidence that had to be MULTIPLIED (not `min()`-ed) to keep both halves alive, and 14 survivors the first sweep was right to report
+
+**Date:** 2026-09-27. **Tier 5 = 15/23.** Target: **the new**
+`src/macro_engine/models/intervention.py` (`intervention_capacity`), **the new**
+`src/macro_engine/data_layer/reserves_client.py`, and the **new**
+`InterventionSettings` block in `src/macro_engine/config.py`. Section resolved
+with `grep -n`: `AGENTS.md:4861` is the §20.9 header, and
+`AGENTS.md:4904–4930` carries the section's **reference implementation** — which
+makes this an **UPGRADE** of a specified function, not a blank-page creation.
+**Supersedes nothing**: Section 21.3's Tier-5 list is *replacements*, and the
+honest answer here is the `cip_check` answer — **a new capability**. The
+function reads a **reserve stock and a direction**; no sibling in the FX family
+(`cip_check` / `uip_expected_move` / `ppp_valuation` / `carry_score` /
+`dollar_smile_regime`) reads either.
+
+### 1. The reference implementation was present, and it ships TWO defects the amendment already forbids
+
+§20.9's block is an UPGRADE target (`AGENTS.md:4904`), and it carries:
+
+* **two bare confidence literals** — ``0.8`` and ``0.7`` — which §22.8 forbids;
+* the capacity string ``"UNLIMITED_AMMUNITION_but_costly"``, which **§22.11
+  amends** to ``"MECHANICALLY_UNCONSTRAINED_COST_BOUNDED"`` (`AGENTS.md:4071`).
+  The amendment's reason is exact: *"unlimited" reads as risk-free to a caller
+  skimming a label*, when what is unconstrained is the MECHANISM and nothing
+  else. The published literal is the §22.11 one, in a config leaf, and a test
+  asserts the word ``unlimited`` is absent.
+
+Its branch is a documented-choice ``else`` on ``== "weaken_own_currency"``, which
+sends **every unrecognised value** — a typo, an emptied field — down the
+*reserve-constrained* branch, so a misspelt direction yields a confident verdict
+about the opposite intervention. The field is therefore a ``Literal``, and the
+vocabulary is declared once in ``INTERVENTION_DIRECTIONS``.
+
+### 2. `fx_reserves_usd_bn` is **LIVE, not blocked** — the FOURTH FALSE BLOCK
+
+§20.9's input model carries ``fx_reserves_usd_bn`` and ``reserves_to_gdp_pct``
+with **no source stated**, and ``config/series_registry.yaml`` had **no entry**
+for either — which under §21.1's default rule (*"any input not listed above is
+BLOCKED"*) makes both **BLOCKED**. **Measured 2026-09-27, that reading is
+false.** FRED's *Total Reserves excluding Gold* series are reachable:
+
+```
+TRESEGJPM052N   Japan           843 obs   latest 2026-08-01   1,083,420.49 mn
+TRESEGGBM052N   United Kingdom  843 obs   latest 2026-08-01     169,356.44 mn
+TRESEGCNM052N   China           563 obs   latest 2026-06-01   3,482,386.00 mn
+```
+
+This is the **fourth FALSE BLOCK** this repository has caught (D-043's class,
+after `ppp_implied_rate` at D-115/D-117). The response is the D-117 one: **record
+the source and wire it**, never leave a typed constant in its place. So the
+reserves may be **fetched** (the live path, and the ONLY one — no MANUAL fallback
+to drift alongside it, because a dead fallback reads exactly like a live fetch
+whenever it fires), and a caller-supplied figure is **disclosed as supplied**
+(``SUPPLIED BY THE CALLER``) so the two can never read alike.
+
+**The unit is the trap and it is named everywhere.** The FRED series are in
+**millions** of USD; the model's contract is **billions** (Japan's
+``1083420.49`` is USD 1.083 **trillion** — a 1000x misread produces a
+plausible-looking reserve figure either way). The client returns the source unit
+unchanged; the model divides, once, via the client's **named**
+``MILLIONS_PER_BILLION``.
+
+### 3. The confidence had to be MULTIPLIED — `min()` made the computed half DEAD CODE
+
+The first draft combined the two halves with ``min(computed, cap)``, following
+D-112/D-114. **That was wrong here, and measurably so:** the computed value is
+**0.55** (fetched) / **0.25** (supplied), both **above** the **0.12** cap, so
+``min()`` publishes 0.12 on **every** path and the entire
+``compute_confidence()`` branch never changes an output — *a computation that
+never changes an output is scaffolding, not a model*. The shipped form is the
+**product**, which makes each factor load-bearing: the cap states how much the
+**method** is worth, the computed value how much **this run's inputs** are worth,
+so a fetched reserve (0.066) beats a typed one (0.030) in the published number.
+A test asserts BOTH the exact product AND that fetched > supplied.
+
+The cap is deliberately the **lowest in the FX family** — 0.12, below
+``uip_reliability_cap`` (0.15) and ``ppp_reliability_cap`` (0.2). The ordering is
+the claim: the parity relations at least relate observable prices, whereas this
+function's core content is a **doctrine about mechanisms**, with no measured
+estimate of when a bank abandons a defence. §20.9's own 0.8/0.7 are *higher* than
+both parity models', which reads as *"the most trustworthy Module 9 function"* —
+the opposite of the truth, and the reason they are not carried forward.
+
+### 4. The burn alert is **direction-independent**, and that came from a TEST
+
+A twelve-month reserve **burn** is a fact about the world, not a property of the
+intervention's direction. The first draft gated the alert behind the
+reserve-constrained branch; **the boundary test caught it**, because a bank
+defending by weakening can also be spending reserves — the SNB's 2015 episode,
+which the weakening branch's own note cites, was an expansion whose cost was the
+point. Gating suppressed the depletion signal on exactly the direction the model
+calls cost-driven. **The CODE was fixed, not the test.** Measured burns:
+Japan **−11.98 %** (fires the alert at the 10 % threshold), UK **+1.62 %**,
+China **+2.89 %**.
+
+### 5. The refusal: a strengthening verdict with no stock is NOT made
+
+§20.9's implementation publishes ``reserves_usd_bn: None`` beside a
+0.7-confidence verdict — the **"null that travels as a value"** shape this
+project has paid for. A reserve-constrained label is a *claim* that a finite
+stock constrains the bank, so the model **refuses** (``ValueError``) rather than
+asserting it with no stock behind it. A weakening direction does not need the
+stock and proceeds, disclosing the absence as a warning. **Both halves are
+tested**, so a build that raised on every direction fails.
+
+### 6. The sweep left **14 SURVIVORS on the first run — and one was a CODE DEFECT**
+
+`scripts/mutation_intervention.py` (60 mutations over the model, the client and
+the config block; labels ``I*`` / ``R*`` / ``N*``). Its `--check-targets`
+pre-flight caught **one ambiguous anchor** (`if reserves_bn is None:` opens both
+the fetch branch and the refusal guard — widened with its follower, D-055/D-060).
+The first run then left **14 survivors**, ALL weak tests, in the classes D-050
+names:
+
+| survivor(s) | verdict | cause | fix |
+|---|---|---|---|
+| `I9a`, `I9b` | **weak test** | the only conversion test patched the model's own `_fetch_reserves_bn` and supplied the **already-divided** number, so the model's division line **never executed** | patch at the **client** boundary so the division happens in code under test, + a **leaf perturbation** of the divisor |
+| `R6a` | **CODE DEFECT** | the constant it mutates (`_MILLIONS_PER_BILLION`) was **defined and never used** — the model divided by a bare `1000.0` | promoted to public `MILLIONS_PER_BILLION` in the client and **imported by the model**, so the 1000x step has ONE definition |
+| `I3c` | **weak test** | every fixture supplied the burn rate or the stock, so the fetch→burn **fallback** never ran | a fixture letting the reading supply the burn, with a **negative control** that a supplied burn is not overwritten |
+| `I2a`, `I5e`, `I6d`, `I6e`, `I7c`, `I7d`, `N1b`, `N3a` | **weak test** | published/derived fields asserted only through **shipped defaults**, where a swapped tuple, a dropped independence count, an inverted message branch, a nulled field or a hardcoded constant all coincide with the truth | assert the tuple **order**, the fetched confidence **exact value**, both burn-message **bodies**, the **echoed** inputs, and **leaf-perturbation** fixtures with distinct sentinels |
+| `N4a`, `N4b` | **weak test** | the two config validators were **never driven to fire** | tests that pass an out-of-range cap and a non-positive alert and require the refusal |
+
+**`R6a` is the one that matters: the sweep found a defect in the CODE, not only in
+the tests.** The client's docstring *claimed* the named constant existed "so a
+mutation has to change the constant" — and it did not exist in the expression.
+**The re-run returns 60/60 killed**, no mutation deleted or weakened (D-031's
+strengthen-toward rule), tree verified clean with the sidecar ABSENT before and
+after (O-131).
+
+### 7. A test asserted a behaviour the code SHOULD not have — and the test was what was wrong
+
+The fixture for the burn fallback first asserted that a caller who supplies the
+**stock** still gets the **fetched** burn. The code does not do that, and the
+review concluded **the code is right**: the stock and its burn rate are two facts
+about ONE series, so adopting a burn from a *different* series would pair two
+vintages — the "a dead fallback reads exactly like a live fetch" hazard the
+docstring names. The test now pins **all three** behaviours (fetched-stock ⇒
+fetched burn; supplied-stock ⇒ burn unknown + disclosed; explicit burn ⇒ used as
+given). **This is the second consecutive increment where the check, not the code,
+was the thing that was wrong** (cf. D-117's live-check unit mismatch).
+
+### 8. The live check passes, and its first "failure" was a STALE BYTECODE CACHE
+
+`scripts/live_intervention_capacity_check.py` exercises the three FRED routes,
+the unit conversion (asserted 1000.0x), the burn rate, the direction map against
+the config leaves, the confidence product, the burn-warning agreement and the
+refusal. Its **first** run reported two failures — a strengthening verdict
+publishing the weakening label and an equal confidence on both paths — **both of
+which were a stale `__pycache__` from the pre-edit model**, not defects. Clearing
+it and re-running gives **PASS** on live inputs. **Measured: JP 1,083.4 bn
+(−11.98 %), GB 169.4 bn (+1.62 %), CN 3,482.4 bn (+2.89 %); confidence 0.066 =
+0.55 × 0.12.** *(Lesson: a live check that reads the source through `sys.path`
+can read a cached bytecode — clear `__pycache__` before concluding a failure is
+real.)*
+
+### 9. Gates (measured 2026-09-27 — `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  272 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 272 source files
+reachability_audit.py --check-baseline        ->  PASS — baseline 58 = measured 58, no regressions
+full suite (--junitxml)                       ->  3627 tests / 0 failures / 0 errors / 1 skipped
+slow sweep-catalogue test (explicit)          ->  1 passed  (378 s, within the 600 s budget)
+mutation_intervention.py                      ->  60/60 killed   (first run: 46/60, then triaged)
+live_intervention_capacity_check.py           ->  PASS
+sweep_health.py  (LAST)                       ->  46 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**272 == 272** (D-035): 266 (D-117) **+ 6** = the four new files
+(`models/intervention.py`, `data_layer/reserves_client.py`,
+`test_intervention.py`, `test_reserves_client.py`) plus the two new scripts.
+The count lives in **three places** for the sweep census and all three moved
+**45 → 46**. Reachability: `intervention_capacity` is **SCRIPT-ONLY — Tier 5**,
+so the Tier 1–4 baseline is untouched.
+
+### Next
+
+**Tier 5 = 15/23.** Re-derive the remaining names from §21.3's table *"and only
+that table"* — do NOT recall them. **NOT mine:** the Tier-5 review/audit.

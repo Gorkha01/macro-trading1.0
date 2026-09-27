@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_forty_five_sweeps_to_cover() -> None:
+def test_there_are_forty_six_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -463,9 +463,18 @@ def test_there_are_forty_five_sweeps_to_cover() -> None:
     over a NEW module created by a Tier-5 increment (`models/fx_carry.py`, which
     did not exist before this increment). It uses `sweep_lifecycle` and carries
     the CANARY1 refusal gate, so the same two checks cover it.
+
+    **45 → 46 at D-118**, which added `mutation_intervention.py` — the sweep over
+    Module 9's `intervention_capacity`, a **second** NEW module created by a
+    Tier-5 increment (`models/intervention.py`), plus its new client
+    (`data_layer/reserves_client.py`) and its config block. It uses
+    `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two
+    checks cover it. **Its first run left 14 survivors, all weak tests — one of
+    which was a genuine CODE defect (an unused constant the conversion bypassed),
+    the rest tests that reproduced the code's own expression (D-050).**
     """
     files = _sweep_files()
-    assert len(files) == 45, f"expected 45 sweeps, found {len(files)}"
+    assert len(files) == 46, f"expected 46 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

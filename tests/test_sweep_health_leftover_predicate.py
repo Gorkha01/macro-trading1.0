@@ -357,7 +357,7 @@ def test_the_two_copies_agree_on_the_real_catalogue() -> None:
 
     Skipped when ``git`` is unavailable, since the ground truth depends on it.
 
-    **Marked ``slow``, re-measured at D-110 to ~350 s** — it must ``exec`` all 45
+    **Marked ``slow``, re-measured at D-110 to ~350 s** — it must ``exec`` all 46
     sweeps (each imports the engine) to obtain the real catalogue. The three fast
     structural guards above it catch the same regression class at ~0.01s each;
     this one is the exhaustive backstop, so deselect it with ``-m "not slow"`` on
@@ -883,7 +883,11 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # 44 -> 45 at D-108 (`mutation_fx_carry.py`, Module 9/models/fx_carry.py) --
     # the first sweep over a module a Tier-5 increment CREATED, and likewise a
     # CANARY1 sweep, so `missing == []` still holds without a second edit.
-    assert len(sweeps) == 45, f"expected 45 sweeps, found {len(sweeps)}"
+    # 45 -> 46 at D-118 (`mutation_intervention.py`, Module 9/models/intervention.py
+    # + data_layer/reserves_client.py + the config block) -- the SECOND sweep over
+    # a module a Tier-5 increment created, and likewise a CANARY1 sweep, so
+    # `missing == []` still holds without a second edit.
+    assert len(sweeps) == 46, f"expected 46 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "

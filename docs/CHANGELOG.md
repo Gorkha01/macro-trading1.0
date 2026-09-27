@@ -10,6 +10,49 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-118 — Module 9's `intervention_capacity` (FRED reserves, live) (2026-09-27)
+
+A **function increment**: Tier 5 moves **14/23 → 15/23**. A new module, a new data-layer client,
+and a new config block — and one defect the mutation sweep found in the CODE, not the tests.
+
+**Added**
+
+- **`src/macro_engine/models/intervention.py`** — `intervention_capacity`, Section 20.9's third
+  Module 9 function. The asymmetry is the content: a bank **weakening** its own currency sells
+  what it can print (mechanically unconstrained, **cost**-bounded — the SNB 2015 failure mode); a
+  bank **strengthening** it must spend finite reserves (**breakable** — Black Wednesday 1992).
+  `direction` is a `Literal` (Section 20.9's bare `else` sends every typo to the opposite verdict);
+  the published labels are Section 22.11's rename (`MECHANICALLY_UNCONSTRAINED_COST_BOUNDED`), with
+  the word "unlimited" absent; a `strengthen_own_currency` call with **no reserve stock REFUSES**
+  rather than publishing `null` beside a verdict; and the depletion alert is **direction-independent**.
+- **`src/macro_engine/data_layer/reserves_client.py`** — a new FRED client for *Total Reserves
+  excluding Gold* (`TRESEGJPM052N` / `TRESEGGBM052N` / `TRESEGCNM052N`), returning the **source's
+  MILLIONS** with the observation date and a twelve-month change; the model converts to **billions**
+  via the client's named `MILLIONS_PER_BILLION`. **This closes the fourth FALSE BLOCK** (D-043's
+  class): §20.9 named no source, §21.1's default rule would have BLOCKED it, and the series are
+  measurably reachable.
+- **`InterventionSettings`** in `src/macro_engine/config.py` + the `intervention:` YAML block —
+  `reliability_cap` (0.12, the **lowest** cap in the FX family), `burn_alert_pct` (10.0), and the
+  two capacity literals.
+- **Three registry entries** (`fx_reserves_japan` / `_uk` / `_china`) in `config/series_registry.yaml`.
+- **`tests/models/test_intervention.py`** and **`tests/data_layer/test_reserves_client.py`** — **69 tests**.
+- **`scripts/mutation_intervention.py`** — a **60-mutation** sweep (labels `I*`/`R*`/`N*`), **60/60 killed**.
+- **`scripts/live_intervention_capacity_check.py`** — the live wiring check, **PASS** on real data.
+
+**Fixed**
+
+- **A dead constant the sweep found.** `_MILLIONS_PER_BILLION` was *defined and never used* — the
+  model's conversion divided by a bare `1000.0`, so the sweep's `R6a` mutant survived. Promoted to a
+  public `MILLIONS_PER_BILLION`, now **imported by the model**, so the 1000x step has one definition.
+- **14 first-run sweep survivors**, all weak tests, all strengthened-toward (D-031) — chiefly tests
+  that **reproduced the code's own expression** instead of measuring its output (D-050).
+
+**Changed**
+
+- The sweep census moves **45 → 46** in all three places it is asserted.
+- `docs/DECISIONS.md` gains **D-118**.
+
+
 ### D-117 — `ppp_implied_rate` wired LIVE from the World Bank (2026-09-27)
 
 A **sourcing** increment, not a function increment: D-114's `ppp_valuation` model is untouched,

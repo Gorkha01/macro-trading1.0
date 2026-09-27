@@ -9723,6 +9723,80 @@ adjacency (lesson **5dl**).
 
 ---
 
+## D-118 — Module 9's `intervention_capacity` — **PHASE 5, Tier 5 = 15/23; MODULE 9 CLOSED (2026-09-28)**
+
+**The last Module 9 function, and the second D-096 exception.** §20.9's reference impl
+(`AGENTS.md:4906`) gives the body, so this is an UPGRADE that **supersedes nothing** — the
+`cip_check` answer, *a NEW CAPABILITY* — and the file is a CREATE. Module 9 is now **5 of 5**:
+`cip_check` (D-108) · `carry_score` (D-109) · `dollar_smile_regime` (D-111) · `uip_expected_move`
+(D-112) · `ppp_valuation` (D-114) · `intervention_capacity` (D-118).
+
+### What shipped
+
+* **`src/macro_engine/models/intervention.py`** (NEW FILE — operator decision; NOT `fx_carry.py`,
+  because this is a reserve-capacity estimand, not the FX-parity family). Fields `country`,
+  `direction: Literal[...]`, `fx_reserves_usd_bn`, `reserves_to_gdp_pct`, `reserves_change_12m_pct`.
+* **`src/macro_engine/data_layer/reserves_client.py`** (NEW) — FRED FX reserves
+  (`TRESEGJPM052N` / `TRESEGGBM052N` / `TRESEGCNM052N`; jp/jpn, gb/gbr/uk, cn/chn).
+  `SOURCE_UNIT = "millions of USD"`, `OUTPUT_UNIT = "billions of USD"`,
+  `MILLIONS_PER_BILLION = 1000.0`.
+* **`config.py`** `InterventionSettings` (`reliability_cap` 0.12 · `burn_alert_pct` 10.0 ·
+  the two labels) + **`config/settings.yaml`** + **3 registry entries** (registry now 49 series).
+* **§22.11**'s label rename honoured: `"UNLIMITED_AMMUNITION_but_costly"` →
+  **`"MECHANICALLY_UNCONSTRAINED_COST_BOUNDED"`** (`AGENTS.md:4071`).
+* 69 model tests + 24 client tests · `scripts/mutation_intervention.py` (**60** mutations) ·
+  `scripts/live_intervention_capacity_check.py`.
+
+### The fourth FALSE BLOCK, and a confidence that is a PRODUCT
+
+* **`fx_reserves_usd_bn`'s "BLOCKED" tag was FALSE** (D-043's class; the **fourth**, after
+  `ppp_implied_rate` at D-115/D-117). Measured against three reachable FRED series ⇒ it is now
+  **fetched**; the manual path survives as `MANUAL_ASSESSMENT` so a typed number can never pass
+  as measured.
+* **Confidence = `compute_confidence()` × the config CAP, NOT `min()`.** Two producers: the
+  input-quality score (**0.55** live) and the model-specific CAP (`reliability_cap` = **0.12**).
+  `min(0.55, 0.12) = 0.12` would make the computed half **DEAD CODE** — every value above 0.12
+  discarded — shipping **one inert factor** while claiming two. Product = **0.066**. Guarded by a
+  test that reads the OTHER half (skill 5dw).
+
+### A genuine CODE DEFECT the sweep found (O-143)
+
+`R6a` survived because `_MILLIONS_PER_BILLION` was **defined but never read** — the model divided
+by a bare `1000.0`. This is a **code defect, not a weak test** (lesson 5dv). Fixed by promoting it
+to public `MILLIONS_PER_BILLION`, adding it to `__all__`, **importing** it in the model, and
+retargeting the `I9a`/`I9b`/`R6a` anchors. **The mutation was retargeted, never deleted** (D-031).
+
+### And the class the increment's own tests cannot see — again (O-144)
+
+The increment-local surface was green; the repository was not (**O-141/O-142's lesson restated**).
+D-118's costume: a **stale `__pycache__`** made the live check's sections 5/6 "fail" on pre-edit
+bytecode — **both failures were FALSE**. **Clear `__pycache__` before a live check.**
+
+### Measured live (real data, `live_intervention_capacity_check.py` PASS)
+
+```
+JP  1083.4 bn / -11.98 %   GB  169.4 bn / +1.62 %   CN  3482.4 bn / +2.89 %
+confidence 0.066 = 0.55 x 0.12
+```
+
+### Gates (measured 2026-09-28, `sweep_health.py` LAST)
+
+```
+ruff format --check src tests tools scripts   ->  272 files already formatted
+mypy --strict src tests tools scripts         ->  Success: no issues found in 272 source files
+full suite (--junitxml)                        ->  3627 collected / 0 failed / 0 errors / 1 skipped
+slow sweep-catalogue test (explicit)           ->  1 passed (378 s)
+reachability --check-baseline                  ->  PASS 58/58 (SCRIPT-ONLY Tier 5 = 14)
+mutation_intervention.py                       ->  60/60 killed
+live_intervention_capacity_check.py            ->  PASS
+sweep_health.py (LAST)                         ->  46 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK
+```
+
+**272 == 272** (D-035). **The sweep census moved 45 → 46** — its three homes edited together
+(`test_sweep_sidecar_lifecycle.py` ×2, `test_sweep_health_leftover_predicate.py` ×1). **NEXT =
+`em_vulnerability_checklist`** (§20's part B, `AGENTS.md:2948`) — two operator questions first
+(placement; which of its three inputs is LIVE vs genuinely BLOCKED).
+
 ## D-117 — `ppp_implied_rate` wired LIVE from the World Bank (2026-09-27) — **PHASE 5, Tier 5 = 14/23 (no new function; D-114's model re-sourced)**
 
 **A SOURCING increment, not a function increment.** No model formula changed — `ppp_valuation`

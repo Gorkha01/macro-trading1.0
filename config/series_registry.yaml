@@ -1239,6 +1239,85 @@ series:
     verified_observation_date: 2025-01-01
     plausible_range: [0.5, 2.0]
 
+  # -------------------------------------------------------------------------
+  # FX RESERVES for `intervention_capacity` (Section 20.9). Section 20.9's
+  # reference implementation declares `fx_reserves_usd_bn` and
+  # `reserves_to_gdp_pct` with NO source, and no entry existed here — which under
+  # Section 21.1's default rule ("any input not listed above is BLOCKED by
+  # default") makes them BLOCKED. Measured 2026-09-27, that reading is FALSE.
+  #
+  # This is the FOURTH FALSE BLOCK this repository has caught (D-043's class,
+  # after `ppp_implied_rate` at D-115/D-117). The series below are "Total
+  # Reserves excluding Gold", monthly, from FRED — the same route the rest of
+  # this registry uses, so the wiring introduces no new dependency class.
+  #
+  # ⚠️ THE UNIT IS MILLIONS AND IT IS THE DEFECT THIS COMMENT PREVENTS.
+  # `TRESEGJPM052N` reads 1083420.49, i.e. USD 1.083 TRILLION; a reader who
+  # treats that as billions is off by 1000x and the number still looks like a
+  # reserve stock at either scale. The registry's `units` field is the SOURCE's
+  # unit (millions) and `intervention_capacity`'s contract is billions, so
+  # `reserves_client.fetch_reserves` performs the conversion and both units are
+  # named on the disclosure it returns.
+  #
+  # `not_a_snapshot_field: true` on all three: `reserves_client` selects them by
+  # COUNTRY, and the snapshot builder's one-field-one-series model does not shape
+  # a per-country lookup. They are registered so the source is auditable
+  # (Section 21.1's actual purpose), not so the builder fetches them.
+  # -------------------------------------------------------------------------
+  fx_reserves_japan:
+    provider: fred
+    symbol: TRESEGJPM052N
+    not_a_snapshot_field: true
+    description: >
+      Japan total reserves excluding gold, USD MILLIONS, monthly. 843
+      observations, latest 2026-08-01 = 1083420.490020889 mn = 1083.42 bn USD.
+      The twelve-month change measured 2026-09-27 is -11.98%, the largest
+      decline of the three registered countries — which is why Japan is the
+      live check's primary case.
+    frequency: monthly
+    units: millions_of_usd
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 1083420.490020889
+    verified_observation_date: 2026-08-01
+    plausible_range: [100000.0, 2000000.0]
+
+  fx_reserves_uk:
+    provider: fred
+    symbol: TRESEGGBM052N
+    not_a_snapshot_field: true
+    description: >
+      United Kingdom total reserves excluding gold, USD MILLIONS, monthly. 843
+      observations, latest 2026-08-01 = 169355.6607966373 mn = 169.36 bn USD.
+      Twelve-month change +1.62% — a bank NOT burning reserves, so it is the
+      negative control for the burn warning.
+    frequency: monthly
+    units: millions_of_usd
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 169355.6607966373
+    verified_observation_date: 2026-08-01
+    plausible_range: [10000.0, 500000.0]
+
+  fx_reserves_china:
+    provider: fred
+    symbol: TRESEGCNM052N
+    not_a_snapshot_field: true
+    description: >
+      China total reserves excluding gold, USD MILLIONS, monthly. 563
+      observations, latest 2026-06-01 = 3482385.620113452 mn = 3482.39 bn USD.
+      The LARGEST of the three by an order of magnitude, and the shortest
+      series (563 vs 843) — its publication lags, which is why its latest
+      observation is two months behind the others and why the disclosure names
+      the observation date on every reading.
+    frequency: monthly
+    units: millions_of_usd
+    status: verified
+    verified_on: 2026-09-27
+    verified_value: 3482385.620113452
+    verified_observation_date: 2026-06-01
+    plausible_range: [1000000.0, 6000000.0]
+
 # ---------------------------------------------------------------------------
 # BLOCKED — Section 21.4 Loophole Ledger. These have no reachable source.
 # The registry records them so that an attempt to use them fails loudly and

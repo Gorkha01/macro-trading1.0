@@ -1,7 +1,34 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-27** (after **D-117 — `ppp_implied_rate` WIRED LIVE from the World
+Last updated: **2026-09-28** (after **D-118 — Module 9's `intervention_capacity`: a NEW module, a
+NEW data-layer client, a NEW config block, and a FOURTH FALSE BLOCK closed.** Tier 5 = **15/23**.
+§20.9 (`AGENTS.md:4861`; the reference implementation is at `:4904` — resolved with `grep -n`)
+specifies the function, so this is an **UPGRADE of a specified function in a NEW file**, and it
+**supersedes nothing** — the honest D-096 answer is the `cip_check` one: *a new capability*. The
+content is the **asymmetry**: a bank **weakening** its own currency sells what it can print
+(mechanically unconstrained, **cost**-bounded — the SNB 2015 mode), a bank **strengthening** it
+spends finite reserves (**breakable** — Black Wednesday 1992). **`fx_reserves_usd_bn` is LIVE, not
+blocked** — the **fourth FALSE BLOCK** (D-043's class, after `ppp_implied_rate`): §20.9 names no
+source, §21.1's default rule would BLOCK it, and FRED's *Total Reserves excluding Gold* series are
+**measurably reachable** (`TRESEGJPM052N` / `TRESEGGBM052N` / `TRESEGCNM052N`). **Two design
+corrections the increment made to itself:** the confidence is the **product** of the computed
+input-quality and the 0.12 config cap (a `min()` — the D-112/D-114 form — made the computed half
+**dead code**, since 0.55/0.25 both exceed 0.12), and the burn alert is **direction-INDEPENDENT**
+(a boundary test caught the first draft gating it behind the reserve-constrained branch, which
+would have silenced the depletion signal on the direction the model calls cost-driven). **The first
+mutation sweep left 14 survivors, and one was a CODE DEFECT:** the client's
+`_MILLIONS_PER_BILLION` was **documented as the single source of the 1000x conversion but was
+DEFINED AND NEVER USED** (the model divided by a bare `1000.0`) — now **O-143**, fixed by wiring
+the constant through `__all__` and importing it (**60/60 killed** after the triage). The other
+thirteen were **weak tests**, chiefly tests that *reproduced the code's own expression* (D-050) —
+including the only conversion test, which patched the model's helper and supplied an
+**already-divided** number, so the division line never executed. **The live check passed on live
+data** — JP 1,083.4 bn (−11.98 %), GB 169.4 bn (+1.62 %), CN 3,482.4 bn (+2.89 %) — after a first
+run whose two "failures" were a **stale `__pycache__`**, now **O-144**. **Gates:** 272 == 272
+(D-035) · 3627 tests / 0 failed / 1 skipped · reachability PASS 58/58 · sweep 60/60 ·
+`sweep_health.py` LAST → **46 sweeps, 0 leftovers, OK**.)
+Previous update: **D-117 — `ppp_implied_rate` WIRED LIVE from the World
 Bank: a FALSE BLOCK removed, the ALFRED question answered by MEASUREMENT, and TWO defects the
 full suite found that the increment's own tests could not.** D-114's `ppp_valuation` model is
 **untouched** — this is a **SOURCING** increment, so Tier 5 stays **14/23**: its input moves
@@ -349,16 +376,26 @@ in Tier 4, not here.
 | **Tier 2** — depend on Tier 1 | 29 | 29 | **100%** | `████████████████████` |
 | **Tier 3** — synthesis | 15 | 15 | **100%** | `████████████████████` ✅ |
 | **Tier 4** — construction | 11 | 11 | **100%** | `████████████████████` ✅ |
-| **Tier 5** — Phase 5+ | 2 | 20 | **10%** | **STARTED** — D-092 `run_regression` · D-094 `test_stationarity` |
+| **Tier 5** — Phase 5+ | 15 | 23 | **65%** | **UNDER WAY** — the newest is **D-118 `intervention_capacity`**; before it D-117 (PPP sourcing), D-114 `ppp_valuation`, D-112 `uip_expected_move`, D-110 `dollar_smile_regime`, D-109 `carry_score`, D-108 `cip_check`, D-106 `monte_carlo_var`, D-094 `test_stationarity`, D-092 `run_regression` |
 
-**Read the "85 / 98" correctly — it is not a backlog.** 85 = 23 + 29 + 15 + 11,
-i.e. **every Tier 1–4 function**. The 13 outstanding are **all Tier 5**, and
-Tier 5 is the specification's own deferral list: the non-US central-bank
-reaction functions (the ECB's 20-country-compromise dynamic, the BoJ's
-institutional deflation-scar bias, the PBoC's non-Western reaction function —
-each **genuinely different logic**, not the Fed's Taylor Rule with a different
-country label) plus the Phase-5-only models. §22.3 scopes Phases 0–4 to the US,
-so those 13 *cannot* be earned yet. **No Phase-2 item blocks Phase 3.**
+**The Tier-5 denominator is 23, per §21.3's own table — *"and only that table."*** The
+`20` this row carried until D-118 was one of the known three-way disagreements (23 = §21.3's
+list, 20 = the phase table's implied count, 13 = the "Phase 2 unfinished" count, which counts
+only the items Phase 2 *deferred* rather than the whole Tier-5 list). **A count in prose drifts
+(O-104): the number here is the SCRIPT-ONLY Tier 5 measured by `tools/reachability_audit.py`
+plus the functions §21.3 names, and every Tier-5 name that ships is confirmed against the
+table — never recalled.**
+
+**Read the phase-line counts correctly — they are not a backlog.** The Tier 1–4 figures
+(23 + 29 + 15 + 11 = 78) are **every Tier 1–4 function, all complete**. Tier 5 is the
+specification's own deferral list: the non-US central-bank reaction functions (the ECB's
+20-country-compromise dynamic, the BoJ's institutional deflation-scar bias, the PBoC's
+non-Western reaction function — each **genuinely different logic**, not the Fed's Taylor Rule
+with a different country label) plus the Phase-5-only models. §22.3 scopes Phases 0–4 to the US,
+so those *cannot* be earned by Phase 2. **No Phase-2 item blocks Phase 3.**
+**⚠️ D-096: Phase 5+ is an UPGRADE PASS — each Tier-5 name is a REPLACEMENT for a simpler
+Phase 0–4 function (the exceptions: §6.7's FX block and §20.9). Ask "what does this supersede?",
+never grep the list for a keyword.**
 
 **Phase 3 is COMPLETE (D-070).** `src/macro_engine/api_layer/` holds eight
 modules (3383 lines) implementing all five §8 surfaces — `/health`,

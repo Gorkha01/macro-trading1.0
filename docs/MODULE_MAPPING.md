@@ -2336,3 +2336,47 @@ was already **SCRIPT-ONLY** in Tier 5, so `--check-baseline` stayed **PASS 58/58
 `data_layer` client does not itself become a Tier-5 reachability target; only its **calling
 model** matters, and that model was already audited.
 
+---
+
+## D-118 — Module 9's `intervention_capacity`, and Module 9 CLOSED (2026-09-28)
+
+**Tier 5 = 15/23. Module 9 = 5 of 5 — COMPLETE.** Module 18 is untouched at 5 of 6.
+
+`intervention_capacity` claims the **last open Module 9 slot** (Module 9.5 in §20.9's
+numbering, `AGENTS.md:4906`). Module 9 now reads: `cip_check` (D-108) · `carry_score` (D-109) ·
+`dollar_smile_regime` (D-111) · `uip_expected_move` (D-112) · `ppp_valuation` (D-114) ·
+`intervention_capacity` (D-118). **The `fx_carry.py` parity branch and Module 9 as a whole are
+CLOSED.**
+
+**A NEW FILE, not `fx_carry.py`.** Unlike its five siblings, `intervention_capacity` lives in
+**`src/macro_engine/models/intervention.py`** — a NEW file (operator decision, D-118). The
+§20.9 reference impl sits in a Module 9 block, but **Module 9's FX-parity functions are what
+`fx_carry.py` carries**, and this is a **reserve-capacity** estimator, a different estimand from
+the FX-parity family. The file split is the mapping expression of that distinction: **a module's
+file boundary is a claim about what the module IS**, and two estimands that share a course
+section need not share a source file. **`em_vulnerability_checklist` (§20's part B,
+`AGENTS.md:2948`) is the NEXT Module 9 name** — and its placement is an open operator question
+(set in `fx_carry.py` per its comment, or a new file per this precedent).
+
+**A new `data_layer` node.** The FX-reserves input `fx_reserves_usd_bn` is fed by a NEW
+`src/macro_engine/data_layer/reserves_client.py` (FRED `TRESEGJPM052N` / `TRESEGGBM052N` /
+`TRESEGCNM052N` for jp/jpn, gb/gbr/uk, cn/chn; `SOURCE_UNIT = "millions of USD"`,
+`OUTPUT_UNIT = "billions of USD"`). This is the **fourth** input this project has moved from a
+declared constant to a measured fetch (after `ppp_implied_rate` at D-117), and it re-opened the
+`MANUAL_ASSESSMENT` vs fetched distinction in the disclosure.
+
+**Reachability moved — SCRIPT-ONLY count 13 → 14.** `intervention_capacity`'s only caller is
+`scripts/live_intervention_capacity_check.py`, so it classifies **SCRIPT-ONLY — Tier 5**, taking
+the SCRIPT-ONLY Tier-5 count from **13 to 14**. The **total** stays **PASS 58/58** — the
+baseline is a fixed total (built functions each occupy one classification), and a new Tier-5
+function is added to the SCRIPT-ONLY bucket rather than appearing as a new total row. The new
+`reserves_client.py` does **not** itself become a reachability target (same rule as D-117: only
+its calling model matters).
+
+**Also recorded:** the sweep census moved **45 → 46** (`mutation_intervention.py` is the 46th
+sweep), edited in its three homes — `test_sweep_sidecar_lifecycle.py` ×2 and
+`test_sweep_health_leftover_predicate.py` ×1. And the conversion constant
+`MILLIONS_PER_BILLION` is now **public and imported** by the model rather than re-typed
+(O-143), which is the mapping-level statement that the unit conversion has **one** source of
+truth.
+
