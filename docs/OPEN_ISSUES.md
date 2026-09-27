@@ -52,15 +52,41 @@ substituting copper or a broader metals index.
 
 ---
 
-### O-3 — `ppp_implied_rate` — BLOCKED
+### O-3 — `ppp_implied_rate` — **RESOLVED (LIVE)** 2026-09-27 by D-117
 
-OECD publishes PPP conversion factors but exposes no clean free API.
+**This was a FALSE BLOCK** (D-043's class — the third this repo has caught).
+The premise below, *"OECD … exposes no clean free API"*, was **measured false**:
+the **World Bank REST API** serves the item directly (`PA.NUS.PPP`, PPP
+conversion factor GDP, LCU per international $) with **36 non-null annual points
+1990–2025**. §21.1's row is now **`LIVE`**, sourced by
+`src/macro_engine/data_layer/world_bank_client.py` on the same *"direct, not
+OpenBB"* route the spec already sanctions for `current_account_pct_gdp`.
 
-**Path:** MANUAL entry only. Section 21.4 notes any MANUAL input must appear as
-"Manual Entry" in output, so it can never be mistaken for a live observation.
+**⚠️ Do NOT read this as "any free PPP source will do."** The increment that
+resolved it established the **criterion** first, against the engine's own
+`alfred_client.py` contract — a **point-in-time selector**
+(`realtime_start == realtime_end == as_of`) — and **NONE of the four named free
+sources implements one**, so **none is an ALFRED substitute** and the ALFRED
+capability stays **FRED-only**. In particular the **IMF `PPPEX` is a trap**: the
+right series *label*, HTTP 200, and a `?version=` that is **silently absorbed and
+corrupts the read** — **O-6's exact defect** on a different host. Full
+per-source measurement: `docs/PLAN_ppp_source.md` §6 and `docs/DECISIONS.md` D-117 §1.
 
-**Affects:** the PPP leg of FX modelling (Module 12). UIP and carry remain
-computable from live data; only the PPP-anchored view is unavailable.
+**Original entry, retained for the audit trail:**
+
+> OECD publishes PPP conversion factors but exposes no clean free API.
+>
+> **Path:** MANUAL entry only. Section 21.4 notes any MANUAL input must appear as
+> "Manual Entry" in output, so it can never be mistaken for a live observation.
+>
+> **Affects:** the PPP leg of FX modelling (Module 12). UIP and carry remain
+> computable from live data; only the PPP-anchored view is unavailable.
+
+**What actually happened to the "Path":** the MANUAL entry shipped at D-114 and
+was **replaced at D-117** by the fetched value. The fetch is now the **only live
+path** (operator decision — a dead MANUAL fallback would read exactly like a live
+fetch whenever it fired); a caller-supplied rate still exists but is **disclosed
+as supplied**, so a typed number can never pass as a measured one.
 
 ---
 

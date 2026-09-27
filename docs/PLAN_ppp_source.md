@@ -1,9 +1,21 @@
 # PLAN — `ppp_implied_rate`: is the data really "not found anywhere"?
 
 **Written 2026-09-27, immediately after D-114 shipped `ppp_valuation`.**
-**Status:** a **MEASUREMENT**, not a proposal to change code yet. It answers one
-question the operator asked — *"is the data not found anywhere?"* — and it changes
-what the next increment should do about `ppp_valuation`'s input.
+**Status: ✅ EXECUTED — BOTH PHASES DONE. Plan C (record the finding) landed at
+D-115/D-116; Plan A (wire the LIVE source) landed at D-117.**
+This document began as **a MEASUREMENT, not a proposal to change code** — it
+answered one question the operator asked: *"is the data not found anywhere?"*
+Its §4 recommendation (*"Plan C now, Plan A as its own increment later"*) was
+followed exactly, and §6 is the **completed** answer to the operator's follow-up
+question about the four named sources.
+
+> **⚠️ READ THIS FILE AS HISTORY, NOT AS A TO-DO.** Nothing here is outstanding.
+> What shipped: `ppp_implied_rate` is now **`LIVE`** (§21.1), fetched by
+> `src/macro_engine/data_layer/world_bank_client.py` from the World Bank REST API
+> (`PA.NUS.PPP`). The **fetch is the only live path** (no MANUAL fallback), the
+> euro leg is **DEU**, and the ALFRED question in §6 resolved to **"no — none of
+> the four is a substitute"**. Where this file and `DECISIONS.md` D-117 disagree,
+> **D-117 is the record of what was actually built.**
 
 ---
 
