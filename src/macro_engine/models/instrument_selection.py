@@ -564,6 +564,42 @@ def select_instrument(
     # could never fire: it compared a literal to a set the literal was written
     # from (probe P4). This compares the EMITTED NAME to the real matcher, so a
     # template edited to name an out-of-universe instrument is caught here.
+    #
+    # Two checks, and they are NOT redundant (D-128):
+    #
+    #   (a) `category_for` — a *classification*. It answers "which category does
+    #       this string read as", using keyword sets. `ProductionUniverse.equity`
+    #       lists exactly one member, "Broad equity indices (ES, NQ, RTY)", but
+    #       `_EQUITY_KEYWORDS` admits ANY phrase containing "equity index" /
+    #       "index futures" / "s&p" / ... . So a template reading "Broad equity
+    #       index (some reader-facing note)" is category-correct yet names no
+    #       listed member — which is exactly the P4 defect this block says it
+    #       fixed, only one level down: it compared the emitted name, but to a
+    #       matcher that accepts far more than the universe lists.
+    #
+    #   (b) `permits` — the universe's OWN membership statement, required in
+    #       addition to the classification. This is the audit's prescribed
+    #       strengthening. It is defence in depth, NOT the whole fix: measured,
+    #       `permits` delegates to `category_for`, so every keyword-matched
+    #       string (including the defective `equity_macro` prose) returns
+    #       True — see the note below on why the per-route membership contract
+    #       is enforced in the CONFIG VALIDATOR plus a test, not here.
+    #
+    # WHY (b) IS NOT A STRICT MEMBERSHIP CHECK, measured on the real universe
+    # (2026-09-28): the three legitimate literal routes do NOT name list
+    # entries either. `ProductionUniverse.rates` lists
+    # "UST futures (TU, FV, TY, US)", while `policy_path_gap` correctly ships
+    # "UST 2yr note futures" (the TU contract by name) and
+    # `inflation_expectations_gap` ships "Duration-matched TIPS long / nominal
+    # short (breakeven trade)". Both are real, desk-verified instruments that
+    # the keyword path recognises as *more specific instances of a listed
+    # family*. A strict `instrument in universe.<category>` check here would
+    # REJECT them — trading a real defect for two false refusals, which is the
+    # wrong trade (Section 22.8: refuse rather than guess, but never refuse a
+    # correct answer). The membership contract on the shipped strings is
+    # therefore pinned by `tests/models/test_instrument_selection.py` (per-route
+    # expected instrument) and by the config validator, where a prose string
+    # cannot reach review unnoticed — not by an over-broad runtime guard.
     observed_category = universe.category_for(instrument)
     if observed_category is None:
         raise ValueError(
@@ -580,6 +616,13 @@ def select_instrument(
             f"{category!r} but {instrument!r} is classified {observed_category!r} by the "
             f"production universe. Fix the routing table — a category that disagrees "
             f"with the matcher makes the config note a claim rather than a fact."
+        )
+    if not universe.permits(instrument):
+        raise ValueError(
+            f"The route for {inputs.thesis_type.value!r} produced {instrument!r}, which "
+            f"the production universe classifies as {observed_category!r} but does not "
+            f"PERMIT (Section 22.12). Refusing to publish something the desk's own "
+            f"universe refuses, even though the category check above passed."
         )
 
     confidence = compute_confidence(

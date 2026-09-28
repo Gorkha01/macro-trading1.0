@@ -150,6 +150,74 @@ def test_the_four_executable_routes_name_tradeable_instruments() -> None:
         assert UNIVERSE.permits(instrument), (member, instrument)
 
 
+def test_the_equity_route_names_a_literal_universe_member_not_a_description() -> None:
+    """``equity_macro`` must name the listed member, not merely match a keyword (D-128).
+
+    The defect this pins was a Class-G/E one: the shipped template read
+    ``"Broad equity index (per Section 6.9 duration/sector logic)"`` — a
+    **reader-facing note appended to a phrase**. It passed
+    ``UNIVERSE.permits`` (category ``equity``, on the keyword *equity index*)
+    while naming **nothing the desk trades**, and the prose about Section 6.9
+    belongs in the route's ``rationale``, which is published separately.
+
+    The equity category is the sharpest place to pin this because it lists
+    exactly **one** member. So for equity — and only for equity — membership
+    *is* equality, and the assertion can be the strict one the audit asked for:
+    the emitted instrument must equal a member of ``UNIVERSE.equity`` verbatim.
+
+    The same strictness does NOT hold for the rates routes: ``rates`` lists the
+    *family* ``"UST futures (TU, FV, TY, US)"``, while ``policy_path_gap``
+    correctly ships the specific contract ``"UST 2yr note futures"``. Both are
+    real instruments; the family/specific-instance split is why the runtime
+    guard checks ``permits`` (the universe's own statement) rather than exact
+    list equality, and why the exact member pin lives here, per category, where
+    the answer is known.
+    """
+    instrument = _instrument(_select(ThesisType.EQUITY_MACRO))
+
+    assert instrument in UNIVERSE.equity, (
+        f"equity_macro emits {instrument!r}, which is not a member of the production "
+        f"universe's equity list {UNIVERSE.equity!r}. An equity route that matches the "
+        f"category keyword while naming a description rather than a listed member is "
+        f"the D-128 defect."
+    )
+    assert "Section" not in instrument, (
+        "the instrument field must not carry a document/section reference; that is "
+        "rationale prose, published under value['rationale']"
+    )
+
+
+def test_no_executable_route_publishes_prose_as_its_instrument() -> None:
+    """No route may put a section/document reference in the instrument field (D-128).
+
+    The equity defect was one instance of a class: a template that appends a
+    note *to the reader* ("per Section ...", "see ...", "as described in ...")
+    instead of naming a trade. This walks every executable route and asserts the
+    emitted instrument carries no such marker — a cheap, category-agnostic net
+    under the per-route pins, so a *different* route acquiring the same habit
+    fails here even though it is not the equity route.
+
+    It is deliberately weaker than an exact-membership check (which would reject
+    the legitimate specific-instance rates names, see the sibling test) and
+    deliberately stronger than ``permits`` alone (which the prose string
+    passed). Its markers are the ones a section reference actually uses; a bare
+    word "section" is not searched, because "duration-matched TIPS long / nominal
+    short (breakeven trade)" is the legitimate shape the check must not disturb.
+    """
+    prose_markers = ("per Section", "Section ", "see ", "as described", "reference ")
+    for member in (
+        ThesisType.POLICY_PATH_GAP,
+        ThesisType.CURVE_SHAPE_GAP,
+        ThesisType.INFLATION_EXPECTATIONS_GAP,
+        ThesisType.EQUITY_MACRO,
+    ):
+        instrument = _instrument(_select(member))
+        assert not any(marker in instrument for marker in prose_markers), (
+            member,
+            instrument,
+        )
+
+
 def test_each_route_declares_the_category_the_matcher_observes() -> None:
     """A route's declared ``universe_category`` must equal the matcher's verdict.
 
@@ -254,6 +322,41 @@ def test_a_route_whose_category_disagrees_with_the_matcher_is_refused() -> None:
         select_instrument(inputs, _UniverseReclassifyingEverything())
 
 
+def test_a_route_the_universe_classifies_but_does_not_permit_is_refused() -> None:
+    """The membership guard: category agreement is not membership (D-128).
+
+    This is the exact discrimination the audit's fix #2 asked for. ``permits``
+    and ``category_for`` are NOT the same test: a string can read as a category
+    by keyword while the universe declines to permit it. The stand-in
+    classifies correctly and permits nothing, so the first two guards pass and
+    only the membership guard can fire — which is what makes this a test of the
+    NEW guard rather than a replay of the old ones.
+    """
+    inputs = InstrumentSelectionInputs(
+        thesis_type=ThesisType.POLICY_PATH_GAP, gap_direction=GapDirection.POSITIVE
+    )
+    with pytest.raises(ValueError, match="does not PERMIT"):
+        select_instrument(inputs, _UniversePermitsNothingButClassifies())
+
+
+def test_the_equity_membership_replay_is_refused() -> None:
+    """The audit's measured defect, replayed at the membership level (D-128).
+
+    ``_UniverseMembershipOnlyRejectingEquity`` classifies the equity instrument
+    correctly but refuses to permit it — the state the pre-fix prose string was
+    in, where ``category_for`` said ``equity`` and the string named no member.
+    The router must refuse rather than publish. Paired with
+    ``test_the_equity_route_names_a_literal_universe_member_not_a_description``,
+    which pins the *fixed* config, this covers both halves: the guard fires when
+    membership fails, and the shipped config does not fail it.
+    """
+    inputs = InstrumentSelectionInputs(
+        thesis_type=ThesisType.EQUITY_MACRO, gap_direction=GapDirection.POSITIVE
+    )
+    with pytest.raises(ValueError, match="PERMIT"):
+        select_instrument(inputs, _UniverseMembershipOnlyRejectingEquity())
+
+
 class _UniverseRejectingPolicyPathGap(ProductionUniverse):
     """Stand-in for a config whose POLICY_PATH_GAP template drifted out of universe.
 
@@ -283,6 +386,40 @@ class _UniverseReclassifyingEverything(ProductionUniverse):
 
     def category_for(self, instrument: str) -> str | None:
         return "fx"
+
+
+class _UniversePermitsNothingButClassifies(ProductionUniverse):
+    """Classifies correctly yet PERMITS nothing — the D-128 guard's isolating shape.
+
+    ``category_for`` delegates to the real matcher, so the declared category and
+    the observed category still AGREE — the first two guards pass. Only
+    ``permits`` disagrees, returning ``False`` for every instrument. That is the
+    one shape that can reach the membership guard, and therefore the only shape
+    that can kill ``M3.4``. (``_UniverseRejectingPolicyPathGap`` cannot: it makes
+    ``category_for`` return ``None``, so the *first* guard fires and the
+    membership guard is never consulted.)
+
+    This is not a contrived universe. It is the honest model of a universe that
+    grows its membership lists without growing its keyword sets — the direction
+    of drift that a `permits`-only check is meant to survive.
+    """
+
+    def permits(self, instrument: str) -> bool:
+        return False
+
+
+class _UniverseMembershipOnlyRejectingEquity(ProductionUniverse):
+    """Classifies the equity member correctly but refuses to PERMIT it (D-128).
+
+    The precise replay of the audit's measured defect, one level down: before the
+    fix, ``equity_macro``'s instrument was a *prose* string that ``category_for``
+    read as ``equity`` (keyword ``equity index``) while it named no listed
+    member. Modelling that as "category agrees, membership does not" is exactly
+    the state the new guard refuses.
+    """
+
+    def permits(self, instrument: str) -> bool:
+        return instrument != "Broad equity indices (ES, NQ, RTY)"
 
 
 # ---------------------------------------------------------------------------

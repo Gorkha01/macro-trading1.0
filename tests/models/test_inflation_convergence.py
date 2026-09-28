@@ -1406,3 +1406,188 @@ def test_the_base_confidence_constant_is_not_special_cased() -> None:
         f"a confidence of exactly the specification's hardcoded value was "
         f"produced: {observed & {0.5, 0.7}}"
     )
+
+
+# --------------------------------------------------------------------------
+# 12. The base-state threshold is LEAF-DRIVEN, not a source literal (D-127)
+# --------------------------------------------------------------------------
+
+
+def test_the_base_state_threshold_is_read_from_config_not_a_literal() -> None:
+    """The `0.75` in the source was silently coupled to a leaf that moves.
+
+    §D-127: the base-state disclosure compares ``current_measure_count_high``
+    (a config leaf) against a boundary that used to be a bare literal. The
+    boundary is now ``settings.base_state_warning_threshold``, so re-measuring
+    the base rate cannot move it out from under the comparison without the
+    validator below refusing the pairing. This test asserts the leaf is what the
+    code reads — a revert to a literal would make the two disagree here.
+    """
+    settings = get_settings().inflation.convergence
+    declared = settings.base_state_warning_threshold
+    rederived = settings.base_state_warning_threshold_value.value
+    assert declared == pytest.approx(rederived)
+
+    # The higher of the two base rates must sit ABOVE the bar, or the disclosure
+    # could never fire — the state the config validator forbids.
+    achieved = max(
+        settings.measured_base_rates.three_measure_high,
+        settings.measured_base_rates.six_measure_high,
+    )
+    assert declared < achieved, (
+        "the base-state bar is at or above every producible HIGH base rate, so "
+        "the disclosure could never fire"
+    )
+
+
+def test_the_base_state_disclosure_fires_today_because_the_leaf_is_below_the_rate() -> None:
+    """A control: the shipped pairing produces the warning, at both n=3 and n=6.
+
+    A threshold that is *declared* but never reached is dead config. Both
+    measure-counts the model can produce carry a HIGH base rate (0.866 / 0.895)
+    above the 0.75 bar, so a HIGH reading warns in both configurations.
+    """
+    for inputs in (
+        _three(headline=1, core=1, pce=1),
+        _six(1, 1, 1, 1, 1, 1),
+    ):
+        result = inflation_convergence_classifier(inputs)
+        assert _verdict(result).classification == "HIGH"
+        assert any("BASE STATE" in w for w in result.warnings), (
+            "the base-state disclosure did not fire for a HIGH reading"
+        )
+
+
+def test_a_config_whose_threshold_kills_the_disclosure_is_refused() -> None:
+    """The validator is load-bearing: it stops a config edit removing the warning.
+
+    This is the defect the audit named — a *config* edit (raising the bar, or
+    re-measuring the base rate down) could silently stop the disclosure firing.
+    Now the model refuses to load such a pairing rather than degrading quietly.
+    """
+    import copy
+    from pathlib import Path
+
+    import yaml
+
+    from macro_engine.config import InflationConvergenceSettings
+
+    raw = yaml.safe_load(Path("config/settings.yaml").read_text(encoding="utf-8"))
+    conv = copy.deepcopy(raw["inflation"]["convergence"])
+
+    # Sanity: the shipped block loads.
+    InflationConvergenceSettings.model_validate(conv)
+
+    # A threshold at or above the highest base rate would make the warning dead.
+    dead = copy.deepcopy(conv)
+    dead["base_state_warning_threshold_value"]["value"] = 0.9
+    with pytest.raises(ValidationError, match=r"could.{0,20}never fire"):
+        InflationConvergenceSettings.model_validate(dead)
+
+    # A share outside [0, 1] is not a share.
+    out_of_range = copy.deepcopy(conv)
+    out_of_range["base_state_warning_threshold_value"]["value"] = 1.5
+    with pytest.raises(ValidationError, match=r"share in \[0, 1\]"):
+        InflationConvergenceSettings.model_validate(out_of_range)
+
+
+# --------------------------------------------------------------------------
+# 13. `majority_direction` publishes the sign `agreeing` does not carry (D-128)
+# --------------------------------------------------------------------------
+
+
+def test_majority_direction_reports_the_side_the_majority_is_on() -> None:
+    """`agreeing` is a count of the *majority*, which may be the DOWN side.
+
+    §D-127: a parameter/field named `agreeing` that holds the down side's count
+    reads as a directional claim it does not make (the D-034/36/37 latent trap).
+    `majority_direction` makes the sign recoverable from the output.
+
+    Rising month: 3 up, 0 down → +1. Disinflation month: 0 up, 3 down → -1.
+    """
+    rising = _verdict(inflation_convergence_classifier(_three(headline=1, core=1, pce=1)))
+    falling = _verdict(inflation_convergence_classifier(_three(headline=-1, core=-1, pce=-1)))
+
+    assert rising.agreeing == 3 and rising.opposing == 0
+    assert rising.majority_direction == 1
+    assert falling.agreeing == 3 and falling.opposing == 0
+    assert falling.majority_direction == -1
+
+
+def test_majority_direction_is_zero_when_no_side_holds_a_majority() -> None:
+    """A tie — including the all-flat month — reports 0, the honest answer."""
+    flat = _verdict(inflation_convergence_classifier(_three(headline=0, core=0, pce=0)))
+    assert flat.agreeing == flat.opposing
+    assert flat.majority_direction == 0
+
+    # A genuine 1-up / 1-down / 1-flat split is also a tie on the directional
+    # sides and must not claim a direction.
+    mixed = _verdict(inflation_convergence_classifier(_three(headline=1, core=-1, pce=0)))
+    assert mixed.agreeing == mixed.opposing == 1
+    assert mixed.majority_direction == 0
+
+
+def test_majority_direction_is_published_in_the_verdict() -> None:
+    """The field must be part of the published contract, not an internal value."""
+    value = inflation_convergence_classifier(_three(headline=1, core=1, pce=1)).value
+    assert isinstance(value, dict)
+    assert "majority_direction" in value
+    assert value["majority_direction"] == 1
+
+
+def test_the_disclosure_follows_a_moved_leaf(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Moving the leaf must move the disclosure — the only path that sees a literal.
+
+    §D-127, and the counterpart of ``test_rebalancing_drift``'s lesson: a test
+    that re-reads the *accessor* proves the accessor is live and says nothing
+    about whether the FUNCTION consults it. A function hardcoding the shipped
+    ``0.75`` passes that kind of test unchanged.
+
+    Here the leaf is moved to a value the shipped literal does not equal, and the
+    classifier is called. The disclosure must follow the leaf:
+
+    * raised to ``0.95`` (above both base rates) it must go SILENT for a HIGH
+      reading — the state the config validator forbids from shipping but which
+      this test reaches by construction;
+    * lowered to ``0.10`` it must FIRE as before.
+
+    A revert to the literal ``0.75`` fails this test, which is what makes it the
+    kill for the C-2a defect-reintroduction mutant.
+    """
+    import macro_engine.models.inflation_convergence as module
+    from macro_engine.config import get_settings as _real_get_settings
+
+    settings = _real_get_settings()
+    convergence = settings.inflation.convergence
+
+    def _patched(threshold: float) -> object:
+        moved_conv = convergence.model_copy(
+            update={
+                "base_state_warning_threshold_value": (
+                    convergence.base_state_warning_threshold_value.model_copy(
+                        update={"value": threshold}
+                    )
+                )
+            }
+        )
+        moved_inflation = settings.inflation.model_copy(update={"convergence": moved_conv})
+        return settings.model_copy(update={"inflation": moved_inflation})
+
+    high = _three(headline=1, core=1, pce=1)
+
+    # (a) Bar ABOVE every base rate -> the disclosure cannot fire.
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(0.95))
+    silenced = inflation_convergence_classifier(high)
+    assert _verdict(silenced).classification == "HIGH"
+    assert not any("BASE STATE" in w for w in silenced.warnings), (
+        "the disclosure fired even though its bar sits above the base rate — "
+        "the code is not reading the leaf"
+    )
+
+    # (b) Bar BELOW every base rate -> the disclosure fires.
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(0.10))
+    loud = inflation_convergence_classifier(high)
+    assert any("BASE STATE" in w for w in loud.warnings), (
+        "the disclosure did not fire with a bar below the base rate — the code "
+        "is not reading the leaf"
+    )

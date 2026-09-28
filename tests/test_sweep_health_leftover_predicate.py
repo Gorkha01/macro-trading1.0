@@ -913,7 +913,11 @@ def test_a_control_less_sweep_is_reported_not_failed(tool_module: Any) -> None:
     # models/labor_synthesis.py `inflation_breadth_score` -- no new client,
     # because the breadth read consumes three supplied m/m floats) -- likewise a
     # CANARY1 sweep, so `missing == []` still holds without a second edit.
-    assert len(sweeps) == 51, f"expected 51 sweeps, found {len(sweeps)}"
+    # 51 -> 52 at D-128 (`mutation_as_of.py`, models/as_of.py -- the
+    # point-in-time discipline, Section 5.5/O-7 -- no new client, because the
+    # module is a pure filter over an already-fetched series) -- likewise a
+    # CANARY1 sweep, so `missing == []` still holds without a second edit.
+    assert len(sweeps) == 52, f"expected 52 sweeps, found {len(sweeps)}"
     assert missing == [], (
         f"{len(missing)} sweep(s) lost their control: {missing}. O-72's first "
         "half was closed on 2026-09-21 by adding a CANARY1 gate to all 18; a new "

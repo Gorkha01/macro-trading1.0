@@ -124,6 +124,12 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "src/macro_engine/models/instrument_selection.py"
 SCHEMAS = REPO / "src/macro_engine/thesis_layer/schemas.py"
 CONFIG = REPO / "src/macro_engine/config.py"
+#: The shipped YAML. Swept from D-128, when the routing table's
+#: ``instrument_template`` strings became load-bearing (the equity route's
+#: template was prose, and the fix moved it to a real universe member). The
+#: config round-trip in ``tests/test_infrastructure.py`` plus the per-route pins
+#: in ``tests/models/test_instrument_selection.py`` are what kill edits here.
+SETTINGS = REPO / "config/settings.yaml"
 
 #: The test selection a surviving mutation must be *capable* of killing.
 #:
@@ -225,6 +231,14 @@ _M3_OUT_OF_UNIVERSE = """    observed_category = universe.category_for(instrumen
     if observed_category is None:
         raise ValueError("""
 _M3_CATEGORY_AGREEMENT = """    if observed_category != category:
+        raise ValueError("""
+#: The membership guard added at D-128: the universe's own `permits` verdict,
+#: required IN ADDITION to the category classification. Mutating it to a
+#: tautology leaves the classification check in place, so only a test that
+#: exercises a universe whose `permits` agrees with its `category_for` on the
+#: *category* but disagrees on *membership* can kill it — which is exactly the
+#: `_UniversePermitsNothing` stand-in in the test file.
+_M3_PERMITS = """    if not universe.permits(instrument):
         raise ValueError("""
 
 # --- M5: the sentinel branches -----------------------------------------------
@@ -435,6 +449,21 @@ def build_mutations() -> list[Mutation]:
                 "P4: a guard that can only fire on an empty string. This is the shape "
                 "Section 22.3.1's vacuous assert had -- present, and unreachable on "
                 "every input it was written for."
+            ),
+        ),
+        Mutation(
+            group="M3",
+            name="M3.4 the universe's own permits() verdict is ignored",
+            path=SRC,
+            old=_M3_PERMITS,
+            new="""    if False:
+        raise ValueError(""",
+            intent=(
+                "D-128: the membership guard added after the equity prose defect. It is "
+                "the universe's OWN statement, required alongside the category "
+                "classification. Killed only by a universe whose category_for admits "
+                "the string while permits rejects it -- the stand-in built for exactly "
+                "this discrimination."
             ),
         ),
         # -- M5: the sentinel branches ----------------------------------------
@@ -680,6 +709,52 @@ def build_mutations() -> list[Mutation]:
                 "(D-051)."
             ),
             expect_killed=False,
+        ),
+        # -- M9b: the shipped instrument templates (D-128) ---------------------
+        # These mutants edit the CONFIG template strings, not the code. The
+        # `equity_macro` mutants revert the D-128 fix: the prose form (a reader
+        # note in the instrument field) matches the category keyword while
+        # naming no member, which is exactly the shipped defect. Killing them
+        # proves the per-route membership pin in the test file actually binds.
+        Mutation(
+            group="M9b",
+            name="M9b.1 equity_macro reverts to the prose template (the D-128 defect)",
+            path=SETTINGS,
+            old='        instrument_template: "Broad equity indices (ES, NQ, RTY)"',
+            new=(
+                '        instrument_template: "Broad equity index '
+                '(per Section 6.9 duration/sector logic)"'
+            ),
+            intent=(
+                "D-128: this IS the shipped defect. The string classifies as `equity` "
+                "by keyword yet names no listed member. Killed by the exact-membership "
+                "pin, which no amount of category matching can satisfy for prose."
+            ),
+        ),
+        Mutation(
+            group="M9b",
+            name="M9b.2 equity_macro names a non-member equity phrase",
+            path=SETTINGS,
+            old='        instrument_template: "Broad equity indices (ES, NQ, RTY)"',
+            new='        instrument_template: "Broad equity index futures (custom basket)"',
+            intent=(
+                "D-128: a keyword-valid but non-listed string. It still matches the "
+                "`equity index` keyword, so only the membership pin separates it from "
+                "the shipped member -- this mutant proves the pin is not just checking "
+                "`permits`."
+            ),
+        ),
+        Mutation(
+            group="M9b",
+            name="M9b.3 policy_path_gap publishes a document reference",
+            path=SETTINGS,
+            old='        instrument_template: "UST 2yr note futures"',
+            new='        instrument_template: "UST 2yr note futures (see Section 15)"',
+            intent=(
+                "D-128: the class-level net (`test_no_executable_route_publishes_prose_"
+                "as_its_instrument`). A prose parenthetical must be caught for ANY "
+                "route, not only the equity one that originally carried it."
+            ),
         ),
         # -- CX: the config surface -------------------------------------------
         Mutation(

@@ -160,27 +160,32 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
 
     Confidence
     ----------
-    **Computed, not asserted.** Section 6.5 writes ``confidence=0.5`` with the
-    comment "potential GDP itself is an estimate". Section 22.8 replaces that
-    literal with ``compute_confidence()``, and the specification's own four
-    factors map onto the stated inputs exactly:
+    **Computed, not asserted — and fixed by construction.** Section 6.5 writes
+    ``confidence=0.5`` with the comment "potential GDP itself is an estimate".
+    Section 22.8 replaces that literal with ``compute_confidence()``.
+
+    This is a **pure two-float function**, and that is the whole point of it: it
+    cannot know whether the snapshot behind ``potential_gdp`` was flagged, nor
+    how many independent source families produced it — those are facts about the
+    *caller's* data, not about the arithmetic. So the model supplies exactly the
+    two factors it genuinely owns and lets the formula decide:
 
     * ``depends_on_unobservable=True`` — potential GDP is the canonical
       unobservable (Section 21.4 item 13). This is the factor the
       specification's comment was reaching for.
-    * ``data_quality_flags_present`` — set by the caller when the snapshot
-      carrying these values was flagged.
-    * ``source_independence_count`` — the number of genuinely independent
-      source families behind the inputs (Module 13). A single-provider,
-      single-methodology pair is not corroboration.
-    * ``is_heuristic_not_calibrated`` — left to the caller, since whether the
-      underlying potential-output estimate is calibrated is a fact about the
-      estimate's provenance rather than about this arithmetic.
+    * ``source_independence_count=0`` — a single-provider, single-methodology
+      pair is not corroboration, and this function is handed only the two
+      numbers, so it cannot certify independence it has not seen.
 
-    The resulting value will land **at or below** the specification's 0.5 for a
-    bare two-input call, which is the correct direction: the spec's literal was
-    already meant to express "this is not a measurement", and the computed form
-    says it without a magic number.
+    Every legal call therefore publishes **exactly 0.5** (0.7 base - 0.2 for the
+    unobservable), the value the specification's literal was groping toward.
+    ``data_quality_flags_present`` and a *measured* ``source_independence_count``
+    are **not** inputs here by design: the caller-side data-quality information
+    is applied by ``output_gap_from_snapshot`` and the orchestration layer, which
+    are the layers that actually hold the snapshot's flags. (An earlier revision
+    of this docstring listed all four factors as caller-supplied while
+    ``OutputGapInputs`` rejected every one but the two floats — a docstring that
+    promised an input surface the model refuses, corrected at D-127.)
 
     Warnings
     --------

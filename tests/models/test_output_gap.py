@@ -293,6 +293,70 @@ def test_output_gap_declares_its_inputs_and_is_us_scoped() -> None:
     assert result.as_of.tzinfo is not None, "as_of must be timezone-aware (DTZ rule)"
 
 
+def test_output_gap_input_contract_is_exactly_two_floats() -> None:
+    """The docstring's Confidence section and ``OutputGapInputs`` must agree (D-127).
+
+    This test exists because they once did NOT. The docstring listed four
+    caller-supplied confidence factors — ``data_quality_flags_present``,
+    ``source_independence_count``, ``is_heuristic_not_calibrated`` and
+    ``depends_on_unobservable`` — while ``OutputGapInputs`` refused every one of
+    them (``extra="forbid"``) and accepted only the two floats. A docstring that
+    advertises an input surface the model rejects is a defect of the same class
+    as a ``Literal`` with an unproducible member (D-045a): the documented
+    contract and the enforced contract were two different promises.
+
+    The audit's preferred remedy was to make the CODE the truth and rewrite the
+    docstring, not to widen the model — because a pure two-float function
+    *cannot* honestly report a caller's data-quality flag (it never sees the
+    snapshot). So the pinned contract is deliberately the NARROW one:
+
+      * the two floats are accepted;
+      * each of the four formerly-documented factors is REFUSED.
+
+    A future revision that either widens ``OutputGapInputs`` back to accept a
+    quality factor, or trims the docstring's claim, must update this test —
+    which is the point: the two halves cannot silently drift apart again.
+    """
+    # The accepted surface: exactly two floats, nothing else.
+    assert set(OutputGapInputs.model_fields) == {"actual_gdp", "potential_gdp"}
+
+    # The refused surface: every factor the old docstring promised is rejected
+    # by the model, so the docstring's current (narrow) claim is the honest one.
+    for rejected in (
+        "data_quality_flags_present",
+        "source_independence_count",
+        "is_heuristic_not_calibrated",
+        "depends_on_unobservable",
+    ):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            OutputGapInputs(
+                actual_gdp=21_000.0,
+                potential_gdp=20_000.0,
+                **{rejected: True},
+            )
+
+
+def test_output_gap_confidence_is_pinned_at_half_by_construction() -> None:
+    """Every legal call publishes exactly 0.5 — the fact the docstring now states.
+
+    The docstring's claim is specific and falsifiable: a pure two-float function
+    supplies ``depends_on_unobservable=True`` and ``source_independence_count=0``
+    and nothing else, so ``compute_confidence`` has one answer for every input
+    pair. This asserts that constancy directly, rather than through the
+    config-coincidence reasoning of the sibling test, so the "fixed by
+    construction" sentence is backed by a check and not merely asserted in prose.
+
+    Two different input pairs are used so the claim is shown to be
+    input-INdependent: a positive gap (above potential) and a negative one
+    (slack) must both land on 0.5.
+    """
+    above = output_gap(OutputGapInputs(actual_gdp=21_000.0, potential_gdp=20_000.0))
+    slack = output_gap(OutputGapInputs(actual_gdp=19_000.0, potential_gdp=20_000.0))
+
+    assert as_float(above) > 0 and as_float(slack) < 0, "the two cases must differ in sign"
+    assert above.confidence == slack.confidence == 0.5
+
+
 # ---------------------------------------------------------------------------
 # Snapshot adapter — where O-7 is closed
 # ---------------------------------------------------------------------------

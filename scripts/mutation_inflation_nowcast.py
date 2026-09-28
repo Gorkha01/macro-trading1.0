@@ -76,8 +76,30 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ),
     (
         "M7 normal-path confidence hardcoded",
-        "confidence=compute_confidence(ConfidenceInputs()),\n        interpretation=(",
+        "confidence=compute_confidence(\n"
+        "            ConfidenceInputs(is_heuristic_not_calibrated=not lag_is_calibrated),\n"
+        "        ),\n        interpretation=(",
         "confidence=0.55,\n        interpretation=(",
+    ),
+    # -- The D-127 defect-reintroduction guard (Card 7) --------------------
+    # The audit found the success branch published the BARE confidence while
+    # reading an `uncalibrated_illustrative` coefficient. These mutants re-create
+    # that defect and must be killed by `test_normal_path_confidence_is_computed`
+    # / `test_the_lag_penalty_is_load_bearing`.
+    (
+        "M20 the uncalibrated-lag penalty dropped (the D-127 defect reintroduced)",
+        "ConfidenceInputs(is_heuristic_not_calibrated=not lag_is_calibrated),",
+        "ConfidenceInputs(is_heuristic_not_calibrated=False),",
+    ),
+    (
+        "M21 the penalty is keyed off a literal, not the leaf",
+        "ConfidenceInputs(is_heuristic_not_calibrated=not lag_is_calibrated),",
+        "ConfidenceInputs(is_heuristic_not_calibrated=True and False),",
+    ),
+    (
+        "M22 the penalty is inverted (a calibrated lag would be penalised)",
+        "ConfidenceInputs(is_heuristic_not_calibrated=not lag_is_calibrated),",
+        "ConfidenceInputs(is_heuristic_not_calibrated=lag_is_calibrated),",
     ),
     (
         "M8 converged tolerance read from a literal instead of config",

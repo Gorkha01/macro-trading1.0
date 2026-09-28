@@ -133,9 +133,21 @@ def project_shelter_cpi(inputs: ShelterLagInputs) -> ModelResult:
     drives it to the configured floor — the lowest value the formula can return —
     rather than the ``0.0`` of the specification sample, since ``0.0`` is
     indistinguishable from "confidence not computed".
+
+    The success branch carries ``is_heuristic_not_calibrated`` from the lag
+    leaf's own calibration status (``settings.inflation.shelter_lag_is_calibrated``).
+    The lag is shipped as ``uncalibrated_illustrative`` — the midpoint of
+    Module 5.1's 12-18 month range, a judgement rather than a measurement, which
+    the warnings below say outright. §22.8 (`contracts.py:88`) makes the flag
+    ``True`` for *any coefficient that has not been calibrated against realized
+    data*, so publishing the un-penalised ``0.70`` here would overstate the
+    confidence by ``0.20`` against the ``0.50`` the standard requires. The flag
+    tracks the leaf, so a re-measured lag lifts the penalty without a code change
+    (the same shape ``inflation_trajectory`` uses for ``beta``).
     """
     settings = get_settings()
     lag_months = settings.inflation.shelter_lag
+    lag_is_calibrated = settings.inflation.shelter_lag_is_calibrated
 
     history = inputs.market_rent_growth_yoy_pct
     required_points = lag_months + 1
@@ -248,7 +260,19 @@ def project_shelter_cpi(inputs: ShelterLagInputs) -> ModelResult:
         country="us",
         as_of=utc_now(),
         value=round(projected, 2),
-        confidence=compute_confidence(ConfidenceInputs()),
+        # `is_heuristic_not_calibrated` is READ FROM THE LEAF, not asserted: the
+        # lag is `uncalibrated_illustrative`, so the flag is True today and the
+        # published confidence is 0.50 (not the 0.70 a bare ConfidenceInputs()
+        # would give). §22.8's rule is that a coefficient not calibrated against
+        # realized data carries the penalty, and this projection's value IS that
+        # coefficient applied. `settings.inflation.shelter_lag_is_calibrated`
+        # tracks `shelter_lag_months.calibration_status`, so re-measuring the lag
+        # removes the penalty with no edit here (D-126's `confidence_cap_...`
+        # shape). The shipped 0.70 overstated by 0.20; the sibling
+        # `inflation_trajectory` already penalises its uncalibrated `beta`.
+        confidence=compute_confidence(
+            ConfidenceInputs(is_heuristic_not_calibrated=not lag_is_calibrated),
+        ),
         interpretation=(
             f"CPI shelter likely converging toward {projected:.2f}% "
             f"({direction} from current {inputs.current_cpi_shelter_yoy_pct:.2f}%)"

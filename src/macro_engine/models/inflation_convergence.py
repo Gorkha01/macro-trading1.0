@@ -127,6 +127,12 @@ class InflationConvergenceVerdict(BaseModel):
     * ``agreeing`` / ``opposing`` / ``flat`` — the split, so the arithmetic is
       visible. ``flat`` is reported separately because a flat reading is
       *absence of evidence*, not evidence for the majority side.
+    * ``majority_direction`` — which side the ``agreeing`` count is on:
+      ``1`` (rising), ``-1`` (falling), or ``0`` when no side holds a majority.
+      ``agreeing`` is the *majority* count, which may be the down side of a
+      disinflation month, so without this field the sign is not recoverable from
+      the output — the D-009 cross-field-identity habit, and the fix for the
+      ``frac_agreeing``/``agreeing`` naming trap recorded on ``_classify``.
     * ``measures_used`` — **the denominator that matters for reading the rest.**
       Three is the specification's Phase 1 configuration; six is what this build
       can run. A ``frac_agreeing`` of 0.67 means something different at each.
@@ -151,6 +157,7 @@ class InflationConvergenceVerdict(BaseModel):
     agreeing: int = Field(ge=0)
     opposing: int = Field(ge=0)
     flat: int = Field(ge=0)
+    majority_direction: Direction
     measures_used: int = Field(ge=1)
     frac_agreeing: float = Field(ge=0.0, le=1.0)
     attainable_fracs: list[float]
@@ -320,10 +327,26 @@ def _tagged_measures(
     return results, len(results)
 
 
+def _majority_direction(up: int, down: int) -> Direction:
+    """Which side the majority is on: ``1`` up, ``-1`` down, ``0`` for a tie.
+
+    Published as ``majority_direction`` so ``agreeing`` (the *majority* count,
+    which may be the down side) does not read as a directional claim it does not
+    make. A tie — including the all-flat month — reports ``0``, which is the
+    honest answer: no side holds a majority. Written as one named helper so the
+    sign convention exists in exactly one place.
+    """
+    if up > down:
+        return 1
+    if down > up:
+        return -1
+    return 0
+
+
 def _classify(
     *,
-    agreeing: int,
-    opposing: int,
+    majority: int,
+    minority: int,
     headline: int,
     core: int,
     total: int,
@@ -343,11 +366,19 @@ def _classify(
        checked *after* the pair gate only in the sense that both are OR'd; the
        order in the code carries no priority because either is sufficient.
 
-    The bands then test the agreeing fraction. Note that ``agreeing`` counts one
-    side, so ``frac_agreeing`` here is the majority share, matching the
-    specification's own arithmetic.
+    The band tests the **majority share**. The parameters are named
+    ``majority``/``minority`` (not ``agreeing``/``opposing``) deliberately: the
+    majority may be the *down* side of a disinflation month, so a parameter named
+    ``agreeing`` would read as a directional claim it does not make. Every term
+    here is invariant to which side is the majority — ``frac`` and
+    ``min(majority, minority)`` both are — so the earlier name was a latent trap
+    of the D-034/D-036/D-037 class: a future term that genuinely depended on
+    *direction* would have inherited a silently wrong value. The published
+    ``frac_agreeing`` field is likewise the majority share and is paired with a
+    published ``majority_direction`` so the sign is recoverable from the output
+    (the D-009 cross-field-identity habit).
     """
-    losing = min(agreeing, opposing)
+    losing = min(majority, minority)
     if headline * core < 0:
         return "CONFLICTED"
     # The conflict test is written with `losing` on the left, which is what makes
@@ -360,7 +391,7 @@ def _classify(
     # through the public API (three fields are required) but the helper is
     # callable in isolation and `_classify` should not divide by zero.
     #
-    # Nothing here depends on `agreeing + opposing > 0`. An earlier revision of
+    # Nothing here depends on `majority + minority > 0`. An earlier revision of
     # this condition carried that term as a "degenerate guard" and the comment
     # claimed it was load-bearing; a mutation sweep proved it inert
     # (scripts/mutation_inflation_convergence.py, D2), which is exactly the
@@ -369,7 +400,7 @@ def _classify(
     if total > 0 and losing >= deep_conflict_share * total:
         return "CONFLICTED"
 
-    frac = agreeing / total if total else 0.0
+    frac = majority / total if total else 0.0
     settings = get_settings().inflation.convergence
     if frac >= settings.high:
         return "HIGH"
@@ -447,8 +478,8 @@ def inflation_convergence_classifier(
     family_names = [str(name) for name in census_value["families"]]
 
     classification = _classify(
-        agreeing=majority,
-        opposing=min(agreeing_side, opposing_side),
+        majority=majority,
+        minority=min(agreeing_side, opposing_side),
         headline=inputs.headline_cpi_direction,
         core=inputs.core_cpi_direction,
         total=total,
@@ -484,7 +515,12 @@ def inflation_convergence_classifier(
 
     # --- the base-state disclosure (correction 2) --------------------------
     current_rate = base_rates["current_measure_count_high"]
-    if classification == "HIGH" and current_rate > 0.75:
+    # The bar comes from config, not a literal: it is a claim about when a
+    # number becomes uninformative, and it is compared against a leaf
+    # (`measured_base_rates`) that a re-measurement will move. The model's
+    # validator keeps it strictly below the highest base rate, so the disclosure
+    # cannot become dead on arrival.
+    if classification == "HIGH" and current_rate > settings.base_state_warning_threshold:
         warnings.append(
             f"HIGH IS THE BASE STATE, NOT A FINDING. A {total}-measure sign test "
             f"returned HIGH in {current_rate:.1%} of 522 real months "
@@ -556,6 +592,7 @@ def inflation_convergence_classifier(
             agreeing=majority,
             opposing=min(agreeing_side, opposing_side),
             flat=flat,
+            majority_direction=_majority_direction(agreeing_side, opposing_side),
             measures_used=total,
             frac_agreeing=round(frac, 6),
             attainable_fracs=attainable,

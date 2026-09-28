@@ -426,7 +426,7 @@ def test_the_predicate_asks_the_repository_that_holds_the_target(gate: Any, tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_there_are_fifty_sweeps_to_cover() -> None:
+def test_there_are_fifty_two_sweeps_to_cover() -> None:
     """Pin the denominator, so a sweep silently vanishing is reported.
 
     The count is asserted rather than inferred: "all sweeps are covered" is
@@ -513,9 +513,17 @@ def test_there_are_fifty_sweeps_to_cover() -> None:
     increment fixed (a flat reading published as CONFLICTED). It uses
     `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two
     checks cover it.
+
+    **51 → 52 at D-128**, which added `mutation_as_of.py` — the sweep over
+    `models/as_of.py`, the point-in-time discipline (Section 5.5 / O-7). That
+    module was a load-bearing one imported by five consumers yet exercised by
+    no dedicated test and no sweep (the O-133 shape), so this increment closed
+    the gap with BOTH a test file and this sweep. It covers an EXISTING,
+    unchanged module (the code was already correct), uses `sweep_lifecycle`,
+    and carries the CANARY1 refusal gate.
     """
     files = _sweep_files()
-    assert len(files) == 51, f"expected 51 sweeps, found {len(files)}"
+    assert len(files) == 52, f"expected 52 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

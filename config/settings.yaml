@@ -455,6 +455,18 @@ inflation:
         most 3 families (BLS_CPI, BEA_PCE, DALLAS_FED), so the credit never
         saturates for this classifier. The entry still governs the relationship
         and will bind the moment a market-based input (a breakeven) is added.
+    base_state_warning_threshold_value:
+      value: 0.75
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The HIGH base rate above which a HIGH reading is disclosed as the base
+        state rather than a finding. A plausibility bar, not a measured one: it
+        answers "is this reading so common that it carries little information?"
+        Kept STRICTLY BELOW max(three_measure_high, six_measure_high) — the
+        shipped base rates are 0.866 / 0.895, so today the disclosure fires; if a
+        future re-measurement drops a base rate to or below this bar the warning
+        would be dead on arrival, and the model's validator REFUSES that pairing
+        rather than letting the disclosure silently stop firing.
     measured_base_rates:
       three_measure:
         high:
@@ -1826,10 +1838,15 @@ instrument_selection:
       ThesisType -> (instrument template, universe category, rationale).
       `instrument_template` is formatted with curve_short_tenor /
       curve_long_tenor / direction_word where the branch is a rates-shape
-      trade; every other template is a literal. `universe_category` must be a
-      key of ProductionUniverse (rates / fx / equity) -- NOT "equity_index",
-      which Section 22.3.1 writes and which is not a category this system
-      knows (D-058 probe P3).
+      trade (only the curve-shape route today); every other template is a
+      literal instrument name. `universe_category` must be a key of
+      ProductionUniverse (rates / fx / equity) -- NOT "equity_index", which
+      Section 22.3.1 writes and which is not a category this system knows
+      (D-058 probe P3). Every literal template must name a real desk
+      instrument, not a reader-facing note: a string that merely *contains*
+      category keywords (e.g. "Broad equity index (per Section 6.9 logic)")
+      passes the category matcher while naming nothing tradeable, and is
+      pinned out by tests/models/test_instrument_selection.py (D-128).
     routes:
       policy_path_gap:
         instrument_template: "UST 2yr note futures"
@@ -1837,6 +1854,9 @@ instrument_selection:
         rationale: >
           Most directly sensitive to the expected policy path (Module 8
           expectations component); avoids 30yr term-premium noise.
+          "UST 2yr note futures" is the TU contract by name -- a specific
+          instance of the universe's "UST futures (TU, FV, TY, US)" family,
+          so it is keyword-approved rather than a literal list entry.
       curve_shape_gap:
         instrument_template: "Duration-weighted {short}/{long} UST {direction_word}"
         universe_category: rates
@@ -1846,17 +1866,30 @@ instrument_selection:
           instrument the production universe recognises, which is exactly how
           Section 22.3.1's literal failed its own matcher (D-058 probe P1/P2).
           The 2y/10y default pair lives in curve_default_short/long_tenor.
+          The legs are substituted at call time, so the emitted string is a
+          keyword-approved rates instrument rather than a literal list entry
+          (the same status policy_path_gap has).
       inflation_expectations_gap:
         instrument_template: "Duration-matched TIPS long / nominal short (breakeven trade)"
         universe_category: rates
         rationale: >
           Isolates inflation expectations from real-yield direction
-          (Module 15.2).
+          (Module 15.2). The parenthetical names the TRADE ("breakeven trade"),
+          which is the instrument's own desk name for this structure -- unlike
+          the old equity template's parenthetical, which named a SECTION of this
+          document for the reader (D-128).
       equity_macro:
-        instrument_template: "Broad equity index (per Section 6.9 duration/sector logic)"
+        instrument_template: "Broad equity indices (ES, NQ, RTY)"
         universe_category: equity
         rationale: >
-          No single-stock exposure (production universe boundary).
+          No single-stock exposure (production universe boundary). The template
+          names a real member of ProductionUniverse.equity VERBATIM rather than
+          describing a trade: the previous string appended a reader-facing note
+          ("per Section 6.9 duration/sector logic") and therefore named no
+          instrument the desk trades, matching the matcher only on the keyword
+          "equity index" while membership was false (D-128). The Section 6.9
+          duration/sector selection logic is what a future refinement would use
+          to choose AMONG ES/NQ/RTY; this route asserts the universe boundary.
 
   curve_default_short_tenor:
     value: "2y"

@@ -352,15 +352,61 @@ def test_empty_history_is_handled_not_crashed() -> None:
 
 
 def test_normal_path_confidence_is_computed() -> None:
+    """The success branch's confidence must carry the uncalibrated-lag penalty.
+
+    §22.8 (`contracts.py:88`) makes ``is_heuristic_not_calibrated`` True for
+    *any coefficient that has not been calibrated against realized data*. The
+    shelter lag ships as ``uncalibrated_illustrative`` (Module 5.1's 12-18 month
+    midpoint), so the published confidence is the **penalised** ``0.50``, not the
+    bare ``0.70``. This test previously asserted the bare value — pinning the
+    implementation's own flags rather than the standard, which is why the defect
+    survived the suite. It now asserts the leaf-driven value and re-derives it
+    from the flag, so a revert to ``ConfidenceInputs()`` fails here.
+    """
+    from macro_engine.config import get_settings
     from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
 
+    settings = get_settings()
     result = project_shelter_cpi(
         ShelterLagInputs(
             market_rent_growth_yoy_pct=_marker_series(_lag() + 3),
             current_cpi_shelter_yoy_pct=50.0,
         )
     )
-    assert result.confidence == pytest.approx(compute_confidence(ConfidenceInputs()))
+    assert result.confidence == pytest.approx(
+        compute_confidence(
+            ConfidenceInputs(
+                is_heuristic_not_calibrated=not settings.inflation.shelter_lag_is_calibrated,
+            )
+        )
+    )
+    # The shipped leaf is uncalibrated, so the penalty is present today. If a
+    # future re-measurement flips `shelter_lag_months.calibration_status`, this
+    # assertion (and the one above) move together rather than silently drifting.
+    assert settings.inflation.shelter_lag_is_calibrated is False
+    assert result.confidence < compute_confidence(ConfidenceInputs())
+
+
+def test_the_lag_penalty_is_load_bearing() -> None:
+    """Halving the calibration status must move the published confidence.
+
+    A control for the branch above: the uncalibrated flag is not decoration. If
+    the leaf were ``calibrated`` the success branch would publish the bare
+    ``0.70``; because it is ``uncalibrated_illustrative`` it publishes ``0.50``.
+    """
+    from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
+
+    penalised = compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=True))
+    bare = compute_confidence(ConfidenceInputs())
+    assert penalised < bare, "the penalty must reduce the value, or it is inert"
+    result = project_shelter_cpi(
+        ShelterLagInputs(
+            market_rent_growth_yoy_pct=_marker_series(_lag() + 3),
+            current_cpi_shelter_yoy_pct=50.0,
+        )
+    )
+    assert result.confidence == pytest.approx(penalised)
+    assert result.confidence != pytest.approx(bare)
 
 
 def test_no_hardcoded_confidence_in_either_branch() -> None:

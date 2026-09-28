@@ -73,8 +73,20 @@ _PAIR_GATE_DROPPED = """    if False:
 
 # C. The disclosures -------------------------------------------------------
 
-_BASE_RATE_WARNING = '    if classification == "HIGH" and current_rate > 0.75:'
+_BASE_RATE_WARNING = (
+    '    if classification == "HIGH" and current_rate > settings.base_state_warning_threshold:'
+)
 _BASE_RATE_UNCONDITIONAL = "    if True:"
+# The D-127 defect-reintroduction guard: the boundary reverts to the bare `0.75`
+# the audit found, decoupling it from the leaf the comparison is made against.
+_BASE_RATE_WARNING_LITERAL = (
+    '    if classification == "HIGH" and current_rate > 0.75:  # noqa: PLR2004'
+)
+# And the inverted form: the comparison reads the leaf but flips the sense, so
+# the disclosure stops firing for a HIGH base rate above the bar.
+_BASE_RATE_WARNING_INVERTED = (
+    '    if classification == "HIGH" and current_rate < settings.base_state_warning_threshold:'
+)
 
 _DEGENERACY_WARNING = "    if total < 5:"
 _DEGENERACY_DROPPED = "    if False:"
@@ -137,6 +149,29 @@ _MEASURES_FIELD = """            attainable_fracs=attainable,
             independent_families=independent_families,"""
 _MEASURES_DROPPED = """            attainable_fracs=attainable,
             independent_families=0,"""
+
+# The D-127 `majority_direction` field (Card 19). Its anchors:
+_MAJORITY_DIRECTION_FIELD = (
+    "            majority_direction=_majority_direction(agreeing_side, opposing_side),"
+)
+_MAJORITY_DIRECTION_DROPPED = "            majority_direction=0,"
+_MAJORITY_DIRECTION_INVERTED = (
+    "            majority_direction=-_majority_direction(agreeing_side, opposing_side),"
+)
+# The helper's own sign convention (the D-127 replacement for the `agreeing` name).
+_MAJORITY_HELPER = """    if up > down:
+        return 1
+    if down > up:
+        return -1
+    return 0"""
+_MAJORITY_HELPER_SWAPPED = """    if up > down:
+        return -1
+    if down > up:
+        return 1
+    return 0"""
+_MAJORITY_HELPER_NEVER_TIE = """    if up >= down:
+        return 1
+    return -1"""
 
 _BASE_RATES_IN_VALUE = "            base_rates=base_rates,"
 _BASE_RATES_EMPTY = "            base_rates={},"
@@ -406,6 +441,48 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         CONFIG_YAML,
         _YAML_CEILING,
         _YAML_CEILING_WRONG,
+    ),
+    # --- Card 19 (D-127): the leaf-driven threshold ------------------------
+    # The base-state boundary was a bare `0.75` in the source, silently coupled
+    # to `measured_base_rates` (the leaf that moves). C1/C2 above already cover
+    # the *code* edit; these cover the *reason* it was a defect: a literal that
+    # cannot track the leaf.
+    (
+        "C-2a the base-state boundary reverts to the literal 0.75 (the D-127 defect)",
+        SRC,
+        _BASE_RATE_WARNING,
+        _BASE_RATE_WARNING_LITERAL,
+    ),
+    (
+        "C-2b the base-state comparison sense inverted (fires below the bar)",
+        SRC,
+        _BASE_RATE_WARNING,
+        _BASE_RATE_WARNING_INVERTED,
+    ),
+    # --- Card 19 (D-127): `majority_direction` ----------------------------
+    (
+        "D-1a majority_direction dropped (the sign becomes unrecoverable)",
+        SRC,
+        _MAJORITY_DIRECTION_FIELD,
+        _MAJORITY_DIRECTION_DROPPED,
+    ),
+    (
+        "D-1b majority_direction sign inverted",
+        SRC,
+        _MAJORITY_DIRECTION_FIELD,
+        _MAJORITY_DIRECTION_INVERTED,
+    ),
+    (
+        "D-1c the majority helper's sign convention swapped",
+        SRC,
+        _MAJORITY_HELPER,
+        _MAJORITY_HELPER_SWAPPED,
+    ),
+    (
+        "D-1d the majority helper never reports a tie",
+        SRC,
+        _MAJORITY_HELPER,
+        _MAJORITY_HELPER_NEVER_TIE,
     ),
 ]
 

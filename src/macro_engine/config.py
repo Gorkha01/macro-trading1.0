@@ -2555,7 +2555,43 @@ class InflationConvergenceSettings(BaseModel):
     deep_conflict_share_threshold: CalibratedValue
     min_independent_families_per_band: dict[str, int]
     confidence_ceiling_by_independent_families: CalibratedValue
+    base_state_warning_threshold_value: CalibratedValue
     measured_base_rates: InflationConvergenceBaseRates
+
+    @model_validator(mode="after")
+    def _validate_base_state_warning_threshold(self) -> InflationConvergenceSettings:
+        """The base-state disclosure must be able to fire, or it is dead config.
+
+        The comparison is ``current_rate > threshold`` on the base rate the
+        classifier publishes (``measured_base_rates``). If the threshold sat at
+        or above ``max(three_measure_high, six_measure_high)`` the warning would
+        never appear for any reading the model can produce — a disclosure that
+        silently cannot fire is the O-29 class (a gate row that is a claim, not a
+        receipt). The validator REFUSES that pairing rather than letting a config
+        edit quietly remove the disclosure, which is exactly what the audit
+        flagged: the comparison decides whether a published sentence appears on a
+        published output, and the leaf it is compared against is the one that
+        moves. Range-checked to ``[0, 1]`` because it is a share.
+        """
+        threshold = float(self.base_state_warning_threshold_value.value)
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError(
+                "inflation.convergence.base_state_warning_threshold must be a "
+                f"share in [0, 1]; got {threshold}."
+            )
+        highest_base_rate = max(
+            self.measured_base_rates.three_measure_high,
+            self.measured_base_rates.six_measure_high,
+        )
+        if threshold >= highest_base_rate:
+            raise ValueError(
+                "inflation.convergence.base_state_warning_threshold "
+                f"({threshold}) is at or above the highest measured HIGH base "
+                f"rate ({highest_base_rate}), so the base-state disclosure could "
+                "never fire. Set the threshold strictly below the smallest base "
+                "rate the classifier can publish."
+            )
+        return self
 
     @property
     def high(self) -> float:
@@ -2579,6 +2615,20 @@ class InflationConvergenceSettings(BaseModel):
         measure set splits, not of two particular members.
         """
         return float(self.deep_conflict_share_threshold.value)
+
+    @property
+    def base_state_warning_threshold(self) -> float:
+        """HIGH base rate above which the base-state disclosure fires.
+
+        Read by ``inflation_convergence_classifier``. The threshold is a
+        **claim about when a number becomes uninformative**, so it belongs in
+        config beside the base rate it is compared against — before this leaf
+        existed the comparison was a bare ``0.75`` in the source, silently
+        coupled to ``measured_base_rates`` (the one leaf that will move). The
+        model validator above keeps it strictly below the highest measured base
+        rate, so the disclosure cannot become dead on arrival.
+        """
+        return float(self.base_state_warning_threshold_value.value)
 
     def min_families(self, band: str) -> int:
         """Independent source families required before ``band`` may be claimed."""
@@ -2641,6 +2691,21 @@ class InflationSettings(BaseModel):
         truth that wins whenever a caller omits it.
         """
         return int(self.shelter_lag_months.value)
+
+    @property
+    def shelter_lag_is_calibrated(self) -> bool:
+        """Whether the shelter lag is a measured value or a placeholder.
+
+        The lag is shipped as ``uncalibrated_illustrative`` (the midpoint of
+        Module 5.1's 12-18 month range), so this is ``False`` and
+        ``project_shelter_cpi`` must pass ``is_heuristic_not_calibrated=True``
+        — the same obligation §22.8 places on every coefficient that has not
+        been calibrated against realized data. Tracks the leaf, so a future
+        re-measurement that sets ``calibration_status`` to ``calibrated``
+        removes the penalty without a code change (the D-126
+        ``confidence_cap_is_calibrated`` shape).
+        """
+        return self.shelter_lag_months.is_trustworthy
 
     @property
     def shelter_converged_tolerance(self) -> float:
