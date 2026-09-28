@@ -10,6 +10,46 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-128 — the Phase 0–4 audit's remaining four defects + the Card-4 evidence gap (2026-09-28)
+
+The **second** go-ahead on `docs/AUDIT_PHASE04_FINDINGS.md`, closing the four DEFECT-status cards
+(7, 19, 21, 22) D-127 left open, plus the Card-4 evidence gap. No new module, no new OpenBB command
+(census stays 6); **one** new config leaf, **one** new sweep, **one** new test file. **Every Phase 0–4
+audit defect and the Card-4 gap are now closed.**
+
+- **Fixed** `project_shelter_cpi` (`inflation_nowcast.py`) published base confidence **0.70** while
+  reading the `uncalibrated_illustrative` `shelter_lag_months` leaf — a **0.20 overstatement** (§22.8).
+  Now **0.50**, via a leaf-tracking `InflationSettings.shelter_lag_is_calibrated` (post-D-118 pattern).
+  The audit predicted the test break and it happened (`assert 0.5 == 0.7` — the test had been pinning
+  the defect).
+- **Fixed** `inflation_convergence.py`'s bare `> 0.75` → the config leaf
+  `base_state_warning_threshold_value` (`uncalibrated_illustrative`; the **`_value` suffix** avoids the
+  property/field shadow — D-126 precedent), plus a `@model_validator` that **refuses a threshold that
+  could never fire** (dead-on-arrival disclosure). `_classify(*, agreeing, opposing)` renamed to
+  `majority/minority`, and `majority_direction` (three-valued `1/0/-1`) is now published.
+- **Fixed** `output_gap`'s docstring (`gdp_nowcast.py`) — it listed four confidence factors that
+  `OutputGapInputs` (`extra="forbid"`) **refuses**. The audit's *preferred* option was taken: the code
+  is the truth. It now states plainly that `output_gap` is a **pure two-float function whose confidence
+  is fixed at 0.5 by construction**, with caller-side quality applied by `output_gap_from_snapshot`
+  (verified backed). Two tests pin the contract; sweep 40/40.
+- **Fixed** `equity_macro`'s `instrument_template` (`config/settings.yaml`) published
+  `"Broad equity index (per Section 6.9 duration/sector logic)"` — **a rationale in the instrument
+  field**, matching the universe on a *keyword* while naming no member. Now the real member
+  `"Broad equity indices (ES, NQ, RTY)"`; the note moved to `rationale`. The guard gained
+  `universe.permits(instrument)`.
+- **Added** `tests/models/test_as_of.py` (**16 tests**) and `scripts/mutation_as_of.py`
+  (**17/17 killed**, canary live) — `models/as_of.py` had **no dedicated test and no sweep**, exercised
+  only through five consumers (the O-133 shape). No code changed: the module was already correct.
+- **Changed** `scripts/mutation_inflation_nowcast.py` (+M20/M21/M22; 23/23),
+  `scripts/mutation_inflation_convergence.py` (+M3.4, the M9b group; 33/33, 1 inert by design),
+  `scripts/mutation_instrument_selection.py` (+M3.4, +M9b — **its first YAML target**);
+  `tests/models/test_instrument_selection.py` (+4), `test_inflation_convergence.py` (+7),
+  `test_output_gap.py` (+2), `test_inflation_nowcast.py` (+1).
+- **⚠️ Note:** the audit's Card-22 prescription `instrument in universe.<category>` was measured
+  UNSOUND — it refused three legitimate **family-vs-instance** routes (`rates` lists the family
+  `"UST futures (TU, FV, TY, US)"`; `policy_path_gap` correctly ships `"UST 2yr note futures"`). The
+  exact-membership pin lives in the test, per category, not an over-broad runtime guard.
+
 ### D-127 — the Phase 0–4 audit's three defects fixed to production grade (2026-09-28)
 
 Three **existing** branches corrected to states their inputs already produce. No new module, no new

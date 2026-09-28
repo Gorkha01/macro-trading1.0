@@ -2690,8 +2690,9 @@ sweep script**, so the catalogue is **49**. The count is asserted in
 `test_sweep_sidecar_lifecycle.py` (**twice** — the function NAME `test_there_are_forty_nine_sweeps_to_cover`
 and its assertion) and `test_sweep_health_leftover_predicate.py` (**once**), and all three were edited
 together — the rule D-025 established when the census first drifted. *(The function name was renamed
-`..._forty_nine_...` → `..._fifty_...` at **D-125**, when the census moved 49 → 50; the name is the
-live identifier, so a grep for `test_there_are_fifty_sweeps_to_cover` is the current one.)*
+`..._forty_nine_...` → `..._fifty_...` at **D-125** (49 → 50) and → `..._fifty_two_...` at **D-128**
+(51 → 52, `mutation_as_of.py`); the name is the live identifier, so a grep for
+`test_there_are_fifty_two_sweeps_to_cover` is the current one.)*
 
 ---
 

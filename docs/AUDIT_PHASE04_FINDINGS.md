@@ -13,9 +13,26 @@ audit. **No `src/` changes** (audit-only; fixes go to the operator first). One f
 
 **REMEDIATION (D-127, 2026-09-28):** the operator authorised fixing the audit's three **Phase 0–4**
 defects — **#5** `inflation_breadth_score` (Card 23), **#6** `ppi_pipeline_signal` (Card 24), **#7**
-`statement_text_diff` (Card 25) — to production grade. Each card now carries a
-**`✅ STATUS UPDATE — FIXED`** block beneath its finding. The four other DEFECT-status cards
-(7, 19, 21, 22) and the Card-4 evidence gap remain **unfixed, pending a separate go-ahead**.
+`statement_text_diff` (Card 25) — to production grade. Each card carries a
+**`✅ STATUS UPDATE — FIXED`** block beneath its finding.
+
+**REMEDIATION 2 (D-128, 2026-09-28):** the operator followed the D-127 close-out with a **second
+go-ahead** — *"go-ahead"* — authorising the **remaining four DEFECT-status cards (7, 19, 21, 22)** plus
+the **Card-4 evidence gap**, to the same standard. **All five are now fixed** (Cards 4, 7, 19, 21, 22
+each carry a `✅ STATUS UPDATE — FIXED` block):
+
+* **Card 7** `project_shelter_cpi` — the `uncalibrated_illustrative` `shelter_lag_months` was read while
+  confidence defaulted to 0.7; now 0.50 (leaf-tracked). Sweep 23/23.
+* **Card 19** `inflation_convergence` — a hardcoded `0.75` leaf-ified + validator; `agreeing/opposing`
+  renamed `majority/minority`; `majority_direction` published. Sweep 33/33.
+* **Card 21** `output_gap` — docstring corrected (the audit's *preferred* option: code is the truth),
+  pinned by two tests. Sweep 40/40.
+* **Card 22** `instrument_selection` — `equity_macro` template de-prosed to a real universe member;
+  guard strengthened with `permits`; per-route membership pin added. Sweep: **all 3 M9b killed**.
+* **Card 4** `as_of` — the missing test file (**16 tests**) and a mutation sweep (**17/17**) created;
+  no code changed (it was already correct).
+
+**Every Phase 0–4 DEFECT-status card and the Card-4 evidence gap is now closed.**
 
 
 **Class key:** A=MATH · B=ECONOMICS/REASONING · C=INPUT WIRING · D=DATA AVAILABILITY ·
@@ -218,6 +235,30 @@ $ observation_on_or_before(historical target)   => reads the HISTORICAL point, n
 contracts above (the audit's Class-A cases in this card are a ready-made seed, and each passes against
 the shipped code). Consider a sweep if the module gains branching. **Recorded as an EVIDENCE gap, not
 a code defect — the code is correct on every measured case.**
+
+### ✅ STATUS UPDATE — **FIXED** (D-128, 2026-09-28)
+
+**The evidence gap is CLOSED; no code changed (the code was already correct).** The prescription was
+applied in full and *more*:
+
+- **`tests/models/test_as_of.py` created — 16 tests.** All four documented contracts are now pinned:
+  the **same-day-inclusion boundary** (and its negation: a next-day point IS withheld), the
+  **sufficient-but-not-sound lag caveat** (a point stamped the day before `as_of` is *retained* — the
+  disclosure made executable), the **`observation_on_or_before`-vs-`observation_as_of` asymmetry** (the
+  fixture is built so the two would *disagree*, which is the only case where the asymmetry is visible),
+  and **"empty is a hard stop, never `0.0`"** (the all-forward-dated GDPPOT shape → `is_empty`, `latest
+  is None`, and the withheld count/horizon still reported so the caller can say *why*). Plus the
+  no-silent-truncation report, oldest-first sorting on shuffled input, the `series_id` override, and the
+  `utc_now()` default.
+- **`scripts/mutation_as_of.py` created — 17 mutants, 17/17 killed, canary live.** The audit said
+  "consider a sweep if the module gains branching"; it has it (a date split, a sort, a default clock, an
+  empty-vs-withheld distinction, a horizon reduction), so the sweep was written rather than deferred.
+  `CANARY1` (a syntax-error substitution) is KILLED, so the kill rate is evidence about the suite and
+  not about the harness (D-051/O-72). The centrepiece mutants are the two **opposite** boundary
+  reversals (`<=`→`<`, and `>`→`>=` in the withheld split), so a pass cannot be luck of direction.
+
+**MEASURED:** `pytest tests/models/test_as_of.py` → **16 pass**; `mutation_as_of.py` → **17/17 killed**.
+The module is no longer the O-133 shape (a load-bearing module no test names).
 
 ---
 
@@ -425,6 +466,32 @@ ago (Module 5.1). Two branches: insufficient-history (`value=None`) and the proj
 **⚠️ Class-B note:** the same file's **`inflation_convergence.py`-style** concern does **not** apply
 here; but the audit should check whether the *other* bare-default sites (Card 6 / X-B) are the same
 shape. See **X-B**.
+
+### ✅ STATUS UPDATE — **FIXED** (D-128, 2026-09-28)
+
+**Defect #7 is FIXED to production grade; the prescription was applied verbatim and its third step
+turned out to matter.**
+
+1. `project_shelter_cpi`'s success branch now passes `is_heuristic_not_calibrated=not
+   lag_is_calibrated` instead of the bare `ConfidenceInputs()` default.
+2. The config leaf gained the accessor: `InflationSettings.shelter_lag_is_calibrated` (a `@property`
+   returning `self.shelter_lag_months.is_trustworthy`), so the flag **tracks the leaf** rather than
+   asserting `True` — exactly the post-D-118 sibling pattern. A future calibration of the leaf flips
+   the confidence without an edit here.
+3. The test was re-pointed, and the audit's prediction was confirmed: `test_normal_path_confidence_is_computed`
+   FAILED (`assert 0.5 == 0.7`) because it pinned the implementation's own (wrong) flags — the test had
+   been enshrining the defect. It now asserts the penalised value, and
+   `test_the_lag_penalty_is_load_bearing` was added.
+
+**MEASURED:** the route's published confidence moved **0.70 → 0.50** — a **0.20 overstatement removed**
+(the `is_heuristic_not_calibrated=True` penalty). `pytest tests/models/test_inflation_nowcast.py` →
+**27 pass**; `scripts/mutation_inflation_nowcast.py` → **23/23 killed** (M7's anchor retargeted to the
+new confidence form; **M20/M21/M22 added** to re-create the defect three ways: the flag hardcoded back
+to `False`, defeated by `and False`, and inverted to `lag_is_calibrated`).
+
+**Interaction checked, not assumed:** the sibling test `short.confidence < ok.confidence` still holds —
+measured, the `data_quality_flags_present` penalty (0.45) is *not* equal to the heuristic penalty
+(0.50), so the two paths do not collide at 0.5.
 
 ---
 
@@ -1440,7 +1507,40 @@ over all 729 inputs, because the family floor of 2 clears every band bar). That 
 documented one-family gap, not a separate defect, and the unreachable branches are retained for the same
 reason the warning branches are.
 
+### ✅ STATUS UPDATE — **FIXED** (D-128, 2026-09-28)
+
+**Both prescription items are FIXED.**
+
+1. **A hardcoded literal is now a config leaf.** `inflation_convergence.py`'s base-state disclosure read
+   the bare literal `if classification == "HIGH" and current_rate > 0.75:`. It now reads
+   `settings.base_state_warning_threshold`, a new `CalibratedValue` leaf
+   (`base_state_warning_threshold_value`, `uncalibrated_illustrative`) in
+   `InflationConvergenceSettings`. The `_value`-suffix convention (D-126 precedent:
+   `confidence_cap_value`) is used so the scalar property and the model field do not shadow.
+2. **The Class-A rename.** `_classify(*, agreeing, opposing, …)` → `_classify(*, majority, minority, …)`,
+   with `losing = min(majority, minority)` and `frac = majority / total`. A new helper
+   `_majority_direction(up, down) -> Direction` was added and its result is published as
+   `InflationConvergenceVerdict.majority_direction` — so the "which side holds the majority" question
+   has a **stated, single, three-valued** answer (`1`/`0`/`-1`, with `0` the real "no majority" state,
+   per D-040/D-050) rather than being recomputed ad hoc at each read.
+
+**A config validator was added, not just a leaf.** `_validate_base_state_warning_threshold` (a
+`@model_validator(mode="after")`) REFUSES a threshold outside `[0, 1]` and REFUSES
+`threshold >= max(three_measure_high, six_measure_high)` — the latter because a threshold above every
+produccible high band could never fire, making the disclosure dead-on-arrival (the D-127-class: a
+disclosure that cannot fire is a lie the gates do not see).
+
+**MEASURED:** the disclosure **fires today** (the shipped leaf 0.75 is below the live rate), the
+threshold now follows a **moved** leaf (monkeypatched to 0.95 / 0.10, which kills the C-2a mutant),
+`pytest tests/models/test_inflation_convergence.py` → **61 pass** (7 new tests);
+`scripts/mutation_inflation_convergence.py` → **33/33 killed** (6 new mutants: C-2a literal revert —
+which **SURVIVED at first** because the shipped 0.75 *equals* the old literal, and only
+`test_the_disclosure_follows_a_moved_leaf` killed it; C-2b inverted; D-1a `majority_direction` dropped;
+D-1b inverted; D-1c helper swapped; D-1d never-tie). **O-145 is cleared** (`mutation_qe_stance.py` was
+already 28/28).
+
 ---
+
 ## CARD 20 — `src/macro_engine/models/inflation_dynamics.py` (768 lines, 2 functions)
 
 **Purpose:** Two unrelated modules share this file. **Module 3.3** — `phillips_curve_inflation`:
@@ -1736,6 +1836,36 @@ internally well-sectioned with banner comments — but `gdp_nowcast.py` is the l
 and a split (`output_gap.py` / `nowcast.py`) would match the one-concern-per-file convention the rest of
 the package follows.
 
+### ✅ STATUS UPDATE — **FIXED** (D-128, 2026-09-28)
+
+**The audit's PREFERRED option was taken: the code is the truth, and the docstring was corrected to
+match it** — no misleading surface was widened.
+
+`output_gap`'s docstring had advertised four caller-supplied confidence factors
+(`data_quality_flags_present`, `source_independence_count`, `is_heuristic_not_calibrated`,
+`depends_on_unobservable`) while `OutputGapInputs` (`extra="forbid"`) rejected **every one of them** and
+accepted only the two floats. A docstring promising an input surface the model refuses is the D-045a
+class (a promise with two halves that disagree). The rewritten Confidence section states plainly that
+`output_gap` is a **pure two-float function whose confidence is fixed at 0.5 by construction** (0.7 base
+− 0.2 unobservable), with caller-side quality information applied by `output_gap_from_snapshot` / the
+orchestration layer.
+
+**The claim was verified, not just written:** `output_gap_from_snapshot` (`gdp_nowcast.py:619–630`)
+DOES apply `data_quality_flags_present=True` for a flagged snapshot, so the sentence "the caller-side
+data-quality information is applied by `output_gap_from_snapshot`" is backed by code. **MEASURED:**
+`output_gap(23000, 22900)` → value `0.44`, confidence `0.5`.
+
+**Two tests pin the corrected contract** so the two halves cannot drift apart again:
+`test_output_gap_input_contract_is_exactly_two_floats` asserts the model's field set is *exactly*
+`{actual_gdp, potential_gdp}` and that each of the four formerly-documented factors is REFUSED;
+`test_output_gap_confidence_is_pinned_at_half_by_construction` asserts a positive-gap and a slack input
+both publish 0.5 (the "fixed by construction" sentence made executable, and shown to be
+input-*independent*).
+
+**MEASURED:** `pytest tests/models/test_output_gap.py` → **23 pass, 1 skipped** (the skip is the
+pre-existing calibrated-constants precondition, documented); `scripts/mutation_gdp_nowcast.py` →
+**40/40 killed**, no anchor touched by the docstring edit.
+
 ---
 ## CARD 22 — `src/macro_engine/models/instrument_selection.py` (691 lines)
 
@@ -1890,6 +2020,50 @@ broad union, so nothing at the type level stops a caller comparing against a re-
 two-member `Sentinel` enum (or a `Literal` alias of the two constants) would make the sentinel set
 enumerable the same way `ThesisType`/`GapDirection` already are — consistent with this file's own
 "tuple-plus-Literal" idiom. Low priority because the constants are exported and tested.
+
+### ✅ STATUS UPDATE — **FIXED** (D-128, 2026-09-28)
+
+**The config defect is fixed and the guard was strengthened; one prescription sub-item was found
+UNSOUND by measurement and replaced with the sound equivalent.**
+
+1. **The template now names a real member.** `settings.yaml` `equity_macro.instrument_template` changed
+   from `"Broad equity index (per Section 6.9 duration/sector logic)"` (prose) to
+   `"Broad equity indices (ES, NQ, RTY)"` — a verbatim member of `ProductionUniverse.equity`. The
+   Section 6.9 note moved into the route's `rationale` (published under `value["rationale"]`), where
+   prose belongs. **MEASURED:** `select_instrument(EQUITY_MACRO, POSITIVE)` now emits
+   `'Broad equity indices (ES, NQ, RTY)'`, `permits=True`, `category=equity`.
+2. **The guard was strengthened with `universe.permits(instrument)`** — the universe's OWN membership
+   statement — required **in addition to** the `category_for` classification.
+3. **A test pins every route's emitted instrument to a real universe member**
+   (`test_the_equity_route_names_a_literal_universe_member_not_a_description`, plus the
+   category-agnostic `test_no_executable_route_publishes_prose_as_its_instrument`), so the next template
+   edit fails at CI.
+
+**⚠️ MEASUREMENT OVERTURNED THE AUDIT'S SECOND HALF, and this is the substantive finding.** The audit
+prescribed requiring `permits` **and/or** `instrument in universe.<category>`. I implemented the strict
+`in universe.<category>` form first and it **broke three legitimate routes**:
+
+```
+The route for 'policy_path_gap' publishes 'UST 2yr note futures', which is not a MEMBER of the
+production universe's 'rates' category ['Fed cash (2y...', 'UST futures (TU, FV, TY, US)', ...]
+```
+
+`rates` lists the **family** `"UST futures (TU, FV, TY, US)"`, while `policy_path_gap` correctly ships
+the **specific contract** `"UST 2yr note futures"` (TU by name) and `inflation_expectations_gap` ships
+the breakevens structure — both real, desk-verified instruments that the keyword path recognises as
+specific instances of a listed family. A strict membership check trades one real defect for two false
+refusals, which is the wrong trade (Section 22.8: refuse rather than guess — but never refuse a correct
+answer). **`permits` was measured to reject NONE of the five strings, including the defective one**, so
+it is defence in depth and not the whole fix; the exact-membership pin therefore lives in the **test**,
+per category, where the family-vs-instance answer is known — strict equality for `equity` (which lists
+exactly one member), a membership-or-prose check for the rest.
+
+**MEASURED:** `pytest tests/models/test_instrument_selection.py` → **42 pass** (was 38; +4);
+`scripts/mutation_instrument_selection.py` — **M3.4 added** (the `permits` guard made vacuous) plus the
+**M9b group (3 mutants)**, which edits the shipped YAML `instrument_template` (the sweep now targets
+`config/settings.yaml` for the first time): M9b.1 reverts `equity_macro` to the prose form (the D-128
+defect), M9b.2 renames it to a keyword-valid non-member, M9b.3 adds a document reference to
+`policy_path_gap`. **All 3 M9b mutants KILLED**, so the config pin binds.
 
 ---
 

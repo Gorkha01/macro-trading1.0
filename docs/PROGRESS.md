@@ -1,7 +1,25 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-28** (after **D-127 — the Phase 0–4 file-by-file audit's THREE defects fixed to
+Last updated: **2026-09-28** (after **D-128 — the SAME Phase 0–4 audit's REMAINING four DEFECT cards
+(7, 19, 21, 22) + the Card-4 evidence gap, fixed to production grade**: `project_shelter_cpi` read an
+`uncalibrated_illustrative` leaf while publishing base confidence → **0.70 → 0.50** (leaf-tracked flag);
+`inflation_convergence`'s bare `0.75` → a **config leaf + validator** (refuses a threshold that could
+never fire) and `agreeing/opposing` renamed `majority/minority` + `majority_direction` published;
+`output_gap`'s docstring promised an input surface `OutputGapInputs` **refuses** → corrected to the truth
+(pure two-float fn, confidence fixed at 0.5), pinned by two tests; `equity_macro`'s
+`instrument_template` was **prose** (`"…(per Section 6.9 …)"`) → a real universe member
+(`"Broad equity indices (ES, NQ, RTY)"`), guard strengthened with `universe.permits`; `as_of.py` had
+**no test and no sweep** → `test_as_of.py` (**16 tests**) + `mutation_as_of.py` (**17/17**) created, NO
+code changed. **NO src/ function added, NO new OpenBB command (census stays 6); ONE new config leaf,
+ONE new sweep, ONE new test file.** **ALL Phase 0–4 audit defects + the Card-4 gap are now CLOSED.**
+Gates: **292 == 292** (D-035) · **full suite 0 failed / 0 errors / 1 skipped** (junitxml) ·
+`mutation_inflation_nowcast.py` **23/23** · `mutation_inflation_convergence.py` **33/33** (1 inert) ·
+`mutation_gdp_nowcast.py` **40/40** · `mutation_instrument_selection.py` **M9b 3/3 + M3.4** ·
+`mutation_as_of.py` **17/17**. **⚠️ Measurement OVERTURNED the audit's Card-22 prescription** (strict
+`in universe.<category>` refused three legitimate family-vs-instance routes) — the exact-membership pin
+lives in the test, not an over-broad guard.)
+Previous update: **2026-09-28** (after **D-127 — the Phase 0–4 file-by-file audit's THREE defects fixed to
 production grade**: `inflation_breadth_score` published a FLAT reading as `CONFLICTED`
 (`labor_synthesis.py`) → now an explicit opposition predicate + a real `flat` state, per **§22
 Resolution Finding #10**; `ppi_pipeline_signal` published `upstream_pressure_building=True` opposite a

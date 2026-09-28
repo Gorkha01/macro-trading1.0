@@ -21313,3 +21313,166 @@ at **3 defects in 26 cards**; the decisive authority for #5 was `AGENTS.md` §22
 signals are not evidence), for #6 it was D-009 (fields of one result must not contradict), for #7 it
 was D-125 (a reduction keyed on the wrong predicate) read together with D-045a (a `Literal` is a
 promise with two halves).
+
+---
+
+## D-128 — the remaining **four Phase 0–4 DEFECT cards (7, 19, 21, 22)** and the **Card-4 evidence gap**, fixed to production grade: a leaf read but not disclosed, a hardcoded threshold, a docstring promising an input surface the model refuses, and a parenthetical rationale published as an instrument name
+
+**Date:** 2026-09-28 (session clock). **Trigger:** the operator's second go-ahead — *"go-ahead"* —
+following the D-127 close-out, authorising the **remaining** Phase 0–4 audit items (deliverable
+`docs/AUDIT_PHASE04_FINDINGS.md`, 26 cards): the four DEFECT-status cards **7, 19, 21, 22** **plus**
+the **Card-4 evidence gap**. **Targets:** four EXISTING modules — `models/inflation_nowcast.py`
+(`project_shelter_cpi`), `models/inflation_convergence.py`, `models/gdp_nowcast.py` (`output_gap`),
+`models/instrument_selection.py` (`select_instrument`) — plus `models/as_of.py` (evidence only, no
+code change). **NO new OpenBB command** (census stays 6). One new config leaf
+(`inflation.convergence.base_state_warning_threshold_value`); one new sweep (`mutation_as_of.py`);
+one new test file (`tests/models/test_as_of.py`).
+
+**With D-128, every Phase 0–4 DEFECT-status card in the audit and the Card-4 evidence gap are closed.**
+D-127 fixed #5/#6/#7 (Cards 23/24/25); D-128 fixes the rest.
+
+### 1. Card 7 — `project_shelter_cpi`: the `uncalibrated_illustrative` leaf was read, the confidence was not penalised
+
+The success branch published `compute_confidence(ConfidenceInputs())` — base **0.70** — while reading
+`settings.inflation.shelter_lag_months`, a `CalibratedValue` whose `calibration_status` is
+`uncalibrated_illustrative`. Per §22.8 and `contracts.py:88`, reading an uncalibrated coefficient and
+making an estimate from it *is* the condition `is_heuristic_not_calibrated=True` names. The published
+0.70 was therefore a **0.20 overstatement** of a number that must be ≤ 0.50.
+
+**Fix (the audit's prescription, verbatim):** a leaf-tracking accessor
+`InflationSettings.shelter_lag_is_calibrated` (`return self.shelter_lag_months.is_trustworthy`), and the
+success branch now passes `is_heuristic_not_calibrated=not lag_is_calibrated`. The flag **tracks the
+leaf** rather than asserting `True`, so a future calibration flips the confidence with no edit here
+(the post-D-118 sibling pattern).
+
+**MEASURED:** published confidence **0.70 → 0.50**. **The audit predicted the test break and it
+happened:** `test_normal_path_confidence_is_computed` failed (`assert 0.5 == 0.7`) — it had been
+pinning the implementation's own wrong flags. Re-pointed to the penalised value; added
+`test_the_lag_penalty_is_load_bearing`.
+
+**Interaction checked, not assumed:** the sibling `short.confidence < ok.confidence` survives because
+the `data_quality_flags_present` penalty (**0.45**) is *not* equal to the heuristic penalty (**0.50**).
+
+### 2. Card 19 — `inflation_convergence`: a hardcoded `0.75` and a mis-named pair
+
+Two fixes:
+
+* **A literal became a leaf.** `if classification == "HIGH" and current_rate > 0.75:` now reads
+  `> settings.base_state_warning_threshold`, a new `CalibratedValue`
+  (`base_state_warning_threshold_value`, `uncalibrated_illustrative`). The **`_value` suffix is
+  load-bearing** (D-126 precedent, `confidence_cap_value`): naming the field `base_state_warning_threshold`
+  made the property and the model field **shadow**, and the read returned a `CalibratedValue` where a
+  float was expected (`TypeError: '>' not supported between 'float' and 'CalibratedValue'`). The YAML
+  key must match the field name exactly (`base_state_warning_threshold_value`), or the model raises
+  `Field required` / `Extra inputs are not permitted`.
+* **A Class-A rename.** `_classify(*, agreeing, opposing, …)` → `_classify(*, majority, minority, …)`
+  (`losing = min(majority, minority)`, `frac = majority / total`), plus a new helper
+  `_majority_direction(up, down) -> Direction` whose result is published as
+  `InflationConvergenceVerdict.majority_direction`. The "which side holds the majority" question now
+  has a **stated, three-valued** answer (`1`/`0`/`-1`, with `0` the real no-majority state — D-040/D-050)
+  instead of being recomputed at each read site.
+
+**A validator was added, not just a leaf.** `_validate_base_state_warning_threshold`
+(`@model_validator(mode="after")`) REFUSES a threshold outside `[0, 1]` and REFUSES
+`threshold >= max(three_measure_high, six_measure_high)` — a threshold above every producible high band
+could never fire, making the disclosure **dead-on-arrival** (the D-127-class: a disclosure that cannot
+fire is a lie no gate sees).
+
+**MEASURED:** the disclosure fires today (shipped leaf 0.75 < live rate); 61 tests pass (7 new);
+`mutation_inflation_convergence.py` **33/33 killed**. **One mutant earned its keep:** **C-2a** (revert
+the leaf read to the literal `0.75`) **SURVIVED at first** — because the shipped 0.75 *equals* the old
+literal, so no shipped-config test can distinguish them. It was killed only after adding
+`test_the_disclosure_follows_a_moved_leaf`, which monkeypatches the leaf to 0.95/0.10. **This is D-031
+in its purest form: a survivor that is a weak test, not an inert mutant.** The lesson: when a literal is
+replaced by a leaf whose shipped value equals the literal, the *only* discriminating test moves the
+leaf.
+
+### 3. Card 21 — `output_gap`: the docstring promised an input surface the model refuses
+
+`output_gap`'s docstring listed four caller-supplied confidence factors while `OutputGapInputs`
+(`extra="forbid"`) rejected every one and accepted only the two floats. **The audit's PREFERRED option
+was taken: the code is the truth, and the docstring was corrected** — not widened. The Confidence
+section now states `output_gap` is a **pure two-float function whose confidence is fixed at 0.5 by
+construction** (0.7 base − 0.2 unobservable), with caller-side quality information applied by
+`output_gap_from_snapshot` / the orchestration layer.
+
+**The claim was verified, not merely written:** `output_gap_from_snapshot` (`gdp_nowcast.py:619–630`)
+DOES apply `data_quality_flags_present=True` for a flagged snapshot. **MEASURED:**
+`output_gap(23000, 22900)` → value 0.44, confidence 0.5. Two tests pin the corrected contract
+(`test_output_gap_input_contract_is_exactly_two_floats` — the field set is *exactly* the two floats and
+each formerly-documented factor is REFUSED; `test_output_gap_confidence_is_pinned_at_half_by_construction`
+— a positive and a slack input both publish 0.5). Sweep **40/40**, no anchor touched.
+
+### 4. Card 22 — `equity_macro` published a rationale as an instrument name
+
+`settings.yaml`'s `equity_macro.instrument_template` was
+`"Broad equity index (per Section 6.9 duration/sector logic)"` — **a reader-facing note appended to a
+phrase**. It classified as `equity` (keyword *equity index*) but named **nothing the desk trades**; the
+route's own `rationale` already said *"No single-stock exposure (production universe boundary)"*, i.e.
+a correct instrument was already available and the template chose prose over it.
+
+**Fix:** the template now names the real member **verbatim** — `"Broad equity indices (ES, NQ, RTY)"` —
+and the Section 6.9 note moved into the route's `rationale`. **MEASURED:**
+`select_instrument(EQUITY_MACRO, POSITIVE)` emits `'Broad equity indices (ES, NQ, RTY)'`,
+`permits=True`.
+
+**The guard was strengthened with `universe.permits(instrument)`** — the universe's own membership
+statement — required **in addition to** `category_for`.
+
+**A per-route membership pin was added to the test file** (`test_the_equity_route_names_a_literal_universe_member_not_a_description`,
+plus the category-agnostic `test_no_executable_route_publishes_prose_as_its_instrument`).
+
+**⚠️ MEASUREMENT OVERTURNED the audit's second half — the substantive finding of Card 22.** The audit
+prescribed requiring `permits` **and/or** `instrument in universe.<category>`. The strict
+`in universe.<category>` form was implemented first and **broke three legitimate routes**: `rates`
+lists the **family** `"UST futures (TU, FV, TY, US)"`, while `policy_path_gap` correctly ships the
+**specific contract** `"UST 2yr note futures"` (TU by name) and `inflation_expectations_gap` ships the
+breakevens structure — both real, desk-verified instruments the keyword path admits as instances of a
+listed family. A strict membership check trades one real defect for **two false refusals** — the wrong
+trade (refuse rather than guess, but never refuse a correct answer). **And `permits` was measured to
+reject NONE of the five strings, including the defective one** — it delegates to `category_for`, so it
+is defence in depth, not the whole fix. The exact-membership pin therefore lives in the **test**, per
+category, where the family-vs-instance answer is known: **strict equality for `equity`** (exactly one
+member), **membership-or-prose for the rest**.
+
+**MEASURED:** 42 tests pass (+4). `mutation_instrument_selection.py` gained **M3.4** (the `permits`
+guard made vacuous) and the **M9b group (3 mutants)**, which edits `config/settings.yaml` — **the first
+time this sweep targets the YAML**. M9b.1 reverts `equity_macro` to the prose form (the D-128 defect),
+M9b.2 renames it to a keyword-valid non-member, M9b.3 adds a document reference to `policy_path_gap`.
+**All 3 KILLED.**
+
+### 5. Card 4 — `as_of.py`: the evidence gap, closed
+
+The audit measured that `models/as_of.py` — a **load-bearing** module imported by five consumers — had
+**no dedicated test** (`grep -rn "from macro_engine.models.as_of import" tests/` empty) and **no sweep**.
+The code was correct on every measured case; the gap was that no test *named* its contracts (the O-133
+shape).
+
+**Closed, no code changed:** `tests/models/test_as_of.py` created (**16 tests**) pinning all four
+documented contracts — the **same-day-inclusion boundary** (plus its negation), the
+**sufficient-but-not-sound lag caveat** (a point stamped the day before `as_of` is *retained*, making
+the disclosure executable), the **`observation_on_or_before`-vs-`observation_as_of` asymmetry** (the
+fixture is built so the two *disagree* — the only case where it is visible), and **"empty is a hard
+stop, never `0.0`"**. `scripts/mutation_as_of.py` created (**17 mutants, 17/17 killed**, CANARY1 live);
+the centrepiece mutants are the two **opposite** boundary reversals (`<=`→`<`, `>`→`>=`).
+
+### 6. The classes, recorded
+
+* **A disclosure that reads an `uncalibrated_illustrative` leaf must carry the penalty, and the flag
+  must TRACK the leaf (Card 7).** Asserting `True` where an accessor could read
+  `is_trustworthy` is a lie waiting for the calibration to land.
+* **Replacing a literal with a leaf whose shipped value EQUALS the literal needs a MOVED-leaf test
+  (Card 19, C-2a).** Otherwise the mutant survives on the shipped config and the fix is unverified —
+  D-031's "a survivor is a weak test".
+* **A docstring is a promise with two halves (Card 21, D-045a).** When it disagrees with the enforced
+  input surface, correct the SURFACE THAT LIES — and prefer correcting the prose to widening the
+  contract, unless a caller genuinely needs the input.
+* **A guard is only as strong as the predicate it calls (Card 22).** `category_for` is a
+  *classification* (keyword), `permits` is a *membership statement* — but here `permits` delegates to
+  `category_for`, so a keyword path passes both. **"Category-correct" is not "membership-true"**, and
+  the exact membership contract belongs in a test (where the family-vs-instance answer is known), not
+  in an over-broad runtime guard that would refuse correct answers.
+* **A load-bearing module imported by five consumers can still have its OWN contracts untested
+  (Card 4, O-133).** Indirect exercise through consumers is not coverage; the module needs a test file
+  that names its promises, and a sweep once it branches.
+
