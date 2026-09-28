@@ -20980,3 +20980,132 @@ the same files the sweep mutates. **Sequence them; never overlap them.** A "fail
 during a sweep is the sweep, not the code — but the cheap defence is to not create the condition.
 (This is the D-114 trap, and it is the reason the D-125 gate list below is the **sequential**
 re-measurement, not the first interleaved one.)
+
+---
+
+## D-126 — the D-125 `statement_text_diff` confidence was **`min(computed, cap)`** — a DEAD-HALF defect that D-118 had already forbidden: the audit's ONLY defect, fixed to the **CAP-PRODUCT**, with the sweep's `C2b` reworked into a defect-reintroduction guard
+
+**Date:** 2026-09-28 (session clock). **Trigger:** the operator asked for the system to be
+**production-grade and pluggable with no hardcoding**; the 23-function Tier-5 audit
+(`docs/AUDIT_PHASE5_TIER5_FINDINGS.md`, 4,378 lines) had already found this as its **ONE
+STATUS: DEFECT** out of **23** cards (22 CLEAN). **Target:** the **existing**
+`src/macro_engine/models/policy_rules.py` (function 23, `statement_text_diff`) and its three
+satellites (the test file, the live check, the mutation sweep). **NO new module, NO new config leaf,
+NO new OpenBB command** — `StatementTextSettings.confidence_cap_is_calibrated` **already existed**
+(measured at `config.py:3081–3084`), so the config side needed no change. Gate count unchanged.
+
+### 1. The defect — `min()` made `compute_confidence()` half DEAD CODE
+
+D-125 shipped the confidence as (its item 5, quoted verbatim from `docs/DECISIONS.md:20858`):
+
+```python
+# confidence = round(min(compute_confidence(...), cap), 3)   <-- the D-126 defect
+```
+
+That was **correct when D-125 was written** only in the sense that it *capped* the value; but
+**D-118 (the CAP-PRODUCT rule, 2026-09-28, the FX family) postdates it** and had already settled the
+correct combination:
+
+> confidence = `compute_confidence(...)` **×** `cap` — a **PRODUCT**, never a `min()`, because
+> `min()` publishes the cap alone on every path where the computed value sits above it, so the
+> whole `compute_confidence()` half becomes **dead code** — *"a computation that never changes an
+> output is scaffolding, not a model."*
+
+**MEASURED on this function's own shipped inputs** (off-project arithmetic, D-114-safe while the
+commodities sweep ran):
+
+```
+$ python -c "base=0.7; heur=0.20; computed=round(max(0.05,min(0.95,base-heur)),3); cap=0.35; \
+             print('computed',computed,'cap',cap,'min',min(computed,cap),'product',round(computed*cap,3))"
+computed 0.5 cap 0.35 min 0.35 product 0.175 computed>cap True
+```
+
+`computed` (0.500) **>** `cap` (0.350) on **every** path — so `min()` published **0.350 on every
+path**, and the entire `compute_confidence()` half (the `is_heuristic_not_calibrated` factor, the
+`source_independence_count` factor) was **unobservable**. The audit confirmed it was **isolated**:
+a repository-wide `grep` for `min(compute_confidence` / `min(computed,` / `min(confidence,` in
+`src/macro_engine/` returns **no matches** after the fix.
+
+### 2. The fix — the CAP-PRODUCT, both halves published
+
+```python
+    computed = compute_confidence(
+        ConfidenceInputs(
+            is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,
+            source_independence_count=0,
+        )
+    )
+    confidence = round(computed * settings.confidence_cap, 3)
+```
+
+The assignment target changed from `confidence` to **`computed`** (the formula's value is now a
+**half**, not the published number), and the published value dict gained **both halves** so the
+output is **RECOMPUTABLE** (D-009) rather than trusted:
+
+```python
+            "confidence_computed": computed,
+            "confidence_cap": settings.confidence_cap,
+```
+
+The 14-line comment above the block (quoted in the source) names the rule, the dead-half failure
+mode, and the exact numbers (`0.50` against a `0.35` cap).
+
+### 3. What moved with it — tests, live check, sweep anchors
+
+* **`tests/models/test_policy_rules.py`** — three tests asserted the OLD `min()` semantics and were
+  rewritten: `test_the_confidence_is_the_capped_product` (now asserts
+  `result.confidence == pytest.approx(round(expected_uncapped * settings.confidence_cap, 3))` and
+  checks `confidence_computed` is published), `test_the_confidence_cap_is_load_bearing` (now the cap
+  **MULTIPLIES**: halving it halves the published value; the old `cap < uncapped` precondition is
+  gone), and `test_the_heuristic_factor_is_load_bearing` (the **D-125 patched-cap workaround was
+  DELETED** — under `min()` D-125 had to lift the cap above the formula to observe the flag,
+  because `min()` flattened both sides to the cap; under the product the flag is load-bearing at the
+  SHIPPED cap, so `claimed.confidence > honest.confidence` holds directly).
+  `test_the_published_contract_is_complete_and_recomputable` gained `confidence_computed` to its key
+  set and now asserts `confidence == round(computed * cap, 3)`.
+* **`scripts/live_statement_text_check.py`** — section 4 changed from
+  `round(min(computed, ...), 3)` to `round(computed * statement_text.confidence_cap, 3)`, with new
+  assertions that `confidence_computed` is published and that `computed > confidence_cap` (the
+  control's precondition — the check **refuses** if the computed half ever drops below the cap,
+  because then the product and the `min()` would coincide and the check could not tell them apart).
+* **`scripts/mutation_statement_text.py`** — the source change broke three anchors and they were
+  re-pointed (`_CONF_BLOCK` `    confidence = compute_confidence(` →
+  `    computed = compute_confidence(`; `_CAP` `    confidence = round(min(confidence, ...), 3)` →
+  `    confidence = round(computed * settings.confidence_cap, 3)`), and the mutant bodies
+  `C1a`/`C2a` were reworked. **`C2b` was reworked into a DEFECT-REINTRODUCTION GUARD**: it now
+  applies `    confidence = round(min(computed, settings.confidence_cap), 3)` — the **exact defect
+  text the audit found** — over the `_CAP` anchor. If a future edit reverts to `min()`, `C2b`
+  **survives** (no test detects it) and the sweep flags it; under the shipped product form it is
+  **KILLED** (measured). This is the new standing guard for the D-118 rule.
+
+### 4. Gates (measured 2026-09-28, SEQUENTIAL on the quiescent tree)
+
+| Gate | Result |
+|---|---|
+| `ruff check src tests tools scripts` | **All checks passed** |
+| `ruff format --check` | **289 files already formatted** |
+| `mypy --strict` | **no issues found in 289 source files** |
+| `pytest tests/models/test_policy_rules.py` | **81 passed** |
+| `live_statement_text_check.py` | **OK** — computed **0.500000**, cap **0.350000**, product **0.175000** = published |
+| Reachability | Tier 1-4 **PASS 58/58**; Tier-5 **NO CALLER 1** (`oil_balance_signal`); SCRIPT-ONLY 21 ⇒ **22** unwired (unchanged) |
+| Full suite (`--junitxml`) | **4054 / 0 failed / 0 errors / 1 skipped** (the D-125 baseline; `EXIT=1` was the safe-delete hook, O-140 class) |
+| `mutation_statement_text.py` | **30/30 killed** (incl. **C1a** hardcode, **C2a** cap-dropped, **C2b** `min()`-reintroduction); `--check-targets` **30, 0 problems** |
+| `mutation_qe_stance.py` (O-145) | **28/28 killed** — editing the shared `policy_rules.py` did NOT break its anchors |
+| `sweep_health.py` (LAST) | **OK** — **50** sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures (census unchanged) |
+| **D-035** | `ruff format --check` **289** == `mypy --strict` **289** ✓ |
+
+**Two formatting fixups were needed and both were mine**: the first `ruff format --check` reported
+**2 files would be reformatted** (`live_statement_text_check.py`, `test_policy_rules.py`), so I ran
+`ruff format` and re-measured. **The D-035 equality was re-derived AFTER the rewrite**, not carried
+from before it.
+
+### 5. The class, recorded
+
+**`min(computed, cap)` where the config convention is `computed × cap` is a DEAD-HALF defect**: it
+survives every gate (the value is still in `[0, 1]`, still monotone-ish, still "capped"), and the
+only thing that catches it is an **arithmetic re-derivation against the SHIPPED inputs** — which is
+exactly what the audit did and what `test_the_confidence_cap_is_load_bearing` now encodes (the cap
+must **multiply**, not clip). **D-118's rule is the authority, and the standing guard is `C2b`.**
+The audit found this defect at **1 in 23** — the audit's own headline is that the other 22 were
+genuinely CLEAN, and the single defect was a **post-D-118-era function that D-125 shipped with a
+pre-D-118 `min()`**.

@@ -1257,10 +1257,13 @@ def test_every_direction_is_reachable() -> None:
 
 
 def test_the_confidence_is_the_capped_product() -> None:
-    """The confidence is min(compute_confidence(...), cap) — both halves loaded.
+    """The confidence is compute_confidence(...) * cap — BOTH halves load-bearing.
 
-    Section 22.8: never hardcode. The product reads the SAME run's factors, and
-    the cap is applied AFTER the formula, so an uncapped value would break this.
+    Section 22.8 / D-118's CAP-PRODUCT rule: never `min()` (which publishes the
+    cap alone whenever the computed value sits above it, making the computed half
+    dead code), never hardcode. The product reads the SAME run's factors and
+    scales by the cap, so both halves move the published number. Both halves are
+    also published on the value dict, so the output is recomputable (D-009).
     """
     settings = _st_settings()
     result = _diff_prior_to_dovish()
@@ -1270,17 +1273,23 @@ def test_the_confidence_is_the_capped_product() -> None:
             source_independence_count=0,
         )
     )
+    # The computed half is published and is NOT the whole story when the cap
+    # binds — this is what makes the product observable end to end.
+    assert as_float(result, key="confidence_computed") == pytest.approx(expected_uncapped)
     assert as_float(result, key="confidence_cap") == pytest.approx(settings.confidence_cap)
-    assert result.confidence == pytest.approx(min(expected_uncapped, settings.confidence_cap))
+    assert result.confidence == pytest.approx(round(expected_uncapped * settings.confidence_cap, 3))
+    # The product is ≤ both halves (they are each ≤ 1), and strictly below the
+    # cap alone because the computed half is < 1 here.
     assert result.confidence <= settings.confidence_cap
 
 
 def test_the_confidence_cap_is_load_bearing() -> None:
     """Perturbing the cap LEAF must move the published confidence (D-050).
 
-    If the cap were dead code (e.g. the raw formula published instead), shrinking
-    it would change nothing. The cap is set BELOW the uncapped formula on this
-    run, so the published value tracks the leaf.
+    Under the product the published value is `computed * cap`, so halving the cap
+    must halve the published confidence. Under the old `min()` the cap was dead
+    code whenever it sat above the formula — the defect this test now guards
+    against by asserting the cap MULTIPLIES rather than clips.
     """
     settings = _st_settings()
     uncapped = compute_confidence(
@@ -1288,9 +1297,6 @@ def test_the_confidence_cap_is_load_bearing() -> None:
             is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,
             source_independence_count=0,
         )
-    )
-    assert settings.confidence_cap < uncapped, (
-        "this test is only meaningful while the cap binds below the formula"
     )
     probe = CalibratedValue(
         value=settings.confidence_cap / 2.0,
@@ -1307,15 +1313,27 @@ def test_the_confidence_cap_is_load_bearing() -> None:
         result = statement_text_diff(
             StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
         )
-    assert result.confidence == pytest.approx(round(lowered_cap, 3))
+    # Product, not min(): the computed half survives, scaled by the perturbed cap.
+    assert result.confidence == pytest.approx(round(uncapped * lowered_cap, 3))
+    assert result.confidence < round(uncapped, 3), (
+        "the cap must MULTIPLY the computed half, not be clipped away by it"
+    )
 
 
 def test_the_heuristic_factor_is_load_bearing() -> None:
-    """Flipping the vocabulary-calibration flag must RAISE the confidence.
+    """Flipping the vocabulary-calibration flag must RAISE the published confidence.
 
     The vocabularies ship uncalibrated, so `is_heuristic_not_calibrated` is True
     and the heuristic penalty is applied. Pretending they are calibrated removes
     the penalty, so the formula's value rises by exactly that penalty.
+
+    Under the CAP-PRODUCT form the flag is load-bearing on the PUBLISHED value at
+    the SHIPPED cap — no patched property or lifted cap is needed, because the
+    product does not clip. (D-125 originally had to lift the cap above the
+    formula to observe this flag, because `min()` flattened both sides to the cap
+    on every path — the defect the audit found and this fix removes. A mutation
+    that hardcodes the factor, C1b, is now invisible only if the whole product is
+    dead, which it is not.)
     """
     settings = _st_settings()
     assert not settings.vocabularies_are_calibrated, "vocabularies ship illustrative"
@@ -1349,43 +1367,20 @@ def test_the_heuristic_factor_is_load_bearing() -> None:
     )
     assert both.vocabularies_are_calibrated is True
 
-    # And the flag must be load-bearing on the PUBLISHED confidence, not only on
-    # the formula: under the shipped cap (0.35) both values are clipped to the
-    # same number, so hardcoding the factor (mutation C1b) would be invisible.
-    # Lifting the cap above the formula makes the flag observable end to end.
-    both_cap = CalibratedValue(
-        value=1.0,
-        calibration_status="fitted_assumption",
-        note="probe — cap lifted so the heuristic penalty is not clipped away",
-    )
-    lifted = settings.model_copy(
-        update={
-            "hawkish_markers_value": hawkish,
-            "dovish_markers_value": dovish,
-            "confidence_cap_value": both_cap,
-        }
-    )
-    lifted_cap = lifted.confidence_cap
-    with patch.object(type(settings), "confidence_cap", property(lambda self: lifted_cap)):
-        with patch.object(
-            type(settings),
-            "vocabularies_are_calibrated",
-            property(lambda self: False),
-        ):
-            honest = statement_text_diff(
-                StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
-            )
-        with patch.object(
-            type(settings),
-            "vocabularies_are_calibrated",
-            property(lambda self: True),
-        ):
-            claimed = statement_text_diff(
-                StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
-            )
+    # And the flag is load-bearing on the PUBLISHED confidence AT THE SHIPPED CAP:
+    # the product scales the computed half rather than clipping it, so removing
+    # the penalty raises the published number directly.
+    with patch.object(type(settings), "vocabularies_are_calibrated", property(lambda self: False)):
+        honest = statement_text_diff(
+            StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
+        )
+    with patch.object(type(settings), "vocabularies_are_calibrated", property(lambda self: True)):
+        claimed = statement_text_diff(
+            StatementTextInputs(prior_text=_PRIOR, current_text=_CURRENT_DOVISH)
+        )
     assert claimed.confidence > honest.confidence, (
         "claiming the vocabulary is calibrated must RAISE the published confidence "
-        "once the cap no longer clips it — otherwise the flag is not load-bearing"
+        "at the shipped cap — the product makes the flag load-bearing without lifting it"
     )
 
 
@@ -1473,9 +1468,18 @@ def test_the_published_contract_is_complete_and_recomputable() -> None:
         "dovish_net",
         "prior_tokens",
         "current_tokens",
+        "confidence_computed",
         "confidence_cap",
     ):
         assert key in published, f"{key} must be published"
+    # And the published confidence is recomputable from the two published halves
+    # (D-009): `confidence == round(confidence_computed * confidence_cap, 3)`.
+    computed = published["confidence_computed"]
+    cap = published["confidence_cap"]
+    assert isinstance(computed, float) and isinstance(cap, float), (
+        "both halves must be published as numbers for the product to be recomputable"
+    )
+    assert result.confidence == pytest.approx(round(computed * cap, 3))
 
 
 def test_the_vocabularies_are_disjoint() -> None:

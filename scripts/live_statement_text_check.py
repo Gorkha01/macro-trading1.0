@@ -42,8 +42,10 @@ What this check establishes
 3. **Every direction value is reachable through the shipped vocabulary**, so no
    name in the ``Literal`` is dead code (D-040/D-037).
 
-4. **The confidence is min(computed, cap), both halves from ONE run**, re-derived
-   here rather than read back.
+4. **The confidence is computed * cap — the D-118 CAP-PRODUCT — both halves from
+   ONE run**, re-derived here rather than read back, and the computed half is
+   asserted to be published and to EXCEED the cap (else a `min()` and a product
+   would agree and this control could not tell them apart).
 
 5. **The two refusals fire** — a blank text (the input model) and a sub-floor one
    (the function) are refused, not diffed.
@@ -231,7 +233,7 @@ def main() -> int:
     print()
 
     # ----------------------------------------------------------------------
-    # 4: the confidence is min(formula, cap), both halves from ONE run.
+    # 4: the confidence is the PRODUCT of formula and cap, both halves from ONE run.
     # ----------------------------------------------------------------------
     print("4. CONFIDENCE — the capped §22.8 product, both halves from one run")
     try:
@@ -244,19 +246,29 @@ def main() -> int:
                 source_independence_count=0,
             )
         )
-        expected_capped = round(min(computed, statement_text.confidence_cap), 3)
+        expected_capped = round(computed * statement_text.confidence_cap, 3)
         print(f"  computed half             = {computed:.6f}")
         print(f"  cap                       = {statement_text.confidence_cap:.6f}")
-        print(f"  expected (capped)         = {expected_capped:.6f}")
+        print(f"  expected (product)        = {expected_capped:.6f}")
         print(f"  published confidence      = {result.confidence:.6f}")
         if abs(result.confidence - expected_capped) > 1e-12:
             failures.append(
-                f"published confidence {result.confidence} != min(computed, cap) {expected_capped}"
+                f"published confidence {result.confidence} != computed * cap {expected_capped}"
             )
         value = result.value
         assert isinstance(value, dict)
         if abs(float(value["confidence_cap"]) - statement_text.confidence_cap) > 1e-12:
             failures.append("the published confidence_cap is not the configured cap")
+        # The computed half must also be published, so the product is checkable
+        # from the output alone (D-009) — and NOT dead code under the cap.
+        if abs(float(value["confidence_computed"]) - computed) > 1e-12:
+            failures.append("the published confidence_computed is not the computed half")
+        if computed <= statement_text.confidence_cap:
+            failures.append(
+                "this control is only meaningful while the computed half exceeds the cap "
+                "(otherwise a min() and a product would agree); the shipped inputs no "
+                "longer meet that condition"
+            )
     except Exception as exc:
         failures.append(f"the confidence path failed: {exc}")
     print()

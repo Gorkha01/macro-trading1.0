@@ -1,7 +1,18 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-28** (after **D-125 — `statement_text_diff` (§20.4), the LAST Tier-5 name:
+Last updated: **2026-09-28** (after **D-126 — the 23-function Tier-5 AUDIT's ONE DEFECT fixed:
+`statement_text_diff`'s confidence was `min(computed, cap)`, which made the `compute_confidence()`
+half **DEAD CODE** (D-118 had already forbidden it); it is now the **CAP-PRODUCT**
+`round(computed * settings.confidence_cap, 3)`, both halves published, with the sweep's **`C2b`
+reworked into a defect-reintroduction guard**. Audit deliverable:
+`docs/AUDIT_PHASE5_TIER5_FINDINGS.md` (4,378 lines, **22 CLEAN / 1 DEFECT**). **NO src/ function
+added, NO config leaf added, NO new OpenBB command, census unchanged.** Gates: **289 == 289** (D-035)
+· **4054 / 0 failed / 0 errors / 1 skipped** · reachability **PASS 58/58** (Tier-5 UNWIRED **22**,
+unchanged) · `mutation_statement_text.py` **30/30** (incl. **C2b**) · `mutation_qe_stance.py` **28/28**
+· `sweep_health.py` LAST → **50 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK** ·
+`live_statement_text_check.py` OK (product **0.175000** = **0.500000** × **0.350000**).)
+Previous update: **2026-09-28** (after **D-125 — `statement_text_diff` (§20.4), the LAST Tier-5 name:
 **TIER 5 = 23/23 COMPLETE**, one genuine MODEL defect, two sweep-harness defects, and the census 49
 → 50.**). **Tier 5 = 23/23** — MEASURED 2026-09-28 from §21.3's table `AGENTS.md:5541–5550` against
 `src/` (all **23** have a real `def`), not recalled — the **O-147** discipline. `statement_text_diff`

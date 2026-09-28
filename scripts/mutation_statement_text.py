@@ -115,10 +115,12 @@ _DOVISH_WARD = "        dovish_ward = hawkish_net < 0 or dovish_net > 0"
 # C1-C3: the confidence.
 # --------------------------------------------------------------------------
 
-# ⚠️ WIDENED: `confidence = compute_confidence(` occurs TWICE (also in
-# `qe_qt_stance`). The anchor carries the unique first factor line below it.
+# ⚠️ WIDENED: `compute_confidence(` occurs TWICE (also in `qe_qt_stance`). The
+# anchor carries the unique first factor line below it. NOTE the assignment
+# target is `computed` (not `confidence`): under the D-118 CAP-PRODUCT the
+# formula's value is a half, not the published number.
 _CONF_BLOCK = (
-    "    confidence = compute_confidence(\n"
+    "    computed = compute_confidence(\n"
     "        ConfidenceInputs(\n"
     "            # Both vocabularies are uncalibrated_illustrative: the marker list is\n"
     "            # a starting vocabulary, not a measured one.\n"
@@ -126,9 +128,11 @@ _CONF_BLOCK = (
 )
 # The heuristic factor. Hardcoding it False claims the vocabulary is calibrated.
 _HEUR_FACTOR = "            is_heuristic_not_calibrated=not settings.vocabularies_are_calibrated,"
-# The cap. Dropping it lets the §22.8 base rate publish far more certainty than a
-# keyword diff earns.
-_CAP = "    confidence = round(min(confidence, settings.confidence_cap), 3)"
+# The cap PRODUCT. Dropping the cap lets the §22.8 base rate publish far more
+# certainty than a keyword diff earns; replacing the product with a `min()` makes
+# the computed half dead code whenever it exceeds the cap (the defect the audit
+# found — D-118's exact shape).
+_CAP = "    confidence = round(computed * settings.confidence_cap, 3)"
 
 # --------------------------------------------------------------------------
 # R1-R2: the refusals.
@@ -275,8 +279,8 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "C1a the confidence is hardcoded (bypasses the §22.8 product)",
         SRC,
         _CONF_BLOCK,
-        "    confidence = 0.35\n"
-        "    _dead_conf = compute_confidence(\n"
+        "    computed = 0.35\n"
+        "    _dead_computed = compute_confidence(\n"
         "        ConfidenceInputs(\n"
         "            # Both vocabularies are uncalibrated_illustrative: the marker list is\n"
         "            # a starting vocabulary, not a measured one.\n"
@@ -292,13 +296,13 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "C2a the cap is dropped (base rate published uncapped)",
         SRC,
         _CAP,
-        "    confidence = round(confidence, 3)",
+        "    confidence = round(computed, 3)",
     ),
     (
-        "C2b the cap is applied before the round but with a hardcoded ceiling",
+        "C2b the product is replaced by a min() (the computed half goes dead)",
         SRC,
         _CAP,
-        "    confidence = round(min(confidence, 0.99), 3)",
+        "    confidence = round(min(computed, settings.confidence_cap), 3)",
     ),
     # --- R1-R2: the refusals ----------------------------------------------
     (

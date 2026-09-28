@@ -1205,9 +1205,17 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
     ``MORE_DOVISH``, not ``MORE_HAWKISH``.
 
     Confidence is computed from the stated factors (Section 22.8), never
-    asserted: a marker diff is a heuristic over a vocabulary that is itself
-    illustrative, and it is capped well below the policy rules' confidence for
-    that reason.
+    asserted, and the two halves are combined as a **product** — the
+    ``compute_confidence(...)`` value times the configured
+    ``statement_text.confidence_cap`` (D-118's CAP-PRODUCT rule). A ``min()``
+    would publish the cap alone on every path whenever the computed value sits
+    above it, making the computed half dead code; the product keeps both
+    load-bearing, so the published confidence moves with the heuristic flag and
+    the source count. Both halves are published on the result
+    (``confidence_computed`` and ``confidence_cap``), so the number is
+    recomputable from the output. The cap sits well below the policy rules'
+    confidence because a marker diff is a heuristic over a vocabulary that is
+    itself illustrative.
     """
     settings = get_settings().statement_text
 
@@ -1284,7 +1292,16 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
             # settle.
             direction = "MIXED_BOTH_DIRECTIONS_NET_FLAT"
 
-    confidence = compute_confidence(
+    # Section 22.8's confidence, COMBINED AS A PRODUCT (D-118's CAP-PRODUCT rule),
+    # never a `min()`. The cap states how much the *method* is worth; the
+    # computed value states how much *this run's inputs* are worth. `min()`
+    # would publish the cap alone on every path whenever the computed value
+    # sits above it — which it does here (0.50 against a 0.35 cap), making the
+    # whole `compute_confidence()` half DEAD CODE. D-118's rule: *"a computation
+    # that never changes an output is scaffolding, not a model."* The product
+    # keeps BOTH halves load-bearing — the published number moves when the
+    # heuristic flag or the source count moves.
+    computed = compute_confidence(
         ConfidenceInputs(
             # Both vocabularies are uncalibrated_illustrative: the marker list is
             # a starting vocabulary, not a measured one.
@@ -1293,7 +1310,7 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
             source_independence_count=0,
         )
     )
-    confidence = round(min(confidence, settings.confidence_cap), 3)
+    confidence = round(computed * settings.confidence_cap, 3)
 
     prior_tokens = len(inputs.prior_text.split())
     current_tokens = len(inputs.current_text.split())
@@ -1337,6 +1354,12 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
             "dovish_net": dovish_net,
             "prior_tokens": prior_tokens,
             "current_tokens": current_tokens,
+            # BOTH halves of the published confidence, so it is RECOMPUTABLE from
+            # the output rather than trusted (D-009): `confidence ==
+            # round(confidence_computed * confidence_cap, 3)`. Publishing the cap
+            # alone would leave the reader unable to tell a dead computed half
+            # from a live one — the exact defect this product form fixes.
+            "confidence_computed": computed,
             "confidence_cap": settings.confidence_cap,
         },
         confidence=confidence,
