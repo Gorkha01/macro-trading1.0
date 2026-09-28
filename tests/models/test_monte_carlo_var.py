@@ -703,6 +703,45 @@ def test_falls_back_to_a_uniform_correlation_stress_and_warns() -> None:
     assert any("uniform correlation" in warning for warning in result.warnings)
 
 
+def test_the_fallback_raises_a_positive_correlation_d129() -> None:
+    """The fallback stress must RAISE toward the target, never cap at it (D-129).
+
+    The audit found ``_uniform_correlation_stress`` shipped as ``min(rho,
+    target)``, which reads "raise toward the target" as "cap at the target": a
+    normal book (rho = 0.3) under a 0.9 stress kept 0.3, so the stressed regime
+    differed from the normal one ONLY by the volatility multiple — no
+    correlation stress at all — while the call-site warning claimed one was
+    applied. The fix is ``max``.
+
+    The observable is the diversification ratio: a genuine correlation stress
+    drives the stressed ratio up toward 1, while ``min`` leaves it unchanged.
+    The book here is positively correlated (0.3) and BELOW the 0.9 target, so
+    the two directions are far apart: ``max`` -> ~0.95+, ``min`` -> the normal
+    ratio, unchanged.
+
+    This test is the ``M4e`` guard: it exists so the defect cannot be
+    reintroduced without a failure (the D-126 ``C2b`` shape).
+    """
+    inputs = MonteCarloVaRInputs(
+        weights=[0.5, 0.5],
+        factor_volatilities=[0.20, 0.20],
+        normal_correlations=[[1.0, 0.3], [0.3, 1.0]],
+        portfolio_value=_VALUE,
+        n_sims=20_000,
+        seed=20260924,
+    )
+    # No transform -> the fallback path.
+    result = monte_carlo_var(inputs, stressed_correlation=0.9)
+    normal = as_float(result, key="diversification_ratio_normal")
+    stressed = as_float(result, key="diversification_ratio_stressed")
+    assert stressed > normal + 0.05, (
+        f"stressed diversification ratio {stressed} is not materially above the "
+        f"normal one {normal} for a positively-correlated book under a 0.9 "
+        f"fallback stress — the fallback is capping (min) rather than raising "
+        f"(max), so it applies no correlation stress at all (D-129)"
+    )
+
+
 def test_refuses_an_out_of_range_fallback_correlation() -> None:
     """A "correlation" above 1 is refused by the fallback rule itself."""
     with pytest.raises(ValueError, match="outside"):

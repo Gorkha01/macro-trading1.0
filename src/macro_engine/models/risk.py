@@ -1196,15 +1196,20 @@ def _uniform_correlation_stress(
 
     A FALLBACK, and labelled as one. It exists because the transform is
     received rather than imported, so a caller that has no transform still gets
-    a defined stressed regime — but this rule cannot preserve a negative
+    a defined stressed regime — but this rule does not preserve a negative
     correlation the way the production rule does, and the difference is warned
     at the call site. Uniformly raising a hedge's correlation is exactly the
     mistake Section 18.2 warns about, so this path must never be silent.
 
-    ``min(rho, target)`` rather than ``max``: a correlation already above the
-    target is left alone, so a book whose factors are ALREADY more correlated
-    than the stress level does not have its correlations *lowered* by a
-    "stress".
+    ``max(rho, target)`` and NOT ``min``: the stress RAISES a correlation
+    toward the target and never *lowers* one. An earlier ``min`` read
+    "raise ... toward target" as "cap at target", so a book at ``rho = 0.3``
+    under a ``0.9`` stress kept ``0.3`` (no stress applied at all) and an
+    already-correlated pair at ``rho = 0.95`` was *lowered* to ``0.9``. A
+    "stress" that leaves a normal book unstressed and de-risks a correlated
+    one is the opposite of the LTCM lesson; ``max`` is the honest reading of
+    the digest's own call-site contract ("a uniform correlation target of
+    {target} was applied").
     """
     if not -1.0 <= target <= 1.0:
         raise ValueError(
@@ -1215,7 +1220,7 @@ def _uniform_correlation_stress(
     out = [[1.0 if i == j else correlations[i][j] for j in range(n)] for i in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
-            raised = min(correlations[i][j], target)
+            raised = max(correlations[i][j], target)
             out[i][j] = raised
             out[j][i] = raised
     return out
@@ -1362,10 +1367,11 @@ def monte_carlo_var(
         )
         warnings.append(
             f"No stress_correlations transform was supplied, so a uniform "
-            f"correlation target of {stressed_correlation} was applied instead. "
-            f"The production rule preserves genuinely NEGATIVE correlations "
-            f"(hedges); this fallback does not, so a hedged book's stressed "
-            f"loss is overstated here."
+            f"correlation target of {stressed_correlation} was applied to every "
+            f"off-diagonal entry instead (a pair already above the target is left "
+            f"at its sampled value; nothing is lowered). The production rule "
+            f"preserves genuinely NEGATIVE correlations (hedges); this fallback "
+            f"does not, so a hedged book's stressed loss is overstated here."
         )
     else:
         if stressed_correlation is None:

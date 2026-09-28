@@ -163,6 +163,13 @@ _LTCM_NOTE = (
 _SEED_PUBLISHED = '            "seed": seed,'
 _UNIFORM_TARGET = "        if stressed_correlation is None:\n            raise ValueError("
 
+#: The fallback's stress direction (D-129). The audit found this line shipped as
+#: ``min`` — reading "raise toward target" as "cap at target" — so a normal book
+#: (rho 0.3) kept 0.3 under a 0.9 stress and an already-correlated pair was
+#: LOWERED. ``M4e`` reverts ``max`` to ``min`` so the defect cannot return
+#: silently: it is the D-126 ``C2b`` defect-reintroduction shape.
+_UNIFORM_RAISE = "            raised = max(correlations[i][j], target)"
+
 # --------------------------------------------------------------------------
 # M7: the published value.
 # --------------------------------------------------------------------------
@@ -342,6 +349,12 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "    except ValueError as error:\n"
         "        raise ValueError(\n"
         '            f"The {regime} correlation matrix is not a valid joint "',
+    ),
+    (
+        "M4e the uniform stress CAPS at the target (max reverted to min, D-129)",
+        SRC,
+        _UNIFORM_RAISE,
+        "            raised = min(correlations[i][j], target)",
     ),
     # --- M5: the warnings ------------------------------------------------
     (

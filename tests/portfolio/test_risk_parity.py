@@ -690,6 +690,62 @@ def test_the_solver_converges_well_within_the_default_budget() -> None:
     assert as_float(result, key="worst_target_error") < 1e-9
 
 
+def test_the_config_tolerance_leaf_is_actually_taken_d129(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The config leaf `risk.risk_parity_tolerance` must reach the solver (D-129).
+
+    The audit found `compute_risk_parity_weights` solved with its `tolerance`
+    **parameter** (default `1e-10`) and never read the config leaf it was
+    authored to parameterise — the parameter shadowed the leaf, so moving the
+    leaf changed nothing. This test MOVES the leaf to a deliberately loose value
+    that the shipped panel cannot meet, and asserts the published
+    `worst_target_error` reflects the loose target: if the leaf were still
+    ignored, the solver would keep driving to `1e-10` and the error would stay
+    tiny.
+
+    A mover, not a pinner: the shipped leaf equals the old parameter default, so
+    a test against the shipped file cannot distinguish a live read from a
+    hardcoded literal (the D-031 shape).
+    """
+    module = "macro_engine.portfolio.risk_budget"
+    real = get_settings()
+
+    class _WithLooseTolerance:
+        """A settings proxy whose risk-parity tolerance is deliberately loose."""
+
+        def __init__(self, loose: float) -> None:
+            self.risk = _risk_settings(
+                risk_parity_tolerance_value=CalibratedValue(
+                    value=loose, calibration_status="mechanical_rule"
+                )
+            )
+            self._real = real
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._real, name)
+
+    monkeypatch.setattr(module + ".get_settings", lambda: _WithLooseTolerance(5e-2))
+
+    panel = _constant_vol_panel(4, 300, volatility=0.10, seed=23)
+    names = sorted(panel)
+    result = compute_risk_parity_weights(
+        RiskBudgetInputs(
+            instrument_returns=panel,
+            target_risk_contribution=dict.fromkeys(names, 0.25),
+        )
+    )
+    # With a loose configured tolerance the solve stops early, so the achieved
+    # error sits ABOVE the tight shipped default. If the leaf were ignored the
+    # solver would still reach < 1e-9.
+    assert as_float(result, key="worst_target_error") > 1e-6, (
+        "the configured risk_parity_tolerance (5e-2) was not honoured — the "
+        "solver still drove to the tight parameter default, so the config leaf "
+        "is dead (D-129)"
+    )
+    assert as_bool(result, key="converged") is True
+
+
 def test_a_zero_variance_instrument_is_refused() -> None:
     """A constant series has no risk, so it has no finite risk-parity weight."""
     flat = [0.0] * 50

@@ -1556,10 +1556,13 @@ class RiskBudgetInputs(BaseModel):
 #: exists only for float summation, not to admit an approximate budget.
 _RISK_BUDGET_SUM_TOLERANCE = 1e-9
 
-#: How close the solved risk contributions must be to the targets before the
-#: solver stops. Read from config as ``risk.risk_parity_tolerance``; the module
-#: default here is only a parameter default for a directly-constructed call and
-#: is never used by ``compute_risk_parity_weights``, which reads the config.
+#: A named mirror of the shipped ``risk.risk_parity_tolerance`` value (``1e-10``),
+#: kept as the human-readable reference for that leaf (`settings.yaml:1519`).
+#: It is NOT the signature default any more: ``compute_risk_parity_weights`` takes
+#: ``tolerance=None`` and resolves it to the config leaf, so the leaf is live and
+#: a caller-supplied value is the only override. Kept (rather than deleted) because
+#: other modules and tests import it by name; if the leaf is ever re-tuned, this
+#: constant and the YAML must move together.
 DEFAULT_RISK_PARITY_TOLERANCE = 1e-10
 
 
@@ -1767,7 +1770,7 @@ _CCD_SIGMA_FLOOR = 1e-12
 def compute_risk_parity_weights(
     inputs: RiskBudgetInputs,
     *,
-    tolerance: float = DEFAULT_RISK_PARITY_TOLERANCE,
+    tolerance: float | None = None,
     max_iterations: int = 10_000,
 ) -> ModelResult:
     """Weights whose **risk contributions** match the target budget (Section 9.2).
@@ -1833,6 +1836,14 @@ def compute_risk_parity_weights(
     settings = get_settings()
     annualization = settings.risk.risk_parity_annualization_periods
     stress_correlation = settings.risk.stress_corr
+    # The tolerance is a config leaf (`risk.risk_parity_tolerance`) and the
+    # parameter is an OVERRIDE: an explicit `tolerance` from the caller wins,
+    # and `None` (the default) takes the configured value. Before this the
+    # parameter default `DEFAULT_RISK_PARITY_TOLERANCE` was always shadowing the
+    # leaf, so `risk.risk_parity_tolerance` was dead for the one function it was
+    # authored to parameterise.
+    if tolerance is None:
+        tolerance = settings.risk.risk_parity_tolerance
 
     _, covariance = sample_covariance(panel, annualization_periods=annualization)
     observations = len(panel[instruments[0]])
