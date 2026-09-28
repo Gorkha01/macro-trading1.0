@@ -10,6 +10,46 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-129 — the fresh Tier-5 re-audit's two defects fixed (2026-09-29)
+
+The **go-ahead** following the fresh, independent Tier-5 re-audit
+(`docs/AUDIT_PHASE5_TIER5_REAUDIT.md`, 23 function cards, **21 CLEAN / 2 DEFECT**). **Both defects
+were rated CLEAN by the prior audit** — the re-measure found them. No new module, no new config leaf,
+no new OpenBB command (census stays 6); **one** new mutant, **two** new tests.
+
+- **Fixed** `_uniform_correlation_stress` (`models/risk.py`) — the fallback Monte-Carlo stress applied
+  **`min(rho, target)`** where its own docstring said *"Raise every cross-correlation toward `target`"*.
+  Measured: a normal book (`rho = 0.3`) under a `0.9` stress kept `0.3` — **no correlation stress at
+  all** — and an already-correlated pair (`0.95`) was **lowered** to `0.9`; the end-to-end
+  `stressed_to_normal_ratio` equalled the **volatility multiple alone** while the call-site warning
+  claimed a stress was applied (**Class A/B + H**). Now **`max`**, with the docstring and the warning
+  corrected to the truth. Guarded by a new **`M4e`** defect-reintroduction mutant (reverts `max`→`min`)
+  and `test_the_fallback_raises_a_positive_correlation_d129`. The prior sweep's only adjacent mutant
+  (`M5c`) removed the disclosure **text**, never the mechanism — which is why the defect was invisible
+  to a green `39/39`. Re-running the sweep after the fix gives **`40/40`** (`M4e` added, killed).
+- **Fixed** `compute_risk_parity_weights` (`portfolio/risk_budget.py`) — it solved with its `tolerance`
+  **parameter** (default `DEFAULT_RISK_PARITY_TOLERANCE = 1e-10`) and **never read**
+  `settings.risk.risk_parity_tolerance`, the leaf its own module comment claimed it reads (**Class E +
+  H**). Measured: moving the leaf `1e-10 → 1e-2` changed nothing (24 iterations either way); moving the
+  *parameter* changed the iteration count and the worst error. Fixed by `tolerance: float | None = None`
+  → `settings.risk.risk_parity_tolerance` (an explicit caller value still wins), with the comment
+  corrected and a **mover** test `test_the_config_tolerance_leaf_is_actually_taken_d129` (the shipped
+  leaf equals the old default, so a pinner cannot tell a live read from a literal — D-031).
+- **Added** **O-157** — a mutation sweep can exit `0` at `N/N killed` with **no sidecar** and still
+  leave a **live mutation** in its target (`mutation_regime.py` left `regime.py` mutated; repaired by
+  `git checkout HEAD`). *A clean exit + no sidecar is NOT sufficient evidence the tree is clean.*
+- **Added** **O-158** — a sweep can also exit `0` with every mutant killed, print **no refusal
+  WARNING**, and still leave an **inert** `.sweepbackup` whose content is **byte-identical** to the
+  live file; `sweep_health.py` correctly still reports **`OK` / `leftover mutations: 0`** (a
+  content-equal sidecar is not a leftover *mutation*), so `ok` is not evidence no sidecar remains.
+  *The standing probe is `find src -name '*.sweepbackup'` after every sweep, beside the `git` check.*
+- **Verified (gates, quiescent):** `ruff check` PASS · **`ruff format --check` 292 == `mypy --strict`
+  292** (D-035) · full suite **0 failed / 0 errors / 1 skipped** (`--junitxml`) · reachability **PASS
+  58/58** · `openbb_reachability.py` **OK** (278 paths) · `sweep_health.py` **52 sweeps · 0 leftovers ·
+  OK**. Each new guard was **hand-reapplied against its mutation** to prove it is a *killer*, not a
+  mere passer (`0.806226 == 0.806226` for the `min` revert; `assert 7.1e-11 > 1e-06` for the ignored
+  leaf).
+
 ### D-128 — the Phase 0–4 audit's remaining four defects + the Card-4 evidence gap (2026-09-28)
 
 The **second** go-ahead on `docs/AUDIT_PHASE04_FINDINGS.md`, closing the four DEFECT-status cards

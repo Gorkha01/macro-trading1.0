@@ -21476,3 +21476,143 @@ the centrepiece mutants are the two **opposite** boundary reversals (`<=`→`<`,
   (Card 4, O-133).** Indirect exercise through consumers is not coverage; the module needs a test file
   that names its promises, and a sweep once it branches.
 
+
+---
+
+## D-129 — the Tier-5 re-audit's **two DEFECTs** fixed to production grade: `monte_carlo_var`'s fallback stress **capped** instead of raised (`min` for `max`), and `compute_risk_parity_weights` **ignored the tolerance config leaf** it was authored to parameterise
+
+**Date:** 2026-09-29 (session clock). **Trigger:** the operator's *"go ahead"* following the fresh
+Tier-5 re-audit (`docs/AUDIT_PHASE5_TIER5_REAUDIT.md`, 23 functions, run at `HEAD = c61a6ed`), which
+found **21 CLEAN · 2 DEFECT** — and BOTH defects were rated **CLEAN** by the prior audit
+(`docs/AUDIT_PHASE5_TIER5_FINDINGS.md`). The re-audit changed no `src/` file; this decision is the
+separate fix increment. **Targets:** `models/risk.py` (`_uniform_correlation_stress`, function 14) and
+`portfolio/risk_budget.py` (`compute_risk_parity_weights`, function 15). **NO new OpenBB command**
+(census stays 6). One new test per defect; one new mutant.
+
+### 1. Function 14 — `_uniform_correlation_stress`: `min` where the contract says `max`
+
+**The defect (measured by the re-audit).** The fallback applied
+`raised = min(correlations[i][j], target)`. Its own docstring header says *"**Raise** every
+cross-correlation toward `target`"*, and the call-site warning claims *"a uniform correlation target of
+{target} was applied"*. Measured against the shipped code:
+
+```
+target=0.90 on corr 0.30 -> 0.30   (docstring: RAISE toward target — NOTHING APPLIED)
+target=0.10 on corr 0.30 -> 0.10   (docstring: does NOT lower — LOWERED)
+corr 0.95, target 0.90   -> 0.90   (docstring: left alone — LOWERED)
+```
+
+End-to-end, the fallback published `stressed_to_normal_ratio = 2.5000` — **exactly the volatility
+multiple alone** (`stressed_volatility_multiplier = 2.5`) — and `diversification_ratio_stressed =
+0.806226 = diversification_ratio_normal`, i.e. **no correlation stress at all**, while the warning said
+one was applied. This is Classes A/B (mechanism) + **H (false disclosure)**: a `min` reading of
+"raise … toward" as "cap at".
+
+**Fix (the re-audit's prescription):** `min` → **`max`** at `risk.py:1223`. The docstring was corrected
+from the inverted `min`-rationale to the true `max` semantics; the call-site warning was rewritten to
+be truthful (*"every correlation was raised toward a uniform target of {x} … nothing is lowered"*, hedge
+caveat retained). The production rule (`risk_budget.stress_correlations`, a **sign-split**
+`max(current, target) if current >= 0 else current`) is untouched — the fallback is deliberately a
+simplification and its warning continues to say so.
+
+**MEASURED after the fix (re-run of the same probe):** `target 0.90` on `corr 0.30` → **0.90** (raised);
+`corr 0.95` → **0.95** (not lowered); the end-to-end fallback ratio rises off the vol-multiple-only
+floor and the stressed diversification ratio moves **above** the normal one. **Test added:**
+`test_the_fallback_raises_a_positive_correlation_d129` — asserts `diversification_ratio_stressed >
+normal + 0.05` on a positively-correlated book, killing the `min` behaviour.
+
+**Why the sweep never caught it — and the guard added.** The D-106 sweep's only mutant touching this
+warning is `M5c` (removes the disclosure TEXT); **nothing mutated the `min`/`max` mechanism itself**, so
+the defect was invisible to a green sweep (39/39). Added **`M4e`** (reverts `max`→`min`) — the D-126
+`C2b` **defect-reintroduction** shape — so the mechanism is now guarded. `_UNIFORM_RAISE` resolves to
+exactly one site (`--check-targets`).
+
+### 2. Function 15 — `compute_risk_parity_weights`: a config leaf shadowed by its own parameter default
+
+**The defect (measured by the re-audit).** The function solves with its **`tolerance` parameter**
+(default `DEFAULT_RISK_PARITY_TOLERANCE = 1e-10`) and **never reads** `settings.risk.risk_parity_tolerance`
+— the very leaf the module comment (`risk_budget.py:1559–1562`) claimed it reads. Measured: moving the
+config leaf `1e-10 → 1e-2` changed nothing (24 iterations either way); moving the *parameter* `1e-14 →
+1e-2` moved the iteration count 24 → 4 and the worst error 0.0 → 2.54e-3. Classes **E (input-not-taken)**
++ **H (false disclosure)**.
+
+**Fix:** the parameter default became **`None`**, and the body resolves `None → config`:
+
+```python
+if tolerance is None:
+    tolerance = settings.risk.risk_parity_tolerance
+```
+
+An explicit caller `tolerance` still wins (the parameter stays live); the config leaf is now
+**actually taken**. The module comment was corrected to describe the override semantics.
+
+**MEASURED after the fix:** a `monkeypatch` that moves the leaf to `5e-2` now makes the solve stop
+early and publish `worst_target_error > 1e-6` (it was pinned at `< 1e-9` when the leaf was dead).
+**Test added:** `test_the_config_tolerance_leaf_is_actually_taken_d129` — a **mover**, because the
+shipped leaf equals the old parameter default, so a test against the shipped file cannot tell a live
+read from a hardcoded literal (D-031; the same lesson as D-128 Card 19's `C-2a`).
+
+### 3. The lesson, recorded
+
+* **A "raise toward X" reduced with `min` is a cap, and a cap is the opposite of a stress.** The
+  fallback's docstring and its call-site warning were both **inverted by one character** — and the
+  warning made it worse, because the run *published* the string "a correlation stress was applied"
+  while the numbers said none was. A disclosure is only as good as the mechanism it describes.
+* **A parameter default equal to a config leaf's shipped value hides a dead leaf perfectly.** This is
+  D-031 (`a survivor is a weak test`) one level up: the *leaf-read* mutant survives because the shipped
+  value equals the literal. The fix is a **mover** test, always.
+* **A sweep that mutates the disclosure but not the mechanism certifies a false disclosure.** `M5c`
+  proved the warning could be removed; nothing proved the warning was *true*. Defect-reintroduction
+  guards (`M4e`) close the gap the disclosure-only mutants leave.
+* **A fresh independent pass finds what a read-only pass missed.** Both defects were "CLEAN" before.
+  The re-measure — not the re-read — is the value.
+* **A guard test whose NAME breaks a linter is a small cost paid late.** The first draft of the new
+  guard was `test_the_fallback_RAISES_a_positive_correlation_d129`; `ruff check` (N802: function names
+  must be lowercase) refused it, so it had to be renamed — and the name had already been written into
+  **four** documents (this file, `CHANGELOG`, the re-audit, the memory log), each of which then needed
+  the same edit. **Run `ruff check` on a new test BEFORE recording its name anywhere** — but note the
+  ordering subtlety that made this invisible: `ruff check` is the *first* repo gate, and it was run
+  *after* the docs were written, so the name propagated first. The standing rule ("`ruff check` runs
+  FIRST, before format")   is about the **gate sequence**, not the **authoring sequence**; for a new
+  artefact the authoring sequence must also start with a lint of the new file.
+
+### 4. The guards are KILLERS, measured (not merely green)
+
+A guard that passes on the shipped code proves nothing; the O-150 lesson is that a test can be *green
+and blind*. Each new guard was therefore **hand-reapplied against its own mutation** (one mutation per
+invocation, `finally`-restored, per O-156) and confirmed to **FAIL**:
+
+* **Function 14** — `risk.py` `max` → `min`: `test_the_fallback_raises_a_positive_correlation_d129`
+  **FAILS**, `AssertionError: stressed diversification ratio 0.806226 is not materially above the normal
+  one 0.806226`. The two ratios are **exactly equal** — a direct measurement that the `min` fallback
+  applies **no** correlation stress to a positively-correlated book.
+* **Function 15** — restore the `DEFAULT_RISK_PARITY_TOLERANCE` parameter default and delete the
+  `if tolerance is None:` resolution: `test_the_config_tolerance_leaf_is_actually_taken_d129` **FAILS**,
+  `assert 7.1e-11 > 1e-06` — the monkeypatched loose leaf (5e-2) is ignored and the solver drives to the
+  tight default. This is what makes the test a **mover** (a pinner would pass on both forms).
+
+The sweep independently confirms the same for function 14: `M4e` is **KILLED** in the full **40/40** run.
+
+### 5. Gates (measured, quiescent — no sweep running, D-114)
+
+`ruff check` **PASS** (after the N802 rename) · **`ruff format --check` 292 == `mypy --strict` 292**
+(D-035) · full suite **0 failed / 0 errors / 1 skipped** via `--junitxml` · `reachability_audit.py
+--check-baseline` **PASS 58/58** (no regressions, none newly wired) · `openbb_reachability.py` **OK**
+(278 paths) · `mutation_monte_carlo_var.py` **40/40, EXIT=0** · `mutation_statement_text.py`
+**34/34, EXIT=0** · both mutant-shape greps print **nothing** · `sweep_health.py` **LAST → 52 sweeps ·
+0 leftovers · 0 shapes · 0 committed · 0 failures · OK**.
+
+### 6. O-158 — a second, distinct evidence-integrity shape (found while VERIFYING this fix)
+
+Verifying the tree after the sweep re-runs surfaced a shape neither O-155, O-156 nor O-157 covers: a
+sweep exited **`EXIT=0`** with every mutant killed and **zero `WARNING` lines** (the `remove_sidecars`
+contract says a *refused* delete is reported), yet left a **`.sweepbackup`** on disk — `config.py`'s and
+`risk.py`'s — each **byte-identical to its live file** (`diff -q` → equal), each target **git-clean**.
+So no mutation was left; the harm was zero *this time*, but `sweep_lifecycle` step 1 **heals from the
+sidecar**, so a surviving one makes the NEXT run revert any intervening edit. **`sweep_health.py`
+correctly still reported `OK` / `leftover mutations: 0`** — a content-equal sidecar is not a leftover
+*mutation* — so a green health check is **not** evidence that no sidecar remains. Not deterministic: a
+clean re-run of `mutation_statement_text.py` left no sidecar at all. **Standing probe, added:** after
+every sweep, `find src -name '*.sweepbackup'` **beside** the `git status` check; `diff` each survivor vs
+its live file (IDENTICAL ⇒ inert, remove; DIFFERENT ⇒ live mutation, restore from it). Recorded as
+**O-158**.

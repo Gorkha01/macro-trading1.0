@@ -1,7 +1,30 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-28** (after **D-128 — the SAME Phase 0–4 audit's REMAINING four DEFECT cards
+Last updated: **2026-09-29** (after **D-129 — the fresh Tier-5 RE-AUDIT's TWO DEFECTs fixed to
+production grade**: `monte_carlo_var`'s `_uniform_correlation_stress` shipped **`min` where the
+contract says `max`** — the fallback stress CAPPED at the target, so a normal book (rho 0.3) under a
+0.9 stress kept 0.3 (**no correlation stress at all**, and the end-to-end ratio equalled the
+volatility-multiple alone) while the call-site warning claimed one was applied (**Class A/B + H**);
+fixed to **`max`** (+ truthful docstring + warning + new `M4e` defect-reintroduction mutant + test).
+`compute_risk_parity_weights` **ignored the `risk.risk_parity_tolerance` config leaf** — the
+`tolerance` parameter (default `1e-10`) shadowed the leaf the module comment claimed it read (**Class
+E + H**); fixed by `tolerance=None` → config resolution (+ corrected comment + a **mover** test).
+**Both defects were rated CLEAN by the prior audit** (`docs/AUDIT_PHASE5_TIER5_FINDINGS.md`); the fresh
+re-measure found them. Audit deliverable: **`docs/AUDIT_PHASE5_TIER5_REAUDIT.md`** (23 function cards,
+**21 CLEAN / 2 DEFECT**, every check measured). **NO src/ function added, NO config leaf added, NO new
+OpenBB command** (census stays 6). **⚠️ NEW evidence-integrity shape recorded as O-157:** a sweep can
+exit `0` at `N/N killed` with NO sidecar and STILL leave a live mutation (`mutation_regime.py` left
+`regime.py` mutated; repaired by `git checkout HEAD`). **A SECOND shape, O-158:** a sweep can also exit
+`0` printing no refusal WARNING and still leave an INERT `.sweepbackup` (byte-identical to the live
+file; `sweep_health.py` correctly still reports `OK` because a content-equal sidecar is not a leftover
+*mutation*) — so the post-sweep probe is `find src -name '*.sweepbackup'` **beside** the `git` check.
+**Gates (quiescent):** `ruff check` PASS · **292 == 292** (D-035) · full suite **0 failed / 0 errors / 1
+skipped** (junitxml) · `mutation_monte_carlo_var.py` **40/40** (39 + `M4e`, added & killed) ·
+`mutation_statement_text.py` **34/34** · reachability **PASS 58/58** · `openbb_reachability.py` **OK**
+(278 paths) · `sweep_health.py` **52 sweeps · 0 leftovers · OK**. Both new guards hand-reapplied against
+their mutations to prove they **kill** (`0.806226 == 0.806226`; `assert 7.1e-11 > 1e-06`).)
+Previous update: **2026-09-28** (after **D-128 — the SAME Phase 0–4 audit's REMAINING four DEFECT cards
 (7, 19, 21, 22) + the Card-4 evidence gap, fixed to production grade**: `project_shelter_cpi` read an
 `uncalibrated_illustrative` leaf while publishing base confidence → **0.70 → 0.50** (leaf-tracked flag);
 `inflation_convergence`'s bare `0.75` → a **config leaf + validator** (refuses a threshold that could
