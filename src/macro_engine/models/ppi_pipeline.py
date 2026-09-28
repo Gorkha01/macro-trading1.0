@@ -58,7 +58,10 @@ What the specification's sample also gets wrong
    all three stages grow at exactly 2.0% reports "no clear upstream gradient",
    and one in which they differ by 0.01pp reports that pressure is building.
    Both statements are technically true and neither is useful. A tolerance makes
-   the *reporting* honest without changing the underlying comparison.
+   the *reporting* honest without changing the underlying comparison. The band
+   reports WHICH ordering it contains (``building_within_tolerance`` when the
+   strict ordering holds inside the band, ``flat_within_tolerance`` when it does
+   not), so a banded month never appears to deny a build the boolean asserts.
 
 Stage-to-series mapping, stated once
 ------------------------------------
@@ -166,10 +169,29 @@ def ppi_pipeline_signal(inputs: PPIPipelineInputs) -> ModelResult:
     ``upstream_pressure_building``
         ``bool`` — the specification's strict ordering test, reported as-is.
     ``gradient_direction``
-        ``str`` — a three-state restatement of the same comparison that can say
-        "no clear gradient" when the stages are within the dead band of each
-        other. Strictly more informative than the boolean, and never contradicts
-        it: a ``True`` here implies ``upstream_pressure_building`` is ``True``.
+        ``str`` — a restatement of the same comparison in five states, so it is
+        never in conflict with ``upstream_pressure_building``. ``building_upstream``
+        and ``passing_through_downstream`` are the two monotonic orderings at a
+        separation larger than the dead band; ``non_monotonic`` is a genuine
+        three-way scramble (``crude > final > intermediate`` and its reverses);
+        and the two **within-band** states exist precisely so a ``True`` boolean
+        is never paired with a direction that reads as a denial:
+
+        * ``building_within_tolerance`` — the strict ordering HOLDS but both
+          adjacent gaps are inside the dead band (e.g. ``2.06 > 2.05 > 2.04``).
+          The boolean is ``True`` and says so.
+        * ``flat_within_tolerance`` — the stages are inside the band and the
+          ordering is not strict (e.g. ``2.0, 2.0, 2.0`` or ``2.0, 2.04, 2.02``).
+          The boolean is ``False``.
+
+        The invariant the earlier three-state version broke:
+        ``gradient_direction == "building_upstream"`` ⟺
+        ``upstream_pressure_building is True`` **is false** — the biconditional
+        is the WRONG invariant once a dead band exists, because the band can
+        hold on a strictly-descending ordering. What is true, and what this
+        five-state version guarantees, is the one-directional implication
+        ``upstream_pressure_building is True`` ⟹ the direction is one of the two
+        *building* states (never ``no*``/``flat*``/``passing*``/``non_monotonic``).
     ``expected_pass_through``
         ``"muted" | "fuller"`` — the specification's binary.
     ``base_rate_strict_descending``
@@ -224,9 +246,22 @@ def ppi_pipeline_signal(inputs: PPIPipelineInputs) -> ModelResult:
     # gaps is the right width to compare against, because a gradient only exists
     # if the stages are separated; when all three sit within the tolerance of
     # each other there is no ordering to speak of.
+    #
+    # The band is a REPORTING fact, not a re-decision of the boolean. The
+    # boolean keeps the specification's strict test (`crude > intermediate >
+    # final`); the direction says where the stages sit. Those two must not
+    # contradict: the earlier version returned the bare "no_clear_gradient" for
+    # every within-band reading, which paired a `True` boolean with a direction
+    # that reads as "there is no gradient" — the exact contradiction D-009's
+    # cross-field identity forbids. The band now reports WHICH ordering it is
+    # inside, so a strictly-descending-but-tight month says
+    # "building_within_tolerance" rather than denying the build.
     tolerance = settings.inflation.pipeline_gradient_tolerance
-    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:
-        gradient_direction = "no_clear_gradient"
+    within_band = abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance
+    if within_band:
+        gradient_direction = (
+            "building_within_tolerance" if upstream_building else "flat_within_tolerance"
+        )
     elif upstream_building:
         gradient_direction = "building_upstream"
     elif crude < intermediate < final:
@@ -265,7 +300,31 @@ def ppi_pipeline_signal(inputs: PPIPipelineInputs) -> ModelResult:
         "the closest live equivalent to the crude stage — the explicit "
         "'crude materials for further processing' index (PPICRM) was "
         "discontinued by BLS after 2015-12 and is unusable.",
+        # The band is a reporting fact, and when it fires the two adjacent gaps
+        # are at or below the input's own precision. Saying so plainly is the
+        # point of the band; the earlier bare "no clear gradient" wording
+        # reported a strictly-ordered month as if there were no ordering.
+        f"A {tolerance:.2f}pp dead band separates the stages: when both adjacent "
+        f"gaps sit inside it the direction names the ordering only at the "
+        f"band's resolution, because a separation at the inputs' own 2dp "
+        f"precision cannot support a stronger claim than the ordering itself. "
+        f"``upstream_pressure_building`` still reports the specification's "
+        f"strict test unchanged.",
     ]
+
+    # The within-band BUILD is the case the earlier version mislabelled: a
+    # strictly-descending month whose gaps are tiny took the bare
+    # "no clear gradient" and so appeared to deny a build the boolean asserted.
+    # Naming it here is what keeps the two fields from contradicting.
+    if gradient_direction == "building_within_tolerance":
+        warnings.append(
+            "The stages are strictly ordered the building way (crude > "
+            "intermediate > final) but both adjacent gaps are inside the "
+            f"{tolerance:.2f}pp dead band. The ordering is real and the boolean "
+            "says so; the SEPARATION is at the inputs' reporting precision, so "
+            "treat the gradient as a rounding-level ordering rather than a "
+            "measured build."
+        )
 
     # A judgement call that contradicts the price data is worth naming: the
     # stages say pressure is arriving while the caller says margins are
@@ -299,6 +358,17 @@ def ppi_pipeline_signal(inputs: PPIPipelineInputs) -> ModelResult:
             "it means the pipeline is not transmitting in one consistent "
             "direction this month. Treat a non-monotonic reading as 'no signal' "
             "rather than resolving it by ignoring whichever stage disagrees."
+        )
+
+    if gradient_direction == "flat_within_tolerance":
+        warnings.append(
+            f"The three stages sit within the {tolerance:.2f}pp dead band of one "
+            f"another without a strict ordering: the cheapest and dearest stages "
+            f"are {stage_spread:+.2f}pp apart. There is no directional gradient "
+            f"to read this month, and the boolean is False. This is a genuine "
+            f"'no gradient', distinct from the within-band case where the "
+            f"ordering DOES hold — the direction names which of the two it is so "
+            f"the boolean and the label cannot appear to disagree."
         )
 
     if abs(stage_spread) <= tolerance:

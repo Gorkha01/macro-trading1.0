@@ -14,6 +14,7 @@ Section 11.1 mandates three of these by name:
 
 from __future__ import annotations
 
+from typing import get_args
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,7 @@ from macro_engine.models.policy_rules import (
     BalanceSheetInputs,
     FirstDifferenceInputs,
     PolicyRuleResult,
+    StatementDiffDirection,
     StatementTextInputs,
     TaylorRuleInputs,
     balanced_approach_rule,
@@ -1189,6 +1191,53 @@ def test_opposing_moves_with_a_hawkish_net_name_the_removal() -> None:
     assert as_str(result, key="direction") == "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
 
 
+def test_opposing_moves_with_a_dovish_addition_say_additions_not_removals() -> None:
+    """Defect #7: a dovish ADDITION must not be published as a REMOVAL.
+
+    Hawkish language is added twice and dovish language is added once, so
+    ``hawkish_net = +2``, ``dovish_net = +1`` and the tilt is hawkish. The
+    earlier reduction keyed the label purely on ``tilt > 0`` and so called this
+    ``..._WITH_DOVISH_REMOVALS`` while ``dovish_left`` was EMPTY and
+    ``dovish_entered`` held the phrase — a label directly contradicted by two
+    other fields of the same result (D-009), and the D-125 class of a reduction
+    keyed on the wrong predicate.
+
+    The whole point of the tilt label (Section 20.4) is that the phrase that
+    MOVED is the signal, so an addition and a removal must not share a name.
+    """
+    prior = "The Committee met today."
+    current = (
+        "The Committee met today. It is prepared to raise and prepared to raise "
+        "again, and inflation has eased."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") == 2
+    assert as_int(result, key="dovish_net") == 1, "dovish language was ADDED, not removed"
+    assert as_float(result, key="net_tilt") > 0.0
+    assert _as_list(result, "dovish_left") == [], "sanity: nothing dovish was removed"
+    assert _as_list(result, "dovish_entered") == ["has eased"]
+    assert as_str(result, key="direction") == "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"
+
+
+def test_opposing_moves_with_a_hawkish_addition_say_additions_not_removals() -> None:
+    """The mirror of defect #7 on the dovish side.
+
+    Dovish language is added three times and hawkish once (one hawkish phrase
+    also removed), so ``dovish_net = +3`` net of a removal and the net is
+    dovish. The label must say the hawkish side was ADDED to, not removed from.
+    """
+    prior = "The Committee is prepared to raise."
+    current = (
+        "It is prepared to raise and prepared to raise again, and it notes "
+        "inflation has eased and sustainable progress and has eased again."
+    )
+    result = statement_text_diff(StatementTextInputs(prior_text=prior, current_text=current))
+    assert as_int(result, key="hawkish_net") > 0, "hawkish language was NET ADDED"
+    assert as_int(result, key="dovish_net") > 0
+    assert as_float(result, key="net_tilt") < 0.0
+    assert as_str(result, key="direction") == "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"
+
+
 def test_an_exact_cancellation_is_not_reported_as_a_tilt() -> None:
     """Two equal-and-opposite moves cancel: the tie branch names it (mutation D4a).
 
@@ -1211,11 +1260,14 @@ def test_an_exact_cancellation_is_not_reported_as_a_tilt() -> None:
 
 
 def test_every_direction_is_reachable() -> None:
-    """All six direction values are producible — none is dead code (D-040/D-037).
+    """All EIGHT direction values are producible — none is dead code (D-040/D-037).
 
     Enumerating the implementation over constructed inputs is the technique that
     found D-040's dead branch, kept here as the guard for the direction
-    vocabulary.
+    vocabulary. The count is asserted against the ``Literal`` itself, not against
+    the length of this dict, so adding a vocabulary member without a producing
+    fixture fails HERE rather than shipping a member no input can reach (D-045a:
+    a ``Literal`` is a promise with two halves).
     """
     cases = {
         "MORE_HAWKISH": (
@@ -1227,17 +1279,33 @@ def test_every_direction_is_reachable() -> None:
             "The Committee met. Inflation has eased and sustainable progress is evident.",
         ),
         "HAWKISH_TILT_WITH_DOVISH_REMOVALS": (
-            # Both directions move; the dovish side sheds more, so the net is
-            # hawkish and the label records that it came from dovish removals.
+            # Both directions move; the dovish side's net FALLS (removals) while
+            # the net is hawkish.
             "The Committee is prepared to raise. Inflation has eased and we see "
             "sustainable progress.",
             "The Committee met today and reviewed conditions.",
         ),
+        "HAWKISH_TILT_WITH_DOVISH_ADDITIONS": (
+            # Both directions move; the dovish side's net RISES (additions)
+            # while the net is still hawkish. The mirror defect (#7): this used
+            # to be published as ..._WITH_DOVISH_REMOVALS.
+            "The Committee met today.",
+            "It is prepared to raise and prepared to raise again, and it notes "
+            "inflation has eased.",
+        ),
         "DOVISH_TILT_WITH_HAWKISH_REMOVALS": (
-            # The mirror: both directions move; the hawkish side sheds more.
+            # The mirror: the hawkish side's net FALLS (removals) against a
+            # dovish net.
             "The Committee is prepared to raise and expects further tightening. "
             "Inflation has eased.",
             "The Committee met today and reviewed conditions.",
+        ),
+        "DOVISH_TILT_WITH_HAWKISH_ADDITIONS": (
+            # The mirror: the hawkish side's net RISES (additions) against a
+            # dovish net.
+            "The Committee is prepared to raise.",
+            "It is prepared to raise and prepared to raise again, and it notes "
+            "inflation has eased and sustainable progress and has eased again.",
         ),
         "MIXED_BOTH_DIRECTIONS_NET_FLAT": (
             "The Committee met today.",
@@ -1253,7 +1321,12 @@ def test_every_direction_is_reachable() -> None:
         )
         assert got == expected, f"for {expected!r} the model said {got!r}"
         seen.add(got)
-    assert seen == set(cases), "every direction must be constructible"
+    vocabulary = set(get_args(StatementDiffDirection))
+    assert seen == vocabulary, (
+        f"every direction must be constructible; missing {vocabulary - seen}, "
+        f"extra {seen - vocabulary}"
+    )
+    assert set(cases) == vocabulary, "the fixture dict must cover the whole vocabulary"
 
 
 def test_the_confidence_is_the_capped_product() -> None:

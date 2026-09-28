@@ -505,9 +505,17 @@ def test_there_are_fifty_sweeps_to_cover() -> None:
     client and reads no market data at all — like D-123's addition it covers a
     model and its config block alone. It uses `sweep_lifecycle` and carries the
     CANARY1 refusal gate, so the same two checks cover it.
+
+    **50 → 51 at D-127**, which added `mutation_labor_breadth.py` — the sweep
+    over Module 6.3's `inflation_breadth_score` in `models/labor_synthesis.py`.
+    Unlike the four module-creating sweeps above it covers an EXISTING function
+    that had no sweep at all, and it closes the D-040/D-050 defect this
+    increment fixed (a flat reading published as CONFLICTED). It uses
+    `sweep_lifecycle` and carries the CANARY1 refusal gate, so the same two
+    checks cover it.
     """
     files = _sweep_files()
-    assert len(files) == 50, f"expected 50 sweeps, found {len(files)}"
+    assert len(files) == 51, f"expected 51 sweeps, found {len(files)}"
 
 
 @pytest.mark.parametrize("path", _sweep_files(), ids=lambda p: p.stem)

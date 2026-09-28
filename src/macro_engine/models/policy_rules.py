@@ -1068,15 +1068,18 @@ def _qe_stance_calibrated() -> bool:
 # ---------------------------------------------------------------------------
 
 #: The direction of the forward-guidance change, as a closed vocabulary (D-029).
-#: ``MORE_HAWKISH`` / ``MORE_DOVISH`` when one side's phrases net-enter, the
-#: ``_TILT_*`` values when both sides move with one dominating, ``UNCHANGED``
-#: when the marker set did not move at all, and ``MIXED_BOTH_DIRECTIONS_NET_FLAT``
-#: when both sides moved and cancelled exactly.
+#: ``MORE_HAWKISH`` / ``MORE_DOVISH`` when one side's phrases net-enter, the four
+#: ``_TILT_*`` values when both sides move with one dominating (the label names
+#: the SIGN of BOTH sides' nets, so an ADDITION is never called a REMOVAL),
+#: ``UNCHANGED`` when the marker set did not move at all, and
+#: ``MIXED_BOTH_DIRECTIONS_NET_FLAT`` when both sides moved and cancelled exactly.
 StatementDiffDirection = Literal[
     "MORE_HAWKISH",
     "MORE_DOVISH",
     "HAWKISH_TILT_WITH_DOVISH_REMOVALS",
+    "HAWKISH_TILT_WITH_DOVISH_ADDITIONS",
     "DOVISH_TILT_WITH_HAWKISH_REMOVALS",
+    "DOVISH_TILT_WITH_HAWKISH_ADDITIONS",
     "MIXED_BOTH_DIRECTIONS_NET_FLAT",
     "UNCHANGED",
 ]
@@ -1195,14 +1198,23 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
     ``(h - d) / (|h| + |d|)`` when either is non-zero, else ``0.0``. It is
     **signed** (positive is hawkish) and **bounded**, so it can be compared
     across statements of different lengths without a raw count masquerading as
-    intensity. When **both directions** moved, the direction name says so
-    explicitly (``HAWKISH_TILT_WITH_DOVISH_REMOVALS``) because a hawkish net
-    that comes from *dropping dovish phrases* is a different trade from one that
-    comes from *adding hawkish ones* — and the specification's whole point is
-    that the phrase that MOVED is the signal. When only one **direction** moved,
-    the direction is simply ``MORE_HAWKISH`` / ``MORE_DOVISH``; note that a
-    hawkish phrase *leaving* is a move in the dovish direction, so it reads
-    ``MORE_DOVISH``, not ``MORE_HAWKISH``.
+    intensity.
+
+    **The tilt label names the sign of BOTH sides' nets, not just the net sign.**
+    When both directions moved, the direction says which one moved which way:
+    ``HAWKISH_TILT_WITH_DOVISH_REMOVALS`` when the dovish side's net FELL
+    (``d < 0``) against a hawkish net, and ``HAWKISH_TILT_WITH_DOVISH_ADDITIONS``
+    when the dovish side's net ROSE (``d > 0``). The mirror pair does the same
+    for a dovish net. This matters because a hawkish net built by *dropping
+    dovish phrases* is a different trade from one built by *adding hawkish ones*
+    — and the specification's whole point is that the phrase that MOVED is the
+    signal. An earlier reduction keyed the label on ``tilt > 0`` alone, so a
+    dovish ADDITION was published as a dovish REMOVAL: the D-125 class of a
+    reduction keyed on the wrong predicate.
+    When only one **direction** moved, the direction is simply
+    ``MORE_HAWKISH`` / ``MORE_DOVISH``; note that a hawkish phrase *leaving* is a
+    move in the dovish direction, so it reads ``MORE_DOVISH``, not
+    ``MORE_HAWKISH``.
 
     Confidence is computed from the stated factors (Section 22.8), never
     asserted, and the two halves are combined as a **product** — the
@@ -1275,14 +1287,33 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
             # Every tracked phrase that moved moved dovish-ward.
             direction = "MORE_DOVISH"
         elif tilt > 0:
-            # Language moved in BOTH directions and the net is hawkish. The
-            # side that produced the tilt is named, because a hawkish net built
-            # by dropping dovish phrases is a different trade from one built by
-            # adding hawkish ones (Section 20.4: the phrase that MOVED is the
-            # signal).
-            direction = "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+            # Language moved in BOTH directions and the net is hawkish. WHICH
+            # side's language was added and which was dropped is a separate
+            # question from the sign of the net, and the label must answer it —
+            # a hawkish net built by DROPPING dovish phrases is a different
+            # trade from one built by ADDING hawkish ones (Section 20.4: the
+            # phrase that MOVED is the signal).
+            #
+            # The earlier reduction keyed only on `tilt > 0`, so `dovish_net > 0`
+            # (dovish language ADDED) and `dovish_net < 0` (dovish language
+            # REMOVED) both read "…_WITH_DOVISH_REMOVALS". A dovish ADDITION
+            # labelled a dovish REMOVAL is exactly the D-125 class: a reduction
+            # keyed on the wrong predicate. Here the predicate is the SIGN of
+            # the opposite side's own net, which is what the state name asserts.
+            direction = (
+                "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+                if dovish_net < 0
+                else "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"
+            )
         elif tilt < 0:
-            direction = "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+            # The mirror, with the mirror defect: a dovish net built by dropping
+            # hawkish phrases is `..._WITH_HAWKISH_REMOVALS`; one built by adding
+            # dovish phrases is `..._WITH_HAWKISH_ADDITIONS`.
+            direction = (
+                "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+                if hawkish_net < 0
+                else "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"
+            )
         else:
             # Both directions moved and they cancel exactly (the two nets are
             # equal, e.g. one hawkish phrase added and one dovish phrase added).

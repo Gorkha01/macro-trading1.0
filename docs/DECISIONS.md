@@ -21109,3 +21109,207 @@ must **multiply**, not clip). **D-118's rule is the authority, and the standing 
 The audit found this defect at **1 in 23** — the audit's own headline is that the other 22 were
 genuinely CLEAN, and the single defect was a **post-D-118-era function that D-125 shipped with a
 pre-D-118 `min()`**.
+
+## D-127 — the **Phase 0–4 file-by-file audit's** three remaining defects, fixed to production grade: `inflation_breadth_score` (a FLAT reading published as CONFLICTED), `ppi_pipeline_signal` (a `True` boolean published opposite a `no_clear_gradient` direction), and `statement_text_diff` (`_TILT_*` labels that named the WRONG side of the other net)
+
+**Date:** 2026-09-28 (session clock). **Trigger:** the operator ran a **file-by-file audit of the
+uncovered Phase 0–4 `src/` files** (the 68 files NOT in the Tier-5 §21.3 list; deliverable
+`docs/AUDIT_PHASE04_FINDINGS.md`, 26 cards), then authorised fixing the three defects it found:
+*"fix this defects in prodution grade then"*. **Targets:** three EXISTING modules —
+`src/macro_engine/models/labor_synthesis.py` (Module 6.3), `src/macro_engine/models/ppi_pipeline.py`
+(Module 10), `src/macro_engine/models/policy_rules.py` (function 23, `statement_text_diff`).
+**NO new module, NO new config leaf, NO new OpenBB command** (census stays 6) — every fix is a
+correction of an existing branch to a state the inputs already produce.
+
+**The three defects share one shape and it is now a named class (item 5): a branch whose guard is
+BLINDER than the state set the function can actually emit, so a real, producible input falls through
+to a `else`/first-branch that PUBLISHES A LIE about it.** All three were caught by the audit's
+**econom-ics/reasoning check (Class B)** and its **cross-field-identity check (Class F, D-009)** —
+NOT by any gate, and NOT by any sweep (one had no sweep at all, item 3).
+
+### 1. Defect #5 — `inflation_breadth_score`: an all-flat reading was published as CONFLICTED
+
+`labor_synthesis.py`'s Module 6.3 classified the three m/m inflation sub-measures **by sign only**:
+`all_positive` → "rising", `all_negative` → "falling", `else` → divergent. The `else` therefore
+swallowed the **all-zero** reading (three flat prints), which is **producible live** through
+`orchestration.py:657`'s `_inflation_leg` whenever the three source series are unchanged m/m. The
+function then published `direction='CONFLICTED: measures disagree in sign'` with the **divergent**
+confidence (0.3), and emitted a false warning *"Sub-measures disagree"* — for a reading in which
+**every sub-measure agreed: all zero**.
+
+**The authority that decided the correct shape is `AGENTS.md` §22 Resolution Finding #10** (the
+canonical agreement rule): *"ignores neutral signals when computing agreement (a neutral signal is
+not evidence for either direction), and only flags CONFLICTED when a genuine directional opposition
+exists among NON-neutral signals."* So:
+
+* `(0, 0, 0)` → **flat** — its own state, its own sentence, **convergent** confidence;
+* `(0, 0, −0.3)` and `(0, 0.2, 0.3)` → **convergent-partial** — the readings that moved agree in
+  sign, the zeros are ignored (Finding #10);
+* `(0.4, −0.2, 0.3)` → **CONFLICTED** — a genuine sign opposition among non-neutral signals.
+
+The fix replaced `else`-as-catch-all with an explicit predicate plus a real flat state:
+
+```python
+    all_flat = all(value == 0 for value in values)
+    # divergent requires a positive AND a negative reading (Finding #10)
+    divergent = any(value > 0 for value in values) and any(value < 0 for value in values)
+    confidence = breadth.divergent if divergent else breadth.convergent
+```
+
+The now-unused `same_direction` line (whose only job was to feed the old `else`) was removed (ruff
+F841 caught it). `_breadth_direction_sentence` grew from 3 to **4 arguments**
+(`all_positive, all_negative, all_flat, divergent`) and now returns
+`"flat: all three measures at zero, so there is no direction to read"` on the flat path, and
+`"convergent: measures agree on the sign of the readings that moved"` on the partial path. The
+docstring, `assumptions`, `limitations`, and `decision_prohibition` were updated — the prohibition
+now **explicitly forbids reading flat as a conflict** ("a flat reading is not a disagreement").
+
+**MEASURED, 6 states, before/after:**
+
+| `values` | before | after |
+|---|---|---|
+| `(0, 0, 0)` | `CONFLICTED`, conf **0.3** | `flat`, conf **0.5** |
+| `(0, 0, −0.3)` | `CONFLICTED`, conf 0.3 | convergent-partial, conf **0.5** |
+| `(0, 0.2, 0.3)` | `CONFLICTED`, conf 0.3 | convergent-partial, conf **0.5** |
+| `(0.4, −0.2, 0.3)` | `CONFLICTED`, conf 0.3 | `CONFLICTED`, conf **0.3** (unchanged — correct) |
+| `(0.2, 0.3, 0.1)` | `rising`, conf 0.5 | `rising`, conf 0.5 (unchanged) |
+| `(−0.2, −0.3, −0.1)` | `falling`, conf 0.5 | `falling`, conf 0.5 (unchanged) |
+
+### 2. Defect #6 — `ppi_pipeline_signal`: a `True` boolean published opposite a `no_clear_gradient` direction
+
+`ppi_pipeline.py` computed `upstream_pressure_building` (a strictly-descending crude > intermediate >
+final test) and `gradient_direction` independently, then had a **dead-band guard run FIRST**:
+
+```python
+    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:
+        gradient_direction = "no_clear_gradient"     # <-- the defect
+```
+
+For a **strictly descending but within-band** month (e.g. `2.06, 2.05, 2.04` against a `0.02`
+tolerance), the boolean was **`True`** (it is a strict `>`) while the direction read
+**`no_clear_gradient`** — two fields of one result **contradicting each other** (D-009 class F). The
+direction text *"No clear upstream gradient"* then **denied** a build the same function had just
+asserted.
+
+The fix makes the band report **which ordering it contains**, and corrects the invariant. The naive
+biconditional (`building ⟺ direction is a building direction`) is **WRONG once a dead band exists** —
+within the band the ordering is unknowable, so a build can coexist with an in-band direction. The
+invariant that actually holds is **one-directional**:
+
+> `upstream_pressure_building is True` **⟹** `gradient_direction ∈ { "building_upstream",
+> "building_within_tolerance" }`.
+
+```python
+    within_band = (
+        abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance
+    )
+    if within_band:
+        gradient_direction = (
+            "building_within_tolerance" if upstream_building else "flat_within_tolerance"
+        )
+    elif upstream_building:
+        gradient_direction = "building_upstream"
+    elif crude < intermediate < final:
+        gradient_direction = "passing_through_downstream"
+    else:
+        gradient_direction = "non_monotonic"
+```
+
+Three warnings were added: a general band-resolution warning (always present inside the band), a
+`building_within_tolerance`-specific warning, and a `flat_within_tolerance` warning. `direction_text`
+is unchanged. The module docstring item 4 and the `gradient_direction` docstring were rewritten to
+state the one-directional invariant. `(2.06, 2.05, 2.04)` now reads **`building_within_tolerance`**
+with the boolean `True`.
+
+### 3. Defect #7 — `statement_text_diff`: `_TILT_*` labels that named the WRONG side
+
+`policy_rules.py`'s `statement_text_diff` computed `tilt = hawkish_net − dovish_net` and then:
+
+```python
+    elif tilt > 0:
+        direction = "HAWKISH_TILT_WITH_DOVISH_REMOVALS"     # <-- the defect
+    elif tilt < 0:
+        direction = "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+```
+
+The label asserted **which way the OTHER side moved** — but the `elif tilt > 0` guard only proves the
+**net** is positive; it never read the **sign of `dovish_net`**. A hawkish tilt (net positive)
+produced by *adding* dovish language (e.g. `'+has eased'` with `dovish_net > 0`) was mislabelled
+`..._WITH_DOVISH_REMOVALS` while the payload showed `dovish_left=[]` and
+`dovish_entered=['has eased']` — the label directly contradicting its own evidence. This is the
+**D-125 class** (a reduction keyed on the wrong predicate).
+
+The fix splits each tilt state by the sign of the opposite side's own net:
+
+```python
+    elif tilt > 0:
+        direction = (
+            "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+            if dovish_net < 0
+            else "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"
+        )
+    elif tilt < 0:
+        direction = (
+            "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+            if hawkish_net < 0
+            else "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"
+        )
+```
+
+`StatementDiffDirection` grew from **6 → 8 members** (added `HAWKISH_TILT_WITH_DOVISH_ADDITIONS` and
+`DOVISH_TILT_WITH_HAWKISH_ADDITIONS`). Per **D-045a** ("a `Literal` is a promise with two halves" —
+every declared member must be PRODUCIBLE and every emitted member must MEAN what it names), the two
+new members are constructible (verified by the live check) and now mean the right thing. The
+docstring names the sign-of-both-nets rule and the D-125 class. The exact reproduced case now reads
+**`HAWKISH_TILT_WITH_DOVISH_ADDITIONS`**.
+
+### 4. What moved with the fixes — tests, live check, sweeps
+
+* **`tests/models/test_labor_synthesis.py`** — **5 new tests** (`..._all_zero_is_flat_not_conflicted`,
+  `..._a_zero_is_ignored_when_scoring_agreement`, `..._divergent_requires_both_signs`,
+  `..._a_negative_reading_is_not_flat`, `..._a_zero_alongside_a_negative_is_not_flat`,
+  `..._carries_its_disclosures_on_the_flat_path`). `result.direction` (typed `str | None`) needed
+  explicit `assert ... is not None` narrowing for mypy. **48 pass.**
+* **`tests/models/test_ppi_pipeline.py`** — `test_exact_tie_is_no_clear_gradient` →
+  `..._is_flat_within_tolerance`; `test_separation_exactly_at_the_tolerance_is_no_clear_gradient` →
+  `..._is_within_the_band`; added `..._a_strictly_descending_within_band_month_is_not_a_flat_band`
+  (`2.06,2.05,2.04`) and `..._the_within_band_build_carries_its_own_warning`; rewrote
+  `test_gradient_direction_never_contradicts_the_boolean` to assert the **one-directional
+  implication** over 8 cases including within-band fixtures. **57 pass.**
+* **`tests/models/test_policy_rules.py`** — added `get_args`/`StatementDiffDirection` imports and
+  two tests for the additions paths; strengthened `test_every_direction_is_reachable` to assert
+  coverage against `set(get_args(StatementDiffDirection))` (**all 8**), not against the fixture dict.
+  **83 pass.**
+* **`tests/models/test_reasoning_contract.py`** — updated to the new 4-arg
+  `_breadth_direction_sentence` signature plus the flat case. **73 pass.**
+* **`scripts/mutation_labor_breadth.py` (NEW, 19 mutants, 19/19 killed)** — `inflation_breadth_score`
+  had **NO sweep at all**; this fills the gap. CANARY1 syntax refusal + `sweep_lifecycle` + a 4-tuple
+  `(name, SRC, old, new)` table. Mutants: divergent-predicate reverts (**M1a–d**), flat-state
+  tampering (**M2a–e**: forced off, branch dropped, sentence removed, `<= 0`, folded into divergent),
+  confidence hardcodes/swaps (**M3a–c**), disclosure removals (**M4a–b**), field drops (**M5a–c**),
+  and a confidence-leaf swap (**C1a**).
+* **`scripts/mutation_ppi_pipeline.py`** — retargeted **M4c/M4d/M4e** to the new `within_band`
+  expression; added **M4h** (collapse to the old label), **M4i** (always flat), **M4j** (always
+  building), **M4k** (band forced zero), **M4l** (band unbounded). **38/38 killed.**
+* **`scripts/mutation_statement_text.py`** — added **D4c/D4d** (label reverts to the sign-blind
+  `REMOVALS`) and **D4e/D4f** (split inverted). **34/34 killed** (was 30/30).
+* **`scripts/live_statement_text_check.py`** — the COVERAGE census extended to all **8** directions,
+  asserted against `set(get_args(StatementDiffDirection))`. Green: all 8 constructed correctly.
+* **Sweep census 50 → 51** — the new sweep required editing **all three** declarations together
+  (`tests/test_sweep_sidecar_lifecycle.py` ×2 incl. the function NAME, and
+  `tests/test_sweep_health_leftover_predicate.py` ×1).
+
+### 5. The class, recorded
+
+**A branch whose guard is BLINDER than the function's own producible state set is a defect that no
+gate, no type-checker, and (here) no sweep catches — it publishes a falsehood about a real input.**
+Three instances, three different blinder guards: a `by-sign-only` classifier swallowing the all-zero
+state (#5), a `dead-band-first` guard publishing a direction that denies its own boolean (#6), a
+`net-sign-only` guard labelling a side it never read (#7). The common remedy is **make the guard name
+the state it actually admits** — an explicit opposition predicate, an in-band direction that reports
+the ordering it contains, a split on the OPPOSITE net's sign — and then **encode the producible
+state in a test** (the flat case, the within-band build, the additions case). The audit found these
+at **3 defects in 26 cards**; the decisive authority for #5 was `AGENTS.md` §22 Finding #10 (neutral
+signals are not evidence), for #6 it was D-009 (fields of one result must not contradict), for #7 it
+was D-125 (a reduction keyed on the wrong predicate) read together with D-045a (a `Literal` is a
+promise with two halves).

@@ -92,26 +92,56 @@ def test_reversed_ordering_is_not_upstream_building() -> None:
 
 
 def test_gradient_direction_never_contradicts_the_boolean() -> None:
-    """``building_upstream`` implies the boolean is ``True`` — checked both ways.
+    """``upstream_pressure_building is True`` implies a BUILDING direction.
 
-    The two are computed independently, so this asserts they agree rather than
-    assuming they must.
+    The two are computed by different code, so this asserts the implication
+    rather than assuming it. The earlier version of this test asserted the
+    BICONDITIONAL ``(direction == "building_upstream") == building`` over five
+    cases spaced at least 1.0pp apart — every one of them OUTSIDE the dead band,
+    so the test never entered the band and passed vacuously while the band
+    contained a real contradiction (a strictly-descending month reported as
+    ``no_clear_gradient`` with the boolean ``True``).
+
+    The invariant that actually holds, once a dead band exists, is one-
+    directional: a ``True`` boolean must land on a *building* direction (either
+    ``building_upstream`` or ``building_within_tolerance``), and must never pair
+    with a ``flat*`` / ``passing*`` / ``non_monotonic`` label. The cases below
+    include within-band fixtures — the ones the old list omitted.
     """
     cases = [
-        (5.0, 3.0, 1.0),
-        (1.0, 2.0, 3.0),
-        (3.0, 1.0, 2.0),
-        (1.0, 3.0, 2.0),
-        (2.0, 2.0, 2.0),
+        # (crude, intermediate, final, expected_building, expected_direction)
+        (5.0, 3.0, 1.0, True, "building_upstream"),
+        (1.0, 2.0, 3.0, False, "passing_through_downstream"),
+        (3.0, 1.0, 2.0, False, "non_monotonic"),
+        (1.0, 3.0, 2.0, False, "non_monotonic"),
+        (2.0, 2.0, 2.0, False, "flat_within_tolerance"),
+        # --- the within-band cases the old list omitted (defect #6) --------
+        (2.06, 2.05, 2.04, True, "building_within_tolerance"),
+        (2.0, 2.05, 2.04, False, "flat_within_tolerance"),
+        (2.0, 2.0, 2.04, False, "flat_within_tolerance"),
     ]
-    for crude, intermediate, final in cases:
+    for crude, intermediate, final, expected_building, expected_direction in cases:
         result = ppi_pipeline_signal(_inputs(crude=crude, intermediate=intermediate, final=final))
         building = as_bool(result, key="upstream_pressure_building")
         direction = as_str(result, key="gradient_direction")
-        assert (direction == "building_upstream") == building, (
-            f"boolean {building} and direction {direction!r} disagree for "
+        assert building is expected_building, (
+            f"boolean {building} != {expected_building} for ({crude}, {intermediate}, {final})"
+        )
+        assert direction == expected_direction, (
+            f"direction {direction!r} != {expected_direction!r} for "
             f"({crude}, {intermediate}, {final})"
         )
+        # The implication, stated as the invariant rather than as a biconditional.
+        if building:
+            assert direction in {"building_upstream", "building_within_tolerance"}, (
+                f"a True boolean must name a building direction, got {direction!r} "
+                f"for ({crude}, {intermediate}, {final})"
+            )
+        else:
+            assert not direction.startswith("building"), (
+                f"a False boolean must not name a building direction, got "
+                f"{direction!r} for ({crude}, {intermediate}, {final})"
+            )
 
 
 def test_stage_spread_is_crude_minus_final() -> None:
@@ -359,14 +389,44 @@ def test_ppi_not_one_to_one_warning_is_always_present() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_exact_tie_is_no_clear_gradient() -> None:
-    """All three stages equal -> the dead band suppresses a phantom ordering."""
+def test_exact_tie_is_flat_within_tolerance() -> None:
+    """All three stages equal -> the band reports a flat band, not a denial.
+
+    The boolean is False (strict ordering does not hold) and the direction says
+    the band is flat. The prior label was the bare ``no_clear_gradient``, which
+    was fine here but was ALSO returned on a strictly-descending within-band
+    month, where it contradicted a ``True`` boolean (D-009's cross-field
+    identity). The two within-band states exist so the label always names which
+    one it is.
+    """
     result = ppi_pipeline_signal(_inputs(crude=2.0, intermediate=2.0, final=2.0))
     assert as_bool(result, key="upstream_pressure_building") is False
-    assert as_str(result, key="gradient_direction") == "no_clear_gradient"
+    assert as_str(result, key="gradient_direction") == "flat_within_tolerance"
 
 
-def test_separation_exactly_at_the_tolerance_is_no_clear_gradient() -> None:
+def test_a_strictly_descending_within_band_month_is_not_a_flat_band() -> None:
+    """The defect this increment fixes: a tight-but-real build must not read flat.
+
+    ``2.06 > 2.05 > 2.04`` is strictly descending, so the specification's boolean
+    is ``True`` — but both adjacent gaps are 0.01pp, inside the 0.1pp band. The
+    earlier code took the band branch first and returned
+    ``no_clear_gradient``, pairing a ``True`` boolean with a direction that reads
+    as "there is no gradient": a contradiction between two fields of the SAME
+    result (D-009). The direction must name the within-band BUILD.
+    """
+    result = ppi_pipeline_signal(_inputs(crude=2.06, intermediate=2.05, final=2.04))
+    assert as_bool(result, key="upstream_pressure_building") is True
+    assert as_str(result, key="gradient_direction") == "building_within_tolerance"
+
+
+def test_the_within_band_build_carries_its_own_warning() -> None:
+    """The band's resolution limit must be on the record, not implied."""
+    result = ppi_pipeline_signal(_inputs(crude=2.06, intermediate=2.05, final=2.04))
+    matches = [w for w in result.warnings if "dead band" in w and "strictly ordered" in w]
+    assert len(matches) == 1, "the within-band build must explain the band"
+
+
+def test_separation_exactly_at_the_tolerance_is_within_the_band() -> None:
     """The band is inclusive at its edge — built from the config value.
 
     Reading the tolerance from config rather than hardcoding ``0.1`` means a
@@ -385,7 +445,8 @@ def test_separation_exactly_at_the_tolerance_is_no_clear_gradient() -> None:
     tolerance = get_settings().inflation.pipeline_gradient_tolerance
     result = ppi_pipeline_signal(_inputs(crude=tolerance, intermediate=0.0, final=0.0))
     # |crude - intermediate| == tolerance and |intermediate - final| == 0.0
-    assert as_str(result, key="gradient_direction") == "no_clear_gradient"
+    # crude > intermediate == final, so the ordering is NOT strict: flat band.
+    assert as_str(result, key="gradient_direction") == "flat_within_tolerance"
 
 
 def test_separation_just_outside_the_tolerance_is_directional() -> None:
@@ -421,7 +482,7 @@ def test_the_dead_band_requires_both_adjacent_gaps_inside_it() -> None:
 
     One pair sits exactly on the edge and the other is outside, so the gradient
     is real and must be reported. A one-gap band would see the first pair and
-    wrongly report ``no_clear_gradient``.
+    wrongly report a within-band state instead.
     """
     tolerance = get_settings().inflation.pipeline_gradient_tolerance
     result = ppi_pipeline_signal(

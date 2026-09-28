@@ -1255,24 +1255,44 @@ class InflationSubMeasures(BaseModel):
     pce_core_mom: float = Field(description="PCE core, m/m percent.")
 
 
-def _breadth_direction_sentence(all_positive: bool, all_negative: bool) -> str:
+def _breadth_direction_sentence(
+    all_positive: bool,
+    all_negative: bool,
+    all_flat: bool,
+    divergent: bool,
+) -> str:
     """The breadth read's direction, in words, for the Section 3 ``direction`` field.
 
-    Named rather than inlined because the three states are genuinely distinct and
-    a nested conditional collapses them: "all rising", "all falling", and
-    "measures disagree" are not a direction and its negation. The third state is
-    the one that matters — on a divergent read there is no direction, and saying
-    so is the whole point of the field.
+    Named rather than inlined because the states are genuinely distinct and a
+    nested conditional collapses them: "all rising", "all falling", "all flat",
+    and "measures disagree" are not a direction and its negation.
 
-    Takes the two booleans the caller already computed rather than recomputing
-    them from the values, so the sentence cannot disagree with the branch that
+    The FLAT state is here and not folded into "disagree" because an all-zero
+    reading is the opposite of a disagreement: the three measures agree exactly,
+    the answer is simply "no movement". Reporting it as CONFLICTED (D-040's
+    shape) told the reader the measures pull in opposing directions when in fact
+    none of them moved, and it also charged the divergent confidence for a
+    reading that has no divergence to charge for (D-050: a real state real data
+    produces must be representable, and must be representable as itself).
+
+    ``divergent`` is passed by the caller rather than derived from the negation
+    of the other three flags, because "not all the same way" and "genuinely
+    opposed" are different questions and only the second is a conflict — a
+    single sign alongside zeros is convergent. Passing the caller's own
+    predicate is what makes the sentence unable to disagree with the branch that
     chose the confidence.
     """
     if all_positive:
         return "rising: all three measures positive"
     if all_negative:
         return "falling: all three measures negative"
-    return "CONFLICTED: measures disagree in sign, so the average describes neither"
+    if all_flat:
+        return "flat: all three measures at zero, so there is no direction to read"
+    if divergent:
+        return "CONFLICTED: measures disagree in sign, so the average describes neither"
+    # Not all the same way, not flat, yet no genuine opposition: the only
+    # readings that moved came from one sign, so the non-neutral measures agree.
+    return "convergent: measures agree on the sign of the readings that moved"
 
 
 def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
@@ -1298,6 +1318,17 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
       interpretation states the average so a reader can see the magnitudes, and
       the limitation is a warning.
 
+    **Four states, not two.** Convergent-rising and convergent-falling are the
+    same-direction cases; **flat** is the case where all three are exactly zero
+    (agreement, no direction, and the convergent confidence); **divergent** is
+    the case where the measures genuinely oppose. The divergent state is entered
+    only when a positive AND a negative reading both exist — never merely when
+    "not all the same way", which an all-zero reading also satisfies and which
+    would report a flat month as a conflict (D-040). A zero reading is not
+    evidence for either direction, per AGENTS.md Resolution Finding #10's
+    ``classify_convergence``: it is ignored when scoring agreement, so a reading
+    with a single sign and zeros is convergent, not conflicted.
+
     The confidence in the divergent branch is lower **by config**, not by a
     literal, and is not produced by ``compute_confidence()`` because Section 6.3
     defines it as a property of this specific convergence test rather than of
@@ -1306,20 +1337,46 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
     values = [measures.cpi_headline_mom, measures.cpi_core_mom, measures.pce_core_mom]
     all_positive = all(value > 0 for value in values)
     all_negative = all(value < 0 for value in values)
-    same_direction = all_positive or all_negative
+    all_flat = all(value == 0 for value in values)
+    # A reading is divergent only when the measures actually pull in OPPOSING
+    # directions. The negation of "all one way" is not that: an all-zero reading
+    # satisfies neither `all_positive` nor `all_negative`, yet nothing opposes
+    # anything. Requiring a sign on both sides is what makes the divergent
+    # branch mean what its wording says (D-040: a `>0`/`else` pair that reports
+    # a flat market as a move; D-050: a real state real data produces — three
+    # flat m/m prints, reachable on the live path — must be representable as
+    # itself).
+    divergent = any(value > 0 for value in values) and any(value < 0 for value in values)
     average = sum(values) / len(values)
 
     breadth = get_settings().inflation.breadth
-    confidence = breadth.convergent if same_direction else breadth.divergent
+    confidence = breadth.divergent if divergent else breadth.convergent
 
-    if same_direction:
-        direction = "rising" if all_positive else "falling"
+    if all_positive:
         interpretation = (
             f"Convergent inflation signal across headline CPI, core CPI and core "
-            f"PCE — all three {direction}, average {average:+.2f}% m/m"
+            f"PCE — all three rising, average {average:+.2f}% m/m"
         )
         warnings: list[str] = []
-    else:
+    elif all_negative:
+        interpretation = (
+            f"Convergent inflation signal across headline CPI, core CPI and core "
+            f"PCE — all three falling, average {average:+.2f}% m/m"
+        )
+        warnings = []
+    elif all_flat:
+        interpretation = (
+            f"Flat inflation reading across headline CPI, core CPI and core PCE "
+            f"— all three at 0.00% m/m, average {average:+.2f}% m/m"
+        )
+        warnings = [
+            "All three sub-measures are exactly flat (0.00% m/m). This is NOT a "
+            "disagreement — the measures agree, that inflation did not move this "
+            "month. It is also not breadth evidence: a flat reading at the "
+            "reporting precision can hide offsetting movements inside each "
+            "measure, so no direction is claimed (Section 6.3, Module 13).",
+        ]
+    elif divergent:
         interpretation = (
             f"Divergent inflation signal across headline CPI, core CPI and core "
             f"PCE, average {average:+.2f}% m/m"
@@ -1328,6 +1385,24 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
             "Sub-measures disagree — per Module 13, investigate the source of "
             "the divergence before treating this as a trend. The average of "
             "opposing readings describes neither.",
+        ]
+    else:
+        # One sign moved, the rest are exactly flat. Not a conflict (no
+        # opposition) and not full convergence either — the moved readings agree
+        # with each other, and the zero reads are not evidence either way
+        # (Resolution Finding #10's non-neutral rule).
+        interpretation = (
+            f"Convergent inflation signal across headline CPI, core CPI and core "
+            f"PCE — the readings that moved agree in sign, the rest are flat, "
+            f"average {average:+.2f}% m/m"
+        )
+        warnings = [
+            "Some sub-measures printed exactly flat (0.00% m/m) while the rest "
+            "moved one way. A flat reading is not evidence for either direction "
+            "(Resolution Finding #10), so it neither counts toward agreement nor "
+            "triggers a conflict; the direction is read from the measures that "
+            "moved. Confirm the flat prints are genuinely flat rather than "
+            "rounded near-zero readings before relying on the breadth.",
         ]
 
     warnings.append(
@@ -1356,7 +1431,7 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
         warnings=warnings,
         # --- Section 3/4: the reasoning object, populated -------------------
         unit="percent, month-over-month (an AVERAGE across three measures)",
-        direction=_breadth_direction_sentence(all_positive, all_negative),
+        direction=_breadth_direction_sentence(all_positive, all_negative, all_flat, divergent),
         assumptions=[
             "Three measures are a sufficient proxy for breadth. Full six-plus "
             "measure convergence (supercore, trimmed mean, median) needs "
@@ -1375,6 +1450,15 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
             "(Section 6.3's exception, the same as Section 22.5's proxy). A "
             "reader comparing this confidence to a compute_confidence() value is "
             "comparing two different things.",
+            "The divergent branch is entered ONLY on genuine directional "
+            "OPPOSITION: at least one positive AND at least one negative "
+            "reading. A zero reading is not evidence for either direction "
+            "(AGENTS.md Resolution Finding #10's `classify_convergence` rule), "
+            "so it neither counts toward agreement nor triggers conflict, and an "
+            "all-zero reading is FLAT — an agreement with no direction — "
+            "carrying the convergent confidence because there is no divergence "
+            "to penalise. Reading 'not all the same way' as 'divergent' would "
+            "report a motionless month as a conflict (D-040/D-050).",
         ],
         data_provenance=[
             "cpi_headline_mom — CPIAUCSL (BLS headline CPI) m/m percent, computed "
@@ -1400,6 +1484,12 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
             "readings, which is not a price index: on a divergent reading it "
             "averages opposing movements and describes neither. Use it as a "
             "central-tendency indicator, not as an inflation rate.",
+            "A FLAT reading (all three at 0.00%) leaves `value` at 0.00 and "
+            "claims no direction. That is an honest 'no movement at this "
+            "measurement resolution', not evidence that inflation is absent: at "
+            "the reported precision a +0.004% and a -0.004% reading both print "
+            "as 0.00%, so offsetting sub-measure movements can hide inside a "
+            "flat print.",
             "Points-in-time: m/m changes are computed from the two most recent "
             "observations, so a revision to either changes the reading. The O-7 "
             "filter applies upstream but is SUFFICIENT BUT NOT SOUND "
@@ -1423,6 +1513,11 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
             "interpretation and the warning both say it describes neither "
             "movement, and Module 13 requires the divergence be investigated "
             "rather than averaged.",
+            "MUST NOT be read as a CONFLICT when the reading is FLAT. All three "
+            "at 0.00% is agreement with no direction, and the ``direction`` "
+            "field says 'flat' rather than 'CONFLICTED'. A consumer keying off "
+            "the word 'CONFLICTED' to trigger a divergence investigation must "
+            "not fire on a motionless month (D-040/D-050).",
             "MUST NOT have its confidence compared against a "
             "compute_confidence() value: this confidence comes from config and "
             "answers a different question (Section 6.3).",

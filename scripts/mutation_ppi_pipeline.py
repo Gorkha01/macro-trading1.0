@@ -38,10 +38,6 @@ _VALUE_DICT = (
     '            "base_rate_strict_descending": base_rate.strict_descending_rate,\n'
     '            "base_rate_crude_above_final": base_rate.crude_above_final_rate,\n'
 )
-_GRADIENT_BAND = (
-    "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:\n"
-    '        gradient_direction = "no_clear_gradient"'
-)
 _MARGIN_WARNING = '        "``corporate_margin_trend`` is a HUMAN ASSESSMENT, not an observation "'
 _BASE_RATE_WARNING = '        f"The stage gradient\'s own base rate: the strict ordering "'
 
@@ -165,13 +161,13 @@ MUTATIONS: list[tuple[str, str, str]] = [
     ),
     (
         "M4d dead band made exclusive (<= becomes <)",
-        "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:",
-        "    if abs(crude - intermediate) < 0 and abs(intermediate - final) < 0:",
+        "    within_band = abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance",
+        "    within_band = abs(crude - intermediate) < tolerance and abs(intermediate - final) < tolerance",
     ),
     (
         "M4e dead band applies to only one adjacent pair",
-        "    if abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance:",
-        "    if abs(crude - intermediate) <= tolerance:",
+        "    within_band = abs(crude - intermediate) <= tolerance and abs(intermediate - final) <= tolerance",
+        "    within_band = abs(crude - intermediate) <= tolerance",
     ),
     (
         "M4f non-monotonic label collapsed into the downstream case",
@@ -182,6 +178,38 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "M4g stage spread sign flipped",
         "    stage_spread = crude - final",
         "    stage_spread = final - crude",
+    ),
+    # --- The within-band contradiction (defect #6) ------------------------
+    # The dead band runs FIRST, so an earlier version returned a single
+    # "no_clear_gradient" for every within-band reading — including a
+    # strictly-descending month whose boolean was True. These four mutants
+    # re-create that contradiction and each must be killed by
+    # `test_gradient_direction_never_contradicts_the_boolean` or by the
+    # dedicated within-band test.
+    (
+        "M4h within-band state collapsed to the old bare no-gradient label",
+        '            "building_within_tolerance" if upstream_building else "flat_within_tolerance"',
+        '            "no_clear_gradient"',
+    ),
+    (
+        "M4i within-band state ignores the boolean (always flat)",
+        '            "building_within_tolerance" if upstream_building else "flat_within_tolerance"',
+        '            "flat_within_tolerance"',
+    ),
+    (
+        "M4j within-band state ignores the boolean (always building)",
+        '            "building_within_tolerance" if upstream_building else "flat_within_tolerance"',
+        '            "building_within_tolerance"',
+    ),
+    (
+        "M4k band width forced to zero (band never fires)",
+        "    tolerance = settings.inflation.pipeline_gradient_tolerance",
+        "    tolerance = 0.0",
+    ),
+    (
+        "M4l band made unbounded (every reading is within-band)",
+        "    tolerance = settings.inflation.pipeline_gradient_tolerance",
+        "    tolerance = 1e9",
     ),
     # --- Conditional warnings ---------------------------------------------
     (

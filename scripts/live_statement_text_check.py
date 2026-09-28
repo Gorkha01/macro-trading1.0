@@ -61,12 +61,14 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import get_args
 
 import yaml
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import ConfidenceInputs, compute_confidence
 from macro_engine.models.policy_rules import (
+    StatementDiffDirection,
     StatementTextInputs,
     statement_text_diff,
 )
@@ -201,12 +203,28 @@ def main() -> int:
         "MORE_HAWKISH": (_NEUTRAL, _HAWKISH_ADDED),
         # Only the dovish direction moves (two phrases enter).
         "MORE_DOVISH": (_NEUTRAL, f"{_NEUTRAL} {two_dovish_left}"),
-        # Both directions move (one hawkish and two dovish leave); net hawkish.
+        # Both directions move (one hawkish and two dovish leave); net hawkish,
+        # and the dovish side's net FELL — removals.
         "HAWKISH_TILT_WITH_DOVISH_REMOVALS": (f"{_HAWKISH_PHRASE} and {two_dovish_left}", _NEUTRAL),
-        # The mirror: two hawkish and one dovish leave; net dovish.
+        # Both directions move (two hawkish enter, one dovish enters); net
+        # hawkish, and the dovish side's net ROSE — additions (defect #7).
+        "HAWKISH_TILT_WITH_DOVISH_ADDITIONS": (
+            _NEUTRAL,
+            f"The Committee is {_HAWKISH_PHRASE} and expects further tightening, "
+            f"and inflation {_DOVISH_PHRASE}.",
+        ),
+        # The mirror: two hawkish and one dovish leave; net dovish, hawkish
+        # side's net FELL — removals.
         "DOVISH_TILT_WITH_HAWKISH_REMOVALS": (
             f"{two_hawkish} and inflation {_DOVISH_PHRASE}.",
             _NEUTRAL,
+        ),
+        # The mirror of the addition case: the hawkish side's net RISES against a
+        # dovish net (defect #7).
+        "DOVISH_TILT_WITH_HAWKISH_ADDITIONS": (
+            f"The Committee is {_HAWKISH_PHRASE}.",
+            f"The Committee is {_HAWKISH_PHRASE} and expects further tightening, "
+            f"and inflation {_DOVISH_PHRASE} and {_DOVISH_PHRASE_2}.",
         ),
         # Both directions move by the same amount, cancelling exactly.
         "MIXED_BOTH_DIRECTIONS_NET_FLAT": (
@@ -223,11 +241,14 @@ def main() -> int:
             failures.append(f"direction {expected!r} could not be constructed: {exc}")
             continue
         flag = "" if got == expected else "  <-- MISMATCH"
-        print(f"  {expected:34s} -> {got:34s} (tilt {tilt:+.4f}){flag}")
+        print(f"  {expected:38s} -> {got:38s} (tilt {tilt:+.4f}){flag}")
         if got != expected:
             failures.append(f"expected {expected!r} from a constructed input, got {got!r}")
         seen.add(got)
-    declared: set[str] = set(cases)
+    # Coverage is measured against the DECLARED vocabulary, not against the
+    # fixture dict's own keys: a `Literal` member with no producing fixture must
+    # fail here rather than ship unexercised (D-045a).
+    declared: set[str] = set(get_args(StatementDiffDirection))
     if seen != declared:
         failures.append(f"directions never constructed: {sorted(declared - seen)}")
     print()

@@ -683,6 +683,146 @@ def test_inflation_breadth_confidence_follows_convergence() -> None:
     assert convergent.confidence > divergent.confidence
 
 
+def test_inflation_breadth_all_zero_is_flat_not_conflicted() -> None:
+    """A flat month is AGREEEMENT, not conflict (D-040/D-050).
+
+    Three m/m readings of exactly 0.00% satisfy neither ``all_positive`` nor
+    ``all_negative``, so an implementation that keys the divergent branch on
+    "not all the same way" reports a motionless month as CONFLICTED — the exact
+    D-040 shape (a ``>0``/``else`` pair that reports a flat market as a move).
+    The divergent branch must require genuinely OPPOSING signs, and a flat
+    reading must carry the convergent confidence because there is no divergence
+    to penalise.
+    """
+    breadth = get_settings().inflation.breadth
+    result = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.0, cpi_core_mom=0.0, pce_core_mom=0.0)
+    )
+    assert result.value == pytest.approx(0.0, abs=1e-9)
+    direction = result.direction
+    assert direction is not None
+    assert "CONFLICTED" not in direction, "a flat reading is not a conflict"
+    assert direction.startswith("flat"), direction
+    assert "Divergent" not in result.interpretation
+    assert "Flat inflation reading" in result.interpretation
+    assert result.confidence == breadth.convergent, (
+        "a flat reading has no divergence to penalise — it takes the convergent "
+        "confidence, not the divergent one"
+    )
+    assert not any("Sub-measures disagree" in warning for warning in result.warnings), (
+        "no warning may claim the sub-measures disagree when none moved"
+    )
+    assert any("exactly flat" in warning for warning in result.warnings), (
+        "the flat case must carry its own warning, so the reason is on the record"
+    )
+    # A flat read is NOT the partial case either: `all_flat` must be exact-zero,
+    # not `<= 0`. A negative reading is not flat (mutation M2d).
+    assert "the readings that moved" not in result.interpretation, (
+        "an all-zero read is FLAT, not the partial 'some moved' state"
+    )
+
+
+def test_inflation_breadth_a_zero_is_ignored_when_scoring_agreement() -> None:
+    """A zero reading is not evidence for either direction — the canonical rule.
+
+    AGENTS.md Resolution Finding #10's ``classify_convergence`` is explicit:
+    *"ignores neutral signals when computing agreement (a neutral signal is not
+    evidence for either direction), and only flags CONFLICTED when a genuine
+    directional opposition exists among NON-neutral signals."* Applied to the
+    breadth sign test that means ``(0.0, 0.0, -0.3)`` is NOT a conflict — the
+    only non-neutral reading points the same way as itself — so it takes the
+    convergent confidence. The prior ``not all_positive and not all_negative``
+    test called this CONFLICTED (D-040).
+    """
+    breadth = get_settings().inflation.breadth
+    result = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.0, cpi_core_mom=0.0, pce_core_mom=-0.3)
+    )
+    assert result.direction is not None and "CONFLICTED" not in result.direction
+    assert result.confidence == breadth.convergent
+
+
+def test_inflation_breadth_divergent_requires_both_signs() -> None:
+    """CONFLICTED is entered only on genuine directional OPPOSITION.
+
+    Finding #10's rule again: a positive-vs-negative pair is the case the
+    wording describes; a single sign plus zeros is not. Both sides of the
+    boundary are pinned here so a future edit cannot widen the branch back to
+    ``not all_positive and not all_negative`` without a test going red.
+    """
+    breadth = get_settings().inflation.breadth
+    positive_and_zero = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.0, cpi_core_mom=0.2, pce_core_mom=0.3)
+    )
+    positive_and_negative = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.4, cpi_core_mom=-0.2, pce_core_mom=0.3)
+    )
+    assert positive_and_zero.direction is not None
+    assert "CONFLICTED" not in positive_and_zero.direction
+    assert positive_and_zero.confidence == breadth.convergent
+    assert positive_and_negative.direction is not None
+    assert "CONFLICTED" in positive_and_negative.direction
+    assert positive_and_negative.confidence == breadth.divergent
+
+
+def test_inflation_breadth_a_negative_reading_is_not_flat() -> None:
+    """``all_flat`` is exact-zero, not ``<= 0`` (mutation M2d).
+
+    Re-defining ``all_flat`` as ``all(v <= 0)`` would make an all-negative read
+    (a real, directional convergence) report as flat, losing its "falling"
+    direction. This pins the boundary so that mutation is caught.
+    """
+    result = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=-0.2, cpi_core_mom=-0.3, pce_core_mom=-0.1)
+    )
+    assert result.direction is not None and result.direction.startswith("falling"), result.direction
+    assert "Convergent" in result.interpretation
+    assert "falling" in result.interpretation
+
+
+def test_inflation_breadth_carries_its_disclosures_on_the_flat_path() -> None:
+    """The flat read still ships the sign-test and proxy disclosures (M4a/M4b).
+
+    Removing a disclosure is the classic surfaced-but-unsurfaced mutation: the
+    read still works, it just stops telling the reader what its limits are. The
+    flat path in particular must carry BOTH the general sign-test warning and
+    the specific flat warning, so a caller reading only the flat branch's output
+    still sees why a flat sign test is weak.
+    """
+    result = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.0, cpi_core_mom=0.0, pce_core_mom=0.0)
+    )
+    joined = " ".join(result.warnings).lower()
+    assert "sign test" in joined, "the sign-test disclosure must survive on the flat path"
+    assert "exactly flat" in joined, "the flat disclosure must be present"
+    assert "phase 5+" in joined, "the proxy-upgrade disclosure must survive"
+    assert len(result.warnings) >= 3, (
+        f"the flat path must carry its full disclosure set, found {len(result.warnings)}"
+    )
+
+
+def test_inflation_breadth_a_zero_alongside_a_negative_is_not_flat() -> None:
+    """``all_flat`` is exact-zero, not ``<= 0`` (mutation M2d).
+
+    ``(0.0, 0.0, -0.3)`` is NOT all-flat and NOT all-negative: only one reading
+    moved. Redefining ``all_flat`` as ``all(v <= 0)`` would make this read
+    ``flat`` — claiming no movement when core PCE fell 0.3% — so this fixture
+    pins the exact-zero boundary from the negative side. (The all-negative case
+    is caught by the ``all_negative`` branch before ``all_flat`` is read, so it
+    cannot distinguish the mutation; this partial case can.)
+    """
+    result = inflation_breadth_score(
+        InflationSubMeasures(cpi_headline_mom=0.0, cpi_core_mom=0.0, pce_core_mom=-0.3)
+    )
+    direction = result.direction
+    assert direction is not None
+    assert direction.startswith("convergent"), direction
+    assert "flat" not in direction.lower() or "convergent" in direction.lower()
+    assert "the readings that moved" in result.interpretation, (
+        "a single moved reading is the PARTIAL case, not the flat case"
+    )
+
+
 def test_inflation_breadth_is_a_sign_test_and_says_so() -> None:
     """Three measures at +0.01% must read as convergent; the disclosure is what
     stops that from being mistaken for evidence of breadth."""

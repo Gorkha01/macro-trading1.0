@@ -414,9 +414,11 @@ class TestAllThreeLiveReadsArePopulated:
     def test_inflation_divergent_read_has_no_direction(self) -> None:
         """On a divergent read there IS no direction, and the field must say so.
 
-        Three states are not a boolean: all-rising, all-falling, and CONFLICTED.
-        Collapsing the third into either of the others is the defect the helper
-        exists to prevent.
+        The states are not a boolean: all-rising, all-falling, flat, and
+        CONFLICTED. Collapsing any of them into another is the defect the helper
+        exists to prevent — and the FLAT state is the one that was previously
+        collapsed into CONFLICTED (D-040), which reported a motionless month as
+        a conflict.
         """
         from macro_engine.models.labor_synthesis import (
             InflationSubMeasures,
@@ -430,9 +432,13 @@ class TestAllThreeLiveReadsArePopulated:
         assert r.direction is not None
         assert "CONFLICTED" in r.direction
         # And the standalone helper must agree with the branch that produced it.
-        assert "CONFLICTED" in _breadth_direction_sentence(False, False)
-        assert "rising" in _breadth_direction_sentence(True, False)
-        assert "falling" in _breadth_direction_sentence(False, True)
+        # (all_positive, all_negative, all_flat, divergent)
+        assert "CONFLICTED" in _breadth_direction_sentence(False, False, False, True)
+        assert "rising" in _breadth_direction_sentence(True, False, False, False)
+        assert "falling" in _breadth_direction_sentence(False, True, False, False)
+        assert "flat" in _breadth_direction_sentence(False, False, True, False), (
+            "an all-zero reading is flat, NOT conflicted"
+        )
 
     def test_labor_read_admits_it_is_an_uncalibrated_level(self) -> None:
         """The score's scale is this model's own, so it cannot be compared outward."""

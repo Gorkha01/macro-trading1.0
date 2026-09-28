@@ -30,6 +30,10 @@ looks exactly like a right one. The decisions a future edit is most likely to
   (``MIXED_BOTH_DIRECTIONS_NET_FLAT``) is reachable only when two equal-and-
   opposite moves cancel, and collapsing it into the ``else`` would label a tie
   as a one-sided tilt;
+* **the tilt label's SIGN awareness** — the four ``_TILT_*`` states split by the
+  sign of the OPPOSITE side's own net, so a dovish ADDITION is never published
+  as a dovish REMOVAL. Keying the label on ``tilt > 0`` alone (the original
+  defect #7) collapses each pair and these mutants restore that;
 * **the two refusals** — a blank statement or a sub-floor one is a partial input
   (D-054), not a statement that says nothing;
 * **the confidence cap** — which replaced the §22.8 base rate that would have
@@ -255,6 +259,41 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         SRC,
         '            direction = "MORE_HAWKISH"',
         '            direction = "MORE_DOVISH"',
+    ),
+    # D4c/D4d are defect #7: the tilt label keyed on `tilt > 0` alone, so a
+    # dovish ADDITION (dovish_net > 0) was published as a dovish REMOVAL. Each
+    # of the two split labels must be killed by the addition-mirror tests.
+    (
+        "D4c hawkish tilt label reverts to the sign-blind REMOVALS spelling",
+        SRC,
+        "            direction = (\n"
+        '                "HAWKISH_TILT_WITH_DOVISH_REMOVALS"\n'
+        "                if dovish_net < 0\n"
+        '                else "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"\n'
+        "            )",
+        '            direction = "HAWKISH_TILT_WITH_DOVISH_REMOVALS"',
+    ),
+    (
+        "D4d dovish tilt label reverts to the sign-blind REMOVALS spelling",
+        SRC,
+        "            direction = (\n"
+        '                "DOVISH_TILT_WITH_HAWKISH_REMOVALS"\n'
+        "                if hawkish_net < 0\n"
+        '                else "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"\n'
+        "            )",
+        '            direction = "DOVISH_TILT_WITH_HAWKISH_REMOVALS"',
+    ),
+    (
+        "D4e the hawkish tilt split is inverted (ADDITIONS on a removal)",
+        SRC,
+        "                if dovish_net < 0\n",
+        "                if dovish_net > 0\n",
+    ),
+    (
+        "D4f the dovish tilt split is inverted (ADDITIONS on a removal)",
+        SRC,
+        "                if hawkish_net < 0\n",
+        "                if hawkish_net > 0\n",
     ),
     (
         "D5a the UNCHANGED branch is dropped, so a no-move statement is tilted",
