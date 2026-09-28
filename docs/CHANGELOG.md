@@ -10,6 +10,39 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-127 — the Phase 0–4 audit's three defects fixed to production grade (2026-09-28)
+
+Three **existing** branches corrected to states their inputs already produce. No new module, no new
+config leaf, no new OpenBB command (census stays 6). The shared class: a guard **blinder** than the
+function's own producible state set, so a real input falls through and the branch publishes a lie
+about it.
+
+- **Fixed** `inflation_breadth_score` (`labor_synthesis.py`, Module 6.3) reported an all-flat m/m
+  reading as `CONFLICTED` with the divergent confidence 0.3 and a false "Sub-measures disagree". The
+  by-sign-only classifier now has an explicit opposition predicate (`any(v>0) and any(v<0)`) plus a
+  real `flat` state, per **Section 22 Resolution Finding #10** (a neutral signal is not evidence for
+  either direction). Measured: `(0,0,0)` → `flat` 0.5 (was `CONFLICTED` 0.3); `(0,0,−0.3)` and
+  `(0,0.2,0.3)` → convergent 0.5; `(0.4,−0.2,0.3)` → still `CONFLICTED` 0.3.
+- **Fixed** `ppi_pipeline_signal` (`ppi_pipeline.py`, Module 5.4) published
+  `upstream_pressure_building=True` opposite a bare `no_clear_gradient` for a strictly-descending
+  in-band month (`2.06, 2.05, 2.04` at tolerance `0.02`) — a cross-field contradiction (**D-009**).
+  The dead band now reports *which* ordering it contains (`building_within_tolerance` /
+  `flat_within_tolerance`); the invariant is **one-directional** (the biconditional is wrong once a
+  dead band exists): `building=True` ⟹ the direction is one of the two building states.
+- **Fixed** `statement_text_diff`'s `_TILT_*` labels (`policy_rules.py`, Module 4) fired
+  `HAWKISH_TILT_WITH_DOVISH_REMOVALS` while dovish language was **added** (`dovish_left=[]`,
+  `dovish_entered=['has eased']`) — the **D-125 class**. Each tilt state is now split by the sign of
+  the opposite side's own net; `StatementDiffDirection` grew **6 → 8** members (both `..._ADDITIONS`),
+  per **D-045a**.
+- **Added** `scripts/mutation_labor_breadth.py` (19 mutants, 19/19 killed) — `inflation_breadth_score`
+  had no sweep.
+- **Changed** `scripts/mutation_ppi_pipeline.py` (anchors follow the shipped one-line `within_band`;
+  +5 within-band mutants; 38/38) and `scripts/mutation_statement_text.py` (+4 label mutants; 34/34);
+  the sweep census moved **50 → 51**.
+- **Fixed** a CRLF regression this change introduced in `tests/models/test_labor_synthesis.py` (the
+  D-061/O-119 class — a `'\n'` anchor matches zero times in a CRLF file), caught only by the full
+  suite's source-hygiene gate.
+
 ### D-125 — TIER 5 COMPLETE (23/23): `statement_text_diff` (§20.4), a real direction defect, and two sweep-harness defects (2026-09-28)
 
 **Tier 5 = 23/23** (moved 22 → 23). Every name in Section 21.3's table now has a real `def` in `src/`.

@@ -1,7 +1,22 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-28** (after **D-126 — the 23-function Tier-5 AUDIT's ONE DEFECT fixed:
+Last updated: **2026-09-28** (after **D-127 — the Phase 0–4 file-by-file audit's THREE defects fixed to
+production grade**: `inflation_breadth_score` published a FLAT reading as `CONFLICTED`
+(`labor_synthesis.py`) → now an explicit opposition predicate + a real `flat` state, per **§22
+Resolution Finding #10**; `ppi_pipeline_signal` published `upstream_pressure_building=True` opposite a
+bare `no_clear_gradient` (`ppi_pipeline.py`) → the band now reports WHICH ordering it contains and the
+invariant is **one-directional** (D-009); `statement_text_diff`'s `_TILT_*` labels named the WRONG side
+of the other net (`policy_rules.py`) → split by the opposite net's sign, `StatementDiffDirection`
+**6 → 8** (D-125 class / D-045a). **NO src/ function added, NO config leaf added, NO new OpenBB command
+(census stays 6).** Deliverable `docs/AUDIT_PHASE04_FINDINGS.md` (26 cards; **7 defects found — 3 now
+FIXED, Cards 7/19/21/22 + the Card-4 evidence gap remain unfixed**). Gates: **290 == 290** (D-035) ·
+**4068 / 0 failed / 0 errors / 1 skipped** (junitxml) · **NEW** `mutation_labor_breadth.py` **19/19** ·
+`mutation_ppi_pipeline.py` **38/38** · `mutation_statement_text.py` **34/34** · `sweep_health.py` LAST →
+**51 sweeps, 0 leftovers, 0 shapes, 0 committed, 0 failures, OK** (census **50 → 51**). **⚠️ A CRLF
+defect this change introduced** (`test_labor_synthesis.py`, the D-061/O-119 class) was caught **only by
+the FULL suite** (`test_source_hygiene.py`) and normalized byte-wise.)
+Previous update: **2026-09-28** (after **D-126 — the 23-function Tier-5 AUDIT's ONE DEFECT fixed:
 `statement_text_diff`'s confidence was `min(computed, cap)`, which made the `compute_confidence()`
 half **DEAD CODE** (D-118 had already forbidden it); it is now the **CAP-PRODUCT**
 `round(computed * settings.confidence_cap, 3)`, both halves published, with the sweep's **`C2b`
