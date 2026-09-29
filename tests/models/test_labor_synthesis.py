@@ -889,3 +889,66 @@ def test_every_module_6_result_conforms_to_the_contract(result: ModelResult) -> 
     assert isinstance(result.value, allowed), f"unexpected value type {type(result.value)}"
     if isinstance(result.value, float):
         assert math.isfinite(result.value)
+
+
+# --------------------------------------------------------------------------
+# D-139 — non-finite inputs are refused, and the NFP divisor is a leaf-read
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_scalar_input_is_refused(bad: float) -> None:
+    """D-139: a non-finite labor input is refused at construction.
+
+    Before this, `nan` flowed straight through: `LaborInputs` typed its fields
+    as bare `float`, which admits `nan`/`inf`, and no `isfinite` guard existed
+    anywhere in this module. A `nan` input then propagates silently — e.g.
+    `claims_trend_signal`'s magnitude test returns a false "no signal" on a
+    comparison that never ran, which reads as a healthy labor market. The guard
+    lives on the shared `FiniteInputs` base (promoted from `policy_rules`), so
+    every input group in this module is covered by construction.
+    """
+    kwargs = {
+        "initial_claims_4wk_avg_change_pct": 1.0,
+        "jolts_openings_yoy_pct": -2.0,
+        "jolts_quits_level_percentile": 50.0,
+        "nfp_3m_avg": 150.0,
+    }
+    with pytest.raises(ValueError, match="non-finite"):
+        LaborInputs.model_validate({**kwargs, "jolts_openings_yoy_pct": bad})
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_a_non_finite_list_element_is_refused(bad: float) -> None:
+    """D-139: a non-finite ELEMENT of a list input is refused too.
+
+    A per-field `allow_inf_nan=False` would NOT catch this: it constrains the
+    list, not its elements. The claims series is exactly this shape, and one bad
+    weekly print would otherwise propagate through BOTH comparison windows (the
+    latest 4-week mean and the trailing baseline) without ever being named.
+    """
+    series = [220.0] * 12 + [bad]
+    with pytest.raises(ValueError, match=r"non-finite|weekly_initial_claims\[12\]"):
+        ClaimsTrendInputs(weekly_initial_claims=series)
+
+
+def test_the_nfp_divisor_is_read_from_config_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-139 MOVER test: the NFP scaling divisor is a leaf-read.
+
+    `_nfp_scaling_divisor` returned a bare `10.0`. The divisor sets the SCALE of
+    the whole tightness score, so a change to it silently rescales every
+    published score. A test asserting the score at the default 10.0 cannot tell
+    a config read from a literal; moving the leaf is the only discriminating
+    move. At a divisor of 5.0 a given NFP deviation must contribute TWICE the
+    score points, so the published score must rise by the NFP term's share.
+    """
+    settings = get_settings().labor
+    monkeypatch.setattr(settings.tightness_scaling.nfp_divisor, "value", 5.0, raising=False)
+
+    from macro_engine.models.labor_synthesis import _nfp_scaling_divisor
+
+    assert _nfp_scaling_divisor() == pytest.approx(5.0), (
+        "the divisor accessor did not follow the moved config leaf"
+    )

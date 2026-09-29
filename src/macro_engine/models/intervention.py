@@ -233,11 +233,14 @@ class InterventionCapacityInputs(BaseModel):
         default=None,
         description=(
             "Reserves as a percentage of GDP (0-100 scale, 12.5 = 12.5%). "
-            "Section 20.9 carries it but never reads it; here it is used as an "
-            "AMPLE/THIN scale, and its absence is disclosed rather than "
-            "silently ignored. The convention is the World Bank's "
-            "`total reserves (% of GDP)` series, which is the published "
-            "definition a reader will assume."
+            "Section 20.9 carries it but never reads it; here it is consumed by "
+            "an AMPLE/THIN scale against "
+            "``intervention.reserves_to_gdp_ample_threshold_pct``, published as "
+            "``value['reserves_scale']``, and its absence is disclosed as "
+            "``UNSCALED`` rather than silently ignored. The convention is the "
+            "World Bank's `total reserves (% of GDP)` series, which is the "
+            "published definition a reader will assume. The scale is a "
+            "disclosure beside the capacity label and never changes it."
         ),
     )
     reserves_change_12m_pct: float | None = Field(
@@ -304,6 +307,9 @@ def intervention_capacity(inputs: InterventionCapacityInputs) -> ModelResult:
       supplied none and the direction does not require one.
     * ``reserves_change_12m_pct`` — the burn rate, or ``None``, with a warning
       when the strengthening case proceeds without it.
+    * ``reserves_scale`` — ``"AMPLE"``, ``"THIN"`` or ``"UNSCALED"``. Reserves
+      against GDP, decided against config's threshold, or ``UNSCALED`` when the
+      ratio was not supplied (D-139). A disclosure, never a gate on the label.
 
     A ``strengthen_own_currency`` call with no reserve stock **refuses**
     (``ValueError``). The label is a claim that a finite stock constrains the
@@ -435,6 +441,26 @@ def intervention_capacity(inputs: InterventionCapacityInputs) -> ModelResult:
             "already failing."
         )
 
+    # --- reserves/GDP: the AMPLE/THIN scale, made real (D-139) --------------
+    # Section 20.9 carries `reserves_to_gdp_pct` and never reads it; an earlier
+    # draft of this model's field description claimed it was "used as an
+    # AMPLE/THIN scale" while no code path consumed it. Naming the boundary in
+    # config and consuming it here makes the documented use true rather than
+    # leaving a phantom input whose absence a reader cannot detect.
+    #
+    # It is a DISCLOSURE beside the capacity label, never a gate on it: the
+    # label is decided by the direction's mechanics, and a stock is a stock
+    # whether or not it looks small next to GDP. The scale only answers "is this
+    # stock LARGE relative to the economy it defends", which is the one thing
+    # the raw dollar figure cannot say.
+    scale_available: str
+    if inputs.reserves_to_gdp_pct is None:
+        scale_available = "UNSCALED"
+    elif inputs.reserves_to_gdp_pct >= intervention.reserves_to_gdp_ample_threshold:
+        scale_available = "AMPLE"
+    else:
+        scale_available = "THIN"
+
     assumptions = [
         "Section 20.9's function classifies from the intervention's DIRECTION "
         "and the reserve stock; it contains no estimated model of when a bank "
@@ -442,11 +468,20 @@ def intervention_capacity(inputs: InterventionCapacityInputs) -> ModelResult:
         "Reserve figures are denominated in BILLIONS of USD; the fetched route "
         "converts from the source's millions.",
     ]
-    if inputs.reserves_to_gdp_pct is None:
+    if scale_available == "UNSCALED":
         assumptions.append(
             "reserves_to_gdp_pct was not supplied, so the stock is not scaled "
             "against the economy — a large stock in a large economy and a small "
             "stock in a small one are not separated here."
+        )
+    else:
+        assumptions.append(
+            f"The stock is scaled against the economy: reserves are "
+            f"{inputs.reserves_to_gdp_pct:.1f}% of GDP, which is "
+            f"{scale_available} against the "
+            f"{intervention.reserves_to_gdp_ample_threshold:g}% AMPLE boundary. "
+            f"The scale is a DISCLOSURE beside the capacity label and does not "
+            f"change it."
         )
 
     return ModelResult(
@@ -458,6 +493,7 @@ def intervention_capacity(inputs: InterventionCapacityInputs) -> ModelResult:
             "reserves_usd_bn": reserves_bn,
             "reserves_change_12m_pct": burn_pct,
             "reserves_to_gdp_pct": inputs.reserves_to_gdp_pct,
+            "reserves_scale": scale_available,
             "direction": inputs.direction,
         },
         confidence=confidence,

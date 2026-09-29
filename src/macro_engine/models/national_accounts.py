@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -72,7 +73,7 @@ __all__ = [
 ]
 
 
-class SavingsInvestmentInputs(BaseModel):
+class SavingsInvestmentInputs(FiniteInputs):
     """The four sectoral balances, in one consistent unit and period.
 
     No unit is declared because none is required — the identity is homogeneous
@@ -90,7 +91,7 @@ class SavingsInvestmentInputs(BaseModel):
     government_spending: float = Field(description="G. Same unit as the other three.")
 
 
-class QuantityTheoryInputs(BaseModel):
+class QuantityTheoryInputs(FiniteInputs):
     """Growth rates for the exchange equation, all in percent."""
 
     model_config = ConfigDict(extra="forbid")
@@ -114,7 +115,7 @@ class IndexNumberInputs(BaseModel):
     )
 
 
-class FisherIndexInputs(BaseModel):
+class FisherIndexInputs(FiniteInputs):
     """The two index values to combine."""
 
     model_config = ConfigDict(extra="forbid")
@@ -123,7 +124,7 @@ class FisherIndexInputs(BaseModel):
     paasche: float = Field(gt=0.0, description="Paasche index value. Must be positive.")
 
 
-class OpeningsToUnemployedInputs(BaseModel):
+class OpeningsToUnemployedInputs(FiniteInputs):
     """The two labor-market levels behind the ratio."""
 
     model_config = ConfigDict(extra="forbid")
@@ -457,7 +458,7 @@ PolicyMixQuadrant = Literal[
 ]
 
 
-class PolicyMixInputs(BaseModel):
+class PolicyMixInputs(FiniteInputs):
     """The two fiscal quantities and the two monetary ones the 2x2 compares.
 
     **The fiscal sign convention is the trap.** ``fiscal_deficit_pct_gdp`` is
@@ -551,7 +552,10 @@ def policy_mix_classifier(inputs: PolicyMixInputs) -> ModelResult:
             "measured history, so a mixed stance is ordinary, not exceptional."
         )
 
-    if abs(inputs.fiscal_deficit_avg_pct_gdp - settings.fiscal_deficit_avg) > 0.5:
+    if (
+        abs(inputs.fiscal_deficit_avg_pct_gdp - settings.fiscal_deficit_avg)
+        > settings.deficit_mismatch_tolerance
+    ):
         warnings.append(
             f"The supplied deficit average ({inputs.fiscal_deficit_avg_pct_gdp:.2f}% "
             f"of GDP) differs from the configured expectation "
@@ -639,7 +643,7 @@ def _policy_mix_settings() -> PolicyMixSettings:
 MinskyStage = Literal["PONZI_DRIFT_WARNING", "SPECULATIVE_DRIFT", "HEDGE_DOMINANT"]
 
 
-class MinskyCompositionInputs(BaseModel):
+class MinskyCompositionInputs(FiniteInputs):
     """Lending standards and the two credit-growth rates the drift is read from.
 
     **Two of these three inputs are BLOCKED by Section 21.1**, which says of

@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -143,7 +144,7 @@ class PortfolioVaRInputs(BaseModel):
     horizon_days: int = Field(default=1, gt=0, description="Holding period in trading days.")
 
 
-class TwoAssetPortfolioInputs(BaseModel):
+class TwoAssetPortfolioInputs(FiniteInputs):
     """Section 15.20 part C's two-asset variance inputs."""
 
     model_config = ConfigDict(extra="forbid")

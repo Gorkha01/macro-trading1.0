@@ -591,6 +591,34 @@ def test_the_configured_average_is_read_from_config() -> None:
     assert _pm_settings().fiscal_deficit_avg != 20.0
 
 
+def test_the_deficit_mismatch_tolerance_is_read_from_config() -> None:
+    """D-139 MOVER test: the mismatch tolerance is a leaf-read, not a literal.
+
+    The tolerance was a bare ``> 0.5`` in the model body. A mismatch of 0.3pp
+    is BELOW the default tolerance, so it must NOT warn; widening the tolerance
+    leaves that unchanged, but NARROWING it below 0.3 must start warning. The
+    discriminating move is therefore to tighten the leaf, which a hardcoded
+    0.5 could never follow.
+    """
+    shipped = _pm_settings().fiscal_deficit_avg
+    small_mismatch = shipped + 0.3
+
+    # Control: at the shipped 0.5 tolerance a 0.3pp mismatch is silent.
+    baseline = policy_mix_classifier(_pm_inputs(average=small_mismatch))
+    assert not any("differs from the configured" in w for w in baseline.warnings), (
+        "a 0.3pp mismatch must be inside the shipped 0.5 tolerance"
+    )
+
+    # Move the tolerance to 0.1 and the SAME input must now be flagged.
+    patched = _pm_settings().model_copy(update={"deficit_mismatch_tolerance_pp": _pm_leaf(0.1)})
+    with patch("macro_engine.models.national_accounts._policy_mix_settings", return_value=patched):
+        tightened = policy_mix_classifier(_pm_inputs(average=small_mismatch))
+    assert any("differs from the configured" in w for w in tightened.warnings), (
+        "a 0.3pp mismatch must be flagged once the tolerance is tightened to "
+        "0.1; a hardcoded 0.5 in the body could not follow the leaf"
+    )
+
+
 # --- confidence ------------------------------------------------------------
 
 

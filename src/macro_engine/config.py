@@ -2116,6 +2116,8 @@ class PhillipsSettings(BaseModel):
 
     nairu: CalibratedValue
     beta: CalibratedValue
+    illustrative_u_star_revision_pp: CalibratedValue
+    slack_negligible_threshold_pp: CalibratedValue
     trajectory: InflationTrajectorySettings
 
     @property
@@ -2125,6 +2127,29 @@ class PhillipsSettings(BaseModel):
     @property
     def beta_value(self) -> float:
         return float(self.beta.value)
+
+    @property
+    def illustrative_u_star_revision(self) -> float:
+        """u*-revision magnitude (pp) used to price u* uncertainty in a warning.
+
+        D-139. ``phillips_curve_inflation``'s second warning translates "u* is
+        unobservable" into a number of pp of implied inflation via
+        ``beta * revision``. The revision was a bare ``0.5`` literal; it is a
+        reviewable statement about the size of a typical ex-post revision, so
+        it lives here.
+        """
+        return float(self.illustrative_u_star_revision_pp.value)
+
+    @property
+    def slack_negligible_threshold(self) -> float:
+        """Slack contribution (pp) below which the slack term is called negligible.
+
+        D-139. ``phillips_curve_inflation`` flags a slack term that moves the
+        implied inflation by less than this, because the output then carries
+        almost no information beyond the pi^e input. Same unit as
+        ``beta * gap`` at the point the test runs.
+        """
+        return float(self.slack_negligible_threshold_pp.value)
 
 
 class ProductionFunctionSettings(BaseModel):
@@ -3046,6 +3071,7 @@ class LaborTightnessScaling(BaseModel):
     jolts_openings_multiplier: CalibratedValue
     jolts_quits_multiplier: CalibratedValue
     quits_centering: CalibratedValue
+    nfp_divisor: CalibratedValue
 
     @property
     def claims_multiplier_value(self) -> float:
@@ -3062,6 +3088,22 @@ class LaborTightnessScaling(BaseModel):
     @property
     def quits_centering_value(self) -> float:
         return float(self.quits_centering.value)
+
+    @property
+    def nfp_divisor_value(self) -> float:
+        """Divisor converting a payroll-pace deviation into score points.
+
+        D-139. Section 6.4 writes ``(nfp_3m_avg - 150) / 10``; the divisor was
+        a bare ``10.0`` module constant (``_nfp_scaling_divisor``). It sets the
+        SCALE of the tightness score — every other component is added to the
+        NFP term — so a change to it silently rescales the score's meaning.
+        Unlike the multipliers beside it, a reader cannot see it in the model
+        body, so it belongs with them here where the whole scaling is visible.
+
+        The neutral pace it is applied against is
+        ``labor.neutral_nfp_pace_thousands``.
+        """
+        return float(self.nfp_divisor.value)
 
 
 class ClaimsThresholds(BaseModel):
@@ -4503,6 +4545,7 @@ class PolicyMixSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     fiscal_deficit_avg_pct_gdp: CalibratedValue
+    deficit_mismatch_tolerance_pp: CalibratedValue
     base_rates: PolicyMixBaseRates
 
     @property
@@ -4514,6 +4557,20 @@ class PolicyMixSettings(BaseModel):
         supplying the raw FRED figure inverts every comparison.
         """
         return float(self.fiscal_deficit_avg_pct_gdp.value)
+
+    @property
+    def deficit_mismatch_tolerance(self) -> float:
+        """Mismatch (in pp of GDP) between a caller's deficit average and config's.
+
+        D-139. ``policy_mix_classifier`` warns when the caller's deficit average
+        diverges from the configured expectation, because the two are one
+        measurement and a different window can move the same deficit into a
+        different quadrant. The tolerance for calling that divergence out was a
+        bare ``> 0.5`` in the model body — a materiality judgement, which is the
+        class of constant this project keeps in config so a reviewer can move it
+        and see the warning's sensitivity.
+        """
+        return float(self.deficit_mismatch_tolerance_pp.value)
 
     @property
     def quadrant_base_rates(self) -> dict[str, float]:
@@ -5808,6 +5865,7 @@ class InterventionSettings(BaseModel):
 
     reliability_cap: CalibratedValue
     burn_alert_pct: CalibratedValue
+    reserves_to_gdp_ample_threshold_pct: CalibratedValue
     unconstrained_label: CalibratedValue
     reserve_constrained_label_text: CalibratedValue
 
@@ -5855,6 +5913,23 @@ class InterventionSettings(BaseModel):
         is an ADDITION — recorded as such rather than presented as specified.
         """
         return float(self.burn_alert_pct.value)
+
+    @property
+    def reserves_to_gdp_ample_threshold(self) -> float:
+        """Reserves/GDP ratio (in PERCENT) at or above which the stock is AMPLE.
+
+        D-139. Section 20.9's ``InterventionCapacityInputs`` carries
+        ``reserves_to_gdp_pct`` and its reference implementation never reads it,
+        yet this model's field description claimed it was "used as an
+        AMPLE/THIN scale". Naming the boundary here makes that claim true: the
+        model compares the supplied ratio against this leaf and publishes an
+        ``AMPLE``/``THIN`` verdict beside the capacity label.
+
+        Same unit as the input (0-100, where 12.5 means 12.5 %), so the compare
+        has no hidden 100x. The verdict is a DISCLOSURE and never gates the
+        label, which the direction's mechanics alone decide.
+        """
+        return float(self.reserves_to_gdp_ample_threshold_pct.value)
 
     @property
     def mechanically_unconstrained_label(self) -> str:

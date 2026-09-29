@@ -55,10 +55,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -86,7 +87,7 @@ AuctionVerdict = Literal[
 ]
 
 
-class AuctionInputs(BaseModel):
+class AuctionInputs(FiniteInputs):
     """One auction, plus the trailing averages it is judged against.
 
     The trailing averages are supplied by the caller rather than computed here,

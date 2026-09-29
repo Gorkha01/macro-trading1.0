@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -84,30 +85,12 @@ _NON_FINITE_REMEDY = (
 )
 
 
-class _FiniteInputs(BaseModel):
-    """Base for the policy-rule input groups: every float must be FINITE.
-
-    Placed here rather than on ``PolicyRuleResult`` because the failure is at
-    the **input**: a prescription of ``nan`` is the symptom, and the rule's
-    arithmetic has no way to distinguish "the arithmetic went wrong" from "the
-    input was never a number". Guarding the input names the offending field in
-    the error and stops the value before it can be mixed with real ones.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    @model_validator(mode="after")
-    def _reject_non_finite(self) -> _FiniteInputs:
-        offenders: list[str] = []
-        for name in type(self).model_fields:
-            value = getattr(self, name)
-            if isinstance(value, float) and not isfinite(value):
-                offenders.append(f"{name}={value!r}")
-        if offenders:
-            raise ValueError(
-                f"non-finite policy-rule input(s): {', '.join(offenders)}. {_NON_FINITE_REMEDY}"
-            )
-        return self
+# D-139: the finite-input guard was promoted to the shared contract module as
+# `FiniteInputs`, so every model family can reuse it rather than re-deriving the
+# same `model_validator`. The local name is kept as an alias so this module's
+# own input classes and their tests are untouched; the REASON string stays here
+# too because it is worded for the policy rules specifically.
+_FiniteInputs = FiniteInputs
 
 
 class TaylorRuleInputs(_FiniteInputs):
@@ -863,7 +846,7 @@ def derive_market_implied_policy_path(
 QEStance = Literal["QE_EXPANDING", "QT_CONTRACTING", "NEUTRAL_HOLD"]
 
 
-class BalanceSheetInputs(BaseModel):
+class BalanceSheetInputs(FiniteInputs):
     """The Fed's balance sheet and the reserve complex, over a three-month window.
 
     **The levels and the changes are both here, and both are used.** Section
@@ -873,6 +856,15 @@ class BalanceSheetInputs(BaseModel):
     D-037's defect class, and it is corrected here: the levels are what make the
     change interpretable, and the reserve change is what makes the scarcity
     warning specific rather than generic.
+
+    D-139: this class was left OUT of the ``_FiniteInputs`` family when the
+    guard was added, so a non-finite change reached the stance comparison.
+    Measured: ``qe_qt_stance(balance_sheet_change_3mo=nan)`` published
+    ``stance='NEUTRAL_HOLD'`` — the ``nan > band`` and ``nan < -band`` tests both
+    return ``False``, which is exactly the neutral branch, so the model reported
+    a confident verdict from a number it could not compare. The same class of
+    defect the base exists to close (D-078), reachable because this input group
+    did not inherit it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1085,7 +1077,7 @@ StatementDiffDirection = Literal[
 ]
 
 
-class StatementTextInputs(BaseModel):
+class StatementTextInputs(FiniteInputs):
     """Two FOMC statements to diff: the prior release and the current one.
 
     **Both texts are required and neither may be blank.** Section 20.4's

@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -78,7 +79,7 @@ class CurveSlopeInputs(BaseModel):
     long: str = Field(default="10yr", description="Long tenor label present in `tenors`.")
 
 
-class BreakevenInputs(BaseModel):
+class BreakevenInputs(FiniteInputs):
     """A nominal yield and its TIPS real counterpart at the same tenor."""
 
     model_config = ConfigDict(extra="forbid")
@@ -88,7 +89,7 @@ class BreakevenInputs(BaseModel):
     tenor: str = Field(description="Tenor label, echoed into the interpretation.")
 
 
-class CurveDecompositionInputs(BaseModel):
+class CurveDecompositionInputs(FiniteInputs):
     """A yield plus an optional, possibly-tenor-mismatched term premium.
 
     ``term_premium`` is optional-by-absence rather than defaulted-to-zero. A

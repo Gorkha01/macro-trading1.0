@@ -78,6 +78,7 @@ from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
 from macro_engine.models.as_of import observation_as_of
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -98,7 +99,7 @@ __all__ = [
 ]
 
 
-class OutputGapInputs(BaseModel):
+class OutputGapInputs(FiniteInputs):
     """Inputs to ``output_gap`` (Section 6.5).
 
     ``actual_gdp`` and ``potential_gdp`` are both real GDP in billions of
@@ -646,7 +647,7 @@ def output_gap_from_snapshot(
 # ---------------------------------------------------------------------------
 
 
-class GdpGdiInputs(BaseModel):
+class GdpGdiInputs(FiniteInputs):
     """Inputs to ``gdp_gdi_divergence`` (Section 20.7, Module 7.1).
 
     Both fields are **year-over-year growth rates in percent**, not levels. The

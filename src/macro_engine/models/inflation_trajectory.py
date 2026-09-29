@@ -421,9 +421,9 @@ def project_inflation_trajectory(inputs: InflationTrajectoryInputs) -> ModelResu
                 is_heuristic_not_calibrated=True,
                 depends_on_unobservable=True,
                 source_independence_count=(
-                    0
-                    if corroboration.startswith("disagrees") or corroboration == "unavailable"
-                    else 1
+                    1
+                    if corroboration.startswith("agrees")
+                    else 0  # disagrees / unavailable / not_directional = no corroboration
                 ),
             )
         ),

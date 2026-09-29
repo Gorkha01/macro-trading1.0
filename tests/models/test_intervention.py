@@ -663,6 +663,73 @@ def test_a_missing_reserves_to_gdp_is_disclosed() -> None:
     assert any("not supplied" in a for a in result.assumptions)
 
 
+def test_a_missing_reserves_to_gdp_reads_as_unscaled() -> None:
+    """D-139: the absence of the ratio yields the UNSCALED verdict, not silence."""
+    result = intervention_capacity(_inputs(reserves_to_gdp_pct=None))
+    assert _value(result)["reserves_scale"] == "UNSCALED"
+
+
+@pytest.mark.parametrize(
+    ("ratio", "expected"),
+    [(1.0, "THIN"), (19.9, "THIN"), (20.0, "AMPLE"), (35.0, "AMPLE")],
+)
+def test_the_reserves_scale_verdict_is_computed_from_the_ratio(ratio: float, expected: str) -> None:
+    """D-139: `reserves_to_gdp_pct` is CONSUMED, not merely echoed.
+
+    Before this fix the field description claimed it was "used as an AMPLE/THIN
+    scale" while no code path read it — a phantom input. The boundary is the
+    configured threshold (20% by default), inclusive on the AMPLE side, which is
+    why 20.0 must read AMPLE and 19.9 must read THIN: a reader who cannot see
+    which side a boundary value falls on cannot check the verdict.
+    """
+    result = intervention_capacity(_inputs(reserves_to_gdp_pct=ratio))
+    assert _value(result)["reserves_scale"] == expected
+
+
+def test_the_ample_threshold_is_read_from_config_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-139 MOVER test: the AMPLE/THIN boundary is a leaf-read.
+
+    A ratio of 12.5% is THIN at the default 20% boundary. Moving the boundary
+    DOWN to 10% must flip the same input to AMPLE. A literal boundary in the
+    body would leave the verdict unchanged — which is exactly the difference
+    the test exists to catch.
+    """
+    settings = get_settings().intervention
+    monkeypatch.setattr(settings.reserves_to_gdp_ample_threshold_pct, "value", 10.0, raising=False)
+    result = intervention_capacity(_inputs(reserves_to_gdp_pct=12.5))
+    assert _value(result)["reserves_scale"] == "AMPLE", (
+        "the AMPLE boundary did not follow the moved config leaf; a 12.5% ratio "
+        "at a 10% boundary must read AMPLE"
+    )
+
+
+def test_the_scale_verdict_does_not_change_the_capacity_label() -> None:
+    """D-139: the scale is a DISCLOSURE, never a gate on the capacity label.
+
+    The label is decided by the direction's MECHANICS — a finite stock is finite
+    whether or not it looks small next to GDP. A THIN stock and an AMPLE one must
+    still carry the same direction-derived label, or the scale has smuggled a
+    second, undocumented decision rule into the model.
+    """
+    thin = intervention_capacity(
+        _inputs(
+            direction="strengthen_own_currency", fx_reserves_usd_bn=100.0, reserves_to_gdp_pct=1.0
+        )
+    )
+    ample = intervention_capacity(
+        _inputs(
+            direction="strengthen_own_currency", fx_reserves_usd_bn=100.0, reserves_to_gdp_pct=50.0
+        )
+    )
+    assert _value(thin)["reserves_scale"] == "THIN"
+    assert _value(ample)["reserves_scale"] == "AMPLE"
+    assert _value(thin)["capacity"] == _value(ample)["capacity"], (
+        "the capacity label must be direction-derived only; the scale verdict must not alter it"
+    )
+
+
 def test_the_result_names_its_inputs_and_model() -> None:
     """The reasoning contract: the model is identifiable and lists its inputs."""
     result = intervention_capacity(_inputs(reserves_to_gdp_pct=5.1))

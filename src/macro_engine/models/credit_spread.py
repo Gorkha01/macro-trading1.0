@@ -58,10 +58,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -109,7 +110,7 @@ Durability = Literal[
 DefaultRateTrend = Literal["rising", "stable", "falling"]
 
 
-class CreditSpreadInputs(BaseModel):
+class CreditSpreadInputs(FiniteInputs):
     """One observation of credit conditions, over a stated window.
 
     Every change is over the SAME window — ``change_window_days`` in config,

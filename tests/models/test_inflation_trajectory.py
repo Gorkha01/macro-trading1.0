@@ -760,3 +760,60 @@ def test_beta_is_read_from_config_not_hardcoded() -> None:
     assert "pp_per_score_point" in str(out.value), (
         "the unit must be visible in the published value, not only in the docstring"
     )
+
+
+# --------------------------------------------------------------------------
+# D-139 — the corroboration state that over-credited source independence
+# --------------------------------------------------------------------------
+
+
+def test_a_non_directional_corroboration_earns_no_independence_credit() -> None:
+    """``not_directional`` is a NON-corrobation, so it must not credit a source.
+
+    D-139. ``_growth_corroboration`` returns ``not_directional`` when the labor
+    score is exactly flat (``tight_labor is None``): there is no directional
+    reading to corroborate. The original test
+
+        source_independence_count = 0 if corroboration.startswith("disagrees")
+                                    or corroboration == "unavailable" else 1
+
+    fell through to the ``else 1`` branch on that state and credited an
+    independent family to a projection nothing corroborated — the same
+    overstatement the ``unavailable`` clause exists to prevent, reachable by a
+    different route (a flat score rather than a non-numeric growth value).
+
+    The assertion is on the PUBLISHED confidence, not on the branch: a test that
+    recomputed the ternary would pass against the bug.
+    """
+    flat = project_inflation_trajectory(_inputs(labor=0.0, growth=+1.0))
+    value = flat.value
+    assert isinstance(value, dict)
+    assert value["growth_corroboration"] == "not_directional", (
+        "a flat labor score must yield the not_directional state, or this test "
+        "is not exercising the branch it claims to"
+    )
+    # The state must cost the same as a genuinely-unavailable corroboration:
+    # both are "no corroboration", so both must produce the same confidence.
+    # A non-numeric growth value is the OTHER route to a no-credit corroboration.
+    non_numeric = project_inflation_trajectory(
+        _inputs(labor=+10.0, growth=+1.0).model_copy(
+            update={"growth": _result("output_gap", "n/a")}
+        )
+    )
+    value_non_numeric = non_numeric.value
+    assert isinstance(value_non_numeric, dict)
+    assert value_non_numeric["growth_corroboration"] == "unavailable"
+    assert flat.confidence == non_numeric.confidence, (
+        f"a not_directional corroboration ({flat.confidence}) must cost the same "
+        f"as an unavailable one ({non_numeric.confidence}); they are both 'no "
+        f"corroboration' and must not differ by an independence credit"
+    )
+    # And an actual agreeing corroboration must still be credited MORE, or the
+    # guard has simply removed the bonus from every state.
+    agreeing = project_inflation_trajectory(_inputs(labor=+10.0, growth=+1.0))
+    value_agreeing = agreeing.value
+    assert isinstance(value_agreeing, dict)
+    assert value_agreeing["growth_corroboration"].startswith("agrees")
+    assert agreeing.confidence > flat.confidence, (
+        "an agreeing corroboration must still earn the independence credit"
+    )

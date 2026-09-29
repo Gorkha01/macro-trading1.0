@@ -87,11 +87,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import TransmissionSettings, get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -144,7 +145,7 @@ TransmissionDirection = Literal[
 SurpriseDriver = Literal["demand", "supply_shock", "shelter_lag_mechanical"]
 
 
-class PhillipsCurveInputs(BaseModel):
+class PhillipsCurveInputs(FiniteInputs):
     """Module 3.3's four terms.
 
     ``beta`` is **not** a field. The specification's sample declares
@@ -220,6 +221,8 @@ def phillips_curve_inflation(inputs: PhillipsCurveInputs) -> ModelResult:
     """
     settings = get_settings()
     beta = settings.phillips.beta_value
+    u_star_revision_pp = settings.phillips.illustrative_u_star_revision
+    slack_negligible_pp = settings.phillips.slack_negligible_threshold
 
     gap = inputs.unemployment_rate - inputs.nairu
     implied_inflation = inputs.inflation_expectations - beta * gap
@@ -230,12 +233,13 @@ def phillips_curve_inflation(inputs: PhillipsCurveInputs) -> ModelResult:
     #
     # The ORDER is measured, not assumed (D-026). Section 3.3 calls u* "the
     # dominant uncertainty here"; live data shows the pi^e MEASURE choice moves
-    # this output by ~1.8pp while a 0.5pp u* revision moves it by
-    # ``beta * 0.5`` — an order of magnitude more. Both warnings are true, but
-    # the expectations term is listed first because it is the larger risk, and a
-    # caveat that points a reader at the smaller of two uncertainties is worse
-    # than no caveat.
-    expectations_dominance_pp = abs(beta) * 0.5
+    # this output by ~1.8pp while an u*-revision of
+    # ``phillips.illustrative_u_star_revision_pp`` moves it by
+    # ``beta * revision`` — an order of magnitude more. Both warnings are true,
+    # but the expectations term is listed first because it is the larger risk,
+    # and a caveat that points a reader at the smaller of two uncertainties is
+    # worse than no caveat.
+    expectations_dominance_pp = abs(beta) * u_star_revision_pp
     warnings = [
         "The CHOICE of pi^e measure is the largest single source of variation "
         "in this output. A survey-based measure (what households expect) and a "
@@ -245,8 +249,9 @@ def phillips_curve_inflation(inputs: PhillipsCurveInputs) -> ModelResult:
         "measure you used; the number alone does not say.",
         "u* (NAIRU) is UNOBSERVABLE and revised significantly ex-post — "
         "Section 21.4 item 13 lists it as unobservable by nature, so no data "
-        "improvement removes this. A 0.5pp error in u* moves the implied "
-        f"inflation by {expectations_dominance_pp:.2f}pp at the current beta, "
+        f"improvement removes this. A {u_star_revision_pp:g}pp error in u* moves "
+        f"the implied inflation by {expectations_dominance_pp:.2f}pp at the "
+        f"current beta, "
         f"which is a real but SECOND-ORDER effect next to the pi^e measure "
         f"choice above.",
         "If pi^e is UNANCHORED, the expectations term dominates and the slack "
@@ -259,7 +264,7 @@ def phillips_curve_inflation(inputs: PhillipsCurveInputs) -> ModelResult:
     # for the reader to notice. At small gaps the model is reporting pi^e back
     # with a slightly-adjusted label.
     slack_contribution = -beta * gap
-    if abs(slack_contribution) < 0.05:
+    if abs(slack_contribution) < slack_negligible_pp:
         warnings.append(
             f"The slack term contributes only {slack_contribution:+.3f}pp here — "
             f"the implied inflation is pi^e with a negligible adjustment. The "
@@ -315,7 +320,7 @@ def phillips_curve_inflation(inputs: PhillipsCurveInputs) -> ModelResult:
 # ---------------------------------------------------------------------------
 
 
-class InflationTransmissionInputs(BaseModel):
+class InflationTransmissionInputs(FiniteInputs):
     """Module 5.6's transmission inputs, with the units of each change stated.
 
     Section 20.5 declares four fields and documents none of them. Three are

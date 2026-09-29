@@ -88,11 +88,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -117,7 +118,7 @@ DemandCondition = Literal["strong", "neutral", "weak"]
 PipelinePassThrough = Literal["muted", "fuller"]
 
 
-class PPIPipelineInputs(BaseModel):
+class PPIPipelineInputs(FiniteInputs):
     """Inputs to ``ppi_pipeline_signal`` (Module 5.4).
 
     The three percentages are year-over-year growth rates of the three stage
@@ -126,6 +127,12 @@ class PPIPipelineInputs(BaseModel):
     while the ``WPSID*`` series reach back to 1947, so the common window is
     bounded by the youngest series and a caller who does not align on a common
     date can difference stages that are not contemporaneous.
+
+    D-139: inherits ``FiniteInputs``. Measured before the fix,
+    ``ppi_pipeline_signal(crude_stage_yoy_pct=nan)`` published
+    ``upstream_pressure_building=False`` with ``stage_spread_pp=nan`` — a
+    confident "no upstream cost pressure" verdict from a comparison that never
+    ran, because every ``nan`` comparison is ``False`` (D-078's class).
     """
 
     model_config = ConfigDict(extra="forbid")

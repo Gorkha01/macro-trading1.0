@@ -170,9 +170,17 @@ _INDEPENDENCE = (
     # the close-out re-run -- which is exactly what the gate is for. When
     # anchoring a multi-line target, verify against the file as `ruff format`
     # leaves it, not as it was first written.
-    "                    0\n"
-    '                    if corroboration.startswith("disagrees") or corroboration == "unavailable"\n'
-    "                    else 1"
+    #
+    # RETARGETED at D-139. The original expression credited an independence
+    # point to every state that was not a disagreement or `unavailable`, which
+    # silently included `not_directional` (a flat labor score, where NOTHING is
+    # corroborated). The corrected expression credits a point ONLY when the
+    # corroboration actually agrees, so the mutation below is restated as the
+    # polarity inversion of that test rather than as a deletion of the old
+    # three-line ternary that no longer exists.
+    "                    1\n"
+    '                    if corroboration.startswith("agrees")\n'
+    "                    else 0  # disagrees / unavailable / not_directional = no corroboration"
 )
 
 # --- M9: config, not literals (Defect 1) --------------------------------
@@ -420,14 +428,24 @@ def build_mutations() -> list[Mutation]:
     mutations.append(
         Mutation(
             group="M8",
-            name="M8.2 source-independence factor dropped",
+            name="M8.2 source-independence factor polarity inverted",
             path=MODEL,
             old=_INDEPENDENCE,
-            new="                    1",
+            new=(
+                "                    1\n"
+                '                    if not corroboration.startswith("agrees")\n'
+                "                    else 0  # noqa: ERA001"
+            ),
             intent=(
-                "Removing the disagreement penalty makes a contradicting growth "
-                "reading score as well as a corroborating one. Killed by "
-                "test_confidence_is_produced_not_hardcoded."
+                "Inverting the polarity credits an independence point to every "
+                "NON-corroborating state -- a contradicting growth reading, an "
+                "unavailable one, and (the D-139 defect) a flat `not_directional` "
+                "score all score as well as a corroborating one. Killed by "
+                "test_confidence_matches_compute_confidence_exactly, which "
+                "recomputes the confidence from the published corroboration state "
+                "and so distinguishes the inverted factor from the shipped one. "
+                "test_a_non_directional_corroboration_earns_no_independence_credit "
+                "covers the same polarity from the not_directional side."
             ),
         )
     )

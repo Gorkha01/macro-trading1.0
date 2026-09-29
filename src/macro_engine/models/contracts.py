@@ -23,15 +23,18 @@ does not need it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.models.evidence_family import EvidenceSourceFamily
 
 __all__ = [
+    "NON_FINITE_INPUT_REMEDY",
     "ConfidenceInputs",
     "EvidenceSourceFamily",
+    "FiniteInputs",
     "ModelResult",
     "ModelValue",
     "compute_confidence",
@@ -56,6 +59,67 @@ def utc_now() -> datetime:
 # `float | dict` declaration that appears earlier in the document is
 # superseded and must not be reintroduced.
 ModelValue = float | int | str | bool | dict[str, Any] | list[Any] | None
+
+
+#: The shared reason a non-finite input is refused, quoted wherever the guard
+#: fires so the reader gets the same explanation from every model. A non-finite
+#: value is not "missing" and not "neutral": it fails EVERY comparison, so it
+#: does not merely escape a rule's bounds — it silently takes the branch the
+#: bounds were written to exclude. Measured before the guard existed (D-078):
+#: `taylor_rule(pi_current=nan)` returned `value=nan`, and every consumer that
+#: asks "is the prescription above the actual rate?" gets `False` from
+#: `nan > actual` — the rule reports a verdict on a number it never computed.
+#: Missing data is represented by refusing to compute (Section 21.0 rule 3).
+NON_FINITE_INPUT_REMEDY = (
+    "A non-finite value is neither missing nor neutral — it is a value that "
+    "fails EVERY comparison, so it does not merely escape the input's bounds, it "
+    "silently takes the branch those bounds were written to exclude. Missing "
+    "data is represented by refusing to compute (Section 21.0 rule 3)."
+)
+
+
+class FiniteInputs(BaseModel):
+    """Base for model INPUT groups: every float — scalar or list element — must be FINITE.
+
+    Promoted here (D-139) from ``policy_rules._FiniteInputs``, which proved the
+    pattern on the policy-rule inputs after D-078. It belongs in the shared
+    contract module because the failure is a property of the INPUT, not of any
+    one model: a ``nan`` that reaches a model body has already lost the
+    information that it was never a number, and the arithmetic downstream has no
+    way to recover it. Guarding at construction names the offending field in the
+    error and stops the value before it can be mixed with real ones.
+
+    Two shapes are covered:
+
+    * a scalar ``float`` field that is ``nan``/``inf``;
+    * a ``list[float]`` field carrying a non-finite ELEMENT — which per-field
+      ``allow_inf_nan=False`` does NOT catch on its own, and which is the shape
+      ``claims_trend_signal`` consumes (a weekly claims series where one bad
+      print would otherwise propagate silently through both windows).
+
+    Only *float* checks run: ``bool`` is a subclass of ``int`` in Python but is
+    not a ``float``, and ``int`` is always finite, so neither can false-positive
+    here. Non-numeric fields are ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _reject_non_finite(self) -> FiniteInputs:
+        offenders: list[str] = []
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, float) and not isfinite(value):
+                offenders.append(f"{name}={value!r}")
+            elif isinstance(value, (list, tuple)):
+                for index, element in enumerate(value):
+                    if isinstance(element, float) and not isfinite(element):
+                        offenders.append(f"{name}[{index}]={element!r}")
+        if offenders:
+            raise ValueError(
+                f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}"
+            )
+        return self
 
 
 class ConfidenceInputs(BaseModel):

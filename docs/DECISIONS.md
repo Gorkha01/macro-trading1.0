@@ -22297,3 +22297,123 @@ mutants, 0 failures**. `src/` touched only in `publication_dates.py`; no
 `docs/PHASE1_DATA_LAYER_REVIEW.md` (new), `docs/README.md`, `docs/DECISIONS.md`,
 `docs/PROGRESS.md`.
 **No new `src/` function, no config leaf, no new OpenBB command** (census stays 6).
+
+## D-139 — Phase 2 of the production-grade review (models layer): FOUR root-cause defects + the D-078 non-finite class CLOSED repo-wide
+
+**Trigger:** operator's full review, Phase 2 — the `src/macro_engine/models/` layer
+(34 files) reviewed file-by-file, with the operator's explicit direction:
+*"Fix all 13 now"* for the NaN scope and *"Deep-read all remaining"* for depth.
+
+### 1. Four root-cause defects fixed (found by the file-by-file read)
+
+1. **`inflation_trajectory.py` — a source-independence point credited to a
+   NON-corroboration.** L423–427 computed
+   `0 if corroboration.startswith("disagrees") or corroboration == "unavailable" else 1`,
+   so a `not_directional` verdict fell into `else 1` and earned the *same*
+   confidence bonus as an agreeing source. Corroboration is only real value-
+   added when it AGREES; a non-directional read is not corroboration. Fixed to
+   `1 if corroboration.startswith("agrees") else 0`. **Measured**: the same
+   inputs moved confidence **0.35 → 0.30** — the bug was inflating it.
+2. **`inflation_dynamics.py` — two bare literals in the Phillips curve.**
+   `u_star_revision = 0.5` (the illustrative u* revision magnitude) and the
+   `slack_negligible < 0.05` threshold were inline. Both promoted to config
+   leaves (`phillips.illustrative_u_star_revision_pp`,
+   `phillips.slack_negligible_threshold_pp`) with a MOVER test each, so a leaf
+   read is distinguishable from a re-typed literal (trap class 4).
+3. **`intervention.py` — a PHANTOM input.** `reserves_to_gdp_pct` was a declared
+   field that fed *no* computation and never appeared in the output — a
+   documented input that did nothing. Now consumed: a
+   `reserves_scale` verdict (`UNSCALED` / `AMPLE` / `THIN`) is computed against a
+   new leaf `intervention.reserves_to_gdp_ample_threshold_pct`, published in
+   `value["reserves_scale"]`, disclosed in `assumptions`, and pinned by four
+   tests including `test_the_scale_verdict_does_not_change_the_capacity_label`
+   (it is disclosure, not a verdict-flipper).
+4. **`labor_synthesis.py` — a hardcoded scaling divisor.** `_nfp_scaling_divisor()`
+   returned the literal `10.0`; promoted to
+   `labor.tightness_scaling.nfp_divisor`, with a MOVER test.
+
+### 2. The D-078 non-finite class, CLOSED repo-wide (the load-bearing work)
+
+The file-by-file read found the **D-078** failure — a non-finite float is not
+"missing", it fails *every* comparison, so `nan` silently takes the branch the
+bounds were written to exclude — still reachable through input groups that did
+not inherit the guard. A **repo-wide structural audit** measured the gap as
+**20 input classes**: **13 accepting `nan`** (measured with a valid-instance
+probe) plus **7 accepting `+inf`** (a `Gt`/`Ge` bound rejects `nan`/`-inf` but
+admits `+inf`, so those never showed as `nan` gaps).
+
+The fix: **`policy_rules._FiniteInputs` was promoted to a shared, public
+`contracts.FiniteInputs`** — one `@model_validator(mode="after")` that rejects a
+non-finite scalar float AND a non-finite element of a `list`/`tuple` (which
+`allow_inf_nan=False` cannot catch), with a shared `NON_FINITE_INPUT_REMEDY`
+constant. All 20 gap classes were re-based onto it:
+
+`bond_math` (`RepoStressInputs`, `BondPricingInputs`, `ConvexityInputs`),
+`gdp_nowcast` (`GdpGdiInputs`, `OutputGapInputs`), `inflation_dynamics`
+(`PhillipsCurveInputs`, `InflationTransmissionInputs`), `national_accounts`
+(`PolicyMixInputs`, `QuantityTheoryInputs`, `SavingsInvestmentInputs`,
+`MinskyCompositionInputs`, `FisherIndexInputs`, `OpeningsToUnemployedInputs`),
+`real_policy_rate.RealPolicyRateInputs`, `risk.TwoAssetPortfolioInputs`,
+`yield_curve` (`BreakevenInputs`, `CurveDecompositionInputs`),
+`auctions.AuctionInputs`, `credit_spread.CreditSpreadInputs`,
+`production_function.PotentialGDPInputs`, plus the whole of `labor_synthesis`
+(8 groups) and `ppi_pipeline`. **Final audit: 30 classes `FiniteInputs`-covered,
+11 self-guarded, 0 remaining gaps** for `nan` / `+inf` / `-inf`.
+
+Additionally **`national_accounts.py:554`** had a bare `> 0.5` (deficit-mismatch
+tolerance) → promoted to `policy_mix.deficit_mismatch_tolerance_pp`.
+
+**The closing argument is the SWEEP, not the enum**: because a per-class
+regression test is exactly what nobody writes for the *next* input group,
+`tests/models/test_finite_inputs_repo_wide.py` is a **structural sweep** — it
+imports every `*Inputs` class in the package and asserts none admits a
+non-finite float, naming every offender at once. `test_finite_inputs_contract.py`
+pins the promoted base itself.
+
+### 3. Five new config leaves
+
+`phillips.illustrative_u_star_revision_pp` (0.5),
+`phillips.slack_negligible_threshold_pp` (0.05),
+`intervention.reserves_to_gdp_ample_threshold_pct` (20.0),
+`labor.tightness_scaling.nfp_divisor` (10.0),
+`policy_mix.deficit_mismatch_tolerance_pp` (0.5) — each with a `@property`
+accessor, a YAML leaf carrying its rationale, and (where read by a computation)
+a MOVER test.
+
+### 4. Sweep anchoring repaired
+
+`mutation_inflation_trajectory.py` M8.2's anchor was invalidated by the L423–427
+fix; retargeted to the new ternary, renamed *"source-independence factor
+polarity inverted"*, `new` string polarity-inverted, and its `killed_by` intent
+corrected to name the real killer
+(`test_confidence_matches_compute_confidence_exactly`). Target ABSENT would have
+been a `sweep_health` failure. All 15 affected sweeps re-verified
+`--check-targets: 0 problems`; `sweep_health.py` **OK**.
+
+### 5. Line-ending incident (D-061/O-119 class) — self-inflicted, caught by the suite
+
+The helper scripts I used to apply edits wrote with
+`pathlib.write_text(encoding="utf-8")` **without `newline=""`**, converting
+LF → CRLF in 11 model files on Windows. Git cannot see it (`.gitattributes`
+`* text=auto eol=lf`), but `tests/test_source_hygiene.py::
+test_no_source_file_contains_a_carriage_return` did — which is exactly why that
+test exists. Fixed with a `write_bytes` normaliser (`\r\n`/`\r` → `\n`); the 11
+files re-verified LF, `test_source_hygiene.py` 5 passed. **Lesson recorded:**
+helper edits must use `newline=""` (or byte-mode), never a bare `write_text`.
+
+### Gates (re-derived at CI scope — all green)
+
+`ruff check src/ tools/ tests/ scripts/` PASS · `ruff format --check` (same scopes)
+**296 files already formatted** · bare `mypy` **Success: no issues found in 296
+source files** · reachability **PASS — 58/58, no regressions** · full suite
+**4320 tests / 0 failures / 0 errors / 23 skipped** (`--junitxml`, authoritative;
+`-m "not live"`) · `sweep_health.py` **OK — 52 sweeps, 0 failures, 0 leftovers,
+0 mutant shapes, 0 committed mutants**. No `.sweepbackup` sidecars.
+
+**Files:** `src/macro_engine/config.py`, `config/settings.yaml`,
+`src/macro_engine/models/{contracts,policy_rules,inflation_trajectory,inflation_dynamics,intervention,labor_synthesis,ppi_pipeline,national_accounts,bond_math,gdp_nowcast,real_policy_rate,risk,yield_curve,auctions,credit_spread,production_function}.py`,
+`scripts/mutation_inflation_trajectory.py`,
+`tests/models/{test_finite_inputs_contract,test_finite_inputs_repo_wide,test_inflation_trajectory,test_inflation_dynamics,test_intervention,test_labor_synthesis,test_national_accounts}.py`,
+`docs/PHASE2_MODELS_REVIEW.md` (new), `docs/README.md`, `docs/DECISIONS.md`,
+`docs/PROGRESS.md`.
+**No new `src/` function, no new OpenBB command** (census stays 6). 5 new config leaves.

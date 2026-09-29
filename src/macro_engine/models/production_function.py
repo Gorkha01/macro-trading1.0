@@ -76,11 +76,12 @@ from __future__ import annotations
 
 import math
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -93,7 +94,7 @@ __all__ = [
 ]
 
 
-class PotentialGDPInputs(BaseModel):
+class PotentialGDPInputs(FiniteInputs):
     """The three estimated terms of ``Y = A * K^alpha * L^(1-alpha)``.
 
     ``alpha`` is deliberately absent — see the module docstring. Every field

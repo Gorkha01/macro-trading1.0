@@ -192,6 +192,35 @@ phillips:
     calibration_status: uncalibrated_illustrative
     note: Phillips curve slack sensitivity. Textbook convention, not fitted here.
 
+  # D-139 — two magnitudes that were bare literals inside
+  # `phillips_curve_inflation` (Module 3.3). Neither is a natural constant; both
+  # are statements an auditor must be able to see and move, so they are named
+  # here rather than buried in the model body.
+  illustrative_u_star_revision_pp:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The size of the u*-revision the model's second warning quantifies. u* is
+      unobservable and is revised ex-post; "a 0.5pp error in u*" is the
+      illustrative revision the warning uses to price that risk as
+      `beta * revision` percentage points of implied inflation. It was a bare
+      `0.5` literal in the model body (D-139). It is a statement about the
+      MAGNITUDE of a typical revision, not a fitted parameter — the point of
+      the warning is the ORDER OF MAGNITUDE relative to the pi^e measure
+      choice, and that ranking is stable for any revision in the 0.2-1.0pp
+      range a reader is likely to hold.
+  slack_negligible_threshold_pp:
+    value: 0.05
+    calibration_status: uncalibrated_illustrative
+    note: >
+      A slack contribution whose absolute value is below this is called out as
+      negligible — the implied inflation is pi^e with a rounding-error
+      adjustment, so the output carries almost no information beyond the
+      expectations input. A bare `0.05` literal in the model body (D-139). The
+      unit is pp of implied inflation, matching `beta * gap` at the same point
+      in the function. Small by construction: it is a "did the slack term do
+      anything at all" test, not a materiality test.
+
   # D-053 — `project_inflation_trajectory`'s bridge and dead band.
   #
   # The specification wrote `beta = 0.3` and compared `0.3 * score / 100`
@@ -1319,6 +1348,22 @@ labor:
       note: >
         Section 6.4's literal. Maps the 0-100 percentile onto a symmetric
         +/-50 range so the quits term is comparable with the others.
+    nfp_divisor:
+      value: 10.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        D-139. Section 6.4 writes `(nfp_3m_avg - 150) / 10`, where 10 means "a
+        10k deviation from the neutral pace is one score point". It was a bare
+        module constant (`_nfp_scaling_divisor`) that no reader could see from
+        the model body, yet it sets the SCALE of the tightness score: every
+        other component is added to the NFP term, so changing this silently
+        rescales what a given score means.
+
+        Moved beside the multipliers rather than left as a constant. The
+        neutral pace it is applied against stays at
+        `labor.neutral_nfp_pace_thousands` — that one is a JUDGEMENT and this is
+        a unit conversion, but both belong where a reviewer can see the whole
+        scaling at once.
 
   # Section 21.3 A / Module 6.1's explicit rule replacing "sustained uptrend".
   claims:
@@ -3601,6 +3646,22 @@ policy_mix:
       live check RECOMPUTES the average from the trailing window and compares
       against this expectation, warning on a mismatch -- so the disagreement is
       visible on every run rather than silently resolved here.
+  deficit_mismatch_tolerance_pp:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      D-139. The mismatch, in percentage points of GDP, between a caller's
+      supplied deficit average and `fiscal_deficit_avg_pct_gdp` above which
+      `policy_mix_classifier` warns that the two are not the same measurement.
+      A caller using a different window can move the SAME deficit into a
+      different quadrant, so the disagreement is reported rather than accepted.
+
+      It was a bare `> 0.5` in the model body. It is a materiality threshold
+      rather than a fitted parameter, but it decides whether a reader sees the
+      warning at all, so it lives here where its sensitivity is reviewable. The
+      stored expectation above (4.5) already sits 1.67pp above its own measured
+      10-year mean (2.83), so at this tolerance the mismatch warning fires on a
+      live recompute — which is the intended behaviour, not an accident.
   base_rates:
     observations_measured_value:
       value: 57
@@ -4487,6 +4548,30 @@ intervention:
       `reserve_constrained_label`. The split is deliberate — a field and a
       property may not share a name in this codebase (the D-035 collision guard
       in `tests/test_infrastructure.py`).
+  reserves_to_gdp_ample_threshold_pct:
+    value: 20.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      D-139. The threshold that makes `reserves_to_gdp_pct` a LIVE input rather
+      than a phantom one. Section 20.9's `InterventionCapacityInputs` carries
+      `reserves_to_gdp_pct` and its reference implementation never reads it — it
+      appears only in the output echo — yet this model's own field description
+      claimed it was "used as an AMPLE/THIN scale". A documented use that no
+      code path performs is the phantom-input class (D-139): a reader who trusts
+      the docstring believes a scale verdict is being computed when nothing is.
+
+      The claim is MADE TRUE rather than struck, because reserving against GDP
+      is a real distinction: the same dollar stock defends a small economy far
+      more than a large one, and `intervention_capacity`'s whole content is
+      whether a stock can hold a peg. At or above this ratio the stock is
+      AMPLE; below it, THIN.
+
+      20 % follows the conventional reading of the World Bank's `total reserves
+      (% of GDP)` distribution, where advanced-economy defenders such as Japan
+      and Switzerland sit well above 20 % and most floaters sit far below it. It
+      is a boundary on a scale, not a fitted parameter — the verdict is a
+      DISCLOSURE beside the capacity label, and it never changes the label,
+      which the direction's mechanics alone decide.
 # ---------------------------------------------------------------------------
 # MODULE 9's EM VULNERABILITY CHECKLIST (Section 20's part B). Section 20's
 # reference implementation writes its three thresholds, its four verdict

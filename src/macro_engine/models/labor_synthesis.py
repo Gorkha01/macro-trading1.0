@@ -26,7 +26,7 @@ persistence test. Both are noise, and only requiring both filters them.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.config import (
     AHEDistortionThresholds,
@@ -35,6 +35,7 @@ from macro_engine.config import (
 )
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -88,7 +89,7 @@ def _revision_thresholds() -> RevisionThresholds:
     return get_settings().labor.revisions
 
 
-class LaborInputs(BaseModel):
+class LaborInputs(FiniteInputs):
     """Section 6.4's four labor inputs, one per block."""
 
     model_config = ConfigDict(extra="forbid")
@@ -326,15 +327,17 @@ def _nfp_scaling_divisor() -> float:
     deviation from the neutral pace is one score point", and the neutral pace is
     already in config as ``labor.neutral_nfp_pace_thousands``.
 
-    The divisor is a module constant rather than a config value because it is a
-    unit conversion (thousands of jobs -> score points), not a tunable
-    judgement. The neutral pace it is applied against *is* a judgement, and that
-    one is in config.
+    D-139: the divisor MOVED to config as
+    ``labor.tightness_scaling.nfp_divisor``. It is still a unit conversion
+    rather than a tuned judgement, but it sets the scale of the whole tightness
+    score — a reader cannot see it from the model body, and a silent change to
+    it rescales every published score — so it belongs beside the multipliers
+    that share the same role (``claims_multiplier`` and friends).
     """
-    return 10.0
+    return get_settings().labor.tightness_scaling.nfp_divisor_value
 
 
-class ClaimsTrendInputs(BaseModel):
+class ClaimsTrendInputs(FiniteInputs):
     """One weekly claims series; both comparison windows are derived from it.
 
     D-022's lesson, applied structurally: the original version took a raw
@@ -549,7 +552,7 @@ def claims_trend_signal(inputs: ClaimsTrendInputs) -> ModelResult:
     )
 
 
-class ClaimsCorroborationInputs(BaseModel):
+class ClaimsCorroborationInputs(FiniteInputs):
     """The two claims readings Module 6.3 compares."""
 
     model_config = ConfigDict(extra="forbid")
@@ -632,7 +635,7 @@ def claims_corroboration(inputs: ClaimsCorroborationInputs) -> ModelResult:
     )
 
 
-class TwoSurveyInputs(BaseModel):
+class TwoSurveyInputs(FiniteInputs):
     """Module 6.1's two-survey comparison, plus the rate that explains the gap.
 
     The two employment series are **not** alternatives to each other, and that is
@@ -809,7 +812,7 @@ def two_survey_divergence(inputs: TwoSurveyInputs) -> ModelResult:
     )
 
 
-class BeveridgeInputs(BaseModel):
+class BeveridgeInputs(FiniteInputs):
     """Module 6.2's Beveridge-curve position read.
 
     A Beveridge curve plots job openings against unemployment. The *position of
@@ -960,7 +963,7 @@ def beveridge_curve_position(inputs: BeveridgeInputs) -> ModelResult:
     )
 
 
-class AHEDistortionInputs(BaseModel):
+class AHEDistortionInputs(FiniteInputs):
     """Module 6.2's wage-measure distortion check.
 
     Average Hourly Earnings and the Employment Cost Index measure wage growth
@@ -1120,7 +1123,7 @@ def ahe_composition_flag(inputs: AHEDistortionInputs) -> ModelResult:
     )
 
 
-class RevisionInputs(BaseModel):
+class RevisionInputs(FiniteInputs):
     """Module 6.1's payroll revision structure.
 
     Three months of the same series, not three different series: the
@@ -1237,7 +1240,7 @@ def nfp_revision_adjusted_read(inputs: RevisionInputs) -> ModelResult:
     )
 
 
-class InflationSubMeasures(BaseModel):
+class InflationSubMeasures(FiniteInputs):
     """Section 6.3's three Phase 1 inflation sub-measures, all month-over-month.
 
     Every field is a ``m/m`` percent change in the same units as its

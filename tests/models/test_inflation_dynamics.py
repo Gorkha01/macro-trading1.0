@@ -320,14 +320,63 @@ def test_unobservability_warning_states_the_beta_scaled_sensitivity() -> None:
 
     A warning saying "u* is uncertain" is not actionable. One saying "a 0.5pp
     error in u* moves inflation by X pp at the current beta" tells a reader how
-    much to discount the output — and must track config, since it is derived
-    from beta.
+    much to discount the output — and must track config, since D-139 moved BOTH
+    the beta and the revision magnitude out of the model body. The expected
+    string is recomputed from those two leaves, so this test reads a LEAF rather
+    than re-typing the literal it is meant to be checking.
     """
-    beta = get_settings().phillips.beta_value
+    settings = get_settings().phillips
+    beta = settings.beta_value
+    revision = settings.illustrative_u_star_revision
     result = phillips_curve_inflation(_inputs())
-    expected = f"{abs(beta) * 0.5:.2f}pp"
+    expected = f"{abs(beta) * revision:.2f}pp"
     assert any(expected in w for w in result.warnings), (
         f"expected the beta-scaled sensitivity {expected} in a warning; got {result.warnings}"
+    )
+
+
+def test_the_u_star_revision_magnitude_is_read_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-139 MOVER test: the revision magnitude is a leaf-read, not a literal.
+
+    The magnitude was a bare ``* 0.5`` in the model body. A test that asserts
+    ``"...0.5pp..."`` appears in a warning CANNOT tell a config read from a
+    re-typed literal, because both produce the same string while the leaf sits
+    at its default. The only way to distinguish them is to MOVE the leaf and
+    require the output to follow — the project's own MOVER idiom
+    (``monkeypatch.setattr(<leaf>, "value", ...)``), which restores automatically.
+    """
+    settings = get_settings().phillips
+    monkeypatch.setattr(settings.illustrative_u_star_revision_pp, "value", 2.5, raising=False)
+
+    result = phillips_curve_inflation(_inputs())
+    expected = f"{abs(settings.beta_value) * 2.5:.2f}pp"
+    assert any(expected in w for w in result.warnings), (
+        f"the warning did not follow the moved revision leaf; expected "
+        f"{expected!r} in {result.warnings}"
+    )
+
+
+def test_the_slack_negligibility_threshold_is_read_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-139 MOVER test: the slack-negligibility threshold is a leaf-read.
+
+    The threshold was a bare ``< 0.05`` in the body. At u == u* the slack
+    contribution is EXACTLY zero, so that case cannot distinguish a leaf-read
+    from a literal — zero is below every positive threshold. Moving the
+    threshold ABOVE a small-but-real contribution is the discriminating move: a
+    literal ``0.05`` would leave the warning silent, a leaf-read fires it.
+    """
+    settings = get_settings().phillips
+    # u - u* = 0.2pp at beta 0.5 gives a slack contribution of exactly 0.10pp.
+    # With the threshold moved to 0.5 the term must be called negligible; with
+    # the old literal 0.05 it would not be.
+    monkeypatch.setattr(settings.slack_negligible_threshold_pp, "value", 0.5, raising=False)
+
+    result = phillips_curve_inflation(_inputs(unemployment_rate=4.6, nairu=4.4))
+    assert any("slack term contributes only" in w for w in result.warnings), (
+        f"the threshold did not follow the moved leaf; a 0.10pp contribution "
+        f"should be negligible at a 0.5pp threshold. warnings={result.warnings}"
     )
 
 

@@ -11,15 +11,21 @@ with no knowledge of where its inputs came from (models do not fetch data).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.config import get_settings
-from macro_engine.models.contracts import ConfidenceInputs, ModelResult, compute_confidence, utc_now
+from macro_engine.models.contracts import (
+    ConfidenceInputs,
+    FiniteInputs,
+    ModelResult,
+    compute_confidence,
+    utc_now,
+)
 
 __all__ = ["RealPolicyRateInputs", "real_policy_rate"]
 
 
-class RealPolicyRateInputs(BaseModel):
+class RealPolicyRateInputs(FiniteInputs):
     """Two observed scalars. Both real, neither defaulted."""
 
     model_config = ConfigDict(extra="forbid")

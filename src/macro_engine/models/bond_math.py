@@ -40,10 +40,11 @@ an error — exactly the failure class Section 21.0 warns about.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -67,7 +68,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-class BondPricingInputs(BaseModel):
+class BondPricingInputs(FiniteInputs):
     """A plain-vanilla fixed-coupon bond.
 
     ``periods`` is the number of *coupon periods*, not years — the formulas are
@@ -94,7 +95,7 @@ class BondPricingInputs(BaseModel):
     periods: int = Field(gt=0, description="Number of coupon periods to maturity.")
 
 
-class ConvexityInputs(BaseModel):
+class ConvexityInputs(FiniteInputs):
     """Convexity inputs, matching Section 20.2's own field names.
 
     Section 20.2's ``convexity()`` reads ``inputs.coupon`` (a currency amount),
@@ -113,7 +114,7 @@ class ConvexityInputs(BaseModel):
     n_periods: int = Field(gt=0, description="Number of periods to maturity.")
 
 
-class RepoStressInputs(BaseModel):
+class RepoStressInputs(FiniteInputs):
     """The four rates that define the floor-system corridor, plus the two
     corroboration inputs Section 22.11 requires before escalation.
 
