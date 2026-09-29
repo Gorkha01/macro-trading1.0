@@ -272,9 +272,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M6: the contract -------------------------------------------------
     (
-        "M6a extra='forbid' removed from the input model",
+        # D-139 rebased MinskyCompositionInputs onto `FiniteInputs`, which itself
+        # sets `extra="forbid"` — deleting the local declaration became an
+        # EQUIVALENT mutation (the base still forbids) and survived. The intent
+        # is preserved by OVERRIDING the base with `extra="ignore"`.
+        "M6a extra='forbid' overridden with extra='ignore' on the input model",
         SRC,
         _EXTRA_FORBID,
+        '    model_config = ConfigDict(extra="ignore")\n\n'
         "    lending_standards_net_tightening_pct: float = Field(",
     ),
     # --- M7: confidence ---------------------------------------------------

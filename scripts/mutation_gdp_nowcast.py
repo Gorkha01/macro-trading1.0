@@ -349,10 +349,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M7: the input contract -------------------------------------------
     (
-        "M7a extra='forbid' removed from the input model",
+        # D-139c rebased SimpleGDPNowcastInputs onto `FiniteInputs`, which itself
+        # sets `extra="forbid"` — deleting the local declaration became an
+        # EQUIVALENT mutation (the base still forbids) and survived. The intent
+        # is preserved by OVERRIDING the base with `extra="ignore"`.
+        "M7a extra='forbid' overridden with extra='ignore' on the input model",
         SRC,
         _EXTRA_FORBID,
-        "    retail_sales_mom:",
+        '    model_config = ConfigDict(extra="ignore")\n\n    retail_sales_mom:',
     ),
     (
         "M7b published_gdpnow given a truthy default instead of None",
@@ -495,6 +499,25 @@ def main() -> int:
         return _run_sweep(originals)
 
 
+#: Mutations PROVEN to be genuine no-ops, so a survivor is the correct outcome
+#: rather than a weak spot in the suite (D-031's EQUIVALENT class).
+_EXPECTED_INERT: frozenset[str] = frozenset(
+    {
+        # D-139c rebased `SimpleGDPNowcastInputs` onto `contracts.FiniteInputs`,
+        # which now refuses a non-finite `prior_quarter_annualized` AT
+        # CONSTRUCTION. The in-body `if not isfinite(...)` guard is therefore
+        # UNREACHABLE: no test — and no caller — can build an input that reaches
+        # it, and no test uses `model_construct` to bypass validation. MEASURED:
+        # `SimpleGDPNowcastInputs(..., prior_quarter_annualized=nan)` raises
+        # `ValidationError: non-finite input(s): prior_quarter_annualized=nan`.
+        # The guard is KEPT as defence-in-depth (a future weakening of the input
+        # class would make it live again), so this mutation is inert by
+        # construction, not un-tested.
+        "M5a non-finite base guard removed",
+    }
+)
+
+
 def _run_sweep(originals: dict[Path, str]) -> int:
     # Heal before measuring. See ``_applied_mutations`` for why this is not
     # optional: a stale mutation would otherwise be adopted as the baseline.
@@ -555,7 +578,10 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     print()
     total = len(_MUTATIONS)
     print(f"{total - len(survivors)}/{total} killed")
-    for name, why in survivors:
+    if _EXPECTED_INERT:
+        print(f"({len(_EXPECTED_INERT)} expected-inert by design)")
+    unexpected = [(name, why) for name, why in survivors if name not in _EXPECTED_INERT]
+    for name, why in unexpected:
         print(f"  SURVIVOR ({why}): {name}")
     # O-72's canary gate. A canary that SURVIVES means the sweep ran but tested
     # nothing: its selection no longer reaches the mutated module, so every
@@ -569,7 +595,7 @@ def _run_sweep(originals: dict[Path, str]) -> int:
         print("     module, so no kill above is evidence about the suite (O-72).")
         return 3
 
-    return 0 if not survivors else 1
+    return 0 if not unexpected else 1
 
 
 if __name__ == "__main__":

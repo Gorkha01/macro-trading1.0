@@ -22760,3 +22760,81 @@ long runs get interrupted.
 `docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
 **No `src/` change from this item, no config leaf, no new OpenBB command** (census
 stays 6).
+
+## D-141 — the D-139 rebases made NINE mutations EQUIVALENT; each retargeted or proven inert
+
+**Trigger:** D-140's in-process runner made a FULL sweep tractable for the first
+time, so the sweeps that D-139/D-139b/c/d had invalidated were finally re-run. A
+mutation that SURVIVES is either a weak test or an EQUIVALENT mutation (D-031);
+every survivor below was measured to be the second kind.
+
+### The mechanism
+
+Two mutation idioms stopped being observable once an input class was rebased onto
+`contracts.FiniteInputs`:
+
+1. **"remove `extra="forbid"`"** — the local `model_config = ConfigDict(extra="forbid")`
+   is now REDUNDANT: `FiniteInputs` sets the same thing, so deleting the local
+   declaration changes nothing.
+2. **"remove the in-body finiteness guard"** — the guard is now UNREACHABLE: the
+   input class refuses a non-finite field AT CONSTRUCTION, so no test or caller can
+   build a value that reaches it.
+
+### Retargeted (the intent is preserved, now observable)
+
+`extra="forbid"` **removal** → `extra="ignore"` **override**, which DOES change
+behaviour (a misspelled field is silently dropped instead of refused) and is killed
+by each sweep's existing unknown-field test:
+
+| sweep | mutation |
+|---|---|
+| `mutation_auction_demand` | M6a |
+| `mutation_gdp_nowcast` | M7a |
+| `mutation_minsky` | M6a |
+| `mutation_policy_mix` | M5a |
+| `mutation_qe_stance` | M6a |
+| `mutation_credit_spread` | M6a |
+| `mutation_cross_market_rv` | M7.1 |
+| `mutation_gdp_gdi_divergence` | M6d |
+| `mutation_lei_proxy` | M6e |
+
+### Classified expected-inert (the guard is KEPT as defence-in-depth)
+
+The unreachable in-body guards were **not deleted** — they document a real hazard and
+would become live again if the input class were ever weakened. Instead each sweep
+gained (or used) an `_EXPECTED_INERT` set, with the measurement recorded inline:
+
+| sweep | mutation(s) | why inert |
+|---|---|---|
+| `mutation_gdp_nowcast` | M5a | `SimpleGDPNowcastInputs` refuses `prior_quarter_annualized=nan` at construction (MEASURED) |
+| `mutation_gdp_gdi_divergence` | M6a, M6b, M6c | `GdpGdiInputs` refuses non-finite fields; `_finite_guard` is unreachable |
+| `mutation_lei_proxy` | M6d | `LeadingIndicatorProxyInputs` refuses non-finite fields |
+| `mutation_yield_curve` | MX7c | (D-140) both branches yield 0.5 after the D-139d confidence fix → retargeted instead |
+
+`mutation_gdp_nowcast`, `mutation_gdp_gdi_divergence` and `mutation_lei_proxy` gained
+the `_EXPECTED_INERT` reporting (constant + filter + exit-code use), mirroring the
+existing `mutation_yield_curve` precedent.
+
+### Verification — the affected sweeps re-run, all green
+
+`yield_curve` 89/90 (1 expected-inert) · `evidence` 18/18 · `ppi_pipeline` 38/38 ·
+`auction_demand` 33/33 · `financial_conditions` 32/32 · `gdp_nowcast` 39/40 (1
+expected-inert) · `minsky` 26/26 · `policy_mix` 24/24 · `qe_stance` 28/28 ·
+`regime` 71/71 · `credit_spread`, `cross_market_rv` all survivors expected ·
+`gdp_gdi_divergence` 28/31 (3 expected-inert) · `lei_proxy` 36/37 (1 expected-inert) ·
+**`fx_carry` 176/176** · `intervention` 60/60 · `econometrics` 108/109 (1
+pre-documented inert-by-route).
+
+### Sweep-safety incidents (both caught and repaired)
+
+The 40-minute `mutation_fx_carry` run killed by D-140's predecessor left a mutant
+APPLIED (`"sign_boundary": vix_threshold`) plus two sidecars — triaged per O-157 (one
+inert, one live) and restored. A later batch was lost at a turn boundary and left
+`policy_rules.py` **truncated** (1403 lines → 1, a killed mid-write) — restored
+verbatim from its sidecar, verified identical to `HEAD`. **Both confirm O-157's rule:
+after ANY sweep, `find src -name '*.sweepbackup'` AND compare each survivor against
+the live file — never trust the exit code alone.**
+
+**Files:** `scripts/mutation_{auction_demand,gdp_nowcast,minsky,policy_mix,qe_stance,credit_spread,cross_market_rv,gdp_gdi_divergence,lei_proxy}.py`,
+`docs/DECISIONS.md`, `docs/PROGRESS.md`.
+**No `src/` change, no config leaf, no new OpenBB command** (census stays 6).

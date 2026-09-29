@@ -276,9 +276,15 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "        ],",
     ),
     (
-        "M6e extra=forbid removed from the input model",
+        # D-139 rebased PPIPipelineInputs onto `FiniteInputs`, which itself sets
+        # `extra="forbid"` — so DELETING the local declaration became an
+        # EQUIVALENT mutation (the base still forbids extras) and survived. The
+        # intent — "the input model rejects unknown fields" — is preserved by
+        # OVERRIDING the base with `extra="ignore"` instead, which the
+        # `test_unknown_keyword_is_rejected` test kills.
+        "M6e extra=forbid overridden with extra=ignore on the input model",
         '    model_config = ConfigDict(extra="forbid")\n\n    crude_stage_yoy_pct',
-        "    crude_stage_yoy_pct",
+        '    model_config = ConfigDict(extra="ignore")\n\n    crude_stage_yoy_pct',
     ),
 ]
 

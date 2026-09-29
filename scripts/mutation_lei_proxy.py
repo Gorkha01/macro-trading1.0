@@ -277,9 +277,9 @@ MUTATIONS: list[tuple[str, str, str]] = [
         "        if False:\n            raise ValueError(",
     ),
     (
-        "M6e extra=forbid removed from the input model",
+        "M6e extra=forbid overridden with extra=ignore on the input model",
         _EXTRA_FORBID,
-        "    components: dict[str, float] = Field(",
+        '    model_config = ConfigDict(extra="ignore")\n\n    components: dict[str, float] = Field(',
     ),
     # --- Correction 7: the three-state read -------------------------------
     (
@@ -418,6 +418,20 @@ def main() -> int:
         return _run_sweep(originals)
 
 
+#: Mutations PROVEN to be genuine no-ops, so a survivor is the correct outcome
+#: rather than a weak spot in the suite (D-031's EQUIVALENT class).
+_EXPECTED_INERT: frozenset[str] = frozenset(
+    {
+        # D-139c rebased `LeadingIndicatorProxyInputs` onto `contracts.FiniteInputs`,
+        # which refuses non-finite values AT CONSTRUCTION. The in-body non-finite
+        # guard is therefore UNREACHABLE — no test or caller can build an input
+        # that reaches it — so removing it cannot change any observable. The guard
+        # is KEPT as defence-in-depth.
+        "M6d non-finite guard removed (NaN counted as not-declining)",
+    }
+)
+
+
 def _run_sweep(originals: dict[Path, str]) -> int:
     # This sweep's table is already 4-tuples.
     #
@@ -461,7 +475,10 @@ def _run_sweep(originals: dict[Path, str]) -> int:
     print()
     total = len(MUTATIONS)
     print(f"{total - len(survivors)}/{total} killed")
-    for name, why in survivors:
+    if _EXPECTED_INERT:
+        print(f"({len(_EXPECTED_INERT)} expected-inert by design)")
+    unexpected = [(name, why) for name, why in survivors if name not in _EXPECTED_INERT]
+    for name, why in unexpected:
         print(f"  SURVIVOR ({why}): {name}")
     # O-72's canary gate. A canary that SURVIVES means the sweep ran but tested
     # nothing: its selection no longer reaches the mutated module, so every
@@ -475,7 +492,7 @@ def _run_sweep(originals: dict[Path, str]) -> int:
         print("     module, so no kill above is evidence about the suite (O-72).")
         return 3
 
-    return 0 if not survivors else 1
+    return 0 if not unexpected else 1
 
 
 if __name__ == "__main__":

@@ -285,10 +285,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M6: the contract -------------------------------------------------
     (
-        "M6a extra='forbid' removed from the input model",
+        # D-139 rebased BalanceSheetInputs onto `FiniteInputs`, which itself sets
+        # `extra="forbid"` — deleting the local declaration became an EQUIVALENT
+        # mutation (the base still forbids) and survived. Preserve the intent by
+        # OVERRIDING the base with `extra="ignore"`.
+        "M6a extra='forbid' overridden with extra='ignore' on the input model",
         SRC,
         _EXTRA_FORBID,
-        "    balance_sheet_level: float = Field(",
+        '    model_config = ConfigDict(extra="ignore")\n\n    balance_sheet_level: float = Field(',
     ),
     (
         "M6b the positive-level guard weakened to allow zero",

@@ -486,10 +486,10 @@ def build_mutations() -> list[Mutation]:
         # -- M6: the input contract ----------------------------------------
         Mutation(
             group="M6",
-            name="M6a extra='forbid' removed from the input model",
+            name="M6a extra='forbid' overridden with extra='ignore' on the input model",
             path=SRC,
             old=_EXTRA_FORBID,
-            new="    hy_spread_bp: float = Field(",
+            new='    model_config = ConfigDict(extra="ignore")\n\n    hy_spread_bp: float = Field(',
             intent="A misspelled field is silently ignored instead of refused.",
         ),
         Mutation(

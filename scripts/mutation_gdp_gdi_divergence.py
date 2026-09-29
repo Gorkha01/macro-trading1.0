@@ -253,9 +253,9 @@ MUTATIONS: list[tuple[str, str, str]] = [
         '                f"input is {value!r}; the divergence is undefined. "',
     ),
     (
-        "M6d extra=forbid removed from the input model",
+        "M6d extra=forbid overridden with extra=ignore on the input model",
         _EXTRA_FORBID,
-        "    gdp_growth_pct: float = Field(",
+        '    model_config = ConfigDict(extra="ignore")\n\n    gdp_growth_pct: float = Field(',
     ),
     (
         "M6e stale-after read replaced with a literal",
@@ -320,6 +320,24 @@ def main() -> int:
         return _run_sweep(originals)
 
 
+#: Mutations PROVEN to be genuine no-ops, so a survivor is the correct outcome
+#: rather than a weak spot in the suite (D-031's EQUIVALENT class).
+_EXPECTED_INERT: frozenset[str] = frozenset(
+    {
+        # D-139 rebased `GdpGdiInputs` onto `contracts.FiniteInputs`, which now
+        # refuses a non-finite field AT CONSTRUCTION. The `_finite_guard` helper
+        # in `gdp_nowcast.py` is therefore UNREACHABLE: no test — and no caller —
+        # can build an input that reaches it. All three mutations of that helper
+        # (remove it, weaken its predicate, change its message) are inert by
+        # construction. The guard is KEPT as defence-in-depth, so a future
+        # weakening of the input class would make these live again.
+        "M6a non-finite guard removed (NaN passes through as 'not significant')",
+        "M6b finite check accepts NaN",
+        "M6c rejection message loses the offending field name",
+    }
+)
+
+
 def _run_sweep(originals: dict[Path, str]) -> int:
     pristine_src = originals[SRC]
 
@@ -356,7 +374,10 @@ def _run_sweep(originals: dict[Path, str]) -> int:
 
     print()
     print(f"{len(MUTATIONS) - len(survivors)}/{len(MUTATIONS)} killed")
-    for name, why in survivors:
+    if _EXPECTED_INERT:
+        print(f"({len(_EXPECTED_INERT)} expected-inert by design)")
+    unexpected = [(name, why) for name, why in survivors if name not in _EXPECTED_INERT]
+    for name, why in unexpected:
         print(f"  SURVIVOR ({why}): {name}")
     # O-72's canary gate. A canary that SURVIVES means the sweep ran but tested
     # nothing: its selection no longer reaches the mutated module, so every
@@ -370,7 +391,7 @@ def _run_sweep(originals: dict[Path, str]) -> int:
         print("     module, so no kill above is evidence about the suite (O-72).")
         return 3
 
-    return 0 if not survivors else 1
+    return 0 if not unexpected else 1
 
 
 if __name__ == "__main__":

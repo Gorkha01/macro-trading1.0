@@ -244,10 +244,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M5: the contract -------------------------------------------------
     (
-        "M5a extra='forbid' removed from the input model",
+        # D-139 rebased PolicyMixInputs onto `FiniteInputs`, which itself sets
+        # `extra="forbid"` — deleting the local declaration became an EQUIVALENT
+        # mutation (the base still forbids) and survived. Preserve the intent by
+        # OVERRIDING the base with `extra="ignore"`.
+        "M5a extra='forbid' overridden with extra='ignore' on the input model",
         SRC,
         _EXTRA_FORBID,
-        "    fiscal_deficit_pct_gdp: float = Field(",
+        '    model_config = ConfigDict(extra="ignore")\n\n    fiscal_deficit_pct_gdp: float = Field(',
     ),
     (
         "M5b an input dropped from inputs_used (it still decides the quadrant)",

@@ -567,10 +567,10 @@ def build_mutations() -> list[Mutation]:
         # -- M7: the input contract -----------------------------------------
         Mutation(
             group="M7",
-            name="M7.1 extra='forbid' is removed from the input model",
+            name="M7.1 extra='forbid' is overridden with extra='ignore' on the input model",
             path=YIELD_CURVE,
             old=_M7_EXTRA_FORBID,
-            new="    market_a: str = Field(",
+            new='    model_config = ConfigDict(extra="ignore")\n\n    market_a: str = Field(',
             intent="A misspelled field is silently ignored instead of refused.",
         ),
         Mutation(

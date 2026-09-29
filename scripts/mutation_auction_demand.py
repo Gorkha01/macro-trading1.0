@@ -295,10 +295,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M6: the input contract -------------------------------------------
     (
-        "M6a extra='forbid' removed from the input model",
+        # D-139 rebased AuctionInputs onto `FiniteInputs`, which itself sets
+        # `extra="forbid"` — so DELETING the local declaration became an
+        # EQUIVALENT mutation (the base still forbids) and survived. The intent
+        # is preserved by OVERRIDING the base with `extra="ignore"`.
+        "M6a extra='forbid' overridden with extra='ignore' on the input model",
         SRC,
         _EXTRA_FORBID,
-        "    bid_to_cover: float = Field(",
+        '    model_config = ConfigDict(extra="ignore")\n\n    bid_to_cover: float = Field(',
     ),
     (
         "M6b the bid-to-cover average guard weakened to allow zero",
