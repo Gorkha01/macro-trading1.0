@@ -1186,6 +1186,8 @@ def test_a_timestamp_dated_row_does_not_crash_the_inventory_as_of_clip() -> None
             row["date"] = pd.Timestamp(row["date"])
 
     client = _StubClient(rows)
-    reading = fetch_crude_inventories(as_of=date(2026, 9, 22), client=client)
+    # ``_StubClient`` is a structural stand-in, not an ``OpenBBClient``; the
+    # ignore is the same one every other stub call site in this file carries.
+    reading = fetch_crude_inventories(as_of=date(2026, 9, 22), client=client)  # type: ignore[arg-type]
     assert reading.observation_date == "2026-09-18"
     assert reading.level_thousand_barrels == 426_398.0

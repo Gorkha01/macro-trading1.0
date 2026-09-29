@@ -64,6 +64,7 @@ from macro_engine.models.contracts import (
     ModelResult,
     compute_confidence,
 )
+from tests.helpers import as_str
 
 
 def _inputs(**overrides: object) -> OilBalanceInputs:
@@ -1784,21 +1785,21 @@ def test_metals_the_direction_is_derived_from_the_signs_not_the_verdict() -> Non
     falling_mixed = metals_complex_divergence(
         _metals_inputs(copper_change_pct=-1.0, iron_ore_change_pct=-0.5, aluminum_change_pct=-1.0)
     )
-    assert falling_mixed.value["verdict"] == "MIXED_no_clear_pattern"
+    assert as_str(falling_mixed, key="verdict") == "MIXED_no_clear_pattern"
     assert falling_mixed.direction == "restrictive"
 
     # MIXED *and* all-rising: expansionary, the case the old test happened to hit.
     rising_mixed = metals_complex_divergence(
         _metals_inputs(copper_change_pct=1.0, iron_ore_change_pct=1.0, aluminum_change_pct=1.0)
     )
-    assert rising_mixed.value["verdict"] == "MIXED_no_clear_pattern"
+    assert as_str(rising_mixed, key="verdict") == "MIXED_no_clear_pattern"
     assert rising_mixed.direction == "expansionary"
 
     # MIXED with a genuine mix of signs: NEUTRAL, which is the honest reading.
     mixed_signs = metals_complex_divergence(
         _metals_inputs(copper_change_pct=0.5, iron_ore_change_pct=-0.5, aluminum_change_pct=0.0)
     )
-    assert mixed_signs.value["verdict"] == "MIXED_no_clear_pattern"
+    assert as_str(mixed_signs, key="verdict") == "MIXED_no_clear_pattern"
     assert mixed_signs.direction == "neutral"
 
     # The two FIRING verdicts are NOT automatically restrictive — the direction
@@ -1807,7 +1808,7 @@ def test_metals_the_direction_is_derived_from_the_signs_not_the_verdict() -> Non
     broad = metals_complex_divergence(
         _metals_inputs(copper_change_pct=-5.0, iron_ore_change_pct=-6.0, aluminum_change_pct=-4.0)
     )
-    assert broad.value["verdict"] == "BROAD_INDUSTRIAL_WEAKNESS"
+    assert as_str(broad, key="verdict") == "BROAD_INDUSTRIAL_WEAKNESS"
     assert broad.direction == "restrictive"
 
     # CHINA_CONSTRUCTION_SPECIFIC: iron ore collapses while aluminum RISES, so the
@@ -1817,7 +1818,7 @@ def test_metals_the_direction_is_derived_from_the_signs_not_the_verdict() -> Non
     construction = metals_complex_divergence(
         _metals_inputs(copper_change_pct=-4.0, iron_ore_change_pct=-9.0, aluminum_change_pct=0.5)
     )
-    assert construction.value["verdict"] == "CHINA_CONSTRUCTION_SPECIFIC"
+    assert as_str(construction, key="verdict") == "CHINA_CONSTRUCTION_SPECIFIC"
     assert construction.direction == "neutral"
 
 
