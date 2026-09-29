@@ -84,7 +84,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.data_layer.commodities_client import (
@@ -101,6 +101,7 @@ from macro_engine.data_layer.commodities_client import (
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     EvidenceSourceFamily,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -119,7 +120,7 @@ __all__ = [
 ]
 
 
-class OilBalanceInputs(BaseModel):
+class OilBalanceInputs(FiniteInputs):
     """The oil-market inputs Section 6.8 declares, both optionally fetched.
 
     Section 6.8 declares two REQUIRED floats:
@@ -163,36 +164,6 @@ class OilBalanceInputs(BaseModel):
             "clips it to observations at or before the as-of date."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate_finite_and_signed(self) -> OilBalanceInputs:
-        """Refuse a non-finite value on either leg.
-
-        Both inputs are checked for NON-FINITENESS only, and neither is clamped:
-        a negative inventory deviation (a draw) and a near-zero spare capacity
-        are both legitimate readings. But a ``nan`` silently fails every ``>``
-        and ``<`` comparison, so a nan deviation would publish a *loosening*
-        verdict for an oil balance that is unknown (the D-078 class — a null
-        that travels as a value).
-
-        The inventory SIGN is deliberately not constrained to any range: the
-        whole point of the deviation is that it is signed. The spare capacity is
-        NOT constrained to non-negative either, because a provider that reports
-        a small negative (a measurement artefact near zero, or a genuine
-        over-supply beyond nameplate) should be disclosed rather than silently
-        flipped — the model reports what the series says and warns.
-        """
-        for name, value in (
-            ("inventory_change_weekly", self.inventory_change_weekly),
-            ("opec_spare_capacity_proxy", self.opec_spare_capacity_proxy),
-        ):
-            if value is not None and (value != value or abs(value) == float("inf")):
-                raise ValueError(
-                    f"{name} must be finite when supplied; got {value!r}. A nan "
-                    f"silently fails every comparison, so an unknown value would "
-                    f"be reported as a definite reading (D-078's class)."
-                )
-        return self
 
 
 def oil_balance_signal(inputs: OilBalanceInputs) -> ModelResult:
@@ -416,7 +387,7 @@ def _fetch_spare_capacity() -> tuple[float | None, str]:
 # =============================================================================
 
 
-class GoldDriverInputs(BaseModel):
+class GoldDriverInputs(FiniteInputs):
     """The three gold drivers Appendix D declares, each optionally fetched.
 
     Appendix D (``AGENTS.md:3046``, *"Module 10 — Gold Three-Layer Framework
@@ -484,14 +455,8 @@ class GoldDriverInputs(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _validate_finite_and_trend(self) -> GoldDriverInputs:
-        """Refuse a non-finite real-yield change or a trend outside the vocabulary.
-
-        The real-yield change is checked for NON-FINITENESS only, and is not
-        clamped: a rise and a fall are both legitimate, and a large magnitude is
-        the most interesting reading. But a ``nan`` silently fails every ``>``
-        and ``<`` comparison, so a nan change would make the primary layer fail
-        to fire for a gold move that is unknown (the D-078 class).
+    def _validate_trend(self) -> GoldDriverInputs:
+        """Refuse a trend outside the specification's own vocabulary.
 
         The trend is checked against the SPECIFICATION'S OWN VOCABULARY
         (``"rising"``/``"flat"``/``"falling"``), because Appendix D matches on
@@ -501,16 +466,17 @@ class GoldDriverInputs(BaseModel):
         visible — the same reasoning ``EMVulnerabilityInputs`` uses for its
         enumerated legs. The vocabulary is taken from ``AGENTS.md`` rather than
         invented, and the error names the permitted values.
+
+        **The finiteness check that used to live here is GONE (D-142).** This
+        method was ``_validate_finite_and_trend`` and opened with a
+        ``real_yield_change_bp`` finiteness test over a hardcoded field name.
+        ``GoldDriverInputs`` now inherits ``contracts.FiniteInputs``, whose
+        ``_reject_non_finite`` derives its field list from ``model_fields`` and
+        walks nested containers — so the local test was a second, weaker source
+        of truth for the same rule, and a field added later would have escaped
+        it. The D-078 hazard it guarded against is unchanged; only the owner of
+        the check is.
         """
-        if self.real_yield_change_bp is not None:
-            value = self.real_yield_change_bp
-            if value != value or abs(value) == float("inf"):
-                raise ValueError(
-                    f"real_yield_change_bp must be finite when supplied; got "
-                    f"{value!r}. A nan silently fails every comparison, so an "
-                    f"unknown change would report 'no real-yield layer' — a "
-                    f"different claim from 'the layer is inert' (D-078's class)."
-                )
         if self.central_bank_net_purchases_trend is not None:
             permitted = ("rising", "flat", "falling")
             if self.central_bank_net_purchases_trend not in permitted:
@@ -852,7 +818,7 @@ def _resolve_crisis_indicator() -> tuple[bool | None, str]:
     )
 
 
-class MetalsComplexInputs(BaseModel):
+class MetalsComplexInputs(FiniteInputs):
     """Module 10.3's three metals, each optionally fetched.
 
     Section 20.10 (``AGENTS.md:4940``) declares three REQUIRED floats —
@@ -913,35 +879,6 @@ class MetalsComplexInputs(BaseModel):
             "construction-specific and a broad-industrial signal."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate_finite(self) -> MetalsComplexInputs:
-        """Refuse a non-finite change on any leg.
-
-        A ``nan`` silently fails every ``<``/``>`` comparison, so a nan change
-        would make all three branches false and the verdict would read
-        ``MIXED_no_clear_pattern`` — *a different claim* from MIXED, because the
-        move is UNKNOWN rather than genuinely mixed (the D-078 class, and the
-        same reasoning ``GoldDriverInputs`` uses for its real-yield change).
-
-        The changes are NOT clamped: copper and aluminum can move either way, and
-        a large magnitude is the most interesting reading. Only non-finiteness is
-        refused.
-        """
-        for name in (
-            "copper_change_pct",
-            "iron_ore_change_pct",
-            "aluminum_change_pct",
-        ):
-            value = getattr(self, name)
-            if value is not None and (value != value or abs(value) == float("inf")):
-                raise ValueError(
-                    f"{name} must be finite when supplied; got {value!r}. A nan "
-                    f"silently fails every comparison, so an unknown change would "
-                    f"report MIXED_no_clear_pattern — a different claim from "
-                    f"'the complex is genuinely mixed' (D-078's class)."
-                )
-        return self
 
 
 def metals_complex_divergence(inputs: MetalsComplexInputs) -> ModelResult:

@@ -101,6 +101,7 @@ from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     EvidenceSourceFamily,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -360,7 +361,7 @@ def sector_rotation_prior(inputs: SectorRotationInputs) -> ModelResult:
 # config, and the published result carries the qualification on EVERY path.
 
 
-class DurationSensitivityInputs(BaseModel):
+class DurationSensitivityInputs(FiniteInputs):
     """A rate move and the equity style it is applied to.
 
     Section 6.9's signature is ``duration_sensitivity(is_growth: bool,

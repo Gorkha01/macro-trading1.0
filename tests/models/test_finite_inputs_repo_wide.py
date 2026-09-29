@@ -553,3 +553,37 @@ def test_the_thirteen_really_were_the_gaps() -> None:
         "these classes were fixed by inheriting FiniteInputs and no longer do:\n  "
         + "\n  ".join(not_guarded)
     )
+
+
+def test_every_float_bearing_input_group_inherits_the_shared_guard() -> None:
+    """D-142: the inheritance itself is the invariant, not just the behaviour.
+
+    The tests above prove that no class ACCEPTS a non-finite float. That is a
+    behavioural property, and it can be satisfied by a hand-rolled
+    ``@model_validator`` that walks a **hardcoded tuple of field names** — which
+    is exactly what thirteen classes did until D-142. Such a guard passes every
+    probe in this file while protecting only the fields someone remembered to
+    list: a field added later escapes silently, which is the D-078 class
+    re-opening one release at a time.
+
+    This test closes that gap by asserting the STRUCTURAL property instead:
+    every input group carrying a float must inherit ``contracts.FiniteInputs``,
+    whose ``_reject_non_finite`` derives its field list from
+    ``type(self).model_fields`` and walks scalars, ``list``/``tuple`` elements,
+    ``dict`` values, ``dict[str, list[float]]`` and nested models.
+
+    A class that leaves the family (rebased onto a plain ``BaseModel``) fails
+    HERE, even if its own validator still happens to cover today's fields.
+    """
+    offenders = []
+    for cls in _iter_input_groups():
+        if not _float_field_paths(cls):
+            continue
+        if not issubclass(cls, FiniteInputs):
+            offenders.append(f"{cls.__module__}.{cls.__name__}")
+
+    assert not offenders, (
+        "these input groups carry float fields but do NOT inherit "
+        "contracts.FiniteInputs, so a field added later would escape the "
+        "non-finite guard silently:/n  " + "\n  ".join(offenders)
+    )

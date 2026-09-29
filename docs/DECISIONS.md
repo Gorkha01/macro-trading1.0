@@ -22838,3 +22838,130 @@ the live file — never trust the exit code alone.**
 **Files:** `scripts/mutation_{auction_demand,gdp_nowcast,minsky,policy_mix,qe_stance,credit_spread,cross_market_rv,gdp_gdi_divergence,lei_proxy}.py`,
 `docs/DECISIONS.md`, `docs/PROGRESS.md`.
 **No `src/` change, no config leaf, no new OpenBB command** (census stays 6).
+
+## D-142 — Phase 2 close-out: the Finding #8 confidence audit, the durability rebase of the last 13 hand-rolled guards, live re-verification of `yield_curve`/`regime`, and the integration audit
+
+**Trigger:** the operator directed the remaining Phase 2 work to be audited, fixed and
+pushed — and then asked specifically whether every Phase 0-2 component is genuinely
+**invoked on the real runtime path**.
+
+### 1. Finding #8 — hardcoded confidence: TWO real defects, now closed with a gate
+
+Section 22.8 makes `compute_confidence()` the only producer of a `ModelResult`
+confidence. A regex audit (`confidence=[0-9]`) was the previous tool and it was both
+noisy (most hits were docstrings *quoting* the specification's literals) and blind (it
+could not see a literal reaching a `ModelResult` through a variable). An AST audit of
+every `confidence=` keyword in `src/macro_engine` found **two live literals**, both
+`1.0`:
+
+* **`thesis_layer/builder.py::_as_signal`** — wrote `confidence=1.0` while its own
+  docstring already said *"the confidence is `compute_confidence`'s to produce, so the
+  adapter reports what it knows and no more."* A flat self-contradiction, and the
+  over-confident direction §22.8 exists to prevent. **Fixed by threading the SOURCE
+  result's confidence**: `_as_signal(..., confidence=ensemble.confidence)`, where
+  `ensemble` is the `policy_rule_ensemble` result that produced the gap — so the value
+  originates in `compute_confidence` and is forwarded unchanged. `classify_thesis_convergence`
+  gained the `ensemble` parameter to carry it.
+* **`models/scorecard.py::_pillar_census`** — wrote `confidence=1.0` on the synthetic
+  census carriers, with a docstring claiming the maximum was chosen *because*
+  `compute_confidence()` is the only producer — which is the opposite of what the code
+  did. **Fixed to `compute_confidence(ConfidenceInputs())`**, matching
+  `inflation_convergence._tagged_measures`, the other census carrier in the tree. The
+  value is never read (`count_independent_families` reads `source_family`), so this is
+  an honesty and consistency fix, not a behaviour change.
+
+**New gate:** `tests/test_no_hardcoded_confidence.py` asserts that **no `confidence=`
+keyword in `src/macro_engine` takes a numeric literal** (the AST sees code only, so
+docstrings quoting the specification are correctly ignored), plus a *coverage* test
+(the scanner must find >50 sites) and an *honesty control* (the predicate must flag a
+synthetic offender). Measured: 88 confidence sites traced to `compute_confidence`; the
+9 untraced ones are all legitimate pass-throughs or config-leaf reads (`audit.py`'s
+`result.confidence`, `policy_rule_ensemble`'s `min(...)` of its three legs, `fx_carry`'s
+`uip_reliability_value` leaf).
+
+### 2. Durability — the last 13 hand-rolled finiteness guards rebased onto `FiniteInputs`
+
+D-139/D-139b/c closed the D-078 non-finite class behaviourally, but **13 input groups
+still hand-rolled a `@model_validator` over a HARDCODED tuple of field names**, so a
+field added later would escape silently. All 13 rebased onto `contracts.FiniteInputs`,
+whose `_reject_non_finite` derives its field list from `type(self).model_fields` and
+walks scalars, `list`/`tuple` elements, `dict` values, `dict[str, list[float]]` and
+nested models:
+
+`commodities.{GoldDriver,MetalsComplex,OilBalance}Inputs` · `em_vulnerability.EMVulnerabilityInputs` ·
+`equity_macro.DurationSensitivityInputs` · `fx_carry.{CIP,CarryScore,DollarSmile,UIP,PPP}Inputs` ·
+`intervention.InterventionCapacityInputs` · `probability.BayesInputs` · `regime.RegimeInputs`
+
+**The redundant local finiteness code was then REMOVED, not left as a second source of
+truth** — only the finiteness portion; every non-finiteness check (sign, range, trend
+vocabulary, tenor/period, share bounds) was kept, and each docstring records where the
+check moved. Two cases needed care:
+
+* **`RegimeInputs`** defined its own `_reject_non_finite` — the SAME NAME as the base's.
+  Pydantic collects validators by decorated attribute, so the subclass's **shadowed**
+  the base's and the rebase alone would have gained NOTHING (measured:
+  `RegimeInputs._reject_non_finite.__qualname__` was the subclass's). The local one was
+  deleted; the base's is now active.
+* **`DollarSmileInputs`** had a `_validate_domain` whose ONLY content was the finiteness
+  loop, so removing the loop left an empty `return self`. It was deleted rather than
+  kept as a no-op.
+
+**New gate:** `test_every_float_bearing_input_group_inherits_the_shared_guard` asserts the
+**structural** property — every float-bearing input group must inherit `FiniteInputs` —
+because the existing behavioural tests can be satisfied by a hardcoded-tuple guard, which
+is exactly the defect. Measured after: **0 input classes with floats off `FiniteInputs`**;
+the only hand-rolled finiteness checks left are in model BODIES over raw `Series`
+(`econometrics`, `gdp_nowcast`, `lei_proxy`, …), which have no input class to own them.
+
+### 3. Live re-verification of `yield_curve` and `regime` — the deferred Phase 2 item
+
+The OpenBB server was confirmed reachable first (`http://127.0.0.1:6900` → HTTP 200; the
+project's own config records `:6901` as bound-but-502). Then, against real data:
+
+* `live_regime_check.py` — **PASSED**. 314 observations (1948-01-01 … 2026-04-01), 3
+  regimes, converged (`log-likelihood -623.48`), stored base rates reproduced live
+  (largest drift `0.0000`), and the library transition matrix measured
+  **column-stochastic** (`COLUMN sums = [1.0, 1.0, 1.0]`), which independently confirms
+  the `.T` orientation D-139d's audit relies on.
+* `live_inversion_check.py` — **PASSED**. The measured duration/severity relationship is
+  hump-shaped (peak `0.769` at 26–52wk), the censoring control survives, and ceiling
+  reachability is confirmed (`0.8000`, `binding=True`).
+* `live_curve_trade.py`, `live_breakeven_trade.py`, `live_cross_market_rv.py` — all
+  **PASSED** (the `N*D` rule reproduced exactly, two-signed shortfall across real TIPS
+  configurations, the router vocabulary round-trips).
+
+### 4. The integration audit — what is actually invoked at runtime
+
+Performed on the operator's request. **Method and full evidence are recorded as O-162**;
+the headline: **30 of 78 modules (18 of 33 model modules) are NOT reachable from
+`api_layer/app.py`, and 21 of 101 model functions are called from the shipped pipeline.**
+Recorded as an OPEN issue rather than fixed, because wiring a model into the thesis
+changes published output and each needs its own increment.
+
+### 5. Sweep-anchor consequences (the cost of removing code)
+
+Removing the local finiteness guards invalidated **14 mutation anchors** across four
+sweeps. Each was **deleted with a recorded reason**, never silently: `fx_carry` (M6a,
+K4a, S5a/S5b/S5c, U5a/U5b), `intervention` (I8a/I8b), `commodities` (M8a, MM8b, MM8c),
+`em_vulnerability` (E8b/E8c). The D-078 behaviour they probed is covered by
+`test_finite_inputs_repo_wide.py`, which builds EVERY float-bearing input group and
+asserts refusal at each declared shape — strictly stronger than mutating one hand-written
+loop. Two `fx_carry` mutations that test STILL-LIVE guards (U5c tenor, U5d period-rate)
+were **re-anchored** rather than deleted, onto the UIP-only docstring tail, because their
+old anchor began at the removed finiteness text and the surviving guard line is identical
+in `CIPInputs`.
+
+### Gates (re-derived at CI scope — all green)
+
+`ruff check src/ tools/ tests/ scripts/` PASS · `ruff format --check` clean · bare `mypy`
+**297** files clean · reachability **PASS 58/58** · suite **4368 / 0 failures / 0 errors /
+23 skipped** · `sweep_health.py` **OK**. Affected sweeps re-run green: `fx_carry`
+**169/169** · `commodities` 102/102 · `intervention` 58/58 · `em_vulnerability` 38/38 ·
+`gdp_nowcast` 39/40 (1 inert) · `regime` 71/71 · `yield_curve` 89/90 (1 inert) ·
+`probability` 30/30 · `scorecard`, `equity_macro` `--check-targets` 0 problems.
+
+**Files:** `src/macro_engine/models/{commodities,em_vulnerability,fx_carry,intervention,scorecard,regime}.py`,
+`src/macro_engine/thesis_layer/builder.py`, `tests/{test_no_hardcoded_confidence.py,models/test_finite_inputs_repo_wide.py,thesis_layer/test_builder.py,models/test_reasoning_contract.py}`,
+`scripts/mutation_{fx_carry,intervention,commodities,em_vulnerability}.py`,
+`docs/{DECISIONS,PROGRESS,OPEN_ISSUES}.md`.
+**No config leaf, no new OpenBB command** (census stays 6).

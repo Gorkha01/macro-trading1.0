@@ -257,9 +257,14 @@ def _pillar_census(inputs: ScorecardInputs) -> tuple[int, list[str]]:
 
     The synthetic results are **census carriers only** — they exist to give the
     counter something to count, and are not returned or published. Their
-    ``confidence`` is set to the maximum because ``compute_confidence()`` is the
-    only producer of a confidence that means anything, and a placeholder here
-    must not be mistaken for a measured one.
+    ``confidence`` comes from ``compute_confidence(ConfidenceInputs())``, exactly
+    as ``inflation_convergence._tagged_measures`` — the other census carrier —
+    does. It was the literal ``1.0`` until D-142; that asserted MAXIMUM
+    confidence, the precise opposite of what this docstring claimed ("a
+    placeholder must not be mistaken for a measured one"), and it was the only
+    remaining ``confidence=<literal>`` in the models layer. The value is never
+    read (``count_independent_families`` reads ``source_family``), so this is a
+    consistency and honesty fix rather than a behaviour change.
     """
     directional = [
         (name, read)
@@ -273,7 +278,7 @@ def _pillar_census(inputs: ScorecardInputs) -> tuple[int, list[str]]:
                 country="us",
                 as_of=utc_now(),
                 value=read.direction,
-                confidence=1.0,
+                confidence=compute_confidence(ConfidenceInputs()),
                 interpretation=f"{name} pillar reads {_direction_label(read.direction)}.",
                 context="Scorecard pillar read (census carrier).",
                 inputs_used=[read.source],

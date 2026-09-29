@@ -233,7 +233,11 @@ class TestLivePathReasoningIsPopulated:
             is_meaningful=False,
             interpretation="test gap",
         )
-        return _as_signal(gap, as_of=datetime(2026, 9, 19, tzinfo=UTC))
+        return _as_signal(
+            gap,
+            as_of=datetime(2026, 9, 19, tzinfo=UTC),
+            confidence=compute_confidence(ConfidenceInputs()),
+        )
 
     def test_regime_declares_its_unit_and_direction(self) -> None:
         r = self._regime_result()

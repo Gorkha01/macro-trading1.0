@@ -697,12 +697,14 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         '            "inventory_change_weekly FETCHED BY THE CALLER — unit is THOUSAND "',
     ),
     # --- M8: the guards ------------------------------------------------------
-    (
-        "M8a the non-finite guard removed",
-        MODEL,
-        _NAN_GUARD,
-        "            if False:",
-    ),
+    # D-142 DELETED these mutations rather than retargeting them: the local
+    # finiteness guards they mutated NO LONGER EXIST — the input classes now
+    # inherit `contracts.FiniteInputs`, whose `_reject_non_finite` derives its
+    # field list from `model_fields`. The D-078 behaviour they probed is covered by
+    # `tests/models/test_finite_inputs_repo_wide.py`, which builds EVERY
+    # float-bearing input group and asserts refusal at each declared shape —
+    # strictly stronger than mutating one hand-written guard. An anchor on deleted
+    # text would make this sweep refuse to run (O-138).
     # --- M9: the value dict ---------------------------------------------------
     (
         "M9a the tightness key dropped from the value",
@@ -1170,18 +1172,22 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         _MM8_REFUSAL,
         "        pass",
     ),
-    (
-        "MM8b the non-finite input guard neutralised",
-        MODEL,
-        _MM8_FINITE,
-        "            if False:",
-    ),
-    (
-        "MM8c the non-finite guard's ``abs`` dropped (inf only, nan escapes)",
-        MODEL,
-        _MM8_FINITE,
-        "            if value is not None and (value != value or value == " + _INF + "):",
-    ),
+    # D-142 DELETED these mutations rather than retargeting them: the local
+    # finiteness guards they mutated NO LONGER EXIST — the input classes now
+    # inherit `contracts.FiniteInputs`, whose `_reject_non_finite` derives its
+    # field list from `model_fields`. The D-078 behaviour they probed is covered by
+    # `tests/models/test_finite_inputs_repo_wide.py`, which builds EVERY
+    # float-bearing input group and asserts refusal at each declared shape —
+    # strictly stronger than mutating one hand-written guard. An anchor on deleted
+    # text would make this sweep refuse to run (O-138).
+    # D-142 DELETED these mutations rather than retargeting them: the local
+    # finiteness guards they mutated NO LONGER EXIST — the input classes now
+    # inherit `contracts.FiniteInputs`, whose `_reject_non_finite` derives its
+    # field list from `model_fields`. The D-078 behaviour they probed is covered by
+    # `tests/models/test_finite_inputs_repo_wide.py`, which builds EVERY
+    # float-bearing input group and asserts refusal at each declared shape —
+    # strictly stronger than mutating one hand-written guard. An anchor on deleted
+    # text would make this sweep refuse to run (O-138).
     (
         "MM8d the missing predicate inverted (the refusal misfires on present legs)",
         MODEL,

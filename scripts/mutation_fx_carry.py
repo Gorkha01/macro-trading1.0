@@ -367,11 +367,7 @@ _CARRY_OUTCOME_POSITIVE = (
 _CARRY_OUTCOME_NEGATIVE = (
     '    if rate_differential_annualized < 0.0:\n        return "long_foreign"'
 )
-_CARRY_FINITE_GUARD = (
-    '        for name in ("rate_differential_annualized", "realized_vol_annualized"):\n'
-    "            value = getattr(self, name)\n"
-    "            if not math.isfinite(value):"
-)
+# D-142: `_CARRY_FINITE_GUARD` deleted with the mutation that anchored on it.
 _CARRY_VOL_GUARD = "        if self.realized_vol_annualized <= 0.0:"
 _CARRY_WARN_EARLY_RETURN = "    if not floor_binds:\n        return []"
 _CARRY_SCORE_KEY = '            "score": round(score, 6),'
@@ -440,11 +436,7 @@ _DS_NEUTRAL_RETURN = (
 # module open a validator with that line, so the bare line is AMBIGUOUS (3
 # occurrences). The `for name in (...)` line above it is unique to
 # `DollarSmileInputs`.
-_DS_FINITE_GUARD = (
-    '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
-    "            value = getattr(self, name)\n"
-    "            if not math.isfinite(value):"
-)
+# D-142: `_DS_FINITE_GUARD` deleted with the mutation that anchored on it.
 
 # The warnings. `if side == "left":\n        warnings.append(` is unique; so is
 # the middle-branch guard, which carries `and _dollar_smile_is_neutral(...)`.
@@ -538,34 +530,25 @@ _UIP_FLAT_RETURN = (
 )
 
 # The finiteness guard, widened with the message only UIPInputs carries.
-_UIP_FINITE_GUARD = (
-    '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
-    "            value = getattr(self, name)\n"
-    "            if not math.isfinite(value):\n"
-    "                raise ValueError(\n"
-    '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
-    '                    f"cannot be converted to a period rate: every comparison a "\n'
-    '                    f"plausibility check is made of returns False for nan, so it "\n'
-    '                    f"would reach the arithmetic and produce a non-finite "\n'
-    '                    f"expectation that looks like an answer (D-078)."'
-)
+# D-142: `_UIP_FINITE_GUARD` deleted with the mutation that anchored on it.
 
-# The tenor guard, widened from the same UIP-only message down through the
-# guard line.
+# The tenor guard. D-142 removed the local finiteness loop from
+# `UIPInputs._validate_domain`, so the anchor can no longer begin at the
+# UIP-only finiteness text — it now begins at the UIP-only DOCSTRING tail
+# ("while the period value is not."), which the identical guard inside
+# `CIPInputs._validate_domain` does not have. Measured: 1 site.
 _UIP_TENOR_GUARD = (
-    '                    f"expectation that looks like an answer (D-078)."\n'
-    "                )\n"
-    "\n"
+    "          while the period value is not.\n"
+    '        """\n'
     "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
     "        if self.tenor_days > basis_days:"
 )
 
 # The period guard, widened further so it stays unique: the message is identical
-# to cip_check's, so the span must begin at the UIP-only finiteness text.
+# to cip_check's, so the span must begin at the UIP-only docstring tail.
 _UIP_PERIOD_GUARD = (
-    '                    f"expectation that looks like an answer (D-078)."\n'
-    "                )\n"
-    "\n"
+    "          while the period value is not.\n"
+    '        """\n'
     "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
     "        if self.tenor_days > basis_days:\n"
     "            raise ValueError(\n"
@@ -826,12 +809,6 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- M6: the guards --------------------------------------------------
     (
-        "M6a the finiteness guard removed (nan reaches the arithmetic)",
-        SRC,
-        _FINITE_GUARD,
-        "            if False:",
-    ),
-    (
         "M6b a zero exchange rate is admitted",
         SRC,
         _POSITIVE_GUARD,
@@ -1024,14 +1001,6 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         '    if rate_differential_annualized <= 0.0:\n        return "long_foreign"',
     ),
     # --- K4: the guards ---------------------------------------------------
-    (
-        "K4a the carry finiteness guard removed",
-        SRC,
-        _CARRY_FINITE_GUARD,
-        '        for name in ("rate_differential_annualized", "realized_vol_annualized"):\n'
-        "            value = getattr(self, name)\n"
-        "            if False:",
-    ),
     (
         "K4b a zero volatility is admitted",
         SRC,
@@ -1231,30 +1200,6 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "    return abs(us_growth_surprise) < 1e-6 or abs(us_vs_row_rate_diff) < 1e-6",
     ),
     # --- S5: the guards --------------------------------------------------
-    (
-        "S5a the finiteness guard removed (nan reaches the label, per the probe)",
-        SRC,
-        _DS_FINITE_GUARD,
-        '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
-        "            value = getattr(self, name)\n"
-        "            if False:",
-    ),
-    (
-        "S5b the finiteness guard tests only the VIX (two fields unguarded)",
-        SRC,
-        _DS_FINITE_GUARD,
-        '        for name in ("vix_level",):\n'
-        "            value = getattr(self, name)\n"
-        "            if not math.isfinite(value):",
-    ),
-    (
-        "S5c the finiteness guard is inverted (every finite input is refused)",
-        SRC,
-        _DS_FINITE_GUARD,
-        '        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):\n'
-        "            value = getattr(self, name)\n"
-        "            if math.isfinite(value):",
-    ),
     # --- S6: the warnings ------------------------------------------------
     (
         "S6a the left-limb warning never fires",
@@ -1539,40 +1484,11 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- U5: the guards ---------------------------------------------------
     (
-        "U5a the finiteness guard is removed (nan reaches the arithmetic)",
-        SRC,
-        _UIP_FINITE_GUARD,
-        '        for name in ("i_domestic_annualized", "i_foreign_annualized"):\n'
-        "            value = getattr(self, name)\n"
-        "            if False:\n"
-        "                raise ValueError(\n"
-        '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
-        '                    f"cannot be converted to a period rate: every comparison a "\n'
-        '                    f"plausibility check is made of returns False for nan, so it "\n'
-        '                    f"would reach the arithmetic and produce a non-finite "\n'
-        '                    f"expectation that looks like an answer (D-078)."',
-    ),
-    (
-        "U5b the finiteness guard checks only the domestic rate",
-        SRC,
-        _UIP_FINITE_GUARD,
-        '        for name in ("i_domestic_annualized",):\n'
-        "            value = getattr(self, name)\n"
-        "            if not math.isfinite(value):\n"
-        "                raise ValueError(\n"
-        '                    f"{name} is {value!r}, which is not finite. A non-finite input "\n'
-        '                    f"cannot be converted to a period rate: every comparison a "\n'
-        '                    f"plausibility check is made of returns False for nan, so it "\n'
-        '                    f"would reach the arithmetic and produce a non-finite "\n'
-        '                    f"expectation that looks like an answer (D-078)."',
-    ),
-    (
         "U5c the tenor guard is removed (a compounded horizon accepted)",
         SRC,
         _UIP_TENOR_GUARD,
-        '                    f"expectation that looks like an answer (D-078)."\n'
-        "                )\n"
-        "\n"
+        "          while the period value is not.\n"
+        '        """\n'
         "        basis_days = _BASIS_DAYS[self.day_count_basis]\n"
         "        if False:",
     ),

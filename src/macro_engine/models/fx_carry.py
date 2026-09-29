@@ -95,16 +95,16 @@ provider.
 
 from __future__ import annotations
 
-import math
 from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.data_layer.world_bank_client import fetch_ppp_implied_rate
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     EvidenceSourceFamily,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -205,7 +205,7 @@ _DOLLAR_SMILE_BASE_RATES: dict[str, float] = {
 }
 
 
-class CIPInputs(BaseModel):
+class CIPInputs(FiniteInputs):
     """The two FX rates and the two money-market rates of one covered swap.
 
     Units and basis — stated because four bare floats cannot reveal them, and a
@@ -295,7 +295,11 @@ class CIPInputs(BaseModel):
         * **Non-finite** — ``nan`` fails every comparison, so a guard written as
           ``if x <= 0`` never fires for it and the parity ratio returns ``nan``,
           which then travels into the deviation. ``inf`` *passes* ``> 0``, so it
-          needs the explicit finiteness test (D-078).
+          needs an explicit finiteness test (D-078). **That test now lives in
+          ``contracts.FiniteInputs`` (D-142)**, which this class inherits: it
+          derives the field list from ``model_fields`` rather than a hardcoded
+          name tuple, so a field added later cannot escape it. The local copy was
+          removed rather than left as a second, weaker source of truth.
         * **Non-positive rate** — a zero or negative exchange rate is not a
           price. It would make ``forward / spot`` sign-flip and the deviation
           meaningless while still returning a number.
@@ -310,16 +314,6 @@ class CIPInputs(BaseModel):
           a compounded figure computed with a simple formula is a wrong number
           that looks right.
         """
-        for name in ("spot", "forward", "i_domestic_annualized", "i_foreign_annualized"):
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"{name} is {value!r}, which is not finite. A non-finite input "
-                    f"cannot be classified: every comparison a plausibility check "
-                    f"is made of returns False for nan, so it would reach the "
-                    f"arithmetic and produce a non-finite deviation that looks like "
-                    f"an answer (D-078)."
-                )
         for name in ("spot", "forward"):
             value = getattr(self, name)
             if value <= 0.0:
@@ -727,7 +721,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
     )
 
 
-class CarryScoreInputs(BaseModel):
+class CarryScoreInputs(FiniteInputs):
     """A currency pair's carry and the volatility that comes with it.
 
     **The one thing that must be right, and the one the specification leaves
@@ -785,20 +779,13 @@ class CarryScoreInputs(BaseModel):
 
         * **Non-finite** — ``nan`` fails every comparison, so ``if vol <= 0``
           never fires for it and the score comes back ``nan``; ``inf`` PASSES
-          ``> 0`` and needs the explicit finiteness test.
+          ``> 0`` and needs an explicit finiteness test. **That test now lives in
+          ``contracts.FiniteInputs`` (D-142)**, inherited by this class and
+          derived from ``model_fields`` rather than a hardcoded name tuple.
         * **Non-positive volatility** — zero divides by zero, and a negative one
           makes the denominator negative, so a positive carry would be published
           as a negative score with the wrong direction label attached.
         """
-        for name in ("rate_differential_annualized", "realized_vol_annualized"):
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"{name} is {value!r}, which is not finite. A non-finite input "
-                    f"cannot be classified: every comparison a plausibility check "
-                    f"is made of returns False for nan, so it would reach the "
-                    f"arithmetic and produce a non-finite score (D-078)."
-                )
         if self.realized_vol_annualized <= 0.0:
             raise ValueError(
                 f"realized_vol_annualized is {self.realized_vol_annualized}; a "
@@ -1062,7 +1049,7 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
     )
 
 
-class DollarSmileInputs(BaseModel):
+class DollarSmileInputs(FiniteInputs):
     """The three signed/level inputs Section 6.7's dollar-smile classifier reads.
 
     **Every field's UNIT is stated here, because the same three bare floats can
@@ -1121,35 +1108,6 @@ class DollarSmileInputs(BaseModel):
             "is consumed."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate_domain(self) -> DollarSmileInputs:
-        """Refuse a non-finite input, because it produces a confident LABEL.
-
-        One branch, and it is the branch the probe justified: a bare ``nan``
-        reaches the middle label and a bare ``inf`` reaches the left one, so an
-        unguarded classifier answers a missing value with a regime claim. The
-        message names the measured consequence rather than the mere fact, because
-        the consequence is what makes the guard load-bearing.
-
-        No sign or range guard is added: unlike an exchange rate or a
-        volatility, a negative surprise and a negative differential are ordinary
-        readings, and a VIX level far above or below the gate is exactly what the
-        gate exists to classify.
-        """
-        for name in ("vix_level", "us_growth_surprise", "us_vs_row_rate_diff"):
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"{name} is {value!r}, which is not finite. This classifier "
-                    f"returns a confident LABEL for any input, so a non-finite "
-                    f"value would be published as a regime claim: nan fails every "
-                    f"'>' comparison and falls through to the middle "
-                    f"'synchronized global growth' label, and +inf passes the VIX "
-                    f"gate and is reported as a full left-limb crisis. Neither "
-                    f"raises on its own (D-078)."
-                )
-        return self
 
 
 def _dollar_smile_side(
@@ -1586,7 +1544,7 @@ _PPP_PROVENANCE_SUPPLIED = (
 _QUOTE_CONVENTIONS = frozenset(get_args(QuoteConvention))
 
 
-class UIPInputs(BaseModel):
+class UIPInputs(FiniteInputs):
     """The two money-market rates and the horizon of an uncovered-parity
     expectation.
 
@@ -1668,7 +1626,10 @@ class UIPInputs(BaseModel):
 
         * **Non-finite** — ``nan`` fails every comparison, so ``if x <= 0`` never
           fires for it and ``nan`` travels into the published expectation;
-          ``inf`` passes ``> 0`` and needs the explicit finiteness test (D-078).
+          ``inf`` passes ``> 0`` and needs an explicit finiteness test (D-078).
+          **That test now lives in ``contracts.FiniteInputs`` (D-142)**, inherited
+          by this class and derived from ``model_fields`` rather than a hardcoded
+          name tuple.
         * **Tenor beyond the basis** — simple interest is exact only to one
           money-market year; a longer tenor needs compounding, which this
           function does not implement.
@@ -1677,17 +1638,6 @@ class UIPInputs(BaseModel):
           PERIOD rate, because the annualised value can be an ordinary number
           while the period value is not.
         """
-        for name in ("i_domestic_annualized", "i_foreign_annualized"):
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"{name} is {value!r}, which is not finite. A non-finite input "
-                    f"cannot be converted to a period rate: every comparison a "
-                    f"plausibility check is made of returns False for nan, so it "
-                    f"would reach the arithmetic and produce a non-finite "
-                    f"expectation that looks like an answer (D-078)."
-                )
-
         basis_days = _BASIS_DAYS[self.day_count_basis]
         if self.tenor_days > basis_days:
             raise ValueError(
@@ -2015,7 +1965,7 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
     )
 
 
-class PPPInputs(BaseModel):
+class PPPInputs(FiniteInputs):
     """A spot exchange rate and the PPP-implied rate it is measured against.
 
     **The unit question is the one every FX function in this module faces, and
@@ -2153,8 +2103,12 @@ class PPPInputs(BaseModel):
         * **Non-finite** — ``nan`` fails every comparison, so ``if x <= 0``
           never fires for it; the deviation would be published as ``nan`` and
           the ``status`` branch, which is a comparison, would silently take the
-          ``undervalued`` arm. ``inf`` passes ``> 0`` and needs the explicit
-          finiteness test (D-078).
+          ``undervalued`` arm. ``inf`` passes ``> 0`` and needs an explicit
+          finiteness test (D-078). **That test now lives in
+          ``contracts.FiniteInputs`` (D-142)**, inherited by this class and
+          derived from ``model_fields`` rather than a hardcoded name tuple — so
+          it also covers ``ppp_implied_rate``, whose local copy was removed with
+          the loop.
         * **Non-positive PPP-implied rate** — it is the deviation's denominator.
           A zero raises ``ZeroDivisionError``; a negative inverts every sign.
           The ``gt=0.0`` field bound already covers this for a finite value, so
@@ -2167,17 +2121,6 @@ class PPPInputs(BaseModel):
           malformed before any network call, and the failure is the same
           offline as online.
         """
-        for name in ("spot_rate", "horizon_years"):
-            value = getattr(self, name)
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"{name} is {value!r}, which is not finite. A non-finite input "
-                    f"cannot form a deviation: every comparison a plausibility check "
-                    f"is made of returns False for nan, so it would reach the "
-                    f"arithmetic and produce a non-finite value that looks like an "
-                    f"answer (D-078)."
-                )
-
         if self.ppp_implied_rate is None:
             # The fetch path. Both legs are required, and each must be a
             # plausible ISO3 -- validated here so an incomplete request fails
@@ -2191,14 +2134,6 @@ class PPPInputs(BaseModel):
                     "deterministic offline call, or pass the pair to fetch it."
                 )
         else:
-            if not math.isfinite(self.ppp_implied_rate):
-                raise ValueError(
-                    f"ppp_implied_rate is {self.ppp_implied_rate!r}, which is not "
-                    f"finite. A non-finite input cannot form a deviation: every "
-                    f"comparison a plausibility check is made of returns False for "
-                    f"nan, so it would reach the arithmetic and produce a "
-                    f"non-finite value that looks like an answer (D-078)."
-                )
             if self.ppp_implied_rate <= 0.0:
                 raise ValueError(
                     f"ppp_implied_rate is {self.ppp_implied_rate}, which is not a "

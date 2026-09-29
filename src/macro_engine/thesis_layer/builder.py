@@ -498,7 +498,7 @@ def _gap_direction_sentence(raw_gap: float) -> str:
     return "policy is less restrictive than priced (model path below market path)"
 
 
-def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
+def _as_signal(gap: MarketPricingGap, *, as_of: datetime, confidence: float) -> ModelResult:
     """The gap, as the ``ModelResult`` that ``classify_convergence`` can read.
 
     A named function rather than an inline construction because three things
@@ -510,11 +510,17 @@ def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
       thesis confirm itself unconditionally.
     * ``model_name="market_pricing_gap"`` — the label a reader sees in the
       per-signal direction table. A bare default would put the class name there.
-    * ``confidence=gap.is_meaningful`` is **not** copied: a gap carries a
-      significance verdict, not a measurement confidence, and inventing one
-      would be the D-046 "scored by its own subject matter" failure. The
-      confidence is ``compute_confidence``'s to produce, so the adapter reports
-      what it knows and no more.
+    * ``confidence`` is **passed in**, never invented here. It is the confidence
+      of the ``policy_rule_ensemble`` result that produced this gap — the
+      evidence actually behind the number — so the adapter re-shapes a result
+      without claiming a confidence of its own. Two earlier forms were both
+      wrong: copying ``gap.is_meaningful`` (a *significance verdict*, not a
+      measurement confidence — the D-046 "scored by its own subject matter"
+      failure) and writing the literal ``1.0`` (Section 22.8's forbidden
+      self-asserted confidence, and a flat contradiction of this docstring,
+      which already said the confidence was ``compute_confidence``'s to
+      produce). The value now originates from ``compute_confidence`` inside
+      ``policy_rule_ensemble`` and is threaded through unchanged.
 
     ``warnings`` is empty deliberately: the gap's own caveats live in its
     ``interpretation`` and in the ensemble's warnings, and duplicating them here
@@ -526,7 +532,7 @@ def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
         country="us",
         as_of=as_of,
         value=gap.raw_gap,
-        confidence=1.0,
+        confidence=confidence,
         interpretation=gap.interpretation,
         context=(
             f"Adapted from MarketPricingGap for convergence classification: the "
@@ -600,7 +606,11 @@ def _as_signal(gap: MarketPricingGap, *, as_of: datetime) -> ModelResult:
 
 
 def classify_thesis_convergence(
-    reads: EconomyReads, gap: MarketPricingGap, *, as_of: datetime
+    reads: EconomyReads,
+    gap: MarketPricingGap,
+    *,
+    ensemble: ModelResult,
+    as_of: datetime,
 ) -> tuple[ModelResult, ConvergenceClassification]:
     """Q7: classify agreement across ``[growth, inflation, labor, gap]``.
 
@@ -637,7 +647,10 @@ def classify_thesis_convergence(
     ``.value`` somewhere else. Parsing at the boundary turns a typo into a raise
     at the point that produced it.
     """
-    signals: list[ModelResult] = [*reads.as_sequence(), _as_signal(gap, as_of=as_of)]
+    signals: list[ModelResult] = [
+        *reads.as_sequence(),
+        _as_signal(gap, as_of=as_of, confidence=ensemble.confidence),
+    ]
     result = classify_convergence(ConvergenceInputs(signals=signals))
     value = result.value
     if not isinstance(value, dict):
@@ -868,7 +881,9 @@ def build_us_macro_thesis(
         )
 
     # -- Q7.
-    convergence_result, convergence = classify_thesis_convergence(reads, gap, as_of=stamp)
+    convergence_result, convergence = classify_thesis_convergence(
+        reads, gap, ensemble=ensemble, as_of=stamp
+    )
     signals = build_confirmation_signals(reads.growth, reads.inflation, reads.labor, gap)
     if convergence is ConvergenceClassification.CONFLICTED:
         decision = _q7_decision(signals)

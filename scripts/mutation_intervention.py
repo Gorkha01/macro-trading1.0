@@ -252,13 +252,10 @@ _SOURCE_FAMILY = (
 # I8: the domain guards.
 # --------------------------------------------------------------------------
 
-# The finiteness loop. The `for name, value in (` opener is unique to
-# `InterventionCapacityInputs`; the bare `if not math.isfinite(value):` line is
-# NOT used here to avoid ambiguity with any future model.
-_FINITE_LOOP = (
-    '        for name, value in (\n            ("fx_reserves_usd_bn", self.fx_reserves_usd_bn),'
-)
-_ISFINITE_GUARD = "            if value is not None and not math.isfinite(value):"
+# The positivity guard. D-142 deleted `_FINITE_LOOP` and `_ISFINITE_GUARD`
+# together with the I8a/I8b mutations that anchored on them: the local
+# finiteness loop is gone (the class inherits `contracts.FiniteInputs`), so an
+# anchor on it would resolve to nothing and this sweep would refuse to run.
 _POSITIVE_GUARD = (
     "        if self.fx_reserves_usd_bn is not None and self.fx_reserves_usd_bn <= 0.0:"
 )
@@ -548,19 +545,18 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "            EvidenceSourceFamily.IMF",
     ),
     # --- I8: the domain guards -------------------------------------------
-    (
-        "I8a the finiteness guard removed (nan reaches the arithmetic)",
-        SRC,
-        _ISFINITE_GUARD,
-        "            if False:",
-    ),
-    (
-        "I8b the finiteness loop guards no field",
-        SRC,
-        _FINITE_LOOP,
-        "        for name, value in ():\n"
-        '            ("fx_reserves_usd_bn", self.fx_reserves_usd_bn),',
-    ),
+    # D-142 REMOVED I8a ("the finiteness guard removed") and I8b ("the
+    # finiteness loop guards no field") rather than retargeting them: the local
+    # `for name, value in (...)` finiteness loop they mutated NO LONGER EXISTS.
+    # `InterventionCapacityInputs` now inherits `contracts.FiniteInputs`, which
+    # derives its field list from `model_fields`, so there is no hardcoded loop
+    # left to mutate. The D-078 behaviour those mutations probed is covered by
+    # `tests/models/test_finite_inputs_repo_wide.py`, which builds EVERY
+    # float-bearing input group, contaminates each field at its declared shape,
+    # and asserts refusal — a strictly stronger check than two mutations of one
+    # hand-written loop. Keeping a mutation anchored on deleted text would make
+    # this sweep refuse to run at all (O-138), which is the failure mode it is
+    # designed to surface.
     (
         "I8c a zero reserve stock is admitted",
         SRC,

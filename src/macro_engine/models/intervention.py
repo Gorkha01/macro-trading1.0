@@ -131,10 +131,9 @@ manual booleans and does not read a reserve series at all.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.data_layer.reserves_client import (
@@ -145,6 +144,7 @@ from macro_engine.data_layer.reserves_client import (
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     EvidenceSourceFamily,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -172,7 +172,7 @@ INTERVENTION_DIRECTIONS: tuple[str, str] = (
 )
 
 
-class InterventionCapacityInputs(BaseModel):
+class InterventionCapacityInputs(FiniteInputs):
     """What a central bank is trying to do, and what it has to do it with.
 
     Section 20.9 declares four fields; all four are kept, with three
@@ -258,28 +258,21 @@ class InterventionCapacityInputs(BaseModel):
     def _validate_domain(self) -> InterventionCapacityInputs:
         """Refuse an input that is representable but is not a reserve quantity.
 
-        Three branches, each closing a way the function returns a confident
-        number from an input with no meaning:
+        The branch that remains closes a way the function returns a confident
+        number from an input with no meaning: **a non-positive reserve stock**.
+        Zero is not a stock and a negative one would invert the "finite,
+        depleting" reading while still producing a label.
 
-        1. a non-finite reserve figure. ``nan`` passes no comparison, so a plain
-           ``<= 0`` guard would let it through and it would then be published as
-           the stock (D-078's class);
-        2. a non-positive reserve stock. Zero is not a stock and a negative one
-           would invert the "finite, depleting" reading while still producing a
-           label;
-        3. a non-finite change or reserve/GDP ratio, for the same reason as (1).
+        **The two finiteness branches are GONE (D-142).** This method used to
+        test ``fx_reserves_usd_bn``, ``reserves_to_gdp_pct`` and
+        ``reserves_change_12m_pct`` for non-finiteness over a hardcoded name
+        tuple. ``InterventionCapacityInputs`` now inherits
+        ``contracts.FiniteInputs``, whose ``_reject_non_finite`` derives its
+        field list from ``model_fields`` — so the local loop was a second, weaker
+        source of truth and a field added later would have escaped it. ``nan``
+        passes no comparison, so the hazard is unchanged; only the owner of the
+        check is.
         """
-        for name, value in (
-            ("fx_reserves_usd_bn", self.fx_reserves_usd_bn),
-            ("reserves_to_gdp_pct", self.reserves_to_gdp_pct),
-            ("reserves_change_12m_pct", self.reserves_change_12m_pct),
-        ):
-            if value is not None and not math.isfinite(value):
-                raise ValueError(
-                    f"{name} must be finite when present; got {value!r}. A "
-                    "non-finite value passes every comparison guard, so it must "
-                    "be refused rather than guarded."
-                )
         if self.fx_reserves_usd_bn is not None and self.fx_reserves_usd_bn <= 0.0:
             raise ValueError(
                 "fx_reserves_usd_bn must be strictly positive when present; "

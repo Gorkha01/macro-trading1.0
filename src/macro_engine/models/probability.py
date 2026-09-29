@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -58,7 +59,7 @@ __all__ = [
 ]
 
 
-class BayesInputs(BaseModel):
+class BayesInputs(FiniteInputs):
     """A prior and the two likelihoods that update it.
 
     Every field is bounded to ``[0, 1]`` because all three are probabilities.

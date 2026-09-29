@@ -835,14 +835,14 @@ def test_build_policy_gap_returns_four_things_one_of_which_is_the_market_path() 
 def test_classify_thesis_convergence_includes_the_gap_as_a_fourth_signal() -> None:
     """§16.2 passes four. Three agreeing models plus a contradicting gap is not
     the same verdict as three agreeing models alone."""
-    gap, _rules, _ensemble, _market = build_policy_gap(
+    gap, _rules, ensemble, _market = build_policy_gap(
         taylor(output_gap=1.2),
         first_diff(output_gap_change=0.05),
         short_yield=1.60,
         short_tenor_term_premium=None,
     )
     result, verdict = classify_thesis_convergence(
-        reads(growth=1.2, inflation=0.4, labor=0.8), gap, as_of=STAMP
+        reads(growth=1.2, inflation=0.4, labor=0.8), gap, ensemble=ensemble, as_of=STAMP
     )
 
     assert isinstance(verdict, ConvergenceClassification)
@@ -856,13 +856,41 @@ def test_the_gap_adapter_carries_the_signed_gap_not_the_magnitude() -> None:
     would see the thesis confirm itself unconditionally."""
     from macro_engine.thesis_layer.builder import _as_signal
 
-    gap, _rules, _ensemble, _market = build_policy_gap(
+    gap, _rules, ensemble, _market = build_policy_gap(
         taylor(), first_diff(), short_yield=1.60, short_tenor_term_premium=None
     )
-    signal = _as_signal(gap, as_of=STAMP)
+    signal = _as_signal(gap, as_of=STAMP, confidence=ensemble.confidence)
 
     assert signal.value == gap.raw_gap
     assert signal.model_name == "market_pricing_gap"
+
+
+def test_the_gap_adapter_reports_the_source_confidence_not_a_literal() -> None:
+    """D-142: the adapter re-shapes a result; it does not assert a confidence.
+
+    It used to write the literal ``1.0`` — Section 22.8's forbidden self-asserted
+    confidence, and a flat contradiction of its own docstring, which already said
+    the confidence was ``compute_confidence``'s to produce. It now forwards the
+    confidence of the ``policy_rule_ensemble`` result that produced the gap.
+
+    The assertion is deliberately a COMPARISON against the source rather than a
+    pinned number: a hardcoded ``== 0.5`` here would pass even if the adapter
+    went back to inventing its own value, which is the defect.
+    """
+    from macro_engine.thesis_layer.builder import _as_signal
+
+    gap, _rules, ensemble, _market = build_policy_gap(
+        taylor(), first_diff(), short_yield=1.60, short_tenor_term_premium=None
+    )
+    signal = _as_signal(gap, as_of=STAMP, confidence=ensemble.confidence)
+
+    assert signal.confidence == ensemble.confidence, (
+        "the adapter must forward the source result's confidence, not invent one"
+    )
+    assert signal.confidence != 1.0 or ensemble.confidence == 1.0, (
+        "the literal 1.0 is the D-142 defect; it may only appear here if the "
+        "source itself reports it"
+    )
 
 
 def test_policy_view_carries_all_three_rules_and_the_dispersion() -> None:

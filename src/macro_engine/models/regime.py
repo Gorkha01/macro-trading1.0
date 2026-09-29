@@ -100,12 +100,12 @@ live check, because the wrong pairing produces a perfectly plausible
 from __future__ import annotations
 
 import warnings
-from math import ceil, isfinite
+from math import ceil
 from typing import Literal, NamedTuple, get_args
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 from macro_engine.config import get_settings
@@ -219,7 +219,7 @@ RegimeTension = Literal["NO_REGIME_TENSION", "REGIME_TENSION"]
 GrowthAxis = Literal["deep_contraction", "contraction", "above_trend"]
 
 
-class RegimeInputs(BaseModel):
+class RegimeInputs(FiniteInputs):
     """The two axes the classifier reads, plus the corroborating slack measure.
 
     All three growth/inflation quantities are already-derived outputs of other
@@ -284,62 +284,6 @@ class RegimeInputs(BaseModel):
         default=False,
         description="True if any input carried a Section 5.4 data-quality flag.",
     )
-
-    @model_validator(mode="after")
-    def _reject_non_finite(self) -> RegimeInputs:
-        """Refuse a non-finite axis rather than letting it pick a state (D-078).
-
-        Every comparison in this module is a **sign or magnitude test**, and
-        every such test returns ``False`` for ``NaN``. The consequence is not a
-        loud failure but a *silent, wrong answer*, because the axis helpers are
-        written as fallthroughs::
-
-            def _growth_axis(gap, recession, weak):
-                if gap < recession: return "deep_contraction"
-                if gap < weak:      return "contraction"
-                return "above_trend"          # <- `nan` lands HERE
-
-        A `nan` output gap satisfies neither test, so it falls into the **last**
-        and most expansionary bucket. Measured before this guard: a completely
-        absent output gap was classified ``growth_axis='above_trend'`` and, with
-        a rising momentum reading, ``state='reflation'`` — an expansion invented
-        from no observation. `nan` momentum became a measured ``'flat'``;
-        `inf` momentum became ``'rising'``.
-
-        ``slack_corroborated`` is the same hazard in the other direction:
-        ``(nan < 0.0) == (nan > 0.0)`` is ``False == False``, i.e. ``True``, so
-        a non-finite gap could *satisfy* the corroboration test and **raise the
-        confidence** of a label it supplied no evidence for.
-
-        This is checked at construction, once, for the whole object — rather
-        than inside each helper — because the helpers are also called from
-        ``regime_tension`` and the trilemma check, and a guard in one call path
-        is precisely the ``declared-consumed-unreachable`` shape this project
-        keeps finding (D-045/046/048, D-073, D-077). The object either holds
-        measurements or it does not.
-        """
-        offenders: list[str] = []
-        for name in (
-            "output_gap",
-            "inflation_yoy",
-            "inflation_trend_3m",
-            "unemployment_gap",
-            "output_gap_change",
-        ):
-            value = getattr(self, name)
-            if value is not None and not isfinite(value):
-                offenders.append(f"{name}={value!r}")
-        if offenders:
-            raise ValueError(
-                f"non-finite regime input(s): {', '.join(offenders)}. A non-finite "
-                "value is not a missing value and not a neutral one: `nan` fails "
-                "EVERY comparison, so it does not fall out of the band tests — it "
-                "falls into the final `else` bucket, i.e. the most expansionary "
-                "state the grid has. A missing axis must be reported as a refused "
-                "classification, never as `above_trend` (Section 21.0 rule 3, "
-                "D-074.2, D-078)."
-            )
-        return self
 
     @property
     def slack_corroborated(self) -> bool:
