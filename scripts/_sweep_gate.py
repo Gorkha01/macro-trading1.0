@@ -95,6 +95,7 @@ from pathlib import Path
 
 __all__ = [
     "CHECK_ONLY_FLAG",
+    "InProcPytestResult",
     "check_only",
     "check_only_requested",
     "check_targets",
@@ -105,6 +106,7 @@ __all__ = [
     "record_pristine",
     "remove_sidecars",
     "restore_from_sidecar",
+    "run_pytest",
     "sidecar_for",
     "sweep_lifecycle",
 ]
@@ -843,3 +845,104 @@ def check_only(table: Sequence[tuple[str, Path, str, str]]) -> int:
 def format_problems(problems: list[str], *, indent: str = "  !! ") -> str:
     """Render the gate's findings for a sweep's own stdout."""
     return "\n".join(f"{indent}{p}" for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# The in-process pytest runner — the sweep-speed fix (D-140)
+# ---------------------------------------------------------------------------
+
+#: Module-name prefixes purged before each in-process pytest run. `macro_engine`
+#: covers the mutated source; `tests` (and any `conftest`) covers the test
+#: modules, whose ``from macro_engine... import X`` bindings would otherwise stay
+#: pointed at the PRE-mutation module object — the mutation would be invisible
+#: and the sweep would report a false survivor.
+_PURGE_PREFIXES = ("macro_engine", "tests")
+
+
+def _purge_project_modules() -> None:
+    """Drop every project module from ``sys.modules`` so the next import is fresh."""
+    for name in list(sys.modules):
+        if (
+            name in ("macro_engine", "conftest")
+            or name.startswith(_PURGE_PREFIXES)
+            or name.endswith(".conftest")
+        ):
+            sys.modules.pop(name, None)
+
+
+class InProcPytestResult:
+    """The subset of ``subprocess.CompletedProcess`` a sweep actually reads."""
+
+    __slots__ = ("args", "returncode", "stderr", "stdout")
+
+    def __init__(self, args: Sequence[str], returncode: int, stdout: str, stderr: str = "") -> None:
+        self.args = args
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def run_pytest(
+    cmd: Sequence[str],
+    *,
+    cwd: Path | str | None = None,
+    capture_output: bool = False,
+    text: bool = False,
+    check: bool = False,
+    **_ignored: object,
+) -> InProcPytestResult:
+    """Run pytest **in this interpreter** — a drop-in for the spawn it replaces.
+
+    WHY (measured 2026-09-30, D-140). The sweeps ran
+    ``subprocess.run([sys.executable, "-m", "pytest", ...])`` **once per mutation**.
+    A cold spawn costs **0.66 s** of interpreter startup plus **10.8 s** of heavy
+    import (pandas / numpy / statsmodels / pydantic) for a few seconds of test
+    body — and it pays that on EVERY mutation. A 90-mutation sweep therefore spent
+    ~15 minutes of its ~40 just re-importing the same libraries. Running in-process
+    pays the import ONCE; each later mutation only re-imports the purged project
+    modules (**0.26 s** measured, ~40x cheaper than the spawn's import).
+
+    CORRECTNESS. An in-process run only sees a mutation if the mutated module is
+    re-imported, so every project module is purged from ``sys.modules`` first. The
+    failure mode is deliberately safe: an incomplete purge makes a mutation
+    INVISIBLE, which reports a **survivor** (loud, investigated) rather than a
+    false kill (silent, inflates the score).
+
+    The signature mirrors ``subprocess.run`` for the arguments the sweeps pass
+    (``cwd``, ``capture_output``, ``text``, ``check``); unknown kwargs are ignored
+    so a call site can be switched by name alone.
+
+    ``-p no:cacheprovider`` is appended so repeated runs do not rewrite
+    ``.pytest_cache`` thousands of times.
+    """
+    import io
+    import os
+    from contextlib import redirect_stderr, redirect_stdout
+
+    import pytest
+
+    argv = [str(part) for part in cmd]
+    if len(argv) < 4 or argv[1:3] != ["-m", "pytest"]:
+        raise ValueError(
+            "run_pytest expects [python, '-m', 'pytest', ...]; "
+            f"got {argv[:4]!r}. (Only pytest calls may be run in-process.)"
+        )
+    pytest_args = [*argv[3:], "-p", "no:cacheprovider"]
+
+    previous_cwd = Path.cwd()
+    if cwd is not None:
+        os.chdir(cwd)
+    out_buffer = io.StringIO()
+    err_buffer = io.StringIO()
+    try:
+        _purge_project_modules()
+        with redirect_stdout(out_buffer), redirect_stderr(err_buffer):
+            returncode = int(pytest.main(pytest_args))
+    finally:
+        if cwd is not None:
+            os.chdir(previous_cwd)
+
+    result = InProcPytestResult(argv, returncode, out_buffer.getvalue(), err_buffer.getvalue())
+    if check and returncode != 0:
+        raise RuntimeError(f"pytest exited {returncode}")
+    return result

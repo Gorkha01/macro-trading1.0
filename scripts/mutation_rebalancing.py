@@ -58,11 +58,11 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _sweep_gate import run_pytest as _run_pytest_inproc
 from _sweep_gate import sweep_lifecycle
 
 REPO = Path(__file__).resolve().parent.parent
@@ -1046,7 +1046,7 @@ def check_tests_collect() -> list[str]:
         # because ruff's S603 rule treats a variable argument as potentially
         # untrusted input. The loop verifies `path` exists above, so the two
         # stay in step; the convention is the one the other sweeps follow.
-        proc = subprocess.run(
+        proc = _run_pytest_inproc(
             [
                 sys.executable,
                 "-m",
@@ -1080,7 +1080,7 @@ def run_pytest() -> tuple[int, str]:
     than folded into the kill count, because that conflation is exactly what
     produced D-051's false 56/56.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

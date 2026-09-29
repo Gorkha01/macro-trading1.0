@@ -62,7 +62,6 @@ Every pattern is matched against the pristine source read from the repo.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -73,6 +72,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/econometrics.py")
 
@@ -871,7 +871,7 @@ def run_tests() -> bool:
     treats a variable argument to ``subprocess`` as potentially untrusted input
     and cannot see that a pinned constant is safe.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

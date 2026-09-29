@@ -63,11 +63,11 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _sweep_gate import run_pytest as _run_pytest_inproc
 from _sweep_gate import sweep_lifecycle
 
 REPO = Path(__file__).resolve().parent.parent
@@ -609,7 +609,7 @@ def check_tests_collect() -> list[str]:
         if not path.exists():
             problems.append(f"test target ABSENT: {target}")
             continue
-        proc = subprocess.run(
+        proc = _run_pytest_inproc(
             [
                 sys.executable,
                 "-m",
@@ -640,7 +640,7 @@ def run_pytest() -> tuple[int, str]:
     Exit code **4** is pytest's "usage error / no tests collected", which is not
     a kill -- it means the harness is broken.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

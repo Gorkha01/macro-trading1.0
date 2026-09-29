@@ -48,11 +48,11 @@ radius is the whole repository.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 from _sweep_gate import check_only, check_only_requested, sweep_lifecycle
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/scorecard.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -1190,7 +1190,7 @@ def check_targets(originals: dict[Path, str]) -> list[str]:
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

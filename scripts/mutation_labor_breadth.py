@@ -26,7 +26,6 @@ the sidecar, not a signal handler, is the interrupt defence with real reach.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +36,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/labor_synthesis.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -202,7 +202,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

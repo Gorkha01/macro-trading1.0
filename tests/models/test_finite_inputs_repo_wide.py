@@ -51,7 +51,17 @@ _log = logging.getLogger(__name__)
 _FLOAT_CANDIDATES: tuple[float, ...] = (1.0, 0.5, 2.0, 0.1, -1.0, -10.0)
 _INT_CANDIDATES: tuple[int, ...] = (1, 2, 10)
 _BOOL_CANDIDATES: tuple[bool, ...] = (True, False)
-_STR_CANDIDATES: tuple[str, ...] = ("x", "us", "USA", "domestic_per_foreign", "easing")
+_STR_CANDIDATES: tuple[str, ...] = (
+    "x",
+    "us",
+    "USA",
+    "domestic_per_foreign",
+    "easing",
+    "2y",
+    "5y",
+    "10y",
+    "30y",
+)
 _LIST_FLOAT_CANDIDATES: tuple[list[float], ...] = (
     [1.0],
     [1.0, 1.0],
@@ -262,7 +272,13 @@ def _contaminate(payload: dict[str, object], field: str, shape: str, bad: float)
 
 
 def _iter_input_groups() -> list[type[BaseModel]]:
-    """Every ``*Inputs`` model class defined in the ``models`` package."""
+    """Every input model class defined in the ``models`` package.
+
+    Covers ``*Inputs`` AND ``*Constructor`` — a trade-constructor group is an
+    input too, and ``yield_curve.CurveTradeConstructor`` was a live D-078 gap
+    (``inf`` notional → ``nan`` residual, no warning) that an ``*Inputs``-only
+    sweep never saw (D-139d).
+    """
     found: list[type[BaseModel]] = []
     for mod in pkgutil.iter_modules(models_pkg.__path__):
         try:
@@ -278,7 +294,7 @@ def _iter_input_groups() -> list[type[BaseModel]]:
                 isinstance(obj, type)
                 and issubclass(obj, BaseModel)
                 and obj.__module__ == module.__name__
-                and name.endswith("Inputs")
+                and name.endswith(("Inputs", "Constructor"))
             ):
                 found.append(obj)
     return found

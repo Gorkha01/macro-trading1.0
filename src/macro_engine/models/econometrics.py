@@ -898,6 +898,15 @@ def _cointegration_value(
         "half_life_note": half_life["note"],
         "regime_stability": stability["verdict"],
         "regime_stability_agreement": stability["agreement"],
+        # D-139d: the sub-sample detail was COMPUTED and then DROPPED, while the
+        # docstring promised "the two sub-sample p-values are reported so a
+        # reader can see them" and a warning pointed at `regime_stability` on
+        # the value — a field that held only a verdict string. The evidence a
+        # reader is told exists must actually be published.
+        "regime_stability_split_index": stability["split_index"],
+        "regime_stability_first_half": stability["first_half"],
+        "regime_stability_second_half": stability["second_half"],
+        "regime_stability_note": stability["note"],
         # Published so the disclosure in the warnings has a number to point at.
         # Zero on the Engle-Granger path, which never calls the eigendecomposition
         # that emits it — so the field is present on both paths and its value

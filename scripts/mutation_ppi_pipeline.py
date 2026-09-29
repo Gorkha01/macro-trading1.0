@@ -19,7 +19,6 @@ backup: a ``/tmp`` path resolves in Git Bash but not in a Windows Python process
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +29,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/ppi_pipeline.py")
 
@@ -288,7 +288,7 @@ def run_tests() -> bool:
     # S603 rule treats a variable argument to ``subprocess`` as potentially
     # untrusted input and cannot see that the constant is a pinned path. The
     # constant above is used for documentation; the invocation stays literal.
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

@@ -59,7 +59,6 @@ a **broken** mutation. The runner heals before it measures (D-035 rule 19).
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -69,6 +68,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 MODEL = Path("src/macro_engine/models/commodities.py")
 CLIENT = Path("src/macro_engine/data_layer/commodities_client.py")
@@ -1298,7 +1298,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

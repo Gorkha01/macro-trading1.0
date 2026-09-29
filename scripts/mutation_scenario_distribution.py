@@ -73,11 +73,11 @@ import argparse
 import ast
 import re
 import signal
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from _sweep_gate import run_pytest as _run_pytest_inproc
 from _sweep_gate import sweep_lifecycle
 
 REPO = Path(__file__).resolve().parent.parent
@@ -695,7 +695,7 @@ def check_tests_collect() -> list[str]:
             problems.append(f"test target ABSENT: {target}")
     if problems:
         return problems
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",
@@ -727,7 +727,7 @@ def run_pytest() -> tuple[int, str]:
     a kill. ``-x`` is passed and is not optional (lesson 61): the kill signal
     must be cheap, because the cheap path is the one that gets used.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

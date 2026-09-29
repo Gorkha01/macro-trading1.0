@@ -5,18 +5,22 @@ AGENTS.md Section 6.6, Section 20.8, Section 22.5, Section 21.2 Steps 4-5.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from macro_engine.config import YieldCurveSettings, get_settings
 from macro_engine.models.contracts import ModelResult
 from macro_engine.models.yield_curve import (
     BreakevenInputs,
+    BreakevenTradeConstructor,
     CurveDecompositionInputs,
     CurveSlopeInputs,
+    CurveTradeConstructor,
     InversionHistoryInputs,
     breakeven_inflation,
     curve_slope,
@@ -1338,3 +1342,87 @@ def test_the_config_bucket_tables_match_the_live_probe() -> None:
         assert stale_row not in yaml_text, (
             f"a stale bucket value survives in settings.yaml: {stale_row!r}"
         )
+
+
+# ===========================================================================
+# D-139d — the two trade-constructor input groups were UNGUARDED
+#
+# `CurveTradeConstructor` / `BreakevenTradeConstructor` are not named `*Inputs`,
+# so the finiteness sweep never reached them. Measured: a `+inf` notional
+# constructed, and the model body produced `net_duration_residual = nan`
+# (inf - inf) with `warnings=[]` — the guard `abs(residual) >= tolerance` never
+# fires on `nan`. These tests pin the refusal.
+# ===========================================================================
+
+
+def test_curve_trade_constructor_refuses_an_infinite_notional() -> None:
+    with pytest.raises(ValidationError, match="non-finite"):
+        CurveTradeConstructor(
+            short_tenor="2y",
+            long_tenor="10y",
+            short_duration=2.0,
+            long_duration=7.0,
+            target_notional_short=math.inf,
+        )
+
+
+def test_breakeven_trade_constructor_refuses_an_infinite_notional() -> None:
+    with pytest.raises(ValidationError, match="non-finite"):
+        BreakevenTradeConstructor(
+            tenor="10y",
+            tips_duration=7.0,
+            nominal_duration=8.0,
+            target_notional_tips=math.inf,
+        )
+
+
+def test_the_constructors_still_accept_finite_notionals() -> None:
+    """The positive control: the guard must not reject finite data."""
+    assert (
+        CurveTradeConstructor(
+            short_tenor="2y",
+            long_tenor="10y",
+            short_duration=2.0,
+            long_duration=7.0,
+            target_notional_short=1_000.0,
+        ).target_notional_short
+        == 1_000.0
+    )
+    assert (
+        BreakevenTradeConstructor(
+            tenor="10y",
+            tips_duration=7.0,
+            nominal_duration=8.0,
+            target_notional_tips=1_000.0,
+        ).target_notional_tips
+        == 1_000.0
+    )
+
+
+def test_the_inversion_confidence_carries_the_heuristic_penalty() -> None:
+    """D-139d: the LEVEL must be 0.5 while the parameters are placeholders.
+
+    The function's own docstring calls it "a heuristic placeholder, not a fitted
+    model", and its four leaves ship ``uncalibrated_illustrative`` — so its
+    confidence must carry ``is_heuristic_not_calibrated``. It was emitting 0.7
+    (no flags), where the precedent it cites (``check_trilemma_tension``) yields
+    0.5. Flat across branches (still asserted) but PENALISED.
+    """
+    settings = get_settings()
+    if settings.is_calibrated("yield_curve.max_adjustment"):
+        pytest.skip("leaf is calibrated in this environment; the penalty should not apply")
+
+    not_inverted = inversion_probability_adjustment(
+        InversionHistoryInputs(
+            current_slope_bp=+25.0, weeks_inverted=0, base_rate_recession_prob_12mo=0.157
+        )
+    )
+    inverted = inversion_probability_adjustment(
+        InversionHistoryInputs(
+            current_slope_bp=-50.0, weeks_inverted=20, base_rate_recession_prob_12mo=0.157
+        )
+    )
+    assert not_inverted.confidence == inverted.confidence, "the confidence must stay flat"
+    assert inverted.confidence < 0.7, (
+        "an uncalibrated heuristic placeholder must not publish full confidence"
+    )

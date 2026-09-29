@@ -534,30 +534,45 @@ def test_the_confidence_helper_reads_the_bands_it_names() -> None:
     assert settings.is_calibrated("fx_carry.extreme_deviation_pct") is False
 
 
-def test_the_confidence_helper_reads_the_notable_leaf_specifically(
+def test_the_confidence_helper_reads_both_bands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The helper must read the NOTABLE leaf, not whichever band is handy.
+    """The helper must read BOTH bands, because ``cip_check`` leans on both.
 
-    Today both leaves carry the same calibration status, so a helper pointed at
-    the wrong one returns the same answer — an equivalence that would evaporate
-    the moment one band was calibrated and not the other. Moving each leaf's
-    status in turn is what separates "reads the notable leaf" from "reads an
-    uncalibrated leaf", and it is the only fixture that can see the difference.
+    D-139d: the helper once read only ``notable_deviation_pct`` and its docstring
+    claimed that was "the ONE leaf ``cip_check`` leans on" — but ``cip_check``
+    reads the extreme band too (via ``_stress_labels``), so calibrating the
+    notable band alone restored full confidence while the severity label still
+    rested on an illustrative extreme band (the over-confident direction). The
+    helper now requires BOTH. Moving each leaf's status in turn is what makes the
+    difference visible: with only one calibrated the helper must still say False.
     """
     fx = get_settings().fx_carry
-    monkeypatch.setattr(
-        fx.notable_deviation_pct, "calibration_status", "conventional", raising=False
+    notable = fx.notable_deviation_pct
+    extreme = fx.extreme_deviation_pct
+    original = (notable.calibration_status, extreme.calibration_status)
+
+    # Only the notable band calibrated -> still NOT calibrated (the extreme band
+    # still prices the severity label).
+    monkeypatch.setattr(notable, "calibration_status", "conventional", raising=False)
+    monkeypatch.setattr(extreme, "calibration_status", "uncalibrated_illustrative", raising=False)
+    assert _cip_bands_are_calibrated() is False, (
+        "the extreme band is still a placeholder, so the helper must not report "
+        "the pair as calibrated"
     )
+
+    # Only the extreme band calibrated -> still NOT calibrated.
+    monkeypatch.setattr(notable, "calibration_status", "uncalibrated_illustrative", raising=False)
+    monkeypatch.setattr(extreme, "calibration_status", "conventional", raising=False)
+    assert _cip_bands_are_calibrated() is False
+
+    # BOTH calibrated -> calibrated.
+    monkeypatch.setattr(notable, "calibration_status", "conventional", raising=False)
     assert _cip_bands_are_calibrated() is True
 
-    monkeypatch.setattr(
-        fx.notable_deviation_pct, "calibration_status", "uncalibrated_illustrative", raising=False
-    )
-    monkeypatch.setattr(
-        fx.extreme_deviation_pct, "calibration_status", "conventional", raising=False
-    )
-    assert _cip_bands_are_calibrated() is False
+    # Restore, so this fixture cannot leak into a later test.
+    monkeypatch.setattr(notable, "calibration_status", original[0], raising=False)
+    monkeypatch.setattr(extreme, "calibration_status", original[1], raising=False)
 
 
 # ---------------------------------------------------------------------------

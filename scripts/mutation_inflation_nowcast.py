@@ -8,7 +8,6 @@ suite must catch that.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/inflation_nowcast.py")
 # Read the pristine copy from the repo rather than a /tmp backup: a /tmp path
@@ -167,7 +167,7 @@ MUTATIONS: list[tuple[str, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

@@ -26,7 +26,6 @@ so there is no backup file.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +36,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/gdp_nowcast.py")
 
@@ -288,7 +288,7 @@ def run_tests() -> bool:
     # The test path is a literal, not a constant, because ruff's S603 rule
     # treats a variable argument to ``subprocess`` as potentially untrusted
     # input and cannot see that a pinned constant is safe.
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

@@ -162,7 +162,6 @@ baseline (D-035 rule 19).
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -172,6 +171,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/fx_carry.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -431,7 +431,9 @@ _DS_VIX_GATE = "    if vix_level > vix_threshold:"
 _DS_BOTH_POSITIVE = (
     "    if us_growth_surprise > sign_boundary and us_vs_row_rate_diff > sign_boundary:"
 )
-_DS_NEUTRAL_RETURN = "    return us_growth_surprise == 0.0 or us_vs_row_rate_diff == 0.0"
+_DS_NEUTRAL_RETURN = (
+    "    return us_growth_surprise == sign_boundary or us_vs_row_rate_diff == sign_boundary"
+)
 
 # The finiteness guard. WIDENED past the bare `if not math.isfinite(value):`
 # line for the same reason M6a and K4a are widened: three input models in this
@@ -447,7 +449,11 @@ _DS_FINITE_GUARD = (
 # The warnings. `if side == "left":\n        warnings.append(` is unique; so is
 # the middle-branch guard, which carries `and _dollar_smile_is_neutral(...)`.
 _DS_WARN_LEFT = '    if side == "left":\n        warnings.append('
-_DS_WARN_MIDDLE = '    elif side == "middle" and _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):'
+_DS_WARN_MIDDLE = (
+    '    elif side == "middle" and _dollar_smile_is_neutral(\n'
+    "        us_growth_surprise, us_vs_row_rate_diff, sign_boundary=sign_boundary\n"
+    "    ):"
+)
 
 # The published value and the contract.
 _DS_SIDE_KEY = '            "side": side,'
@@ -1266,7 +1272,9 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "S6c the middle warning fires on EVERY middle label (neutrality unstated)",
         SRC,
         _DS_WARN_MIDDLE,
-        '    elif side == "middle" and not _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):',
+        '    elif side == "middle" and not _dollar_smile_is_neutral(\n'
+        "        us_growth_surprise, us_vs_row_rate_diff, sign_boundary=sign_boundary\n"
+        "    ):",
     ),
     (
         "S6d the right limb emits noise (its own name is its reason, so this is"
@@ -1857,7 +1865,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

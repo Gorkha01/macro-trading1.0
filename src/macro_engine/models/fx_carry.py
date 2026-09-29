@@ -354,25 +354,33 @@ class CIPInputs(BaseModel):
 
 
 def _cip_bands_are_calibrated() -> bool:
-    """Whether the ONE leaf :func:`cip_check` leans on is calibrated.
+    """Whether the TWO bands :func:`cip_check` leans on are BOTH calibrated.
 
     Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
-    caller). The notable band is the leaf that turns a number into the judgement
-    "funding stress", so it is the one that costs confidence while it is a
-    placeholder — which it is today, deliberately, because calibrating it needs
-    a forward series this installation cannot reach.
+    caller). :func:`cip_check` reads **both** ``notable_deviation_pct`` and
+    ``extreme_deviation_pct`` — the notable band decides whether the deviation is
+    a signal at all, and the extreme band decides the severity label via
+    :func:`_stress_labels`. An earlier version of this helper read only the
+    notable leaf and its docstring claimed it was "the ONE leaf ``cip_check``
+    leans on"; that was FALSE (D-139d), and it failed in the over-confident
+    direction: calibrating ``notable`` alone would restore full confidence while
+    the severity label still rested on an illustrative extreme band. Both leaves
+    must be calibrated, exactly as :func:`_dollar_smile_thresholds_are_calibrated`
+    reads both of its leaves.
 
-    **Named for the leaf it reads, not for the section it lives in.** It was
+    **Named for the function it prices, not for a section.** It was
     ``_thresholds_are_calibrated`` (plural, and generic) until this module gained
     a second function with its own threshold — at which point the name was
     ambiguous in exactly the way `_r_squared_floor_is_calibrated`'s docstring in
     ``models/econometrics.py`` warns about: a reader adding a threshold would
-    reasonably assume the generic helper already covered it. The two functions
-    are priced on DIFFERENT leaves, so they need different helpers with names
-    that say which.
+    reasonably assume the generic helper already covered it. The functions are
+    priced on DIFFERENT leaves, so they need different helpers with names that
+    say which.
     """
     settings = get_settings()
-    return settings.is_calibrated("fx_carry.notable_deviation_pct")
+    return settings.is_calibrated("fx_carry.notable_deviation_pct") and settings.is_calibrated(
+        "fx_carry.extreme_deviation_pct"
+    )
 
 
 def _dollar_smile_thresholds_are_calibrated() -> bool:
@@ -1191,22 +1199,28 @@ def _dollar_smile_side(
     return "middle"
 
 
-def _dollar_smile_is_neutral(us_growth_surprise: float, us_vs_row_rate_diff: float) -> bool:
+def _dollar_smile_is_neutral(
+    us_growth_surprise: float, us_vs_row_rate_diff: float, *, sign_boundary: float
+) -> bool:
     """Whether an exactly-neutral signed input is among the middle branch's causes.
 
     A middle label has two very different causes and a reader cannot tell them
     apart from the label: the inputs may point *against* US outperformance (a
     negative surprise, a negative differential), or one of them may be sitting
-    at **exactly zero**, which is the absence of a signal rather than a signal
-    against. The second cause matters because a surprise series prints exactly
-    ``0.0`` whenever a release lands on consensus — it is a value real data
-    takes, not a mathematical edge case (D-040's class).
+    **exactly at the boundary**, which is the absence of a signal rather than a
+    signal against. The second cause matters because a surprise series prints
+    exactly ``0.0`` whenever a release lands on consensus — it is a value real
+    data takes, not a mathematical edge case (D-040's class).
 
-    Derived from the same expression the classifier uses rather than restated,
-    so the two cannot disagree about which values are neutral: a value is
-    neutral exactly when it fails ``> 0.0`` by equality.
+    Derived from the same expression the classifier uses rather than restated, so
+    the two cannot disagree about which values are neutral: a value is neutral
+    exactly when it fails ``> sign_boundary`` by equality. ``sign_boundary`` is
+    passed in (D-139d) rather than hardcoded to ``0.0`` — the leaf ships at
+    ``0.0`` today, but the classifier compares against the CONFIGURED boundary, so
+    a hardcoded ``0.0`` here would silently disagree with the classifier the
+    moment the leaf moved (the docstring's "cannot disagree" claim was false).
     """
-    return us_growth_surprise == 0.0 or us_vs_row_rate_diff == 0.0
+    return us_growth_surprise == sign_boundary or us_vs_row_rate_diff == sign_boundary
 
 
 def _dollar_smile_limitations(
@@ -1280,6 +1294,7 @@ def _dollar_smile_warnings(
     us_growth_surprise: float,
     us_vs_row_rate_diff: float,
     vix_threshold: float,
+    sign_boundary: float,
 ) -> list[str]:
     """The conditions of THIS run, in severity order.
 
@@ -1303,16 +1318,19 @@ def _dollar_smile_warnings(
             f"NOT what decided the label, so a later VIX fall will reclassify "
             f"without either of them changing."
         )
-    elif side == "middle" and _dollar_smile_is_neutral(us_growth_surprise, us_vs_row_rate_diff):
+    elif side == "middle" and _dollar_smile_is_neutral(
+        us_growth_surprise, us_vs_row_rate_diff, sign_boundary=sign_boundary
+    ):
         warnings.append(
             f"The middle 'synchronized global growth' label was reached with a "
             f"NEUTRAL input — growth surprise {us_growth_surprise:+.4f}, rate "
             f"differential {us_vs_row_rate_diff:+.4f} — because a value at "
-            f"exactly {0.0} does not exceed the sign boundary. Zero is the ABSENCE "
-            f"of a US-outperformance signal, not evidence against one: a release "
-            f"landing on consensus prints exactly this, and the specification's "
-            f"'> 0' test cannot distinguish the two. Do not read this label as "
-            f"the inputs opposing USD strength."
+            f"exactly {sign_boundary} does not exceed the sign boundary. That "
+            f"boundary value is the ABSENCE of a US-outperformance signal, not "
+            f"evidence against one: a release landing on consensus prints exactly "
+            f"this, and the specification's '> {sign_boundary}' test cannot "
+            f"distinguish the two. Do not read this label as the inputs opposing "
+            f"USD strength."
         )
     return warnings
 
@@ -1384,7 +1402,9 @@ def dollar_smile_regime(inputs: DollarSmileInputs) -> ModelResult:
     )
     # `is_neutral_input` is only meaningful on the middle limb: on either of the
     # other two the label is not the middle one, and a zero input had no say.
-    is_neutral = side == "middle" and _dollar_smile_is_neutral(growth, rate_diff)
+    is_neutral = side == "middle" and _dollar_smile_is_neutral(
+        growth, rate_diff, sign_boundary=sign_boundary
+    )
 
     if side == "left":
         side_phrase = (
@@ -1486,6 +1506,7 @@ def dollar_smile_regime(inputs: DollarSmileInputs) -> ModelResult:
             us_growth_surprise=growth,
             us_vs_row_rate_diff=rate_diff,
             vix_threshold=vix_threshold,
+            sign_boundary=sign_boundary,
         ),
         limitations=_dollar_smile_limitations(
             vix_threshold=vix_threshold,

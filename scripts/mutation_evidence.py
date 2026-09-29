@@ -28,7 +28,6 @@ and a hard kill skips the ``finally`` (D-045a).
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -39,6 +38,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/evidence.py")
 CONTRACTS = Path("src/macro_engine/models/contracts.py")
@@ -284,7 +284,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

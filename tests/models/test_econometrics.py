@@ -1334,6 +1334,32 @@ def test_regime_stability_reports_absence_in_both_halves() -> None:
     assert value["regime_stability"] != "unstable"
 
 
+def test_regime_stability_publishes_the_sub_sample_evidence() -> None:
+    """D-139d: the sub-sample detail the docstring promises must be PUBLISHED.
+
+    ``_regime_stability`` computes each half's ``n_obs``/``is_cointegrated``/
+    ``p_value`` and the verdict's ``note``, but ``_cointegration_value`` used to
+    publish only the verdict and the agreement flag — so the evidence a reader is
+    told exists (and that a warning points at) could not be recovered. This pins
+    that the computed detail actually reaches the value.
+    """
+    y, x = _split_regime_pair()
+    value = _value(_cointegration(y, x))
+    for key in (
+        "regime_stability_split_index",
+        "regime_stability_first_half",
+        "regime_stability_second_half",
+        "regime_stability_note",
+    ):
+        assert key in value, f"{key} must be published, not computed and dropped"
+    # The halves carry the per-half evidence, not just a label.
+    first = value["regime_stability_first_half"]
+    assert isinstance(first, dict)
+    assert {"label", "n_obs", "is_cointegrated", "p_value", "refused"} <= set(first)
+    assert first["label"] == "first_half"
+    assert value["regime_stability_note"], "the verdict's explanation must travel with it"
+
+
 def test_a_short_sample_reports_not_tested_rather_than_stable() -> None:
     """An UNTESTED half is an absence of information, not evidence of stability.
 

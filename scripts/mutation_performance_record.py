@@ -37,7 +37,6 @@ The mutations are graded, not merely inverted:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +49,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SETTINGS = Path("config/settings.yaml")
 
@@ -168,7 +168,7 @@ def run_tests() -> bool:
     that no longer loads -- so the sweep would certify a mutation that had
     broken every config read in the project.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

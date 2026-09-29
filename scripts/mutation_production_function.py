@@ -8,7 +8,6 @@ the mutated code path is reachable at all.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/production_function.py")
 # The pristine copy is the file itself, read once at import. Earlier sweeps in
@@ -178,7 +178,7 @@ MUTATIONS: list[tuple[str, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

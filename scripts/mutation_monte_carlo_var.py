@@ -37,7 +37,6 @@ rule 19).
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -53,6 +52,7 @@ from _sweep_gate import (
     record_pristine,
     restore_from_sidecar,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/risk.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -503,7 +503,7 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

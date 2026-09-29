@@ -28,7 +28,6 @@ Design notes
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -39,6 +38,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/as_of.py")
 
@@ -175,7 +175,7 @@ MUTATIONS: list[tuple[str, str, str]] = [
 def run_tests() -> bool:
     # The test path is a literal, not a constant, because ruff's S603 rule
     # treats a variable argument to ``subprocess`` as untrusted input.
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

@@ -42,11 +42,11 @@ exactly that way; the blast radius here is the whole repository.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 from _sweep_gate import check_only, check_only_requested, sweep_lifecycle
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 SRC = Path("src/macro_engine/models/yield_curve.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -113,13 +113,26 @@ _NO_INVERSION_BODY = (
 )
 
 _NO_INVERSION_CONF = (
-    "            confidence=compute_confidence(ConfidenceInputs()),\n"
+    "            confidence=compute_confidence(\n"
+    "                ConfidenceInputs(\n"
+    "                    is_heuristic_not_calibrated=not _inversion_adjustment_is_calibrated(),\n"
+    "                    # The base rate is a measured unconditional frequency (592\n"
+    "                    # months); the inversion signal is one market series. There\n"
+    "                    # is no second independent family to corroborate it.\n"
+    "                    source_independence_count=0,\n"
+    "                )\n"
+    "            ),\n"
     "            interpretation=(\n"
     '                f"Curve not inverted ({inputs.current_slope_bp:+.1f}bp) — "'
 )
 
 _CONFIDENCE_INVERTED = (
-    "        confidence=compute_confidence(ConfidenceInputs()),\n"
+    "        confidence=compute_confidence(\n"
+    "            ConfidenceInputs(\n"
+    "                is_heuristic_not_calibrated=not _inversion_adjustment_is_calibrated(),\n"
+    "                source_independence_count=0,\n"
+    "            )\n"
+    "        ),\n"
     "        interpretation=(\n"
     '            f"Recession probability (12mo): {adjusted:.1%} "'
 )
@@ -721,11 +734,13 @@ def _confidence_mutations() -> list[tuple[str, Path, str, str]]:
             '                f"Curve not inverted ({inputs.current_slope_bp:+.1f}bp) — "',
         ),
         (
-            "MX7c the two branches swap their confidence (flat-by-accident)",
+            "MX7c the inverted branch drops the heuristic penalty (the two branches disagree)",
             SRC,
             _CONFIDENCE_INVERTED,
             "        confidence=compute_confidence(\n"
-            "            ConfidenceInputs(depends_on_unobservable=True)\n"
+            "            ConfidenceInputs(\n"
+            "                source_independence_count=0,\n"
+            "            )\n"
             "        ),\n"
             "        interpretation=(\n"
             '            f"Recession probability (12mo): {adjusted:.1%} "',
@@ -1036,7 +1051,7 @@ def check_targets(originals: dict[Path, str]) -> list[str]:
 
 
 def run_tests() -> bool:
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

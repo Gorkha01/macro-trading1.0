@@ -22590,3 +22590,173 @@ owning an edited file report `check_targets: 0 problem(s)`.
 `tests/models/{test_finite_inputs_contract,test_finite_inputs_repo_wide,test_trilemma}.py`,
 `docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
 **No new `src/` function, no config leaf, no new OpenBB command** (census stays 6).
+
+## D-139d — the four-file deep-read (`econometrics` / `fx_carry` / `regime` / `yield_curve`): SIX defects fixed, including a live `inf → nan` trade-constructor gap
+
+**Trigger:** the operator's *"deep-read all remaining"* directive — the four large
+model files whose BODIES had not been read line-by-line (`econometrics` 4439,
+`fx_carry` 2507, `regime` 2347, `yield_curve` 2114). Four independent full reads,
+then every finding re-measured before it was accepted (an audit PRESCRIPTION is a
+claim too).
+
+### 1. LIVE `inf → nan` in the two trade-constructor groups (yield_curve)
+
+`CurveTradeConstructor` and `BreakevenTradeConstructor` were plain `BaseModel` —
+and because they are not named `*Inputs`, the D-139b/c finiteness sweep **never
+reached them**. Measured: a `+inf` notional constructs, and the model body then
+publishes `net_duration_residual = nan` (`inf - inf`) with **`warnings=[]`** —
+the guard `abs(residual) >= tolerance` never fires on `nan` (D-078 exactly). Both
+rebased onto `FiniteInputs`; the sweep's class filter widened to
+`endswith(("Inputs", "Constructor"))` so a trade-constructor group is covered.
+
+### 2. Confidence over-stated on an uncalibrated heuristic (yield_curve)
+
+`inversion_probability_adjustment` emitted `compute_confidence(ConfidenceInputs())`
+— **0.7** — while its own docstring calls it *"a heuristic placeholder, not a
+fitted model"* and all four of its leaves ship `uncalibrated_illustrative`. The
+precedent it cites, `regime.check_trilemma_tension`, **does** apply
+`is_heuristic_not_calibrated`. New `_inversion_adjustment_is_calibrated()` (all
+four leaves) now drives the penalty → **0.5**, still flat across branches. The
+existing test asserted only flatness, never the level, so it could not catch this.
+
+### 3. A helper hardcoded `0.0` where the classifier reads the CONFIGURED boundary (fx_carry)
+
+`_dollar_smile_is_neutral` returned `x == 0.0 or y == 0.0` while
+`_dollar_smile_side` compares against `sign_boundary` (a config leaf), and its
+docstring claimed the two *"cannot disagree"*. Measured with `sign_boundary=0.05`:
+a value of `0.05` is classified `middle` but reported **not** neutral. The helper
+now takes `sign_boundary` and compares against it; both call sites and the warning
+text updated. The claim is now true.
+
+### 4. A calibration helper read ONE of the TWO leaves its function uses (fx_carry)
+
+`_cip_bands_are_calibrated` read only `notable_deviation_pct` and its docstring
+claimed it was *"the ONE leaf ``cip_check`` leans on"* — FALSE: `cip_check` reads
+`extreme_deviation_pct` too (via `_stress_labels`). It failed in the
+over-confident direction: calibrating `notable` alone would restore full
+confidence while the severity label still rested on an illustrative band. Now
+reads both, mirroring `_dollar_smile_thresholds_are_calibrated`.
+
+### 5. Computed-then-DROPPED sub-sample evidence (econometrics)
+
+`_regime_stability` computes each half's `n_obs`/`is_cointegrated`/`p_value` and a
+`note`, but `_cointegration_value` published only the verdict + agreement flag —
+while the docstring promised *"the two sub-sample p-values are reported so a
+reader can see them"* and a warning pointed at `regime_stability` on the value
+(a field holding only a verdict string). A FALSE CLAIM plus silent erasure. The
+detail is now published (`regime_stability_split_index` / `_first_half` /
+`_second_half` / `_note`).
+
+### 6. A grid table the code has never implemented (regime)
+
+`_select_state`'s docstring table showed the near-trend row as
+`falling → early_expansion, flat → mid_expansion`. The code splits on the **SIGN
+of the gap** (`gap < 0` → `early_expansion`, else `mid_expansion`), independent of
+the growth axis. Corrected, with a footnote naming the split.
+
+### Recorded, NOT fixed (durability, no live gap)
+
+Thirteen input groups still hand-roll a finiteness guard over a **hardcoded field
+name tuple** (`regime.RegimeInputs`, the five `fx_carry` groups,
+`commodities`×3, `em_vulnerability`, `equity_macro.DurationSensitivityInputs`,
+`intervention.InterventionCapacityInputs`, `probability.BayesInputs`). Each
+refuses non-finite values for its CURRENT fields (measured), so there is no live
+gap — but a field added later would escape silently, which is exactly why D-139
+promoted the shared base. Recorded as a follow-up. Lower-severity findings also
+recorded: `fx_carry._uip_warnings` accepts an unread parameter; `cip_check` omits
+`source_family`; `UIPDirection` absent from `__all__`; `ppp_valuation`'s
+`inputs_used` omits the fetch-path ISO codes; `econometrics._spread_stationarity`
+indexes `adfuller`'s tuple positionally (the fragility `_run_adf` guards against);
+three bare thresholds in `econometrics` (`> 0.95`, `> 10.0 *`, `/ 4.0`).
+
+### Gates (re-derived at CI scope — all green)
+
+`ruff check src/ tools/ tests/ scripts/` PASS · `ruff format --check` clean · bare
+`mypy` clean · reachability **PASS 58/58** · full suite green · `sweep_health.py`
+**OK**. Also fixed: the two tests that pinned the OLD (weaker) contracts —
+`test_the_confidence_helper_reads_the_notable_leaf_specifically` →
+`..._reads_both_bands`, and `test_dollar_smile_regime`'s helper call.
+
+**Files:** `src/macro_engine/models/{yield_curve,fx_carry,econometrics,regime}.py`,
+`tests/models/{test_yield_curve,test_cip_check,test_dollar_smile_regime,test_econometrics,test_finite_inputs_repo_wide}.py`,
+`docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
+**No new `src/` function beyond one helper, no config leaf, no new OpenBB command**
+(census stays 6).
+
+## D-140 — the sweep-speed fix: run pytest IN-PROCESS, so the ~10.8 s heavy import is paid ONCE instead of per mutation
+
+**Trigger:** the operator's observation that the sweep runtime is far too large.
+D-136 had *diagnosed* this ("the real fix = a single-interpreter worker… deferred
+to Phase 1+ performance work") and D-139b/c/d had just demonstrated the cost: a
+90-mutation sweep took **~40 minutes**.
+
+### 1. Root cause, MEASURED
+
+Every mutation ran
+``subprocess.run([sys.executable, "-m", "pytest", <tests>])`` — a **fresh
+interpreter per mutation**. Timed on the venv interpreter directly:
+
+| step | time |
+|---|---|
+| bare interpreter startup | 0.66 s |
+| ``import macro_engine.models.yield_curve`` | **10.8 s** |
+| full ``pytest <one test file>`` spawn | **14.9 s** |
+
+So ~11 of every ~15 s was **re-importing pandas / numpy / statsmodels / pydantic**
+— the same libraries, on every mutation. A 90-mutation sweep spent ~15 of its 40
+minutes importing.
+
+### 2. The fix — one shared in-process runner
+
+``scripts/_sweep_gate.run_pytest()`` executes pytest **in the sweep's own
+interpreter**, after purging every project module from ``sys.modules``
+(``macro_engine*``, ``tests*``, ``*conftest``) so the on-disk mutation is actually
+re-imported. It returns a ``CompletedProcess``-shaped object (``.returncode`` /
+``.stdout`` / ``.stderr``) and mirrors ``subprocess.run``'s keyword arguments, so a
+call site switches by NAME alone. ``-p no:cacheprovider`` is appended so thousands
+of runs do not rewrite ``.pytest_cache``.
+
+**Measured after the fix** (same test selection):
+
+| run | time |
+|---|---|
+| first (pays the import once) | 10.99 s |
+| mutated | **1.14 s** |
+| restored | **1.22 s** |
+
+**Correctness, proven not assumed:** the runner was driven through
+baseline → apply-a-real-mutation → restore; the exit codes were **0 → 2 → 0**, so
+the mutation is genuinely SEEN and the restore is clean. The failure mode is
+deliberately the SAFE one: an incomplete purge makes a mutation *invisible*, which
+reports a **survivor** (loud, investigated) rather than a false kill (silent, and
+inflates the score).
+
+### 3. Rollout — 52 sweeps, AST-precise
+
+``subprocess.run([sys.executable, "-m", "pytest", …])`` → ``_run_pytest_inproc(…)``
+in **52 files / 74 call sites**, rewritten with ``ast`` (the call is identified by
+its literal argument list, so a ``subprocess.run`` for ``git`` is never touched) and
+imported under an **alias** — because ~30 sweeps DEFINE their own ``run_pytest``
+and a plain import would both shadow and self-recurse. Unused ``subprocess``
+imports were removed.
+
+### 4. Result
+
+``mutation_yield_curve.py``: **89/90 killed, 1 expected-inert, in 3 m 25 s** —
+down from ~40 minutes (**~12x**), and the kill count *improved* from 88/90 because
+the one survivor (``MX7c``) was an **EQUIVALENT** mutation (D-031): the D-139d
+confidence fix made both branches yield 0.5, so "swap the branches" could not be
+observed. Retargeted to "the inverted branch drops the heuristic penalty", which
+makes the branches disagree → killed.
+
+### 5. Sweep-safety note
+
+The 40-minute run this superseded was SIGTERM'd mid-flight and left a mutant
+APPLIED (``"sign_boundary": vix_threshold``) plus two sidecars; triaged per O-157
+(one inert, one live) and restored. The fix also removes the main *reason* these
+long runs get interrupted.
+
+**Files:** `scripts/_sweep_gate.py`, `scripts/mutation_*.py` (52),
+`docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
+**No `src/` change from this item, no config leaf, no new OpenBB command** (census
+stays 6).

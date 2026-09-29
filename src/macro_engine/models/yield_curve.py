@@ -31,7 +31,7 @@ from itertools import pairwise
 from typing import Literal
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
@@ -529,6 +529,30 @@ class InversionHistoryInputs(FiniteInputs):
         return self
 
 
+def _inversion_adjustment_is_calibrated() -> bool:
+    """Whether EVERY leaf ``inversion_probability_adjustment`` leans on is calibrated.
+
+    D-139d. The function is, by its own docstring, a **heuristic placeholder, not
+    a fitted model** — so its confidence must carry ``is_heuristic_not_calibrated``
+    while its parameters are illustrative. It was emitting
+    ``compute_confidence(ConfidenceInputs())`` with no flags, i.e. **0.7**, where
+    the precedent it cites (``regime.check_trilemma_tension``, which does apply
+    ``is_heuristic_not_calibrated``) yields **0.5**. ALL FOUR leaves must be
+    calibrated before the penalty lifts — a single calibrated leaf among four
+    uncalibrated ones does not make the placeholder fitted.
+    """
+    settings = get_settings()
+    return all(
+        settings.is_calibrated(f"yield_curve.{leaf}")
+        for leaf in (
+            "max_adjustment",
+            "depth_saturation_bp",
+            "duration_saturation_cap",
+            "probability_ceiling",
+        )
+    )
+
+
 def inversion_probability_adjustment(inputs: InversionHistoryInputs) -> ModelResult:
     """Adjust a stated recession base rate for curve-inversion depth and duration.
 
@@ -557,6 +581,15 @@ def inversion_probability_adjustment(inputs: InversionHistoryInputs) -> ModelRes
     confidence would be a category error, and Section 22.8's formula produces
     one value.
 
+    **The LEVEL, however, is penalised (D-139d).** Flat does not mean
+    unpenalised: the mechanism is a heuristic placeholder whose four parameters
+    are ``uncalibrated_illustrative``, so every branch carries
+    ``is_heuristic_not_calibrated=True`` until ``_inversion_adjustment_is_calibrated()``
+    reports all four calibrated. Omitting the flag would publish **0.7** for a
+    placeholder the function's own docstring calls "not a fitted model" — the
+    over-confident direction Section 22.8 exists to prevent. ``check_trilemma_tension``,
+    the cited precedent, applies the same penalty.
+
     **The depth and duration factors saturate, and saturation is disclosed.**
     Beyond 100bp of depth or 26 weeks of duration the factors stop moving, so two
     materially different situations (a 30-week inversion and a 113-week one)
@@ -583,7 +616,15 @@ def inversion_probability_adjustment(inputs: InversionHistoryInputs) -> ModelRes
                 "saturated": False,
                 "ceiling_binding": reached_ceiling,
             },
-            confidence=compute_confidence(ConfidenceInputs()),
+            confidence=compute_confidence(
+                ConfidenceInputs(
+                    is_heuristic_not_calibrated=not _inversion_adjustment_is_calibrated(),
+                    # The base rate is a measured unconditional frequency (592
+                    # months); the inversion signal is one market series. There
+                    # is no second independent family to corroborate it.
+                    source_independence_count=0,
+                )
+            ),
             interpretation=(
                 f"Curve not inverted ({inputs.current_slope_bp:+.1f}bp) — "
                 f"recession probability is the stated base rate, {base_rate:.1%}, "
@@ -633,7 +674,12 @@ def inversion_probability_adjustment(inputs: InversionHistoryInputs) -> ModelRes
             "inverted_base_rate": settings.base_rates.inverted_12mo,
             "not_inverted_base_rate": settings.base_rates.not_inverted_12mo,
         },
-        confidence=compute_confidence(ConfidenceInputs()),
+        confidence=compute_confidence(
+            ConfidenceInputs(
+                is_heuristic_not_calibrated=not _inversion_adjustment_is_calibrated(),
+                source_independence_count=0,
+            )
+        ),
         interpretation=(
             f"Recession probability (12mo): {adjusted:.1%} "
             f"(base {base_rate:.1%} + inversion adjustment {adjustment:+.1%} "
@@ -697,7 +743,7 @@ def _tenor_years(tenor: str) -> float:
     return years
 
 
-class CurveTradeConstructor(BaseModel):
+class CurveTradeConstructor(FiniteInputs):
     """The two legs of a duration-weighted curve trade.
 
     Section 15.1b's shape, with three deliberate amendments.
@@ -958,7 +1004,7 @@ def construct_duration_weighted_curve_trade(
 # ---------------------------------------------------------------------------
 
 
-class BreakevenTradeConstructor(BaseModel):
+class BreakevenTradeConstructor(FiniteInputs):
     """The two legs of a duration-matched breakeven (TIPS vs nominal) trade.
 
     Section 15.1b's shape (``tenor``, ``tips_duration``, ``nominal_duration``,

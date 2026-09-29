@@ -429,7 +429,7 @@ def _select_state(
     ========================  ==============  ==============  ================
     ``above_trend``,          disinflation    reflation       late_expansion
     gap > band
-    ``above_trend``,          early_expansion mid_expansion   reflation
+    ``above_trend``,          expansion²      expansion²      reflation
     -band <= gap <= band
     ``contraction``           recovery¹/      slowdown        stagflation
                               slowdown
@@ -438,6 +438,12 @@ def _select_state(
 
     ¹ ``contraction`` + ``falling`` is ``recovery`` when
     ``output_gap_change > 0`` and ``slowdown`` otherwise — see below.
+    ² The near-trend row is split on the **SIGN of the gap**, not on the growth
+    axis: ``early_expansion`` when ``gap < 0`` (still climbing back to trend) and
+    ``mid_expansion`` when ``gap >= 0`` (settled onto it). The growth axis does
+    NOT decide this pair — an earlier version of this table showed ``falling →
+    early_expansion, flat → mid_expansion``, which the code has never done
+    (D-139d). ``rising`` at trend is ``reflation`` regardless of the gap's sign.
 
     Note ``above_trend`` is a single growth bucket — it covers
     ``gap >= weak_growth_gap``, which includes the near-trend strip as well as

@@ -304,7 +304,27 @@ def test_the_neutrality_helper_agrees_with_the_classifier() -> None:
     for value in (-1.0, -1e-9, 0.0, 1e-9, 1.0):
         for other in (-1.0, 0.0, 1.0):
             expected = (value == 0.0) or (other == 0.0)
-            assert _dollar_smile_is_neutral(value, other) is expected
+            assert _dollar_smile_is_neutral(value, other, sign_boundary=0.0) is expected
+
+
+def test_the_neutrality_helper_tracks_a_non_zero_boundary() -> None:
+    """D-139d: the helper must read the CONFIGURED boundary, not a hardcoded 0.0.
+
+    The classifier sends a value to the middle limb when it fails
+    ``> sign_boundary``. With the boundary at ``0.0`` the old hardcoded ``== 0.0``
+    agreed by luck; at any other boundary it would have disagreed — reporting a
+    value EQUAL to the boundary as not-neutral even though the classifier had
+    just placed it in the middle limb for exactly that reason.
+    """
+    boundary = 0.05
+    # A value equal to the boundary does NOT exceed it -> the classifier's middle
+    # limb -> the helper must call it neutral.
+    assert _dollar_smile_is_neutral(boundary, 0.0, sign_boundary=boundary) is True
+    # A value below the boundary is middle for a DIFFERENT reason (it points
+    # against US outperformance), so it is NOT the neutral case.
+    assert _dollar_smile_is_neutral(boundary - 0.01, 0.0, sign_boundary=boundary) is False
+    # And the old hardcoded behaviour is gone: 0.0 is not the boundary any more.
+    assert _dollar_smile_is_neutral(0.0, 0.0, sign_boundary=boundary) is False
 
 
 # ---------------------------------------------------------------------------

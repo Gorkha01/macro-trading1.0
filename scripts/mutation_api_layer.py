@@ -95,7 +95,6 @@ import argparse
 import ast
 import re
 import signal
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,6 +113,7 @@ from _sweep_gate import (
     record_pristine,
     restore_from_sidecar,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -1436,7 +1436,7 @@ def check_tests_collect() -> list[str]:
     # this file, not untrusted input. The rule fires on any non-literal argv,
     # which is why the original code inlined the paths and drifted from the
     # declaration; suppressing it here is the price of one shared list.
-    proc = subprocess.run(  # noqa: S603
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",
@@ -1538,7 +1538,7 @@ def run_pytest() -> tuple[int, str]:
     # file. The interpreter path is ``sys.executable``. Nothing here is
     # untrusted input, and sharing the list with ``check_tests_collect`` is what
     # stops the two from drifting (the D-070 defect).
-    proc = subprocess.run(  # noqa: S603
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",

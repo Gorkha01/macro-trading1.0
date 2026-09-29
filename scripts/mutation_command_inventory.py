@@ -43,7 +43,6 @@ The mutations are graded, not merely inverted:
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -56,6 +55,7 @@ from _sweep_gate import (
     format_problems,
     sweep_lifecycle,
 )
+from _sweep_gate import run_pytest as _run_pytest_inproc
 
 PROGRESS = Path("docs/PROGRESS.md")
 REGISTRY = Path("config/series_registry.yaml")
@@ -170,7 +170,7 @@ def run_tests() -> bool:
     touches needs a config-parity companion. The canary is a syntax error in the
     guard *module*, which the selection reaches directly.
     """
-    proc = subprocess.run(
+    proc = _run_pytest_inproc(
         [
             sys.executable,
             "-m",
