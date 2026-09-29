@@ -7394,3 +7394,44 @@ leaf added** (`rebalancing_contribution_sum_tolerance`) + a validator.
 `extensions/` (6) ✅. **The no-card `models/` pass, the `portfolio/` layer, and `extensions/` are all
 audited.** Root `config.py` is a schema module (scan-only; its accessors/validators were audited as each
 leaf was touched).
+
+---
+
+## D-133a — CI was RED on `main` while every local gate was green: the gate ran at a NARROWER SCOPE than CI (2026-09-29)
+
+**CORRECTION to the D-132/D-133 gate rows above.** The row `mypy --strict src/macro_engine — Success, 79
+source files` is *what was run*, but it is **not the gate**. CI (`.github/workflows/quality-gates.yml:40`)
+runs bare `uv run mypy`, which type-checks the **whole configured file set including `tests/`**. The
+79-file run sees none of `tests/`, and it hid **16 errors in two test files** — so `2c3955a` went to
+`main` green locally and **red in CI**, with `Reachability gate` / `Sweep health` / `Test suite` all
+`[skipped]` behind the failure.
+
+| Gate | Result (D-133a, re-measured at CI scope) |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` | **293 files already formatted** |
+| **`mypy` (bare — CI's actual scope)** | **Success: no issues found in 293 source files** |
+| the two touched test files | **252 passed in 4.80s** |
+| Full suite (`--junitxml`) | **4154 / 0 failures / 0 errors / 4 skipped** in **3m05s** — unchanged from D-132, so the fix touched no behaviour |
+| `reachability_audit.py --check-baseline` | **PASS — baseline 58, measured 58, no regressions** |
+| `sweep_health.py` (LAST) | **OK — 0 mutant shapes, 0 committed mutants, 0 failures** |
+| CI run `36540425225` on `352f458` | **SUCCESS — all 7 steps**, incl. the 3 previously skipped |
+
+**D-035's equality is `format` == `bare mypy` over the SAME file set: 293 == 293** (was 292 == 292 before
+`tools/ci_status.py` was added — **re-derive, never carry**).
+
+**Fixed:** `tests/models/test_commodities.py` (5 × `result.value["verdict"]` → `tests.helpers.as_str`, the
+sanctioned narrowing helper, imported last) and `tests/data_layer/test_commodities_client.py:1189`
+(`# type: ignore[arg-type]`, matching every sibling stub call site).
+
+**New:** `tools/ci_status.py` — CI verdict without `gh` (not installed here). Resolves the sha to its FULL
+40-char form (a 7-char prefix returns `total_count: 0`, indistinguishable from "not started"), recovers the
+token via `git credential fill`, and prints the per-job breakdown. Uses `httpx`, not `urllib` (S310 is
+exempted only for `scripts/*.py`, and `httpx` is what the rest of the codebase uses).
+
+### Audit coverage — MEASURED, not recalled
+
+**0 of 66 substantive `src/` files (>60 lines) lack a card** across all seven `docs/AUDIT*.md`.
+Caveat on the measurement: it is a *filename-mention* test, so it proves coverage is claimed, not that
+every card is an 8-class pass — but every layer carries an explicit verdict (`models/` 33 · `data_layer/`
+12 · `thesis_layer/` 8 · `api_layer/` 8 · root 3 · `portfolio/` 1 · `extensions/` 6).

@@ -21919,3 +21919,55 @@ M1.3b), `docs/AUDIT_PHASE04_LAYERS_FINDINGS.md` (PART 6 + PART 7, tracker rows a
 
 **With D-133 the Phase 0–4 LAYER audit is COMPLETE: `data_layer/` (12) + `thesis_layer/` (8) +
 `api_layer/` (8) + root (3) have all had the file-by-file 8-class pass.**
+
+---
+
+## D-133a — **CI was RED on `main` while every local gate was green: a gate run at a NARROWER SCOPE than CI is not the same gate** (16 mypy errors in two TEST files, both FIXED)
+
+**What this increment is.** `2c3955a` (D-130…D-133) was pushed and **CI FAILED** on it. Every local gate
+had passed. This records the diagnosis and the fix — and promotes the lesson to a standing rule, because
+the failure mode is general: *a gate is only evidence about the file set it actually ran over.*
+
+### 1. The measurement
+
+`.github/workflows/quality-gates.yml:40` is literally `run: uv run mypy` — **bare**, no path argument.
+`pyproject.toml` scopes mypy to the whole project, so CI type-checks **292 source files**. The gate I ran
+locally was `mypy --strict src/macro_engine` = **79 files**, which is `src/` only and therefore *sees none
+of `tests/`*. The 16 errors were all in two **test** files and were invisible to the narrower run:
+
+* `tests/models/test_commodities.py` — five `result.value["verdict"]` indexings. `ModelResult.value` is a
+  union; mypy cannot prove the `"verdict"` key exists. Fixed with the project's *sanctioned* narrowing
+  helper, `tests.helpers.as_str(result, key="verdict")` — the same convention the rest of the suite uses,
+  and a real refusal (it asserts and names the model) rather than a cast that would silence a genuine
+  shape fault. Import placed **last**, after every `macro_engine` import, per convention.
+* `tests/data_layer/test_commodities_client.py:1189` — the new `_StubClient` call site lacked the
+  `# type: ignore[arg-type]` every sibling stub call site in that file carries.
+
+**Consequence beyond the type errors themselves:** the mypy step SHORT-CIRCUITS the three later steps, so
+`Reachability gate` / `Sweep health` / `Test suite (offline)` were all `[skipped]` — a red `main` was
+hiding far more than 16 type errors.
+
+### 2. The standing rule this establishes
+
+**Run the gate at CI's scope, not a narrower one.** Before every push the type gate is
+**bare `.venv/Scripts/python.exe -m mypy`**, and D-035's equality is about the **same file set**:
+**292 (`ruff format --check`) == 292 (bare mypy)**. A `src/macro_engine`-scoped run is a *different*
+measurement (79) and must never be reported as the gate. `mypy --strict` vs bare `mypy` is a
+strictness question; the 79-vs-292 gap is a **scope** question, and scope was the one that bit.
+
+### 3. New tool — `tools/ci_status.py`
+
+`gh` is not installed here, so CI verification has been a hand-rolled `git credential fill` + `curl`
+dance repeated every push, with one trap that has already cost time: the run lookup **must** use the full
+40-character sha (a 7-char prefix returns `total_count: 0`, which reads as "CI has not started").
+`tools/ci_status.py` does sha resolution, token recovery, and the per-job verdict breakdown in one call:
+`python tools/ci_status.py [sha]`.
+
+### Gates (quiescent, sequential)
+
+`ruff check` PASS · `ruff format --check` **292 files already formatted** · **bare `mypy` — Success, no
+issues found in 292 source files** (the gate, at CI scope) · the two touched test files **252 passed in
+4.80s**.
+
+**Files:** `tests/models/test_commodities.py`, `tests/data_layer/test_commodities_client.py`,
+`tools/ci_status.py` (new), `docs/DECISIONS.md`. **No `src/` file touched.**
