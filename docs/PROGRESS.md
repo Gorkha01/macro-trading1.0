@@ -7435,3 +7435,41 @@ exempted only for `scripts/*.py`, and `httpx` is what the rest of the codebase u
 Caveat on the measurement: it is a *filename-mention* test, so it proves coverage is claimed, not that
 every card is an 8-class pass — but every layer carries an explicit verdict (`models/` 33 · `data_layer/`
 12 · `thesis_layer/` 8 · `api_layer/` 8 · root 3 · `portfolio/` 1 · `extensions/` 6).
+
+---
+
+## D-134 — the FUNCTION-level audit: `parse_compact_timestamp`'s "Used by tools" was FALSE (Class H)
+
+File-level coverage was **0 of 66 uncarded**, which says nothing about functions. Measured the function
+level instead: **583 public functions in `src/` · 83 never named in any test · 23 with no reference
+outside their own module · 1 genuine defect after triage by call site.**
+
+| Bucket | Count | Verdict |
+|---|---|---|
+| `@property` accessors in `config.py` | ~30 | exercised indirectly |
+| `__all__` exports (`get_audit_ledger`, `parquet_path_for`, `validate_*`, …) | 7 | deliberate public API |
+| `extensions/*` optional-dependency adapters | 8 | unwired by design (card X-1) |
+| statmodels protocol overrides (`transform_params` / `untransform_params`) | 2 | the *opposite* of dead |
+| my own AST false positive (nested closure `gap_at`) | 1 | measurement artefact |
+| real in-module callers (`iter_curves`, `optional_timestamp`, `decoded_value`, `fetch_metal_change`) | 4 | false positive |
+| **genuine finding** | **1** | **`parse_compact_timestamp` — fixed** |
+
+**The defect:** `persistence.py:424`'s docstring claimed *"Used by tools"* — **false, measured** (no
+reference in `src/`, `scripts/`, `tools/`, or any YAML registry). Same class as X-L1/X-L2 (a published
+claim not in effect). **Docstring corrected; no behaviour change.**
+
+**Guard:** `test_the_compact_timestamp_round_trips_through_the_real_writer` — round-trips through the REAL
+writer (not a re-typed format string, which is the D-031 pinner failure) and asserts `parquet_path_for`'s
+lexicographic-order claim rather than trusting it. **Kill-proved**: hand-mutating the format to
+`"%Y%m%d-%H%M%SZ"` fails it; reverted and verified.
+
+**Reported, not fixed:** `reset_settings_store_cache` (`settings_store.py:569`) is also unreferenced, but
+its docstring states a *purpose*, not a current use — a legitimate unused seam, not a false claim.
+
+| Gate | Result |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` / bare `mypy` | **293 == 293** (D-035, at CI scope) |
+| full suite (`--junitxml`) | **4155 / 0 / 0 / 4** in 3m05s (4154 + the new test) |
+| `reachability_audit.py --check-baseline` | **PASS 58/58, no regressions** |
+| `sweep_health.py` (LAST) | **OK — 0 leftovers, 0 shapes, 0 committed, 0 failures** |

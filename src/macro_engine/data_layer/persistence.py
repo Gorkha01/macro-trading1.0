@@ -422,5 +422,24 @@ def load_snapshot(country: str = "us", *, strict: bool = False) -> MacroDataSnap
 
 
 def parse_compact_timestamp(token: str) -> datetime:
-    """Inverse of ``parquet_path_for``'s filename token. Used by tools."""
+    """Inverse of :func:`parquet_path_for`'s filename token.
+
+    This exists to make the invariant :func:`parquet_path_for` relies on
+    checkable: the ``YYYYMMDDTHHMMSSZ`` compaction is exactly what makes the
+    lexicographic order of the filenames match chronological order.
+
+    **It has no production caller, and the docstring used to claim otherwise**
+    ("Used by tools" — measured 2026-09-29: no module in ``src/``, ``scripts/``
+    or ``tools/`` references it). Nothing needs to reverse the token today
+    because ``load_latest_snapshot_frame`` takes the LAST name from a
+    glob-and-sort, which is the whole point of the compaction. It is kept as
+    the single place the token format is decoded, so a change to that format
+    has one definition to argue with instead of a re-derived ``strptime`` at
+    each future reader.
+
+    Raises :class:`ValueError` on a token that is not in the format. It
+    refuses rather than returning ``None``: an unparsed timestamp read as a
+    fallback would silently become a wrong "latest" ordering, which is the
+    O-134 class of fault.
+    """
     return datetime.strptime(token, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)

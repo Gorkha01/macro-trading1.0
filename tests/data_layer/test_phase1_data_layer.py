@@ -36,6 +36,10 @@ from macro_engine.data_layer.openbb_client import (
     OpenBBClientConfig,
     OpenBBFetchError,
 )
+from macro_engine.data_layer.persistence import (
+    parquet_path_for,
+    parse_compact_timestamp,
+)
 from macro_engine.data_layer.schemas import (
     MacroDataSnapshot,
     ObservationPoint,
@@ -2127,3 +2131,44 @@ class TestPointInTimeProvenance:
         assert snapshot.as_of == built
         assert snapshot.decision_cutoff == decided
         assert snapshot.decision_cutoff < snapshot.as_of
+
+
+def test_the_compact_timestamp_round_trips_through_the_real_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """D-134 — `parse_compact_timestamp` really IS `parquet_path_for`'s inverse.
+
+    `parse_compact_timestamp` has **no production caller** (measured 2026-09-29:
+    referenced by no module in `src/`, `scripts/` or `tools/`) while its
+    docstring claimed "Used by tools". Nothing else in the tree would therefore
+    notice if the two halves of the token format drifted apart.
+
+    This pins the round trip through the REAL writer rather than re-typing the
+    format string — a test that re-typed `"%Y%m%dT%H%M%SZ"` would pass under any
+    drift, which is the D-031 pinner failure.
+
+    `parquet_path_for`'s docstring also CLAIMS the compaction makes
+    lexicographic filename order match chronological order (what makes
+    glob-and-sort the correct "latest" implementation). The second half asserts
+    that claim instead of trusting it — the X-L1/X-L2 class, where a published
+    statement was not in effect.
+    """
+    monkeypatch.setattr("macro_engine.data_layer.persistence._raw_root", lambda _country: tmp_path)
+
+    stamp = datetime(2026, 9, 29, 14, 37, 5, tzinfo=UTC)
+    # Named `compact`, not `token`: bandit's S105 reads any `token = "..."` as a
+    # hardcoded credential, and this is a filename component.
+    compact = parquet_path_for(MacroDataSnapshot(as_of=stamp)).stem
+    assert compact == "20260929T143705Z", "the on-disk token format changed"
+    assert parse_compact_timestamp(compact) == stamp
+
+    earlier = parquet_path_for(
+        MacroDataSnapshot(as_of=datetime(2026, 1, 5, 9, 0, 0, tzinfo=UTC))
+    ).name
+    later = parquet_path_for(
+        MacroDataSnapshot(as_of=datetime(2026, 11, 5, 9, 0, 0, tzinfo=UTC))
+    ).name
+    assert earlier < later, (
+        "the compaction no longer sorts chronologically, so glob-and-sort is wrong"
+    )

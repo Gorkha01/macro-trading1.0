@@ -21971,3 +21971,88 @@ issues found in 292 source files** (the gate, at CI scope) · the two touched te
 
 **Files:** `tests/models/test_commodities.py`, `tests/data_layer/test_commodities_client.py`,
 `tools/ci_status.py` (new), `docs/DECISIONS.md`. **No `src/` file touched.**
+
+---
+
+## D-134 — the FUNCTION-level audit: `parse_compact_timestamp`'s docstring claimed a use that does not exist (Class H) — **FALSE CLAIM REMOVED + the round-trip pinned by a kill-proved test**
+
+**What this increment is.** The file-card audit reached **0 of 66 substantive `src/` files without a
+card**, which is a *file-level* completion signal and says nothing about functions. This pass measured the
+function level: **583 public functions in `src/`; 83 never named in any test; 23 with no reference outside
+their own module.** Triage by *call site*, not by name — and the triage is what matters, because the raw
+number is mostly noise.
+
+### 1. The triage — why 23 became 1
+
+Most of the 83 are **not defects**, and each was cleared by measurement rather than by assumption:
+
+* **`@property` accessors in `config.py`** (~30) — config surface, exercised indirectly.
+* **`__all__` exports** — `get_audit_ledger`, `get_settings_store`, `parquet_path_for`,
+  `validate_unemployment_rate`, `validate_positive_index_level`, `validate_equity_index`. Deliberate
+  public API surface; unreferenced in-tree is the *point* of an exported name.
+* **`extensions/*` (8)** — `run_rule_backtest`, `update_thesis_posterior`, `query_series`, `track_run`,
+  `log_model_result`, `wrap_model`, `thesis_to_order_intent`, `build_scheduler`. Unwired **by design**
+  (card X-1: optional-dependency adapters).
+* **Framework-protocol overrides** — `transform_params` / `untransform_params` (`econometrics.py:1941`,
+  `:1955`) are statmodels `MLEModel` hooks, called by `fit()`. They are the *opposite* of dead: the
+  docstring records the measured defect they exist to prevent (base identity transform ⇒
+  `sigma2.slope = -3.24` and `nan` standard errors everywhere while the fit reported no error).
+* **My own measurement's false positives** — `gap_at` is a **nested closure** the AST walk mis-attributed
+  as module-level; `iter_curves`, `optional_timestamp`, `decoded_value`, `fetch_metal_change` all have real
+  call sites *inside* their own module (a "no external reference" test is too strict).
+
+**One genuine finding survived: `parse_compact_timestamp` (`persistence.py:424`).**
+
+### 2. The defect (Class H — a published claim that is not in effect)
+
+Its docstring read, verbatim: ``"Inverse of ``parquet_path_for``'s filename token. Used by tools."``
+
+**"Used by tools" is false, measured**: no module in `src/`, `scripts/` or `tools/` references it, and no
+YAML registry does either. This is the **X-L1/X-L2 class** — the same shape as the two cross-cutting
+defects this audit already found and closed (a declared mandate not in effect; a published disclosure
+asserting a penalty that is not enforced). Here the false statement is a docstring, but the failure mode is
+identical: a reader trusts a claim about the code instead of the code.
+
+The aggravating part is *why* nothing uses it, which the old docstring also got wrong: `parquet_path_for`
+compacts the timestamp precisely so that **lexicographic filename order equals chronological order**, which
+is what lets `load_latest_snapshot_frame` take the last name from a glob-and-sort and never parse one. The
+inverse is unnecessary *by construction* — so the honest statement is "no production caller, kept as the
+single decoder of the token format".
+
+**Fix:** the docstring now says that, and says why, and documents that it **refuses** (raises `ValueError`)
+rather than returning `None` — an unparsed timestamp read as a fallback would silently become a wrong
+"latest" ordering (the O-134 class).
+
+### 3. The kill-proved guard
+
+`test_the_compact_timestamp_round_trips_through_the_real_writer` asserts the round trip through the **real
+writer** (`parquet_path_for`), not a re-typed format string — a test that re-typed `"%Y%m%dT%H%M%SZ"` would
+pass under any drift, which is exactly the **D-031 pinner** failure. It also asserts the *claim*
+`parquet_path_for` makes (earlier stamp's filename sorts before later's) instead of trusting it.
+
+**Prove it kills:** hand-mutating `parquet_path_for`'s format to `"%Y%m%d-%H%M%SZ"` fails the test
+(`20260929T143705Z` vs `20260929-143705Z`); reverted, and the revert verified (no `MUTANT` marker, file
+green again).
+
+Two mechanics worth recording: `_raw_root` **mkdirs as a side effect**, so the test monkeypatches it to
+`tmp_path` rather than letting a test create directories; and the local variable is named `compact`, not
+`token`, because bandit's **S105** reads any `token = "…"` as a hardcoded credential.
+
+### 4. Reported, not fixed
+
+`reset_settings_store_cache` (`settings_store.py:569`) is likewise unreferenced — but its docstring says
+what it is *for* ("For tests that point at a different database"), not that anything currently uses it.
+That is a legitimate unused seam, not a false claim, so it is recorded rather than removed.
+
+### Gates (quiescent, sequential)
+
+`ruff check` **All checks passed** · `ruff format --check` **293 files already formatted** · **bare `mypy`
+(at CI scope) Success: no issues found in 293 source files** — **D-035: 293 == 293** ·
+`tests/data_layer/test_phase1_data_layer.py` **69 passed** · full suite **4155 / 0 failures / 0 errors /
+4 skipped** (= 4154 + the new test; in 3m05s) · `reachability_audit.py --check-baseline` **PASS 58/58, no
+regressions** · `sweep_health.py` **OK — 0 leftovers, 0 mutant shapes, 0 committed mutants, 0 failures**;
+no `.sweepbackup` sidecars.
+
+**Files:** `src/macro_engine/data_layer/persistence.py` (docstring only — **no behaviour change**),
+`tests/data_layer/test_phase1_data_layer.py` (the guard), `docs/DECISIONS.md`, `docs/PROGRESS.md`.
+**No function added, no config leaf added, no new OpenBB command** (census stays 6).
