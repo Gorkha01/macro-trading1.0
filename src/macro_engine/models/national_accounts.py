@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
@@ -101,7 +101,7 @@ class QuantityTheoryInputs(FiniteInputs):
     real_output_growth_pct: float = Field(description="%dY — real output growth.")
 
 
-class IndexNumberInputs(BaseModel):
+class IndexNumberInputs(FiniteInputs):
     """A basket priced at two dates, with the quantity vector for one of them."""
 
     model_config = ConfigDict(extra="forbid")

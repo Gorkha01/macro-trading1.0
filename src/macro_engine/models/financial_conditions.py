@@ -66,6 +66,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -149,7 +150,7 @@ class FCIComponent(BaseModel):
         return (self.value - self.mean) / self.std
 
 
-class FCIInputs(BaseModel):
+class FCIInputs(FiniteInputs):
     """Five standardised-able components, plus the window they were standardised over.
 
     Every component is a level (for the rates and spreads) or a change (for the

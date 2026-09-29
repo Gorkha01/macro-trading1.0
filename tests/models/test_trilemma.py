@@ -461,23 +461,23 @@ def test_the_thresholds_cannot_cross_zero() -> None:
         )
 
 
-def test_a_nan_reading_does_not_silently_fire() -> None:
-    """``NaN`` is not ``None``, and every comparison against it is ``False``.
+def test_a_nan_reading_is_refused_at_construction() -> None:
+    """``NaN`` is not ``None``: it is refused before it can reach a comparison.
 
     ``float("nan") < threshold`` is ``False`` while ``not (nan >= threshold)`` is
     ``True``, so a guard written as a negation would treat a NaN as a breach — a
-    reading nobody made, reported as a crisis. The shipped form is safe because
-    ``nan < threshold`` is simply ``False``, but that safety is a property of the
-    *operator*, not an accident worth leaving unpinned.
+    reading nobody made, reported as a crisis. The shipped form (``nan <
+    threshold``) happened to be safe because that comparison is ``False``, but
+    that safety was a property of the *operator*, and D-139c closed the class
+    structurally instead: ``TrilemmaInputs`` now inherits
+    ``contracts.FiniteInputs``, so a non-finite reserves reading is refused at
+    construction and never reaches the comparison at all. This is strictly
+    stronger than relying on the operator's polarity — the earlier version of
+    this test asserted the operator's behaviour on a NaN that could be
+    constructed, which is exactly the value the guard now forbids.
     """
-    with _PatchedSettings(_SYNTHETIC):
-        nan = float("nan")
-        result = check_trilemma_tension(_inputs(**_BW_CONFLICT, reserves_trend_pct_change_3mo=nan))
-        value = result.value
-        assert isinstance(value, dict)
-        assert value["reserves_depleting_3mo"] is False, (
-            "NaN must not read as a breach — it is the absence of a measurement, not an extreme one"
-        )
+    with _PatchedSettings(_SYNTHETIC), pytest.raises(ValidationError, match="non-finite"):
+        _inputs(**_BW_CONFLICT, reserves_trend_pct_change_3mo=float("nan"))
 
 
 def test_an_absent_1mo_measure_cannot_fire_the_acute_branch() -> None:

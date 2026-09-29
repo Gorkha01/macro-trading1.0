@@ -12,6 +12,7 @@ import math
 from statistics import NormalDist
 
 import pytest
+from pydantic import ValidationError
 
 from macro_engine.models.risk import (
     _Z_QUANTILES,
@@ -891,3 +892,112 @@ def test_the_overweight_multiple_is_taken_from_config_not_a_literal(
     assert not any("materially more risk" in w for w in moved.warnings), (
         "the over-contribution flag fired above its configured multiple — the leaf is not taken"
     )
+
+
+# ===========================================================================
+# D-139b — the finiteness guard for LIST and NESTED-LIST inputs
+#
+# The repo-wide finiteness sweep in tests/models/test_finite_inputs_repo_wide.py
+# probes the FIRST float field of each input group. For a group whose first
+# float field is a ``list[float]`` (``ReturnsInputs.returns``), replacing the
+# whole field with a scalar ``nan`` is refused because it is no longer a list —
+# a ValidationError for the WRONG reason, which the sweep reads as "guarded".
+# Measured 2026-09-30: historical_var(returns=[-0.05, nan, 0.01, 0.02, -0.03])
+# published value=nan. These tests pin the real guard.
+# ===========================================================================
+
+
+def test_a_nan_inside_the_returns_list_is_refused() -> None:
+    """A nan ELEMENT of ``returns`` must be refused at construction (D-139b)."""
+    with pytest.raises(ValidationError) as excinfo:
+        ReturnsInputs(returns=[-0.05, math.nan, 0.01, 0.02, -0.03])
+    assert "finite" in str(excinfo.value).lower()
+
+
+def test_an_inf_inside_the_returns_list_is_refused() -> None:
+    """``inf`` is the other half of the class — it inverts signs under subtraction."""
+    for bad in (math.inf, -math.inf):
+        with pytest.raises(ValidationError):
+            ReturnsInputs(returns=[0.01, bad])
+
+
+def test_a_nan_return_would_have_published_a_nan_var() -> None:
+    """The measured consequence: a nan in the sample reaches the quantile.
+
+    This is the end-to-end effect the input guard prevents. Stated as a test
+    over ``_quantile`` (which is what ``historical_var`` reads) rather than over
+    the now-guarded input, because the input can no longer be constructed with a
+    nan — the point is that WITHOUT the guard this is what would ship.
+    """
+    from macro_engine.models.risk import _quantile
+
+    # sorted() places nan last, so the 0.05 quantile of a contaminated sample
+    # can select it; the VaR is then nan, published as a "risk number".
+    contaminated = [-0.05, math.nan, 0.01, 0.02, -0.03]
+    quantile = _quantile(sorted(contaminated), 0.05)
+    assert math.isnan(quantile), (
+        "the premise of the guard no longer holds: a nan element must reach the "
+        "quantile for the input refusal to be load-bearing"
+    )
+
+
+def test_realized_vol_refuses_a_nan_return() -> None:
+    """``RealizedVolInputs`` inherits the guard (D-139b)."""
+    with pytest.raises(ValidationError):
+        RealizedVolInputs(returns=[0.01, math.nan, 0.02])
+
+
+def test_portfolio_var_refuses_a_nan_in_the_nested_covariance_matrix() -> None:
+    """The RECURSIVE branch: a nan inside ``list[list[float]]`` is refused.
+
+    This is the case a one-level scan misses — an element of the matrix is a
+    ``list``, not a ``float`` — and it is the one that matters most, because a
+    nan covariance diagonal yields a nan portfolio volatility.
+    """
+    from macro_engine.models.risk import PortfolioVaRInputs
+
+    with pytest.raises(ValidationError) as excinfo:
+        PortfolioVaRInputs(
+            weights=[1.0],
+            covariance_matrix=[[math.nan]],
+            portfolio_value=100.0,
+        )
+    # The error must name the CELL, not merely the field.
+    assert "covariance_matrix[0][0]" in str(excinfo.value)
+
+
+def test_monte_carlo_refuses_a_nan_off_diagonal_correlation() -> None:
+    """``MonteCarloVaRInputs`` refuses a nested nan in ``normal_correlations``."""
+    from macro_engine.models.risk import MonteCarloVaRInputs
+
+    with pytest.raises(ValidationError) as excinfo:
+        MonteCarloVaRInputs(
+            weights=[1.0, -0.5],
+            factor_volatilities=[0.1, 0.2],
+            normal_correlations=[[1.0, math.nan], [math.nan, 1.0]],
+            portfolio_value=100.0,
+        )
+    assert "normal_correlations[0][1]" in str(excinfo.value)
+
+
+def test_parametric_var_refuses_an_infinite_volatility() -> None:
+    """``+inf`` passes ``ge=0.0``, so only the shared guard catches it (D-139b)."""
+    with pytest.raises(ValidationError):
+        ParametricVaRInputs(portfolio_value=100.0, vol_annualized=math.inf)
+
+
+def test_valid_list_and_matrix_inputs_still_construct() -> None:
+    """The positive control: the recursive walk must not reject finite data."""
+    from macro_engine.models.risk import MonteCarloVaRInputs, PortfolioVaRInputs
+
+    assert ReturnsInputs(returns=[0.01, -0.02]).returns == [0.01, -0.02]
+    assert RealizedVolInputs(returns=[0.01, -0.02]).window == 21
+    assert PortfolioVaRInputs(
+        weights=[1.0], covariance_matrix=[[0.04]], portfolio_value=100.0
+    ).weights == [1.0]
+    assert MonteCarloVaRInputs(
+        weights=[1.0, -0.5],
+        factor_volatilities=[0.1, 0.2],
+        normal_correlations=[[1.0, 0.2], [0.2, 1.0]],
+        portfolio_value=100.0,
+    ).weights == [1.0, -0.5]

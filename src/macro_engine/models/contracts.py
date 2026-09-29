@@ -97,6 +97,29 @@ class FiniteInputs(BaseModel):
       ``claims_trend_signal`` consumes (a weekly claims series where one bad
       print would otherwise propagate silently through both windows).
 
+    **Nested containers are covered too (D-139b).** A ``list[list[float]]`` —
+    a covariance or correlation MATRIX, the shape ``risk.PortfolioVaRInputs``
+    and ``risk.MonteCarloVaRInputs`` carry — is walked recursively, because an
+    element of a matrix is a ``list``, not a ``float``, so a one-level scan
+    would pass a ``nan`` on the diagonal straight through and the model would
+    publish a ``nan`` volatility/VaR. The walk is bounded by the data (a finite
+    nesting depth), never by a fixed index count.
+
+    **Dict VALUES are covered too (D-139c).** A ``dict[str, float]`` — the shape
+    ``yield_curve.CurveSlopeInputs.tenors`` carries, a tenor→rate map — holds its
+    numbers in the VALUES, and ``isinstance(value, (list, tuple))`` never sees
+    them. A ``nan`` rate at one tenor would pass a one-shape scan and then
+    contaminate every slope/curvature number derived from the curve. Dict keys
+    are strings and are not inspected; only values are walked. A
+    ``dict[str, list[float]]`` (``gdp_nowcast.SimpleGDPNowcastInputs``' quarter
+    maps) is walked through both levels.
+
+    **Nested MODEL fields are covered too (D-139c).** A field whose type is
+    itself a pydantic model (``financial_conditions.FCIInputs``' five
+    ``FCIComponent`` slots) is still an input: the walk recurses through the
+    nested model's fields, so a ``nan`` in a sub-component is refused rather than
+    slipping past because it is not a bare ``float``.
+
     Only *float* checks run: ``bool`` is a subclass of ``int`` in Python but is
     not a ``float``, and ``int`` is always finite, so neither can false-positive
     here. Non-numeric fields are ignored.
@@ -104,17 +127,56 @@ class FiniteInputs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @staticmethod
+    def _non_finite_offenders(name: str, value: object, path: str = "") -> list[str]:
+        """Recursively collect non-finite floats reachable from ``value``.
+
+        A scalar float is reported as ``name``; a list/tuple element as
+        ``name[index]``; a nested container as ``name[i][j]``; a dict value as
+        ``name['key']``. The error therefore names the EXACT cell, not merely the
+        field, which is what makes a matrix or a curve map debuggable.
+        """
+        location = f"{name}{path}"
+        if isinstance(value, bool):
+            # bool is an int subclass and never non-finite; excluded explicitly
+            # so the isinstance(float) test below cannot be reached with it.
+            return []
+        if isinstance(value, float):
+            return [] if isfinite(value) else [f"{location}={value!r}"]
+        if isinstance(value, (list, tuple)):
+            offenders: list[str] = []
+            for index, element in enumerate(value):
+                offenders.extend(
+                    FiniteInputs._non_finite_offenders(name, element, f"{path}[{index}]")
+                )
+            return offenders
+        if isinstance(value, dict):
+            offenders = []
+            for key, element in value.items():
+                offenders.extend(
+                    FiniteInputs._non_finite_offenders(name, element, f"{path}[{key!r}]")
+                )
+            return offenders
+        if isinstance(value, BaseModel):
+            # A nested model field (e.g. FCIInputs' five FCIComponent slots) is
+            # still an input: its floats must be finite too. Recurse through its
+            # fields so the guard covers a group of sub-components, not only the
+            # scalars at the top level.
+            offenders = []
+            for sub_name in type(value).model_fields:
+                offenders.extend(
+                    FiniteInputs._non_finite_offenders(
+                        name, getattr(value, sub_name), f"{path}.{sub_name}"
+                    )
+                )
+            return offenders
+        return []
+
     @model_validator(mode="after")
     def _reject_non_finite(self) -> FiniteInputs:
         offenders: list[str] = []
         for name in type(self).model_fields:
-            value = getattr(self, name)
-            if isinstance(value, float) and not isfinite(value):
-                offenders.append(f"{name}={value!r}")
-            elif isinstance(value, (list, tuple)):
-                for index, element in enumerate(value):
-                    if isinstance(element, float) and not isfinite(element):
-                        offenders.append(f"{name}[{index}]={element!r}")
+            offenders.extend(self._non_finite_offenders(name, getattr(self, name)))
         if offenders:
             raise ValueError(
                 f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}"

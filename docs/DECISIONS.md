@@ -22417,3 +22417,176 @@ source files** · reachability **PASS — 58/58, no regressions** · full suite
 `docs/PHASE2_MODELS_REVIEW.md` (new), `docs/README.md`, `docs/DECISIONS.md`,
 `docs/PROGRESS.md`.
 **No new `src/` function, no new OpenBB command** (census stays 6). 5 new config leaves.
+
+## D-139b — the D-139 sweep had a BLIND SPOT: it probed only each class's FIRST float field, as a scalar, so a `nan`/`inf` inside a `list[float]` or a nested matrix slipped past every check
+
+**Trigger:** continuing the Phase 2 deep-read of `models/risk.py` after D-139 was
+committed (`ea43109`, CI **SUCCESS**). The class-by-class read asked the question
+the D-139 sweep *claimed* to have answered — "can a non-finite float reach this
+body?" — and the answer for `risk.py` was **yes, in five places**.
+
+### 1. The defect: a `nan` inside a returns list published a `nan` VaR
+
+`risk.ReturnsInputs`, `RealizedVolInputs`, `PortfolioVaRInputs` and
+`MonteCarloVaRInputs` were plain `BaseModel` (not `FiniteInputs`). Measured:
+
+```
+historical_var(ReturnsInputs(returns=[-0.05, nan, 0.01, 0.02, -0.03]))
+  -> value = nan            # a VaR of nan, published as a risk number
+```
+
+`sorted()` places `nan` unpredictably, so the `(1 - confidence)` loss quantile can
+land *on* it. A `nan` covariance diagonal would likewise produce a `nan` portfolio
+volatility. This is the D-078 class reached through a **container element**, and
+the confidence is computed as if the sample were clean.
+
+### 2. Why the D-139 sweep stayed GREEN over a live defect
+
+`tests/models/test_finite_inputs_repo_wide.py` probed only each class's **first**
+float field, replacing it with a scalar `nan`. For `ReturnsInputs` that first
+field is `returns` — a `list[float]` — so the probe made the field a *non-list*,
+which pydantic refuses because it is not a list. That is a `ValidationError` **for
+the wrong reason**, and the sweep read it as "guarded". This is trap class 1
+(evidence integrity: a gate that passes for a reason unrelated to the property it
+claims to check), and the same "does the gate see the real thing" lesson as D-133a
+— the gate ran at a scope narrower than the claim.
+
+### 3. The fix, at root
+
+- **`contracts.FiniteInputs._reject_non_finite` now RECURSES.** The old body
+  scanned one level (`list`/`tuple` elements that are `float`). A matrix is
+  `list[list[float]]`, so an element is a `list`, not a `float` — a one-level scan
+  passes it. A new `_non_finite_offenders(name, value, path)` walks nested
+  containers and reports the exact CELL (`covariance_matrix[0][0]=nan`), bounded by
+  the data's finite nesting depth. `bool` is excluded explicitly (it is an `int`
+  subclass, never a non-finite float).
+- **Four `risk.py` classes rebased onto `FiniteInputs`:** `ReturnsInputs`,
+  `RealizedVolInputs`, `PortfolioVaRInputs`, `MonteCarloVaRInputs`.
+- **The extended sweep found a FIFTH gap the manual probe missed:**
+  `inflation_nowcast.ShelterLagInputs` had **no** finiteness validator at all
+  (its first float field — `market_rent_growth_yoy_pct` — is a `list[float]`, so
+  the old scalar probe never reached it). Rebased onto `FiniteInputs`. Its
+  `current_cpi_shelter_yoy_pct` also accepted `+inf`.
+
+### 4. The sweep was extended so the blind spot CANNOT recur
+
+`_float_field_paths()` now returns, for every float-bearing field, its SHAPE
+(scalar / `list[float]` / `list[list[float]]`), and both sweep tests contaminate
+the target at the shape it declares (`_contaminate`). Proven a KILLER: run against
+a deliberately-unguarded `list[float]` class it names that field as an offender,
+where the old first-field-only probe stayed silent.
+
+### 5. Sweep-safety incident during verification (self-inflicted, caught)
+
+I ran `scripts/mutation_monte_carlo_var.py` (40 mutations, owns `risk.py` +
+`config.py`) under a 900 s foreground `timeout`; it was SIGTERM'd mid-run and left
+**two sidecars**. Triage per O-157: `config.py.sweepbackup` was IDENTICAL to live
+(inert — deleted); `risk.py.sweepbackup` DIFFERED at line 1485 — **the killed
+sweep had left a mutant applied on disk** (`> 1.0` where the live code needs
+`> settings.stress_diversification_warning`). Restored `risk.py` from the sidecar
+(verified it contained my D-139b edits AND the pristine line), deleted both
+sidecars, confirmed no stray processes. **Lesson: run a full sweep backgrounded,
+never under a foreground timeout that can kill it — on win32 a killed sweep leaves
+mutants applied.**
+
+### Gates (re-derived at CI scope — all green)
+
+`ruff check src/ tools/ tests/ scripts/` PASS · `ruff format --check` **296** clean ·
+bare `mypy` **296** files clean · reachability **PASS 58/58** · full suite
+**4311 tests / 0 failures / 0 errors / 23 skipped** (`--junitxml`) · `sweep_health.py`
+**OK — 52 sweeps, 0 failures, 0 leftovers**; the three sweeps owning the edited
+files (`mutation_evidence` 18, `mutation_inflation_nowcast` 23,
+`mutation_monte_carlo_var` 40) all report `check_targets: 0 problem(s)`.
+
+**Files:** `src/macro_engine/models/contracts.py`,
+`src/macro_engine/models/risk.py`,
+`src/macro_engine/models/inflation_nowcast.py`,
+`tests/models/test_risk.py`, `tests/models/test_finite_inputs_repo_wide.py`,
+`docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
+**No new `src/` function, no config leaf, no new OpenBB command** (census stays 6).
+
+## D-139c — the sweep's THIRD blind spot: it SKIPPED 21 classes its builder could not construct, and the guard missed three container shapes (dict values, dict-of-list, nested models)
+
+**Trigger:** while extending the D-139b sweep to contaminate the correct field
+SHAPE, a question was asked of the sweep itself — *which classes does it actually
+check?* The answer was **not all of them**: the builder returned ``None`` (skip)
+for **21 of the ~60** input groups, because it constructed a payload naively and
+gave up on any class with a semantic validator or an unknown field shape. Those
+skipped classes were exactly where gaps survived.
+
+### 1. The skipped classes carried real gaps
+
+Probing the skipped classes by hand found **four more live gaps** the sweep had
+never reached:
+
+| Class | Field | Accepted |
+|---|---|---|
+| `regime.TrilemmaInputs` | `reserves_trend_pct_change_3mo` / `_1mo` | `nan`, `inf` |
+| `yield_curve.CurveSlopeInputs` | `tenors` (a `dict[str, float]`) | `nan`, `inf` inside the map |
+| `yield_curve.InversionHistoryInputs` | `current_slope_bp` | `nan` |
+| `yield_curve.CrossMarketRVInputs` | `target_notional_a` | `inf` |
+
+### 2. Three container SHAPES the guard did not walk
+
+Fixing those exposed that `FiniteInputs._non_finite_offenders` walked only
+scalars and one-level `list`/`tuple` elements. Three more shapes existed:
+
+- **`dict[str, float]` VALUES** (`CurveSlopeInputs.tenors`): the numbers live in
+  the values, which the list branch never sees;
+- **`dict[str, list[float]]`** (`gdp_nowcast.SimpleGDPNowcastInputs`' quarter
+  maps): needs both levels;
+- **nested pydantic MODELS** (`financial_conditions.FCIInputs`' five
+  `FCIComponent` slots): a sub-component's `nan` is not a bare `float` at the top
+  level, so a scalar-only scan passed it.
+
+The walk was extended to recurse through all three, naming the exact cell
+(`matrix[0][0]`, `mapping['10y']`, `component.value`).
+
+### 3. The full re-audit — 23 more gaps closed
+
+With the walk widened and the builder fixed, a full audit over all 57 float-bearing
+input groups found **11 `nan` + 12 `inf` gaps** across four classes the builder had
+skipped:
+
+- `gdp_nowcast.SimpleGDPNowcastInputs` — 5 fields (3 `dict[str, list[float]]` +
+  2 scalars);
+- `national_accounts.IndexNumberInputs` — 4 `dict[str, float]` fields;
+- `lei_proxy.LeadingIndicatorProxyInputs` — `components`, `weights` (dicts);
+- `financial_conditions.FCIInputs` — `nfci_value`.
+
+All were rebased onto `contracts.FiniteInputs`. (`TrilemmaInputs`,
+`CurveSlopeInputs`, `InversionHistoryInputs`, `CrossMarketRVInputs` from §1 too.)
+**Final audit: 0 offenders for `nan` / `+inf` / `-inf` across all 57 classes.**
+
+### 4. The sweep was rebuilt so a skip is IMPOSSIBLE
+
+`_valid_payload` now uses a two-pass builder — a greedy error-guided repair, then
+a bounded product search — so it constructs every class including those with
+semantic validators (`quote` enums, boundary-sensitive rates). A new
+``test_every_input_group_is_actually_probed`` FAILS if any float-bearing class
+cannot be constructed, so a future unbuildable class cannot silently drop out of
+coverage. The two sweep tests now contaminate every float field at its declared
+shape (`_float_field_paths` returns the shape; `_contaminate` builds it). Proven a
+KILLER against deliberately-unguarded `dict` / `dict_list` classes.
+
+### 5. A test that encoded the WEAKER contract was corrected
+
+`tests/models/test_trilemma.py::test_a_nan_reading_does_not_silently_fire`
+asserted the model's OPERATOR was safe on a `nan` that could be constructed. Now
+that `TrilemmaInputs` refuses `nan` at construction, that test is rewritten as
+`test_a_nan_reading_is_refused_at_construction` — the stronger, structural
+property. The old test was not wrong; it pinned a property that the guard now
+makes moot by forbidding the value.
+
+### Gates (re-derived at CI scope — all green)
+
+`ruff check src/ tools/ tests/ scripts/` PASS · `ruff format --check` clean · bare
+`mypy` clean · reachability **PASS 58/58** · models suite **2587 passed / 1 skipped**
+· `sweep_health.py` **OK — 52 sweeps, 0 failures, 0 leftovers**; all **19** sweeps
+owning an edited file report `check_targets: 0 problem(s)`.
+
+**Files:** `src/macro_engine/models/contracts.py`,
+`src/macro_engine/models/{risk,inflation_nowcast,regime,yield_curve,gdp_nowcast,national_accounts,lei_proxy,financial_conditions}.py`,
+`tests/models/{test_finite_inputs_contract,test_finite_inputs_repo_wide,test_trilemma}.py`,
+`docs/DECISIONS.md`, `docs/PROGRESS.md`, `docs/PHASE2_MODELS_REVIEW.md`.
+**No new `src/` function, no config leaf, no new OpenBB command** (census stays 6).

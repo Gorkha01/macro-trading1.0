@@ -60,11 +60,12 @@ change when the caller passes more history.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -76,11 +77,19 @@ __all__ = [
 ]
 
 
-class ShelterLagInputs(BaseModel):
+class ShelterLagInputs(FiniteInputs):
     """Inputs to ``project_shelter_cpi`` (Module 5.1).
 
     ``lag_months`` is deliberately **not** a field — it comes from
     ``inflation.shelter_lag_months``. See the module docstring.
+
+    Inherits ``FiniteInputs`` (D-139b): a non-finite ELEMENT of the market-rent
+    history would propagate silently into the lagged vintage lookup, and a
+    non-finite current CPI shelter rate would make the cooling/reaccelerating
+    comparison fail every branch — the D-078 class. The original repo-wide
+    finiteness sweep missed this class because its FIRST float field is a
+    ``list[float]``, which the old scalar-only probe could not contaminate; the
+    extended sweep (which probes list elements at their declared shape) found it.
     """
 
     model_config = ConfigDict(extra="forbid")

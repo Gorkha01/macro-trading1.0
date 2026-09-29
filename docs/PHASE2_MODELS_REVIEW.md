@@ -201,10 +201,77 @@ No `.sweepbackup` sidecars after any run.
 **Files changed:** see `docs/DECISIONS.md` D-139. **No new `src/` function, no new
 OpenBB command** (census stays 6). 5 new config leaves.
 
-## 8. Deferred to a live session
+## 8. D-139b — the sweep's blind spot, and a fifth gap it had hidden
+
+After D-139 shipped (`ea43109`, CI SUCCESS), the class-by-class read of
+`models/risk.py` asked the question the D-139 sweep *claimed* to answer — "can a
+non-finite float reach this body?" — and the answer was **yes, in five places**.
+
+**The defect.** `risk.ReturnsInputs`, `RealizedVolInputs`, `PortfolioVaRInputs`
+and `MonteCarloVaRInputs` were plain `BaseModel`. Measured:
+`historical_var(ReturnsInputs(returns=[-0.05, nan, 0.01, 0.02, -0.03]))` published
+`value = nan` — a VaR of `nan`, because `sorted()` places `nan` unpredictably and
+the loss quantile can land on it. A `nan` covariance diagonal would likewise yield
+a `nan` portfolio volatility. D-078, reached through a **container element**.
+
+**Why the sweep stayed green.** The D-139 sweep probed only each class's **first**
+float field as a *scalar*. For `ReturnsInputs` that field is `returns`, a
+`list[float]`, so the probe made it a non-list — a `ValidationError` for the
+**wrong reason**, read as "guarded". Trap class 1 (evidence integrity).
+
+**The fix, at root.** `contracts.FiniteInputs._reject_non_finite` now **recurses**
+(`_non_finite_offenders`), so a `list[list[float]]` matrix cell is caught and named
+exactly (`covariance_matrix[0][0]=nan`). Four `risk.py` classes rebased onto
+`FiniteInputs`. The **extended** sweep then immediately found a **fifth** gap:
+`inflation_nowcast.ShelterLagInputs` had no validator at all (its first float field
+is a `list[float]`, invisible to the old probe); rebased onto `FiniteInputs`.
+
+**The sweep was extended so the blind spot cannot recur.** `_float_field_paths()`
+returns each float field's SHAPE; both sweep tests contaminate at that shape.
+Proven a KILLER against a deliberately-unguarded `list[float]`.
+
+**Sweep-safety incident (self-inflicted, caught).** Running
+`mutation_monte_carlo_var.py` under a 900 s foreground `timeout` got it SIGTERM'd
+mid-run, leaving two sidecars. Triage: `config.py.sweepbackup` inert (deleted);
+`risk.py.sweepbackup` DIFFERED — **the killed sweep had left a mutant applied**
+(`factor_pnl = correlated * 1.0` where pristine needs `* horizon_scale`). Restored
+from the sidecar; both sidecars deleted; no stray processes. **Lesson: run a full
+sweep backgrounded, never under a foreground timeout that can kill it.**
+
+## 9. D-139c — the sweep's THIRD blind spot: it skipped 21 classes
+
+Asking the *sweep itself* which classes it actually checks exposed that its
+builder returned "skip" for **21 of ~60** input groups — every class with a
+semantic validator or an unknown field shape. Those skipped classes carried gaps:
+`TrilemmaInputs` (2 fields, nan+inf), `CurveSlopeInputs.tenors` (nan/inf inside a
+`dict[str,float]`), `InversionHistoryInputs.current_slope_bp`, and
+`CrossMarketRVInputs.target_notional_a`.
+
+**Three more container SHAPES the guard did not walk** were exposed: `dict[str,
+float]` VALUES, `dict[str, list[float]]`, and nested pydantic MODELS (`FCIInputs`'
+five `FCIComponent` slots). `FiniteInputs._non_finite_offenders` now recurses
+through all three, naming the exact cell (`mapping['10y']`, `component.value`).
+
+**Full re-audit: 11 `nan` + 12 `inf` gaps closed** across `SimpleGDPNowcastInputs`
+(5 fields), `IndexNumberInputs` (4 dicts), `LeadingIndicatorProxyInputs`
+(`components`, `weights`), and `FCIInputs.nfci_value`. **0 offenders remain across
+all 57 float-bearing classes.** The builder was rebuilt (greedy repair + bounded
+product search) so it constructs every class, and a new
+`test_every_input_group_is_actually_probed` FAILS if any class cannot be
+constructed — a skip can no longer hide. `test_trilemma.py`'s
+`test_a_nan_reading_does_not_silently_fire`, which pinned the weaker
+operator-safety contract, was rewritten as
+`test_a_nan_reading_is_refused_at_construction`.
+
+**The meta-lesson:** a structural sweep is only as good as its COVERAGE. Three
+successive blind spots — first-field-only → wrong shape → skipped classes — each
+produced a green gate that proved nothing about the classes it never reached.
+
+## 10. Deferred to a live session
 
 Live re-verification of `yield_curve` and `regime` against the running OpenBB
 server (both build on the data-layer transports verified in Phase 1), and the
-deep-read of the six large remaining files (`econometrics` 4439 lines,
-`fx_carry` 2507, `regime` 2347, `yield_curve` 2113, `risk` 1528, `commodities`
-1309). These are recorded as remaining Phase 2 work, not defects.
+deep-read of the four large remaining files (`econometrics` 4439 lines,
+`fx_carry` 2507, `regime` 2347, `yield_curve` 2114). `risk` and `commodities`
+have been deep-read; the four above remain (their *input groups* are now
+finiteness-audited, but their model BODIES are not yet read line-by-line).

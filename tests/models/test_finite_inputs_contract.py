@@ -33,6 +33,23 @@ class _ScalarOnly(FiniteInputs):
     label: str = Field(default="", description="A non-numeric field.")
 
 
+class _Component(BaseModel):
+    """A nested model field's element (D-139c)."""
+
+    value: float = Field(description="A component value.")
+
+
+class _ContainerInputs(FiniteInputs):
+    """Every container shape the guard must walk (D-139b / D-139c)."""
+
+    mapping: dict[str, float] = Field(default_factory=dict)
+    nested_map: dict[str, list[float]] = Field(default_factory=dict)
+    matrix: list[list[float]] = Field(default_factory=list)
+    component: _Component = Field(
+        default_factory=lambda: _Component(value=1.0), description="A nested model."
+    )
+
+
 @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
 def test_a_non_finite_scalar_is_refused(bad: float) -> None:
     """The base case: a scalar non-finite value never reaches a model body."""
@@ -92,6 +109,58 @@ def test_an_integer_input_is_accepted_on_a_float_field() -> None:
 def test_an_empty_series_is_allowed() -> None:
     """Absence is not the failure this guard is for — only non-finite is."""
     assert _ScalarOnly(scalar=1.0).series == []
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_dict_value_is_refused(bad: float) -> None:
+    """A ``dict[str, float]`` holds its numbers in the VALUES (D-139c).
+
+    The list branch never sees them, so without the dict branch a ``nan`` rate at
+    one tenor of a curve map would pass and contaminate every slope derived from
+    it.
+    """
+    with pytest.raises(ValueError, match="mapping"):
+        _ContainerInputs(mapping={"10y": bad})
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_dict_of_lists_value_is_refused(bad: float) -> None:
+    """A ``dict[str, list[float]]`` is walked through both levels (D-139c)."""
+    with pytest.raises(ValueError, match="nested_map"):
+        _ContainerInputs(nested_map={"2026-Q1": [1.0, bad]})
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_nested_matrix_cell_is_refused(bad: float) -> None:
+    """A ``list[list[float]]`` matrix cell is refused and NAMED by cell (D-139b)."""
+    with pytest.raises(ValueError, match=r"matrix\[0\]\[0\]"):
+        _ContainerInputs(matrix=[[bad]])
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_a_non_finite_nested_model_field_is_refused(bad: float) -> None:
+    """A nested MODEL field is an input too (D-139c).
+
+    ``FCIInputs`` carries five ``FCIComponent`` slots; the guard recurses into
+    the nested model so a ``nan`` in a sub-component cannot slip past because it
+    is not a bare ``float``.
+    """
+    with pytest.raises(ValueError, match=r"component\.value"):
+        _ContainerInputs(component=_Component(value=bad))
+
+
+def test_all_container_shapes_still_accept_finite_values() -> None:
+    """The positive control: the wider walk must not reject finite data."""
+    group = _ContainerInputs(
+        mapping={"10y": 4.5},
+        nested_map={"2026-Q1": [0.1, 0.2]},
+        matrix=[[1.0, 0.0], [0.0, 1.0]],
+        component=_Component(value=2.5),
+    )
+    assert group.mapping == {"10y": 4.5}
+    assert group.nested_map == {"2026-Q1": [0.1, 0.2]}
+    assert group.matrix == [[1.0, 0.0], [0.0, 1.0]]
+    assert group.component.value == 2.5
 
 
 def test_the_promoted_base_still_guards_the_policy_rule_inputs() -> None:

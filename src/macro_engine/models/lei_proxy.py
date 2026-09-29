@@ -100,11 +100,12 @@ from __future__ import annotations
 from math import ceil, isfinite
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -133,7 +134,7 @@ _NOT_LEI = (
 )
 
 
-class LeadingIndicatorProxyInputs(BaseModel):
+class LeadingIndicatorProxyInputs(FiniteInputs):
     """Inputs to ``leading_indicator_proxy`` (Module 7.3).
 
     ``components`` maps a component name to its **six-month annualized percent

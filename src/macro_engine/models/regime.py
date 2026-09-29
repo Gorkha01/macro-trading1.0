@@ -111,6 +111,7 @@ from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
+    FiniteInputs,
     ModelResult,
     compute_confidence,
     utc_now,
@@ -987,7 +988,7 @@ TrilemmaSeverity = Literal[
 PolicyDirection = Literal["easing", "tightening"]
 
 
-class TrilemmaInputs(BaseModel):
+class TrilemmaInputs(FiniteInputs):
     """The structural classification of a currency regime, plus its reserves trend.
 
     The first three fields are **not measured from a series — they are

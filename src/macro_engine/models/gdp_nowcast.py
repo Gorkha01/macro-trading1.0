@@ -1023,7 +1023,7 @@ def _is_complete_quarter(monthly_pct_changes: list[float], months_per_quarter: i
     return len(monthly_pct_changes) == months_per_quarter
 
 
-class SimpleGDPNowcastInputs(BaseModel):
+class SimpleGDPNowcastInputs(FiniteInputs):
     """Inputs to ``simple_gdp_nowcast`` (Section 6.5, Module 7.5).
 
     Section 6.5 supplies four floats and no unit contract. Three of the four

@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.models.contracts import (
@@ -73,11 +73,20 @@ __all__ = [
 ]
 
 
-class ReturnsInputs(BaseModel):
+class ReturnsInputs(FiniteInputs):
     """A return series in decimal form (0.01 = +1%).
 
     ``lookback_days`` is a field rather than an implicit "use everything",
     because a VaR figure without its window is not interpretable.
+
+    Inherits :class:`~macro_engine.models.contracts.FiniteInputs`, so a
+    non-finite ELEMENT of ``returns`` is refused at construction (D-139b).
+    Measured before the fix: ``historical_var(returns=[-0.05, nan, 0.01, 0.02,
+    -0.03])`` published ``value=nan`` — a VaR of ``nan`` reached the risk report
+    because ``sorted()`` places ``nan`` unpredictably and the loss quantile can
+    land on it. A ``nan`` in a risk sample is not "missing": it silently
+    corrupts the quantile, and the D-078 guard cannot fire downstream because
+    the non-finiteness is already inside a list.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -91,7 +100,7 @@ class ReturnsInputs(BaseModel):
     )
 
 
-class RealizedVolInputs(BaseModel):
+class RealizedVolInputs(FiniteInputs):
     """A return series plus the annualisation convention.
 
     ``periods_per_year`` is explicit because it is the difference between a
@@ -99,6 +108,9 @@ class RealizedVolInputs(BaseModel):
     about 4.6. The specification's sample code hardcodes ``252 ** 0.5``, which
     silently assumes daily data; making it a field means a monthly caller cannot
     inherit the wrong convention by accident.
+
+    Inherits ``FiniteInputs`` (D-139b): a non-finite return ELEMENT would
+    otherwise pass straight into the variance and publish a ``nan`` volatility.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -116,8 +128,14 @@ class RealizedVolInputs(BaseModel):
     )
 
 
-class ParametricVaRInputs(BaseModel):
-    """Portfolio value, volatility, and confidence for a normal approximation."""
+class ParametricVaRInputs(FiniteInputs):
+    """Portfolio value, volatility, and confidence for a normal approximation.
+
+    Inherits ``FiniteInputs`` (D-139b) for consistency with the estimators it
+    is compared against; its scalar fields already carry ``gt``/``ge`` bounds
+    that reject ``nan``, but ``+inf`` passes ``ge=0.0`` and would publish an
+    infinite VaR, so the shared guard is the correct enclosure.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -130,8 +148,16 @@ class ParametricVaRInputs(BaseModel):
     periods_per_year: int = Field(default=252, gt=0, description="Trading days per year.")
 
 
-class PortfolioVaRInputs(BaseModel):
-    """Weights and a covariance matrix for a portfolio VaR estimate."""
+class PortfolioVaRInputs(FiniteInputs):
+    """Weights and a covariance matrix for a portfolio VaR estimate.
+
+    Inherits ``FiniteInputs`` (D-139b), and this is the class that most needs
+    the RECURSIVE branch: ``covariance_matrix`` is a ``list[list[float]]``, so a
+    ``nan`` on a diagonal is an element of an element — a one-level scan sees a
+    ``list`` there, not a ``float``, and would pass it. A ``nan`` variance then
+    produces a ``nan`` portfolio volatility, which is exactly the silent hole in
+    a risk budget the guard exists to prevent.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -853,7 +879,7 @@ class StressCorrelationTransform(Protocol):
         ...
 
 
-class MonteCarloVaRInputs(BaseModel):
+class MonteCarloVaRInputs(FiniteInputs):
     """A multi-factor book and the two regimes to simulate it under.
 
     The specification's outline takes a ``scenario_generator`` callable

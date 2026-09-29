@@ -61,7 +61,7 @@ __all__ = [
 ]
 
 
-class CurveSlopeInputs(BaseModel):
+class CurveSlopeInputs(FiniteInputs):
     """Two tenors from one observed curve.
 
     Tenor labels are validated against the supplied dict rather than defaulted,
@@ -458,7 +458,7 @@ def decompose_yield(inputs: CurveDecompositionInputs) -> ModelResult:
     )
 
 
-class InversionHistoryInputs(BaseModel):
+class InversionHistoryInputs(FiniteInputs):
     """An observed curve slope plus how long it has been inverted.
 
     **Units and sign are load-bearing and cannot be recovered from two bare
@@ -1323,7 +1323,7 @@ _HEDGE_DIRECTIONS: tuple[str, ...] = (
 CorrelationStressedSource = Literal["caller_supplied", "config_default"]
 
 
-class CrossMarketRVInputs(BaseModel):
+class CrossMarketRVInputs(FiniteInputs):
     """The two legs of a duration-matched cross-market relative-value trade.
 
     Section 20.12's shape (``market_a``, ``market_b``, ``duration_a``,
