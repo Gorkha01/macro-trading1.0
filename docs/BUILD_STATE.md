@@ -16,38 +16,36 @@ Per-function completion record (AGENTS.md Section 21.0 / 21.2 Step 9).
 
 
 
-## Quality gates - measured 2026-09-20, after the D-080..D-082 audit-and-fix pass
+## Quality gates — the live numbers live in `PROGRESS.md`, NOT here
 
-```
-ruff check src tests tools scripts ->  All checks passed!
-ruff format --check               ->  225 files already formatted
-mypy (strict, python_version 3.12)->  Success: no issues found in 225 source files
-                                      (src, tests, scripts AND tools all typed)
-                                      [225 = 225, D-035 count parity satisfied]
-                                      (the pair moved 224 -> 225 when
-                                       scripts/_sweep_gate.py was added; the
-                                       earlier "224 = 224" was carried forward
-                                       rather than re-measured -- O-88)
-pytest -q                         ->  2432 passed, 1 skipped, 0 failed
-                                      (measured by counting outcome markers --
-                                      2432 dots, 0 F, 0 E -- NOT by exit code:
-                                      the harness's safe-delete guard makes the
-                                      process exit 1 while every test passes; D-082.2)
-uv run python tools/sweep_health.py -> 40 sweeps checked, 0 leftovers,
-                                      0 mutant shapes, 0 failures,
-                                      0 sweeps with NO sweep-owned gate
-                                      (D-075 cured the 2 "INHERITED" failures --
-                                      they were STALE ANCHORS, not by-design
-                                      absences; D-081 fixed the tool's diagnosis;
-                                      D-082 wired the last 14 gates)
-tools/reachability_audit.py --check-baseline -> PASS, 59 = 59
-scripts/live_risk_axis_check.py   ->  PASSED (exit 0)
-scripts/mutation_lei_proxy.py     ->  36/36 killed  (run in full at D-080;
-                                      M8e and M8g both KILLED)
-scripts/mutation_regime.py        ->  gate 40 mutations / 0 problems;
-                                      interrupted run self-heals from sidecar (D-082)
-grep -rn "if False://|if True:"  src/macro_engine/  ->  nothing (required)
-```
+**Do not add a third copy of the gate numbers to this file.** An earlier version
+of `BUILD_STATE.md` carried two full gate blocks (measured 2026-09-18 at 142
+files, and 2026-09-20 at 225 files). Both were accurate when written and both
+were stale within days: the count parity has since moved to **293 files** and the
+suite to **4155 tests**. Two superseded copies of a live measurement in the same
+file is exactly the drift this project's counting rule (class 8: *a running
+counter is a claim — MEASURE, never carry*) exists to prevent, so the older block
+was replaced by this pointer rather than updated into a third number.
+
+**The authoritative current numbers are in [`PROGRESS.md`](./PROGRESS.md)**, and
+`tests/test_openbb_command_inventory.py` enforces that the *command census* stated
+there is current. Re-derive, do not read a number out of this file.
+
+What belongs **here** is the per-function completion record (`AGENTS.md`
+Section 21.0 / 21.2 Step 9) — a function's implementation, its real-data
+validation record, and the date. That is history and it does not go stale.
+
+> **A function is DONE when, and only when:**
+>
+> - [ ] Implemented exactly as specified (no deviation without a logged decision)
+> - [ ] Unit test with hand-verified expected values passes
+> - [ ] Executed against real data from its documented source
+> - [ ] The real-data output is economically plausible and that assessment is written down
+> - [ ] Every `warnings` condition specified has been triggered at least once in a test
+> - [ ] `ruff` and `mypy --strict` clean
+> - [ ] Documented with its real-data validation record
+
+---
 
 ### The interrupt defence does NOT work on this platform (D-082)
 

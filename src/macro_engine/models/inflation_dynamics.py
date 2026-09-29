@@ -65,6 +65,14 @@ worth naming here because most of them are *structural* rather than numeric:
   paragraph argues from "a hot CPI print with real yields rising"; the code
   tests only ``real_yield_change > 0``, so a *cool* print with rising real
   yields is indistinguishable from a hot one in the output.
+* **A base-rate warning keyed on the wrong side of its own base rate** (D-135).
+  The gold warning fired only on ``gold == "down"``, but
+  ``transmission.gold_base_rate`` is measured precisely as the share on which
+  the rule says DOWN — the **modal** answer (75.56%). The warning therefore
+  advertised the base state as if it were the exception, while ``gold: up`` on
+  a nominal rise — the minority reading (24.44%) that Section 20.5's paragraph
+  exists to explain — carried **no caveat at all**. The gate is symmetric now
+  and each branch publishes its own measured rate.
 * **A bare ``str`` where a ``Literal`` belongs** (D-029), **a ``> 0`` / ``else``
   pair that reports a flat market as a move** (D-040's class), and **a
   hardcoded ``confidence=0.45``** (§22.8).
@@ -745,15 +753,30 @@ def _transmission_warnings(
             "measured split does not corroborate."
         )
 
-    if gold == "down" and inputs.nominal_yield_change_bp > 0:
+    # The gold leg's base-rate warning is SYMMETRIC (D-135). It used to fire only
+    # on `gold == "down"`, which is backwards: `settings.gold_base_rate` is
+    # defined as the measured share on which the rule says DOWN — the MAP's
+    # **modal** answer (measured 75.56%) — while the informative branch is
+    # `gold == "up"` on a nominal rise (the complementary 24.44%), where the gold
+    # call contradicts the nominal move. Keying the warning on the majority case
+    # advertised the base state as a finding AND left the genuine minority case
+    # silent, so a `gold: up` on a nominal rise — the one reading Section 20.5's
+    # paragraph exists to explain — carried no caveat at all.
+    if gold in ("up", "down") and inputs.nominal_yield_change_bp > 0:
+        # Both branches publish their own measured rate. The two are complements
+        # (the leg is never "flat" here — `_leg_direction` already returned
+        # up/down, which is why the guard is not `gold != "flat"`), so no new
+        # config leaf is invented for the second one.
+        share = settings.gold_base_rate if gold == "down" else 1.0 - settings.gold_base_rate
         warnings.append(
-            f"Gold reads DOWN on a nominal yield RISE. Section 20.5's stated "
-            f"trigger is 'a hot CPI print with real yields rising', but the "
-            f"implemented test is only whether the REAL yield rose — so this "
-            f"call fires on a COOL print with rising real yields as well. "
-            f"Base rate: this is what the rule says on "
-            f"{settings.gold_base_rate:.2%} of nominal rises, i.e. it is closer "
-            f"to the rule's default than to a finding."
+            f"Gold reads {gold.upper()} on a nominal yield RISE. Section 20.5's "
+            f"stated trigger is 'a hot CPI print with real yields rising', but the "
+            f"implemented test is only whether the REAL yield rose — so this call "
+            f"fires on a COOL print with {'rising' if gold == 'down' else 'falling'} "
+            f"real yields as well. Base rate: the rule says {gold} on "
+            f"{share:.2%} of nominal rises, i.e. it is closer to the rule's "
+            f"{'default' if gold == 'down' else 'minority case'} than to a "
+            f"{'finding' if gold == 'down' else 'consensus'}."
         )
 
     if inputs.inflation_surprise_bp is not None:

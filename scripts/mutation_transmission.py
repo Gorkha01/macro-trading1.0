@@ -312,7 +312,7 @@ _WARN_DISAGREE = '    if gold != bonds and bonds != "flat" and gold != "flat":'
 _WARN_INDETERMINATE = '    if driver == "indeterminate":'
 _WARN_BOTH = '    elif driver == "both_channels":'
 _WARN_NEITHER = '    elif driver == "neither_channel":'
-_WARN_GOLD_DOWN = '    if gold == "down" and inputs.nominal_yield_change_bp > 0:'
+_WARN_GOLD_DOWN = '    if gold in ("up", "down") and inputs.nominal_yield_change_bp > 0:'
 _WARN_SURPRISE = "    if inputs.inflation_surprise_bp is not None:"
 _INPUTS_USED = (
     '        + (["inflation_surprise_bp"] if inputs.inflation_surprise_bp is not None else []),'
@@ -824,6 +824,21 @@ def build_mutations() -> list[Mutation]:
     m.append(
         _m(
             "M10",
+            "M10.4b the gold base-rate warning is one-sided again (D-135)",
+            SRC,
+            _WARN_GOLD_DOWN,
+            '    if gold == "down" and inputs.nominal_yield_change_bp > 0:',
+            "The gate re-narrows to the MAJORITY branch. `gold_base_rate` is "
+            "measured as the share on which the rule says DOWN (0.7556), so this "
+            "form advertises the base state as a finding while leaving `gold: up` "
+            "on a nominal rise -- the minority case that contradicts the nominal "
+            "move -- with no caveat at all. Killed ONLY by the symmetric-fixture "
+            "guard, because the `down` branch keeps its message either way.",
+        )
+    )
+    m.append(
+        _m(
+            "M10",
             "M10.4 the both-channels warning is not emitted",
             SRC,
             _WARN_BOTH,
@@ -851,7 +866,7 @@ def build_mutations() -> list[Mutation]:
             '    if gold == "down" and inputs.nominal_yield_change_bp > 0 and False:',
             "This is the base-rate disclosure Defect 4 needs: without it a "
             "`gold: down` call on a nominal rise reads as a finding when it is "
-            "the rule's answer 77.79% of the time.",
+            "the rule's answer 75.56% of the time.",
         )
     )
     m.append(

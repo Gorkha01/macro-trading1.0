@@ -22056,3 +22056,106 @@ no `.sweepbackup` sidecars.
 **Files:** `src/macro_engine/data_layer/persistence.py` (docstring only — **no behaviour change**),
 `tests/data_layer/test_phase1_data_layer.py` (the guard), `docs/DECISIONS.md`, `docs/PROGRESS.md`.
 **No function added, no config leaf added, no new OpenBB command** (census stays 6).
+
+---
+
+## D-135 — a base-rate warning keyed on its OWN base rate: the gold caveat fired on the majority branch and silenced the minority one (Class B, economics/reasoning) — FIXED, with the fix proven to be a killer
+
+**What this increment is.** A layer-by-layer pass with the emphasis on **mathematical and economic
+reasoning** rather than on structure. The bond-math layer was re-derived numerically and is **correct**
+(see §4); the defect below was found in the transmission map, and it is a *reasoning* fault of a kind this
+project has not previously catalogued: **a guard whose condition is the same quantity as its own base rate.**
+
+### 1. The defect
+
+`models/inflation_dynamics.py::_transmission_warnings` carried:
+
+```python
+if gold == "down" and inputs.nominal_yield_change_bp > 0:
+    warnings.append("Gold reads DOWN on a nominal yield RISE. ... Base rate: this is what
+                     the rule says on {gold_base_rate:.2%} of nominal rises, i.e. it is
+                     closer to the rule's default than to a finding.")
+```
+
+`transmission.gold_base_rate` is defined — in its **own accessor docstring** and in
+`config/settings.yaml` — as *the measured share of nominal rises on which the gold rule says DOWN*. It is
+**0.7556** (monthly; 0.8846 daily). So:
+
+* the gate `gold == "down"` **is the base rate**. The warning fired on the majority case (75.56%) and
+  described it as *"closer to the rule's default than to a finding"* — while being the rule's default.
+* the genuinely informative branch — **`gold: up`** on a nominal rise, the complementary 24.44%, where the
+  gold call **contradicts** the direction of the nominal move — carried **no caveat at all**.
+
+This is not a cosmetic wording fault. `config/settings.yaml` records that this exact leaf *"previously read
+0.7779 and no population reproduced it"* (a transcription error caught by
+`scripts/live_transmission_check.py`), and states that the 24.44% tail *"is precisely the 'hot CPI, gold
+up' scenario the section's own paragraph says naive reasoning misses."* The module's own docstring lists
+seven corrected specification defects — and its §4 entry says the gold paragraph's trigger and its
+implemented trigger differ. The caveat added to repair that entry was applied to the wrong side of the
+distribution, so the reading the specification's paragraph exists to explain shipped unqualified.
+
+Measured before the fix (nominal **+50bp** in every row, only the two legs differing):
+
+| real leg | gold | caveat fired? |
+|---|---|---|
+| +50bp (real yields rise) | `down` | **yes** — the 75.56% majority case |
+| −50bp (real yields fall) | `up` | **no** — the 24.44% minority case |
+
+### 2. The fix
+
+The gate is now symmetric (`gold in ("up", "down")` — the leg is never `flat` here, which is why the guard
+is not `gold != "flat"`), and **each branch publishes its own measured rate**. The second rate is the
+complement of the first, so **no config leaf was invented** to state a number the config does not measure.
+
+### 3. The guard, and why it is a killer
+
+`test_the_gold_base_rate_warning_is_symmetric_about_the_gold_call` asserts **both** directions, and asserts
+each names **its own** measured share (`0.7556` vs `0.2444`) rather than merely that a message exists — a
+test that only checked presence would pass under the one-sided form, which is the **D-031 pinner failure**.
+
+**Prove it kills:** reapplying the one-sided gate by hand fails the test
+(`assert None is not None` — *"gold UP on a nominal rise carries no base-rate caveat"*); reverted and
+verified (no `MUTANT` marker, 53 passed).
+
+**Sweep updated:** `scripts/mutation_transmission.py`'s `_WARN_GOLD_DOWN` anchor held the old one-sided
+text and was therefore **stale** (`check_targets` verifies anchors verbatim). Re-pointed, plus a new
+defect-reintroduction mutant **M10.4b** that re-narrows the gate. **`--group M10`: 9 applied / 9 killed /
+0 survivors**, M10.4b killed by the new symmetric-fixture guard.
+
+The warning-marker table in `tests/models/test_transmission.py` also needed repair: the marker was
+`"Gold reads DOWN on a nominal yield RISE"`, which matched **only** the `down` branch — so the `up` branch
+was matched by no marker *and* reached by no fixture, and could have been deleted with the coverage test
+still green. The marker is now direction-agnostic (`"on a nominal yield RISE"`) and both branches are in
+the fixture list.
+
+### 4. What was checked and found CORRECT (measured, not assumed)
+
+The **bond mathematics** was re-derived numerically against exact repricing rather than re-read
+(`face 1000, coupon 5%, y 4%, n 10`):
+
+* `price_bond` 1081.11 vs exact 1081.1090 — agrees to 1e−5.
+* `macaulay_duration` 8.191 vs a brute-force present-value sum 8.191 — exact.
+* The second-order expansion `−ModDur·dy + ½·Convexity·dy²` cuts the error from **3736 ppm → 138 ppm** at
+  `dy = 1%`, **951 → 17** at 50bp, **240 → 1.9** at 25bp — i.e. the convexity term behaves as a second-order
+  correction, which is the strongest available check that `convexity()` is not merely plausible.
+
+Also examined and found **deliberate rather than defective**: `policy_rule_ensemble`'s
+`confidence=min(taylor, balanced, first_difference)`. That is not the D-118 CAP-PRODUCT case — the three
+confidence values come from three *alternative* estimators of one quantity, not from two producers of
+different weaknesses, and the call site documents the rule ("a summary cannot be more trustworthy than what
+it summarises").
+
+### Gates (quiescent, sequential)
+
+`ruff check` **All checks passed** · `ruff format --check` **293 == bare `mypy` 293** (D-035, at CI scope) ·
+the transmission file **53 passed** · full suite **4156 / 0 failures / 0 errors / 4 skipped**
+(= 4155 + the new guard) · `reachability_audit.py --check-baseline` **PASS 58/58, no regressions** ·
+`sweep_health.py` **OK — 0 leftovers, 0 mutant shapes, 0 committed mutants, 0 failures**; no sidecars.
+
+**Files:** `src/macro_engine/models/inflation_dynamics.py` (the fix + docstring),
+`src/macro_engine/config.py` (accessor docstring: the base-rate-is-the-majority-branch hazard),
+`tests/models/test_transmission.py` (the guard + marker repair + two fixtures),
+`scripts/mutation_transmission.py` (anchor re-point + M10.4b + a stale 77.79% corrected to 75.56%),
+`docs/README.md` (new documentation index), `docs/BUILD_STATE.md` (a stale duplicate gate block replaced
+by a pointer), `docs/DECISIONS.md`, `docs/PROGRESS.md`.
+**No function added, no config leaf added, no new OpenBB command** (census stays 6).

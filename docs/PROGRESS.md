@@ -7473,3 +7473,45 @@ its docstring states a *purpose*, not a current use — a legitimate unused seam
 | full suite (`--junitxml`) | **4155 / 0 / 0 / 4** in 3m05s (4154 + the new test) |
 | `reachability_audit.py --check-baseline` | **PASS 58/58, no regressions** |
 | `sweep_health.py` (LAST) | **OK — 0 leftovers, 0 shapes, 0 committed, 0 failures** |
+
+---
+
+## D-135 — a base-rate warning keyed on its own base rate (2026-09-29)
+
+Layer-by-layer pass with the emphasis on **mathematical/economic reasoning**. Bond math re-derived
+numerically and **correct**; one **Class B** defect found in the transmission map and fixed.
+
+**The defect.** `models/inflation_dynamics.py`'s gold caveat gated on `gold == "down"` — but
+`transmission.gold_base_rate` is *defined* as the measured share on which the rule says DOWN (**0.7556**
+monthly / 0.8846 daily). So the gate **was** the base rate: it fired on the majority case and described it
+as an exception, while `gold: up` on a nominal rise (the 24.44% minority, where the gold call contradicts
+the nominal move — and the exact scenario `config/settings.yaml` says the specification's own paragraph
+exists to explain) shipped with **no caveat at all**.
+
+**Fix:** symmetric gate, each branch publishing its **own** measured rate (the second is the complement of
+the first, so **no new config leaf**).
+
+**Kill-proved:** the new symmetric guard fails under a hand-reapplied one-sided gate; new sweep mutant
+**M10.4b** killed. `--group M10`: **9 applied / 9 killed / 0 survivors**. The warning-marker table also
+needed repair — its marker matched only the `down` branch, so the `up` branch was reachable by no fixture
+and identified by no marker.
+
+**Also correct, measured:** `price_bond` vs exact repricing to 1e−5; `macaulay_duration` exact vs a
+brute-force PV sum; the convexity term cuts pricing error 3736 ppm → 138 ppm at `dy=1%` (951→17 at 50bp,
+240→1.9 at 25bp). `policy_rule_ensemble`'s `min()` confidence is **deliberate**, not the D-118 CAP-PRODUCT
+case.
+
+**Docs:** added `docs/README.md` — a documentation index that marks which files are **cited from production
+code/config** and therefore must not be deleted (`DECISIONS`, `OPEN_ISSUES`, `PROGRESS`, `DEFECTS_*`,
+`PLAN_ppp_source`, `OPENBB_UTILIZATION_AUDIT`, `CODE_REVIEW_PHASE0-4`, `SERIES_VERIFICATION`,
+`INTEGRITY_*`, `MODULE_MAPPING`), and states the rules for the directory. Replaced a **stale duplicate
+gate block** in `BUILD_STATE.md` (225 files) with a pointer to this file.
+
+| Gate | Result |
+|---|---|
+| `ruff check` | **All checks passed** |
+| `ruff format --check` / bare `mypy` | **293 == 293** (D-035, CI scope) |
+| full suite (`--junitxml`) | **4156 / 0 / 0 / 4** (= 4155 + the new guard) |
+| `mutation_transmission.py --group M10` | **9/9 killed, 0 survivors** (M10.4b killed) |
+| `reachability_audit.py --check-baseline` | **PASS 58/58, no regressions** |
+| `sweep_health.py` (LAST) | **OK — 0 leftovers, 0 shapes, 0 committed, 0 failures** |

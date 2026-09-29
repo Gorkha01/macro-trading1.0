@@ -1005,7 +1005,16 @@ def _warning_branches() -> dict[str, str]:
         "SPLIT is measurable": "the nominal move is below the driver floor",
         "BOTH legs carry most of the move": "both channels drove, so unattributable",
         "NEITHER leg carries most of the move": "the legs offset, so unattributable",
-        "Gold reads DOWN on a nominal yield RISE": "the gold base rate, on a rise",
+        # D-135 made this branch symmetric, so the marker must be
+        # direction-agnostic. It used to read "Gold reads DOWN on a nominal
+        # yield RISE", which matched ONLY the `down` branch — the majority case
+        # (gold_base_rate = 0.7556). The minority branch (`gold: up` on a rise,
+        # the one that contradicts the nominal move) was therefore unreachable
+        # by any fixture AND unmatched by any marker, so it could have been
+        # deleted with this coverage test still green. The marker is now the
+        # shared prefix of both branches, and BOTH are in the fixture list
+        # below, so the pair is covered as a pair.
+        "on a nominal yield RISE": "the gold base rate, in either direction",
         "REPORTED ONLY": "the surprise is disclosed, never consumed",
     }
 
@@ -1030,6 +1039,9 @@ def test_every_warning_path_is_triggered_by_some_test() -> None:
         _inputs(nominal_yield_change_bp=16.0, breakeven_change_bp=-12.0),  # both channels
         _inputs(nominal_yield_change_bp=40.0, breakeven_change_bp=20.0),  # neither
         _inputs(inflation_surprise_bp=9.0),  # disclosure warning
+        # D-135: gold UP on a nominal RISE -- the minority branch, where the gold
+        # call contradicts the nominal move and carries its own base rate.
+        _inputs(breakeven_change_bp=120.0),
     ]
     for inputs in cases:
         for w in cross_asset_transmission(inputs).warnings:
@@ -1057,6 +1069,7 @@ def test_the_warning_markers_are_mutually_non_colliding() -> None:
         _inputs(nominal_yield_change_bp=16.0, breakeven_change_bp=-12.0),
         _inputs(nominal_yield_change_bp=40.0, breakeven_change_bp=20.0),
         _inputs(inflation_surprise_bp=9.0),
+        _inputs(breakeven_change_bp=120.0),  # D-135: gold up on a nominal rise
     ]
     markers = list(_warning_branches())
     for inputs in cases:
@@ -1087,6 +1100,51 @@ def test_the_disagreement_warning_fires_only_when_the_legs_disagree() -> None:
     assert isinstance(dv, dict)
     assert dv["gold"] == "up" and dv["bonds"] == "down"
     assert any("GOLD DISAGREES" in w for w in disagreeing.warnings)
+
+
+def test_the_gold_base_rate_warning_is_symmetric_about_the_gold_call() -> None:
+    """D-135 — the gold base-rate warning must not be keyed on its own base rate.
+
+    ``transmission.gold_base_rate`` is measured as the share of nominal rises on
+    which the rule says DOWN (the MAP's **modal** answer, 0.7556). The warning
+    used to fire only on ``gold == "down"``, so it advertised the base state as
+    though it were the exception while the genuinely informative branch --
+    ``gold: up`` on a nominal rise, where the gold call CONTRADICTS the nominal
+    move -- carried no caveat at all.
+
+    Both directions are asserted, and each must name its OWN measured share
+    rather than a shared one: a test that only checked the message existed would
+    pass under the one-sided form (the D-031 pinner failure).
+    """
+    settings = get_settings().transmission
+
+    down = cross_asset_transmission(_inputs())  # nominal +40bp, real yields up
+    dv = down.value
+    assert isinstance(dv, dict)
+    assert dv["gold"] == "down"
+    down_warning = next((w for w in down.warnings if "on a nominal yield RISE" in w), None)
+    assert down_warning is not None, "the gold base-rate warning vanished"
+    assert f"{settings.gold_base_rate:.2%}" in down_warning
+    assert "default" in down_warning
+
+    # breakeven 120 > nominal 40, so the REAL leg FALLS and gold reads up.
+    up = cross_asset_transmission(_inputs(breakeven_change_bp=120.0))
+    uv = up.value
+    assert isinstance(uv, dict)
+    assert uv["gold"] == "up" and uv["real_yield_change_bp"] < 0
+    up_warning = next((w for w in up.warnings if "on a nominal yield RISE" in w), None)
+    assert up_warning is not None, (
+        "gold UP on a nominal rise carries no base-rate caveat -- this is the "
+        "D-135 defect: the minority branch was silent because the gate keyed "
+        "on the majority branch."
+    )
+    assert "Gold reads UP" in up_warning
+    assert f"{1.0 - settings.gold_base_rate:.2%}" in up_warning
+    assert "minority case" in up_warning
+
+    # The two rates are complements and sum to one, so no config leaf was
+    # invented for the second branch.
+    assert f"{settings.gold_base_rate:.2%}" not in up_warning
 
 
 def test_the_usd_warning_is_unconditional() -> None:

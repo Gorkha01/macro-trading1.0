@@ -4982,8 +4982,17 @@ class TransmissionSettings(BaseModel):
 
         Published on every output because it is the map's **modal** answer: a
         ``gold: down`` call on a nominal rise is what this rule says roughly
-        three times in four, so the label alone reads as a finding when it is
-        closer to the base state (D-029's base-rate rule, reached again here).
+        three times in four (measured 0.7556 monthly; 0.8846 daily), so the label
+        alone reads as a finding when it is closer to the base state (D-029's
+        base-rate rule, reached again here).
+
+        ⚠️ Because this is the share of the **``down``** branch (0.7556 > 0.5),
+        any warning keyed on ``gold == "down"`` is keyed on the base rate itself
+        and cannot distinguish the call from the base state. The consumer in
+        ``models/inflation_dynamics.py`` keys its caveat on BOTH branches for
+        exactly this reason (D-135); that file previously warned on ``down``
+        only, which advertised the majority case as the exception and left the
+        minority case — the one that contradicts the nominal move — uncaveated.
         """
         return float(self.measured_gold_down_on_nominal_rise_share.value)
 
