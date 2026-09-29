@@ -98,12 +98,22 @@ class PublicationDateError(Exception):
 def _resolve_series_symbols() -> dict[str, str]:
     """Registry series name -> provider symbol, for series that have one.
 
-    Two conditions, and only two:
+    Three conditions, and only three:
 
     * Curve entries (``tenors``) are skipped: a curve is not a single series and
       has no one publication time, so attributing the first tenor's stamp to the
       whole curve would be a fabricated fact.
     * An entry with no ``symbol`` is skipped, because there is nothing to query.
+    * An entry whose ``provider`` is not ``fred`` is skipped: this route is the
+      FRED ``economy.fred_search`` endpoint, which only knows FRED series. World
+      Bank and EIA symbols (``PA.NUS.PPP``, ``WCESTUS1``) are not FRED series,
+      and the lookup against them returns a non-JSON body that cannot be parsed —
+      measured 2026-09-29: 7 of 57 registry symbols (all non-fred, all
+      ``not_a_snapshot_field``) produced 21 failing calls per build, every one a
+      guaranteed ``JSONDecodeError``, purely to learn that no FRED ``last_updated``
+      exists for them. Skipping them at the source removes the wasted calls and
+      the misleading warnings; their release timing correctly stays UNKNOWN,
+      because no FRED publication stamp exists for them anyway.
 
     ``status`` is **deliberately not consulted here** (measured 2026-09-29). An
     earlier version of this docstring claimed ``blocked``/``unverified`` entries
@@ -121,7 +131,7 @@ def _resolve_series_symbols() -> dict[str, str]:
     """
     resolved: dict[str, str] = {}
     for name, entry in get_registry().series.items():
-        if entry.symbol and not entry.tenors:
+        if entry.symbol and not entry.tenors and entry.provider == "fred":
             resolved[name] = entry.symbol
     return resolved
 

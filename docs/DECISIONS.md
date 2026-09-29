@@ -22235,3 +22235,65 @@ test file) · reachability **PASS 58/58** · full suite **4264 / 0 failures / 0 
 `.github/workflows/quality-gates.yml`, `pyproject.toml`, `docs/PHASE0_PRODUCTION_REVIEW.md` (new),
 `docs/README.md`, `docs/DECISIONS.md`, `docs/PROGRESS.md`.
 **No `src/` function added, no config leaf added, no new OpenBB command** (census stays 6).
+
+## D-137 — Phase 1 of the production-grade review (data layer)
+
+**Trigger:** operator's full review, Phase 1 — the `src/macro_engine/data_layer/`
+seam (14 files, ~6 441 lines) reviewed file-by-file against live OpenBB data.
+
+### 1. Scope and method
+
+Read all 14 data-layer source files in full, `AGENTS.md` §5, and the 59-key
+`config/series_registry.yaml`. Built a live `MacroDataSnapshot` end-to-end against
+the real OpenBB service on **both** transports (the `openbb` **package** path and
+the **local API** `http://127.0.0.1:6900` path) and re-derived every gate at CI
+scope. No `src/` function was added; one bug was fixed at root cause.
+
+### 2. One real defect — `publication_dates` resolved non-FRED symbols
+
+`_resolve_series_symbols()` resolved *every* registry entry with a `symbol` and no
+`tenors`, regardless of `provider`. The route it feeds is the FRED-only
+`economy.fred_search` endpoint, so the 7 entries whose symbols are EIA/World Bank
+(`WCESTUS1`, `COPS_OPEC`, `PA.NUS.PPP` ×2, `BN.CAB.XOKA.GD.ZS`, `FI.RES.TOTL.CD`,
+`DT.DOD.DSTC.CD` — all `provider != "fred"`, all `not_a_snapshot_field`) returned
+a non-JSON body. Result: **21 failing calls per build** (7 × 3 retries) and
+misleading `JSONDecodeError` warnings. **Fix:** require `entry.provider == "fred"`
+in the resolver. The 7 are excluded at the source; their release timing still
+correctly degrades to UNKNOWN. Regression test
+`test_resolve_series_symbols_only_keeps_fred_provider_entries` added; re-run live
+probe confirms the warnings are gone and FRED series still attach
+`release_datetime`.
+
+### 3. Open question resolved — the three dict fields are placeholders
+
+`fx_spot` / `commodity_spot` / `equity_index` are `dict[str, list[ObservationPoint]]`
+fields, validated defensively if present, but **never populated by
+`build_snapshot`** (scalar + curve only). Their values would come from the
+dedicated provider clients (`commodities_client`, `world_bank_client`,
+`reserves_client`), which return dataclass readings and are `not_a_snapshot_field`.
+They are legitimate future multi-asset (Tier 5) fields for a US-only Phase 0–4
+thesis — by design, not a defect. `assert_finite` intentionally does not iterate
+them; that gap is a recorded limitation, not a live bug.
+
+### 4. Live verification — both transports identical and correct
+
+`cpi_headline=334.131` (2026-08-01), `unemployment_rate=4.1`,
+`fed_funds_rate=3.63`, and all 11 `treasury_curve` tenors populate `yield_curve`,
+on **both** transports with correct per-transport provenance
+(`openbb:package` vs `openbb:http://127.0.0.1:6900`). `validate_snapshot`
+reported `has_errors=False`, 0 findings, on both.
+
+### 5. Gates (re-derived at CI scope — all green)
+
+`ruff check` PASS · `ruff format --check` **294** files clean · bare `mypy`
+**294** files clean · reachability **PASS 58/58** · full suite **4266 collected /
+4243 passed / 0 failures / 0 errors / 23 skipped** (16 live tests deselected) ·
+`sweep_health.py` **OK — 52 sweeps, 0 leftovers, 0 mutant shapes, 0 committed
+mutants, 0 failures**. `src/` touched only in `publication_dates.py`; no
+`.sweepbackup` sidecars after any run.
+
+**Files:** `src/macro_engine/data_layer/publication_dates.py`,
+`tests/data_layer/test_publication_dates.py`,
+`docs/PHASE1_DATA_LAYER_REVIEW.md` (new), `docs/README.md`, `docs/DECISIONS.md`,
+`docs/PROGRESS.md`.
+**No new `src/` function, no config leaf, no new OpenBB command** (census stays 6).

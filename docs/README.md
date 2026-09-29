@@ -59,6 +59,7 @@ never look here for the system's current state (that is `PROGRESS.md`).
 | `AUDIT_PHASE04_LAYERS_FINDINGS.md` | Per-layer (data/thesis/api/root) 8-class cards |
 | `AUDIT_PHASE5_TIER5_BRIEF.md` | Tier-5 23-function work list |
 | `PHASE0_PRODUCTION_REVIEW.md` | D-136 — Phase 0 review: performance bottleneck measurement, O-138, D-136 tautology fix, sweep_health blind spot, CI scope |
+| `PHASE1_DATA_LAYER_REVIEW.md` | D-137 — Phase 1 review: 14-file data layer reviewed file-by-file against live OpenBB data on both transports; one real defect fixed at root cause, residual/by-design placeholder fields noted |
 | `AUDIT_PHASE5_TIER5_FINDINGS.md` | Tier-5 audit, 23 cards |
 | `AUDIT_PHASE5_TIER5_REAUDIT.md` | Tier-5 re-audit (found 2 defects the first pass rated CLEAN) |
 

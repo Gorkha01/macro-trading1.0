@@ -29,9 +29,10 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from macro_engine.config import PublicationDates
+from macro_engine.config import PublicationDates, get_registry
 from macro_engine.data_layer.publication_dates import (
     PublicationDateError,
+    _resolve_series_symbols,
     fetch_publication_dates,
 )
 
@@ -409,3 +410,36 @@ def test_shipped_calendar_is_disabled_now_that_metadata_covers_it() -> None:
     # ...but it must remain fully configured for a one-flag re-enable.
     assert calendar.provider == "nasdaq"
     assert calendar.event_map, "event_map must stay populated for re-enabling"
+
+
+def test_resolve_series_symbols_only_keeps_fred_provider_entries() -> None:
+    """Non-FRED symbols (EIA/World Bank) are excluded from the resolution map.
+
+    The route this map feeds is the FRED ``economy.fred_search`` endpoint, which
+    only knows FRED series. World Bank and EIA symbols (``PA.NUS.PPP``,
+    ``WCESTUS1``) are not FRED series, and a lookup against them returns a
+    non-JSON body that cannot be parsed. Measured 2026-09-29: without this
+    filter, 7 of 57 registry symbols (all non-fred, all ``not_a_snapshot_field``)
+    produced 21 failing calls per build — every one a guaranteed
+    ``JSONDecodeError`` — purely to learn that no FRED ``last_updated`` exists for
+    them. The filter removes the wasted calls and the misleading warnings; their
+    release timing correctly stays UNKNOWN, because no FRED publication stamp
+    exists for them anyway.
+    """
+    registry = get_registry()
+    resolved = _resolve_series_symbols()
+
+    # A known FRED series is kept.
+    assert "cpi_headline" in resolved
+
+    # Non-FRED provider series are excluded by provider, regardless of symbol.
+    assert "ppp_conversion_factor_eur" not in resolved
+    assert "ppp_conversion_factor_usd" not in resolved
+    assert "crude_inventory_weekly" not in resolved
+    assert "opec_spare_capacity" not in resolved
+
+    # Sanity: every kept symbol's registry entry is a FRED-provider, non-tenor entry.
+    for name in resolved:
+        entry = registry.series[name]
+        assert entry.provider == "fred"
+        assert not entry.tenors
