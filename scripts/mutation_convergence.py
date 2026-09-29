@@ -1005,6 +1005,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--group", help="run only this mutation group, e.g. M5")
     parser.add_argument(
+        "--check-targets",
+        dest="check_targets",
+        action="store_true",
+        help="alias for --list: the sweep-wide check-only flag (O-138)",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="print the mutation catalogue and the check_targets verdict, then exit",
@@ -1035,7 +1041,7 @@ def main() -> int:
         return 2
     print(f"test selection collects cleanly: {', '.join(PYTEST_TARGETS)}")
 
-    if args.list:
+    if args.list or args.check_targets:
         for mt in mutations:
             print(f"  {mt.group:3} {mt.path.name:16} {mt.name}")
         return 0

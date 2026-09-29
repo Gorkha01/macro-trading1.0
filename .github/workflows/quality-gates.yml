@@ -30,11 +30,19 @@ jobs:
       - name: Install dependencies (locked)
         run: uv sync --extra dev --frozen
 
+      # `scripts/` is part of the checked scope on purpose (D-136). It holds the
+      # 52 mutation sweeps -- real logic, ~40k lines, with the only code in the
+      # repository that REWRITES `src/` at runtime -- and it was linted by
+      # nobody: `pyproject.toml`'s mypy `files` list includes it, so mypy saw
+      # it, while these two steps did not. That asymmetry is the D-133a lesson
+      # in its other direction (a gate run at a NARROWER scope than the one the
+      # records claim is not the same gate): the documented close-out scope is
+      # `src tests tools scripts` = 293 files, and this step was checking 198.
       - name: Lint (ruff check)
-        run: uv run ruff check src/ tools/ tests/
+        run: uv run ruff check src/ tools/ tests/ scripts/
 
       - name: Format check (ruff format)
-        run: uv run ruff format --check src/ tools/ tests/
+        run: uv run ruff format --check src/ tools/ tests/ scripts/
 
       - name: Type check (mypy --strict)
         run: uv run mypy

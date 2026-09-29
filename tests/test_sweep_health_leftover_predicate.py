@@ -22,15 +22,21 @@ leftovers while the tree was clean. The consequence was not subtle: Step 0 of ev
 session reported ``SWEEP HEALTH: FAILED``, and a gate that always cries wolf is one
 the operator learns to ignore (O-61/O-83's lesson).
 
-The correct discriminator asks **what applying the mutation would do**. With ``P``
-pristine and ``M = P.replace(old, new, 1)``:
+The discriminator then became *"would re-applying the mutation raise ``new``'s
+count?"*, and **that too was a tautology (D-136)**. This branch is reached only
+when ``old`` is ALREADY absent, and ``str.replace`` with an absent needle returns
+the text unchanged — so the count never rises whatever the state, and the
+predicate collapsed to ``new in text``, the very defect it replaced. Measured:
+``_is_applied("| a | b |", "ANCHOR_THAT_NEVER_EXISTED", " |")`` returned ``True``.
 
-* the text is ``M`` (**applied**) → ``old`` is gone, so the replace changes nothing
-  and ``new``'s count is unchanged;
-* the text is ``P`` (**drifted anchor**) → the replace consumes an ``old`` and
-  emits a ``new``, so the count rises.
+**The sound discriminator needs ``P``, the pristine text (the ``HEAD`` blob).**
+From ``T`` alone the two states are the same string-level fact; with ``P`` the
+answer is PROOF rather than inference:
 
-So **applied ⟺ ``old`` absent AND re-applying does not raise ``new``'s count.**
+* ``T == P.replace(old, new, 1)`` → **applied**;
+* anything else, including ``T == P`` → **not applied** (reported "anchor
+  absent", which is the non-destructive error — see O-135/D-086.8);
+* ``P`` lacking ``old``, or ``P`` unavailable → **undecidable**, answered ``False``.
 
 Two things are tested here, and they are different claims:
 
@@ -61,9 +67,16 @@ _GATE = _ROOT / "scripts" / "_sweep_gate.py"
 
 
 class _Discriminator(Protocol):
-    """The surface this file needs from a module that owns the discriminator."""
+    """The surface this file needs from a module that owns the discriminator.
 
-    def _is_applied(self, text: str, old: str, new: str) -> bool: ...
+    **``pristine`` is REQUIRED, not optional (D-136).** From the working text
+    alone the question "applied, or merely drifted?" is undecidable — both
+    present as ``old`` occurring zero times — so a predicate that answers from
+    ``text`` alone is necessarily a guess, and the guess the old one made had a
+    false-positive direction. See ``test_a_drifted_anchor_is_not_reported_as_a_leftover``.
+    """
+
+    def _is_applied(self, text: str, old: str, new: str, *, pristine: str | None) -> bool: ...
 
 
 def _load(path: Path, name: str) -> Any:
@@ -158,10 +171,16 @@ def test_a_pristine_file_is_not_called_a_leftover(
     membership test reports a mutant that is not there.
 
     Correct answer: **not applied.**
+
+    **D-136: this case is now answered against HEAD, not inferred.** The working
+    text IS the HEAD text here, so ``T == P.replace(old, new, 1)`` is false by
+    construction and the verdict is a proof. Without ``pristine`` the same
+    question was answered ``True`` by both the membership test and the
+    count-stability test that replaced it.
     """
     module: Any = request.getfixturevalue(module_fixture)
     for label, predicate in _predicates(module):
-        assert predicate(_PRISTINE, _OLD, _NEW) is False, (
+        assert predicate(_PRISTINE, _OLD, _NEW, pristine=_PRISTINE) is False, (
             f"{label}: reported a leftover on a pristine file whose anchor has "
             "drifted — this is O-108's false positive, and it makes Step 0 fail "
             "on a clean tree"
@@ -177,13 +196,18 @@ def test_a_genuinely_applied_mutation_is_detected(
     A predicate fixed for the false positive by simply returning ``False`` would
     pass the test above and be useless. This is the guard against that: apply the
     mutation for real and require it to be seen.
+
+    The two fixtures above and here differ in exactly one thing — whether
+    ``_PRISTINE.replace(_OLD, _NEW, 1)`` was applied — so the ONLY way to get both
+    verdicts right is to compare against the pristine text. That is the whole
+    D-136 discriminator, exercised end to end.
     """
     module: Any = request.getfixturevalue(module_fixture)
     assert _OLD in _PRISTINE, "the fixture anchor must resolve, or this proves nothing"
     mutated = _PRISTINE.replace(_OLD, _NEW, 1)
     assert mutated != _PRISTINE
     for label, predicate in _predicates(module):
-        assert predicate(mutated, _OLD, _NEW) is True, (
+        assert predicate(mutated, _OLD, _NEW, pristine=_PRISTINE) is True, (
             f"{label}: MISSED a genuinely applied mutation — a leftover this "
             "predicate does not see is a mutant that survives into a commit"
         )
@@ -201,7 +225,9 @@ def test_a_deletion_is_never_reported_as_a_leftover(
     """
     module: Any = request.getfixturevalue(module_fixture)
     for label, predicate in _predicates(module):
-        assert predicate(_PRISTINE, _OLD, "") is False, (
+        # `pristine` is supplied but must be irrelevant: a deletion is unverifiable
+        # by construction, and D-062 requires that to be reported, not guessed.
+        assert predicate(_PRISTINE, _OLD, "", pristine=_PRISTINE) is False, (
             f"{label}: reported a deletion mutation as a leftover (D-062)"
         )
 
@@ -226,6 +252,13 @@ def test_a_vanished_anchor_with_a_vanished_replacement_is_not_a_leftover(
 
     The fixture is a file in which NEITHER string occurs, which is exactly the
     post-rename state of a swept module.
+
+    **D-136 sharpened this from a heuristic into two proofs.** The working text
+    equals HEAD (so ``T == P`` ⇒ not applied) and, decisively, HEAD does not
+    carry the anchor either — ``P.count(old) == 0`` — so ``P.replace(old, new, 1)``
+    would be a no-op and no comparison could prove anything. Both routes reach
+    "not applied"; the second is the one that must be guarded, because it is the
+    guard that keeps the tautology from returning under a new variable name.
     """
     module: Any = request.getfixturevalue(module_fixture)
     text = "def f():\n    return 1\n"
@@ -233,7 +266,8 @@ def test_a_vanished_anchor_with_a_vanished_replacement_is_not_a_leftover(
     new = "THE_REPLACEMENT_THE_SWEEP_WOULD_HAVE_WRITTEN"
     assert old not in text and new not in text, "the fixture must contain neither string"
     for label, predicate in _predicates(module):
-        assert predicate(text, old, new) is False, (
+        # HEAD == the working text (the tree is clean), and HEAD lacks the anchor.
+        assert predicate(text, old, new, pristine=text) is False, (
             f"{label}: reported a leftover when BOTH the anchor and its replacement "
             "are absent — this is O-135, and the remedy it prints (`git checkout --`) "
             "destroys uncommitted work"
@@ -254,14 +288,26 @@ def test_the_both_absent_fix_did_not_blind_the_true_positive(
     The two fixtures differ in exactly one thing: whether the sweep's replacement
     text was written. That is the discriminator, so nothing else can explain a
     difference in the verdict.
+
+    **D-136 made ``pristine`` the instrument that separates them.** The negative
+    control above passes ``pristine=text`` (HEAD equals the working tree); here
+    HEAD is the PRE-mutation text — it still carries ``old`` — so
+    ``mutated == pristine.replace(old, new, 1)`` is a proof of application rather
+    than a coincidence. Note that without ``pristine`` these two fixtures are the
+    SAME input to the predicate: ``old`` absent, ``new`` present. The old
+    predicate could not tell them apart at all, which is precisely why it
+    reported the clean one as a leftover.
     """
     module: Any = request.getfixturevalue(module_fixture)
     old = "A_LINE_THAT_WAS_RENAMED_AWAY"
     new = "THE_REPLACEMENT_THE_SWEEP_WOULD_HAVE_WRITTEN"
+    pristine = f"def f():\n    {old}\n"
     mutated = f"def f():\n    {new}\n"
     assert old not in mutated and new in mutated
+    assert old in pristine, "HEAD must carry the anchor, or nothing is provable"
+    assert mutated == pristine.replace(old, new, 1)
     for label, predicate in _predicates(module):
-        assert predicate(mutated, old, new) is True, (
+        assert predicate(mutated, old, new, pristine=pristine) is True, (
             f"{label}: MISSED a genuine leftover after the O-135 fix — the fix must "
             "narrow the false positive, never the true one"
         )
@@ -288,8 +334,10 @@ def test_a_mutation_that_is_not_idempotent_is_still_detected(
     for label, predicate in _predicates(module):
         # Applied → detected; pristine → not detected. Both at once, because a
         # predicate hardcoded to either answer passes a single-sided test.
-        assert predicate(mutated, _OLD, _NEW) is True, f"{label}: miss"
-        assert predicate(_PRISTINE, _OLD, _NEW) is False, f"{label}: false positive"
+        assert predicate(mutated, _OLD, _NEW, pristine=_PRISTINE) is True, f"{label}: miss"
+        assert predicate(_PRISTINE, _OLD, _NEW, pristine=_PRISTINE) is False, (
+            f"{label}: false positive"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -322,13 +370,25 @@ def test_both_copies_of_the_discriminator_exist(path: Path) -> None:
 
 @pytest.mark.parametrize("path", [_TOOL, _GATE])
 def test_the_discriminator_is_not_a_bare_membership_test(path: Path) -> None:
-    """Structural guard against regressing to ``new in text``.
+    """Structural guard against regressing to a predicate that cannot be false.
 
     Asserted on the **return expression**, not on the presence of a substring: a
-    textual guard would be a guard on the formatter (lesson 5bf). The defect being
-    guarded against is a predicate that decides on membership alone, so the test
-    requires the discriminator to compare ``new``'s **count** before and after
-    re-applying — which is the property that makes it correct in both directions.
+    textual guard would be a guard on the formatter (lesson 5bf).
+
+    **The property guarded here was itself the defect (D-136).** Until now this
+    test required the decisive return to compare ``new``'s **count** before and
+    after re-applying — and that requirement *pinned a tautology*. When ``old`` is
+    absent, ``str.replace(old, new, 1)`` returns the text unchanged, so
+    "re-applying does not raise the count" held for every text in which ``new``
+    merely appeared: the predicate reduced to ``new in text``. Measured:
+    ``_is_applied("| a | b |", "NEVER", " |")`` returned ``True``, and
+    ``mutation_command_inventory.py``'s ``M5`` (whose replacement is the two-byte
+    ``" |"``) was reported as a LEFTOVER on a clean tree.
+
+    The correct predicate needs the pristine text: a mutation is applied only when
+    ``text == pristine.replace(old, new, 1)``. So the decisive return must
+    reference BOTH ``pristine`` and ``replace`` — the comparison against HEAD is
+    what makes the question answerable at all.
     """
     body = _function_source(path, "_is_applied")
     tree = ast.parse(body)
@@ -337,12 +397,122 @@ def test_the_discriminator_is_not_a_bare_membership_test(path: Path) -> None:
     ]
     assert returns, f"{path}: _is_applied has no return statement"
 
-    # The decisive return must involve `.count(` — the count-stability test.
-    decisive = [r for r in returns if "count" in ast.dump(r)]
+    dumped = [ast.dump(r) for r in returns]
+    decisive = [d for d in dumped if "pristine" in d and "replace" in d]
     assert decisive, (
-        f"{path}: _is_applied's returns never compare a count, so it has "
-        "regressed to a membership test (O-108)"
+        f"{path}: _is_applied's returns never compare the text against "
+        "`pristine.replace(old, new, 1)`, so the discriminator has regressed to "
+        "something decidable without HEAD — which is the D-136 tautology"
     )
+
+    # ...and it must still refuse to decide when HEAD does not carry the anchor,
+    # because otherwise the comparison is a no-op and the tautology returns.
+    #
+    # Asserted on the GUARD, not on the returns: `pristine.count(old) == 0` is an
+    # early `return False`, so looking for "count" among the return expressions
+    # (which is what this test did) found nothing the moment the decisive compare
+    # stopped being a count comparison. The property is "the function refuses
+    # before comparing", and that lives in an `if`.
+    guards = [
+        ast.dump(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and "pristine" in ast.dump(node.test)
+        and "count" in ast.dump(node.test)
+    ]
+    assert guards, (
+        f"{path}: _is_applied never checks that `pristine` carries the anchor, so "
+        "`pristine.replace(old, new, 1)` would be a no-op and the D-136 tautology "
+        "returns under a new variable name"
+    )
+
+
+def _load_module(path: Path, name: str) -> Any:
+    """``exec`` a non-package file and return it as a module (both are scripts)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("path", [_TOOL, _GATE])
+def test_a_drifted_anchor_is_not_reported_as_a_leftover(path: Path) -> None:
+    """D-136's regression, stated as the case the old predicate got wrong.
+
+    A **drifted** anchor and a **leftover mutant** both present as "``old`` is
+    absent". The old discriminator answered "leftover" whenever ``new`` appeared
+    anywhere in the file, which is the WORST possible error direction: the message
+    it prints tells the operator to *"restore the file before sweeping"*, and the
+    natural restore is ``git checkout --`` — which discards uncommitted work
+    (D-086.8: 97 lines).
+
+    The construction below is the real one: a markdown table (so the two-byte
+    replacement ``" |"`` is trivially present) whose anchor text was edited away,
+    on a tree that is EXACTLY what HEAD says. Nothing was applied. The only
+    defensible answer is "not applied".
+
+    The two arms below are deliberately built from **two different anchors**,
+    because that difference *is* the D-136 finding:
+
+    * a **drifted** anchor is absent from the working text **and from HEAD** —
+      the census row was rewritten from ``2 of 201`` to ``6 of 201`` and
+      committed — so ``pristine.replace(old, new, 1)`` is a NO-OP and no
+      comparison can prove application. The honest verdict is "not applied",
+      reported as an absent anchor.
+    * a **genuine leftover** is absent from the working text **but present in
+      HEAD**, so ``text == pristine.replace(old, new, 1)`` is a PROOF.
+
+    Feeding both arms the same ``old`` (as the first draft of this test did)
+    silently asserts a falsehood: it asks the predicate to prove application of
+    an anchor HEAD never carried, which is undecidable — and then fails for
+    being undecidable. **A test that cannot be satisfied by the correct
+    implementation is worse than no test** (D-062's rule, one level up).
+    """
+    module = _load_module(path, path.stem)
+    is_applied = module._is_applied
+
+    # HEAD, and the working tree: identical, and the census says 6.
+    pristine = "| x | **6 of 201** |\n| OpenBB commands the engine uses | **6 of 201** |\n"
+    living_anchor = "| OpenBB commands the engine uses | **6 of 201** |"
+    # The anchor the sweep still carries, written when the census said 2.
+    drifted_anchor = "| OpenBB commands the engine uses | **2 of 201** |"
+
+    assert living_anchor in pristine and drifted_anchor not in pristine, (
+        "the fixture must have HEAD carrying one anchor and not the other, or it "
+        "does not distinguish drift from application"
+    )
+    assert " |" in pristine, "the two-byte replacement must be trivially present"
+
+    # (a) DRIFT — working text IS HEAD, anchor nowhere. Old predicate: True.
+    assert not is_applied(pristine, drifted_anchor, " |", pristine=pristine), (
+        f"{path.name}: a drifted anchor on a file that equals HEAD was reported "
+        "as a leftover mutation. That verdict invites `git checkout --`."
+    )
+
+    # (b) LEFTOVER — HEAD carries the anchor, the working text is HEAD with the
+    # mutation applied at that site. Must still be caught.
+    mutated = pristine.replace(living_anchor, " |", 1)
+    assert mutated != pristine
+    assert is_applied(mutated, living_anchor, " |", pristine=pristine), (
+        f"{path.name}: a genuinely applied mutation was NOT detected"
+    )
+
+    # (c) Uncommitted edit that is NOT the mutation — HEAD carries the anchor,
+    # the working text does not, and `new` is present for an unrelated reason.
+    uncommitted_edit = "| OpenBB commands the engine uses | **7 of 201** |"
+    edited = pristine.replace(living_anchor, uncommitted_edit, 1)
+    assert not is_applied(edited, living_anchor, " |", pristine=pristine), (
+        f"{path.name}: an ordinary uncommitted edit at the edit site was reported "
+        "as a leftover — that is the destructive-verdict direction again"
+    )
+
+    # Without HEAD the question is undecidable, so it must not claim anything.
+    assert not is_applied(pristine, drifted_anchor, " |", pristine=None)
+    assert not is_applied(mutated, living_anchor, " |", pristine=None)
 
 
 @pytest.mark.slow
@@ -411,8 +581,10 @@ def test_the_two_copies_agree_on_the_real_catalogue() -> None:
         mutated = pristine.replace(old, new, 1)
         for label, text in (("pristine", pristine), ("mutated", mutated)):
             wanted = label == "mutated"
-            a = bool(tool._is_applied(text, old, new))
-            b = bool(gate._is_applied(text, old, new))
+            # D-136: `pristine` is now REQUIRED, not optional. From the working
+            # text alone the question is undecidable -- see `_is_applied`.
+            a = bool(tool._is_applied(text, old, new, pristine=pristine))
+            b = bool(gate._is_applied(text, old, new, pristine=pristine))
             if a != b:
                 disagreements.append(f"{name} [{label}]: tool={a} gate={b} (they disagree)")
             if a != wanted:

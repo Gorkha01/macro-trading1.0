@@ -44,6 +44,8 @@ from pathlib import Path
 import yaml
 
 from _sweep_gate import (
+    check_only,
+    check_only_requested,
     check_targets,
     format_problems,
     sweep_lifecycle,
@@ -196,7 +198,16 @@ def _parses(text: str) -> bool:
     return True
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138)."""
+    return check_only([(name, SETTINGS, old, new) for name, old, new in MUTATIONS])
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle
+    # writes, and before ANY file is read -- see check_only's docstring.
+    if check_only_requested():
+        return _check_targets_only()
     # The whole interrupt defence in one call (O-103): heal, protect, spend.
     # On win32 no Python signal handler runs for SIGTERM/SIGINT, so the
     # sidecar -- not a handler -- is the defence with real reach here.

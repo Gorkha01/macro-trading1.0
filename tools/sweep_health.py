@@ -134,7 +134,7 @@ def _load(path: Path) -> tuple[Any | None, str]:
     return module, ""
 
 
-def _is_applied(text: str, old: str, new: str) -> bool:
+def _is_applied(text: str, old: str, new: str, *, pristine: str | None) -> bool:
     """Is this mutation APPLIED to ``text``, or is the anchor merely absent?
 
     **Deliberately duplicated from ``scripts/_sweep_gate.py``, not imported.**
@@ -195,6 +195,22 @@ def _is_applied(text: str, old: str, new: str) -> bool:
     absent replacement means the anchor has DRIFTED. Kept in step with
     ``scripts/_sweep_gate.py``'s copy by
     ``tests/test_sweep_health_leftover_predicate.py``.
+
+    **⚠️ D-136: the discriminator this function used was a TAUTLOGY.** It reduced
+    to ``new in text``, because ``str.replace`` with an absent ``old`` returns the
+    text unchanged, so "re-applying does not raise ``new``'s count" was true for
+    *every* text in which ``old`` is absent — including a perfectly pristine file
+    whose anchor merely DRIFTED. Measured: ``_is_applied("| a | b |", "NEVER",
+    " |")`` returned ``True``. In ``mutation_command_inventory.py``'s ``M5`` the
+    replacement is the two-byte ``" |"``, so this tool's sibling copy reported a
+    drifted anchor as a LEFTOVER on a tree ``git status`` called clean, and its
+    message invites ``git checkout --`` (destructive — D-086.8 cost 97 lines).
+
+    The sound test needs the pristine text, supplied by the caller as
+    ``pristine`` (the ``HEAD`` blob): a mutation is applied only when PROVEN,
+    i.e. ``text == pristine.replace(old, new, 1)``. That also requires ``old`` to
+    exist in ``pristine`` — otherwise the replace is a no-op and the tautology
+    returns wearing a different variable.
     """
     if not new.strip():
         return False
@@ -204,7 +220,36 @@ def _is_applied(text: str, old: str, new: str) -> bool:
         # Both absent: the anchor drifted (or a rename moved it) and the
         # replacement was never written here. NOT a leftover — see the docstring.
         return False
-    return text.replace(old, new, 1).count(new) == text.count(new)
+    if pristine is None:
+        return False
+    if pristine.count(old) == 0:
+        # HEAD does not carry the anchor either, so the compare below would be
+        # the same tautology. Unprovable — report "absent", never "leftover".
+        return False
+    return _fold(text) == _fold(pristine.replace(old, new, 1))
+
+
+def _fold(text: str) -> str:
+    """CRLF/CR folded to LF, so a checkout convention is not read as a diff.
+
+    ``git show`` returns the BLOB, whose line endings need not match the working
+    tree's. This file has already been burned twice by newline handling (the 87%
+    artefact rate recorded in ``_own_target_check``'s docstring).
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _blob_for(target: Path, cache: dict[Path, str | None]) -> str | None:
+    """The ``HEAD`` text of ``target``, memoised per path."""
+    if target in cache:
+        return cache[target]
+    try:
+        rel = target.resolve().relative_to(REPO.resolve()).as_posix()
+    except ValueError:
+        cache[target] = None
+    else:
+        cache[target] = _committed_blob(rel)
+    return cache[target]
 
 
 def _native(module: Any) -> list[Any]:
@@ -232,6 +277,19 @@ def _native(module: Any) -> list[Any]:
         return list(module.build_mutations())
     legacy = getattr(module, "MUTATIONS", None)
     if legacy is not None:
+        # D-136: a sweep that DECLARES its own per-mutation target map is the
+        # authority for its own catalogue. `_legacy_targets` only recognises
+        # `SRC/TARGET/MODULE/PATH/FILE` plus `_`-prefixed Path constants, so
+        # `mutation_command_inventory.py`'s `PROGRESS`/`REGISTRY`/`GUARD` matched
+        # neither rule, `candidates` came back EMPTY, and every anchor resolved
+        # to `Path("<unknown>")` — which cannot be read, so the check passed
+        # silently. Measured: this tool printed `[ok] ... every anchor resolves`
+        # for that sweep while the sweep's own `check_targets` refused to run on
+        # 2 unsound anchors. A gate that cannot see its subject must SAY SO, not
+        # report green (D-062).
+        declared = getattr(module, "_TARGETS", None)
+        if not isinstance(declared, dict):
+            declared = None
         candidates = _legacy_targets(module)
         texts = {}
         for candidate in candidates:
@@ -259,6 +317,9 @@ def _native(module: Any) -> list[Any]:
                 continue
         resolved: list[Any] = []
         for name, old, new in legacy:
+            if declared is not None and name in declared:
+                resolved.append((name, declared[name], old, new))
+                continue
             # Pick the candidate file the anchor actually lives in. Falling back
             # to the first candidate keeps a genuinely ABSENT anchor reportable
             # rather than silently dropped.
@@ -308,11 +369,28 @@ def _legacy_targets(module: Any) -> list[Path]:
         candidate = getattr(module, attribute, None)
         if isinstance(candidate, Path):
             candidates.append(candidate)
+    # D-136: the second rule used to be `name.startswith("_")` only, which
+    # silently excluded EVERY sweep that names its target with an ordinary
+    # UPPER-CASE constant. Measured: `mutation_command_inventory.py`
+    # (PROGRESS/REGISTRY/GUARD) and `mutation_performance_record.py` (SETTINGS)
+    # both resolved to `Path("<unknown>")`, so this tool reported `[ok] ...
+    # every anchor resolves` about two catalogues it never opened.
+    #
+    # The generalised rule is "any module-level Path THAT EXISTS ON DISK", which
+    # is what a target is; the existence test keeps a Path constant that is a
+    # template or a placeholder out of the candidate list.
     for name in dir(module):
         if name.startswith("_"):
-            candidate = getattr(module, name, None)
-            if isinstance(candidate, Path) and candidate not in candidates:
-                candidates.append(candidate)
+            continue
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, Path) and candidate.exists() and candidate not in candidates:
+            candidates.append(candidate)
+    for name in dir(module):
+        if not name.startswith("_"):
+            continue
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, Path) and candidate.exists() and candidate not in candidates:
+            candidates.append(candidate)
     return candidates
 
 
@@ -404,6 +482,8 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
     than the thing it is checking**, and the way to tell is to reproduce the
     finding with a second, independent reader rather than to trust the first.
     """
+    heads: dict[Path, str | None] = {}
+
     problems: list[str] = []
     for name, target, old, new in catalogue:
         try:
@@ -412,6 +492,18 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
             # its source with `Path.read_text`, so this must match it exactly.
             text = Path(target).read_text(encoding="utf-8")
         except OSError:
+            # D-136: this `continue` is how a sweep with unresolvable targets
+            # was reported `[ok]`. `Path("<unknown>")` cannot be read, so every
+            # anchor was skipped and the tool printed "every anchor resolves"
+            # about a catalogue it never looked at. An unreadable target is a
+            # FINDING, not a skip: the check cannot see the sweep's subject, and
+            # silently passing is what makes a gate ignorable (D-062).
+            problems.append(
+                f"{name}: TARGET UNRESOLVABLE — {target} cannot be read, so this "
+                "check did not look at the anchor it is named for. Declare the "
+                "targets (a `_TARGETS` map, or a recognised module-level Path "
+                "constant) so the catalogue can be resolved."
+            )
             continue
         if old == new:
             problems.append(f"{name}: INERT BY CONSTRUCTION (old == new)")
@@ -432,7 +524,7 @@ def _own_target_check(catalogue: list[tuple[str, Path, str, str]]) -> list[str]:
             # source. `M7b`'s `lead_direction = "broad_based_advance"` is the
             # legitimate advance branch's own assignment, so `new in text` was
             # trivially true and Step 0 failed on a clean tree.
-            if _is_applied(text, old, new):
+            if _is_applied(text, old, new, pristine=_blob_for(target, heads)):
                 problems.append(
                     f"{name}: MUTATION STILL APPLIED in {target.name} "
                     f"(anchor absent AND re-applying the mutation changes nothing "
@@ -832,6 +924,7 @@ def main() -> int:
 
     # O-83's remedy, run BEFORE the per-sweep scan so a shape left anywhere is
     # reported even if no catalogue declares it.
+    heads: dict[Path, str | None] = {}
     shape_hits = _whole_tree_mutant_scan()
     for hit in shape_hits:
         failures.append(f"mutant shape on disk: {hit}")
@@ -900,7 +993,7 @@ def main() -> int:
                 if old not in text:
                     unverifiable += 1
                 continue
-            if _is_applied(text, old, new):
+            if _is_applied(text, old, new, pristine=_blob_for(path, heads)):
                 applied += 1
                 leftovers.append(f"{path.name}: {name}")
 

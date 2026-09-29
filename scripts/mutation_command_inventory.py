@@ -50,6 +50,8 @@ from pathlib import Path
 import yaml
 
 from _sweep_gate import (
+    check_only,
+    check_only_requested,
     check_targets,
     format_problems,
     sweep_lifecycle,
@@ -77,12 +79,7 @@ _TARGETS: dict[str, Path] = {
 #
 # NOTE the anchor is the WHOLE table row, not just the figure: M1 needs to restore
 # the *bare* row, which differs from the corrected row in more than the number.
-_CORRECTED_ROW = (
-    "| OpenBB commands the engine uses | **4 of 201** — `fred_series`, `fred_search`, "
-    "`fixedincome.government.yield_curve` (D-086 change 1), `economy.fomc_documents` "
-    "(D-086 change 2) · *superseded: 2 of 201 as measured at D-084, before two of the "
-    "five §8 changes were applied* |"
-)
+_CORRECTED_ROW = "| OpenBB commands the engine uses | **6 of 201** — `fred_series`, `fred_search`, `fixedincome.government.yield_curve` (D-086 change 1), `economy.fomc_documents` (D-086 change 2), `commodity.petroleum_status_report` + `commodity.short_term_energy_outlook` (D-120) · *superseded: 4 of 201 at D-086/D-087.27; 2 of 201 as measured at D-084, before two of the five §8 changes were applied* |"
 
 # The stale row, verbatim from what the tree carried before this increment.
 _STALE_ROW = "| OpenBB commands the engine uses | **2 of 201** (`fred_series`, `fred_search`) |"
@@ -108,10 +105,7 @@ _M4_NEW = "release_calendar:\n  enabled: true\n  provider: nasdaq\n"
 
 # The supersession clause for M5 -- stripped, leaving the honest figure as a bare
 # claim alongside the current one.
-_M5_OLD = (
-    " · *superseded: 2 of 201 as measured at D-084, before two of the "
-    "five §8 changes were applied* |"
-)
+_M5_OLD = " · *superseded: 4 of 201 at D-086/D-087.27; 2 of 201 as measured at D-084, before two of the five §8 changes were applied* |"
 _M5_NEW = " |"
 
 MUTATIONS: list[tuple[str, str, str]] = [
@@ -205,7 +199,16 @@ def _parses(text: str) -> bool:
     return True
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138)."""
+    return check_only([(name, _TARGETS[name], old, new) for name, old, new in MUTATIONS])
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle
+    # writes, and before ANY file is read -- see check_only's docstring.
+    if check_only_requested():
+        return _check_targets_only()
     # The whole interrupt defence in one call (O-103): heal, protect, spend.
     # On win32 no Python signal handler runs for SIGTERM/SIGINT, so the sidecar --
     # not a handler -- is the defence with real reach here.

@@ -44,6 +44,8 @@ from pathlib import Path
 from _sweep_gate import (
     _clear_in_flight,
     _set_in_flight,
+    check_only,
+    check_only_requested,
     check_targets,
     format_problems,
     install_signal_restore,
@@ -546,7 +548,16 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
     return repaired
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138)."""
+    return check_only(_MUTATIONS)
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle
+    # writes, and before ANY file is read -- see check_only's docstring.
+    if check_only_requested():
+        return _check_targets_only()
     # FIRST: a kill from here on must leave a log behind (O-124).
     line_buffer_stdout()
     # A truncated pipe closes stdout and kills this process; the sidecar is the

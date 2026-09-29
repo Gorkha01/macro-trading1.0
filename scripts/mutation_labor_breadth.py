@@ -31,6 +31,8 @@ import sys
 from pathlib import Path
 
 from _sweep_gate import (
+    check_only,
+    check_only_requested,
     check_targets,
     format_problems,
     sweep_lifecycle,
@@ -216,7 +218,16 @@ def run_tests() -> bool:
     return proc.returncode == 0
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138)."""
+    return check_only(_MUTATIONS)
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle
+    # writes, and before ANY file is read -- see check_only's docstring.
+    if check_only_requested():
+        return _check_targets_only()
     with sweep_lifecycle([SRC]) as originals:
         return _run_sweep(originals)
 

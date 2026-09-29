@@ -243,7 +243,11 @@ markers = [
     "offline: no network access required",
     "golden: hand-verified expected-value test (Section 21.2 Step 4)",
     "warning_path: proves a ModelResult.warnings condition actually fires (Section 21.2 Step 5)",
-    "slow: loads all 45 mutation sweeps (~6 min); correctness is unaffected by deselection",
+    # D-136: the count was 45 when this line was written and the catalogue is 52
+    # now. A stale number here is not cosmetic -- this marker decides whether CI
+    # spends minutes on a test, so a reader sizing the run from this string is
+    # mis-sized by ~16%.
+    "slow: loads all 52 mutation sweeps (~6 min); correctness is unaffected by deselection",
 ]
 
 [dependency-groups]

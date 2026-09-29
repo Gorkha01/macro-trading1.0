@@ -89,12 +89,13 @@ import shutil
 import signal
 import subprocess
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = [
     "CHECK_ONLY_FLAG",
+    "check_only",
     "check_only_requested",
     "check_targets",
     "describe_dirty_targets",
@@ -597,6 +598,10 @@ def check_targets(
       the mutation may land on a different function than its name claims.
     """
     cache: dict[Path, str] = dict(originals)
+    # D-136: the pristine text is read ONCE per file, not per mutation — 176
+    # mutations against one target would otherwise be 176 `git show` calls, and
+    # this gate runs 52 times over in `tools/sweep_health.py`.
+    heads: dict[Path, str | None] = {}
     problems: list[str] = []
 
     for name, target, old, new in table:
@@ -608,6 +613,9 @@ def check_targets(
                 problems.append(f"{name}: target UNREADABLE ({path.name}: {exc})")
                 continue
         text = cache[path]
+        if path not in heads:
+            heads[path] = _head_text(path)
+        pristine = heads[path]
 
         if old == new:
             problems.append(f"{name}: INERT BY CONSTRUCTION (old == new)")
@@ -615,7 +623,7 @@ def check_targets(
 
         count = text.count(old)
         if count == 0:
-            if _is_applied(text, old, new):
+            if _is_applied(text, old, new, pristine=pristine):
                 problems.append(
                     f"{name}: MUTATION STILL APPLIED in {path.name} (anchor absent, "
                     "replacement present AT THE EDIT SITE - this is a LEFTOVER, not a "
@@ -632,7 +640,54 @@ def check_targets(
     return problems
 
 
-def _is_applied(text: str, old: str, new: str) -> bool:
+def _normalised(text: str) -> str:
+    """``text`` with CRLF/CR folded to LF, so a checkout convention is not a diff.
+
+    ``git show HEAD:<path>`` returns the BLOB, whose line endings need not match
+    the working tree's (``core.autocrlf``, a ``.gitattributes`` rule, or a file
+    committed with CRLF and checked out with CRLF). Comparing raw would report
+    "differs from HEAD" for a tree that is byte-identical modulo the convention,
+    and this module has already been burned twice by newline handling (the 87%
+    artefact rate in ``_own_target_check``'s docstring).
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _head_text(path: Path) -> str | None:
+    """The committed text of ``path`` at ``HEAD``, or ``None`` if git cannot say.
+
+    ``None`` is deliberately distinct from ``""``: it means *could not ask* (no
+    git, no repository, untracked file, timeout, detached nothing to compare to),
+    and callers must treat an unanswered question as "not proven" rather than as
+    a finding (D-062).
+    """
+    git = shutil.which("git")
+    if git is None:
+        return None
+    root = _git_root(path.parent if path.is_absolute() else None)
+    if root is None:
+        return None
+    try:
+        relative = path.resolve().relative_to(root)
+    except ValueError:
+        return None
+    try:
+        proc = subprocess.run(  # noqa: S603 - three literals + a resolved path
+            [git, "show", f"HEAD:{relative.as_posix()}"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def _is_applied(text: str, old: str, new: str, *, pristine: str | None) -> bool:
     """Is this mutation APPLIED to ``text``, or is the anchor merely absent?
 
     Both cases present as ``old`` occurring zero times, and separating them is the
@@ -651,28 +706,48 @@ def _is_applied(text: str, old: str, new: str) -> bool:
     assignment. Membership cannot tell "``new`` is here because the mutant wrote
     it" from "``new`` was always here".
 
-    **The discriminator is what applying the mutation would DO.**
+    **⚠️ The discriminator this function used to apply was a TAUTLOGY (D-136).**
 
-    A mutation is a single ``str.replace(old, new, 1)``. Let ``P`` be the pristine
-    text and ``M = P.replace(old, new, 1)`` the mutated one; we hold one of them and
-    must say which. Apply the mutation to what we hold and count:
+    It was: *"applied ⟺ re-applying does not raise ``new``'s count"*, justified as
+    "if the text is pristine the replace consumes an ``old`` and the count rises".
+    That justification is false. This branch is only reached when
+    ``text.count(old) == 0`` — the anchor is ALREADY absent — and
+    ``str.replace`` with an absent needle returns the text **unchanged**, so the
+    count never rises regardless of which of the two texts we hold. The predicate
+    reduced to ``text.count(new) != 0``, i.e. it asked only "does the replacement
+    text appear anywhere in this file?"
 
-    * the text is ``M`` (**applied**) → the anchor ``old`` is gone, so the replace
-      finds nothing and changes nothing: ``new``'s count is **unchanged**;
-    * the text is ``P`` (**drifted anchor**) → the anchor is present, so the
-      replace consumes it and emits a ``new``: the count **rises**.
+    Measured 2026-09-29: ``_is_applied("| a | b |", "ANCHOR_THAT_NEVER_EXISTED",
+    " |")`` returned **True** on a file that never contained the anchor. In
+    ``mutation_command_inventory.py``'s ``M5`` the replacement is the two-byte
+    string ``" |"``, present in every markdown table, so a **drifted** anchor was
+    reported ``MUTATION STILL APPLIED ... this is a LEFTOVER`` — on a tree
+    ``git status`` reported clean. The message then tells the operator to
+    *"restore the file before sweeping"*, whose natural reading is
+    ``git checkout --``; that discards uncommitted work, which cost this project
+    97 lines once (D-086.8). **A gate whose remedy destroys work must not fire on
+    a predicate that cannot be false.**
 
-    So: **applied ⟺ ``old`` is absent AND re-applying does not raise ``new``'s
-    count.** It asks "would this mutation change this file?" by actually applying
-    it and looking, so it needs neither a pristine reference nor an assumption that
-    the mutation is idempotent.
+    Why the original measurement missed it: it was validated as
+    "0 false positives, 0 misses" by comparing ``P`` (from ``git show HEAD``)
+    against ``M = P.replace(old, new, 1)``. Both arms had the anchor resolved or
+    genuinely applied — the DRIFTED case (``old`` absent, ``new`` present, nothing
+    applied) was never constructed, and it is exactly the case this branch exists
+    to decide.
 
-    Measured against ground truth (``git show HEAD:<file>`` as ``P``, so truth is
-    established rather than inferred), over the **622** of 632 catalogue entries
-    for which this branch is reachable: **0 false positives, 0 misses.** The other
-    10 are excluded because ``old`` survives *inside* ``new`` (a prefix-extension
-    such as ``new = old + " / 100.0"``); for those the anchor always resolves, this
-    branch is never entered, and no predicate here is consulted.
+    **The sound discriminator needs the pristine text.** From ``T`` alone the two
+    are indistinguishable: both are "``old`` absent". So ``P`` is read from
+    ``HEAD``, and a mutation is reported applied only when it is PROVEN —
+    ``T == P.replace(old, new, 1)``. Anything else (``T == P``, or ``T`` differing
+    from ``P`` in some other way) is reported as not-applied, because the
+    non-destructive error is the one to prefer: a drifted anchor makes the sweep
+    refuse with "target ABSENT", while a false "leftover" invites a destructive
+    restore.
+
+    Where git cannot answer — no repository, an untracked file, a timeout — the
+    function returns ``False``. That is D-062's rule: an unanswered question is
+    not a finding.
+
 
     A deletion mutation (``new`` empty) is **not** our call: it cannot be verified
     this way, and D-062 requires such entries be reported *unverifiable*, never as
@@ -707,7 +782,62 @@ def _is_applied(text: str, old: str, new: str) -> bool:
         # Both absent: the anchor drifted (or a rename moved it) and the
         # replacement was never written here. NOT a leftover — see the docstring.
         return False
-    return text.replace(old, new, 1).count(new) == text.count(new)
+
+    # `old` absent, `new` present. Only HEAD can separate "drifted" from
+    # "applied" — see the docstring for why `text.replace(...)` cannot.
+    if pristine is None:
+        return False
+    if pristine.count(old) == 0:
+        # HEAD does not carry the anchor either, so `pristine.replace` is a
+        # no-op and the comparison below would be the SAME tautology wearing a
+        # different variable. The anchor drifted in the committed text (which is
+        # the `mutation_command_inventory.py` M1/M5 case) — nothing here was
+        # applied by a sweep, and the honest report is "absent".
+        return False
+    return _normalised(text) == _normalised(pristine.replace(old, new, 1))
+
+
+def check_only(table: Sequence[tuple[str, Path, str, str]]) -> int:
+    """Print the anchor verdict for ``table`` and STOP. Touches nothing (O-138).
+
+    **This is the second half of O-138, and the reason it is a separate function
+    rather than six more copies of the same eight lines.** ``check_only_requested``
+    answers *whether* the operator asked for a pre-flight; until now each sweep
+    that adopted it also had to re-implement what a pre-flight PRINTS, and 46 of
+    the 52 never adopted it at all — so ``python scripts/mutation_X.py
+    --check-targets`` ran the FULL sweep on 24 of them, which is the exact
+    incident O-138 records (D-113: a SIGTERM left a mutant on disk because the
+    "safe" flag was not safe).
+
+    One implementation here means the verdict a sweep prints in check-only mode
+    and the verdict it prints at the top of a real run are the SAME verdict,
+    produced by the same ``check_targets`` call. A second implementation would
+    eventually disagree with the first, and a pre-flight that disagrees with the
+    run it is supposed to predict is worse than no pre-flight.
+
+    It deliberately does NOT go through :func:`sweep_lifecycle`: that helper
+    writes a sidecar, and a mode whose entire purpose is safety must not write
+    to the tree. The files are read here instead, which is also why the
+    ``originals`` mapping is built from the table's own targets — a sweep cannot
+    pass a target it forgot to declare.
+    """
+    originals: dict[Path, str] = {}
+    for _name, target, _old, _new in table:
+        if target not in originals and target.exists():
+            originals[target] = target.read_text(encoding="utf-8")
+
+    problems = check_targets(originals, list(table))
+    print(f"check_targets: {len(table)} mutations, {len(problems)} problem(s)", flush=True)
+    if problems:
+        print(format_problems(problems))
+        print()
+        print("ANCHORS UNSOUND: fix the anchors above before sweeping. A sweep that")
+        print("cannot prove it mutates the site it names certifies nothing.")
+        return 4
+    print()
+    print("Anchors sound: every mutation resolves to exactly one site. No mutation")
+    print("was applied and no sidecar was written (O-138 -- this mode stops here).")
+    return 0
 
 
 def format_problems(problems: list[str], *, indent: str = "  !! ") -> str:

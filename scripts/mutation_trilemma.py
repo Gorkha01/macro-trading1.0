@@ -48,7 +48,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from _sweep_gate import sweep_lifecycle
+from _sweep_gate import check_only, check_only_requested, sweep_lifecycle
 
 SRC = Path("src/macro_engine/models/regime.py")
 CONFIG = Path("src/macro_engine/config.py")
@@ -1021,7 +1021,16 @@ def repair_leftover_mutations(originals: dict[Path, str]) -> list[str]:
     return repaired
 
 
+def _check_targets_only() -> int:
+    """Print the anchor verdict and STOP, touching nothing (O-138)."""
+    return check_only(_MUTATIONS)
+
+
 def main() -> int:
+    # O-138: the check-only mode must be answered BEFORE the lifecycle
+    # writes, and before ANY file is read -- see check_only's docstring.
+    if check_only_requested():
+        return _check_targets_only()
     # O-103: heal, protect, spend in ONE call. The bare `try/finally` this
     # replaces restored a crash but could not survive a SIGTERM -- on win32
     # no Python signal handler runs and a killed process gets no `finally`
