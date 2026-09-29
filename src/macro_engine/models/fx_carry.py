@@ -2266,6 +2266,7 @@ def _ppp_warnings(
     deviation_pct: float,
     horizon_years: float,
     tactical_horizon_years: float,
+    implausible_deviation_pct: float,
 ) -> list[str]:
     """The warning paths, each of which a test must be able to trigger.
 
@@ -2278,10 +2279,13 @@ def _ppp_warnings(
     * **an overvaluation at a tactical horizon** — the same fact, stated as the
       specific error 6.7 warns about, because "the currency is 30 % overvalued"
       read at three months is the single most common misuse of this model.
-    * **a deviation large enough to be a data check** — a >100 % deviation is
-      more often a unit or convention error (a transposed pair, a rate passed
-      where a level was expected) than a genuine market state, so it is
-      surfaced rather than published silently.
+    * **a deviation large enough to be a data check** — a deviation past the
+      configured plausibility bound is more often a unit or convention error (a
+      transposed pair, a rate passed where a level was expected) than a genuine
+      market state, so it is surfaced rather than published silently. **The
+      bound is a config leaf (D-132), not the bare ``100.0`` it used to be**: it
+      decides whether a PUBLISHED disclosure appears, which is exactly the class
+      of judgement every other boundary in this module already reads from config.
     """
     warnings: list[str] = []
     if horizon_years < tactical_horizon_years:
@@ -2300,10 +2304,11 @@ def _ppp_warnings(
             f"widen. Matching the tool's horizon to the trade's horizon is the "
             f"discipline (Module 9.2)."
         )
-    if abs(deviation_pct) > 100.0:
+    if abs(deviation_pct) > implausible_deviation_pct:
         warnings.append(
-            f"The deviation is {deviation_pct:+.1f}%, beyond any plausible "
-            f"purchasing-power gap. A four-figure deviation is far more often a "
+            f"The deviation is {deviation_pct:+.1f}%, beyond the configured "
+            f"plausibility bound ({implausible_deviation_pct}%) for a "
+            f"purchasing-power gap. A gap this wide is far more often a "
             f"UNIT OR CONVENTION ERROR than a market state — check that both "
             f"rates share one quote convention and that neither is a rate "
             f"passed where a level was expected."
@@ -2362,6 +2367,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
     fx_carry = settings.fx_carry
     reliability = fx_carry.ppp_reliability_value
     tactical_horizon_years = fx_carry.ppp_tactical_horizon_value
+    implausible_deviation_pct = fx_carry.ppp_implausible_deviation_value
 
     # --- resolve the PPP leg: fetch it, or take the caller's override -------
     # The fetch is the ONLY live path (the operator's D-117 decision): there is
@@ -2452,6 +2458,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
             deviation_pct=deviation_pct,
             horizon_years=inputs.horizon_years,
             tactical_horizon_years=tactical_horizon_years,
+            implausible_deviation_pct=implausible_deviation_pct,
         ),
         limitations=_ppp_limitations(ppp_vintage),
         decision_relevance=(

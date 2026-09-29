@@ -98,7 +98,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
@@ -430,14 +430,56 @@ def fetch_opec_spare_capacity(
 
 
 def _parse_date(raw: object, *, context: str) -> date:
-    """Parse a provider date into a ``datetime.date``.
+    """Parse a provider date into a ``datetime.date`` — ALWAYS a real date.
 
     The two commodity routes were measured returning ISO ``YYYY-MM-DD`` strings;
     the parse is explicit rather than ``fromisoformat`` alone so a future
     timestamp-bearing value (``2026-09-18T00:00:00``) is handled by taking the
     date part, and a genuinely unparseable value raises with the context rather
     than a bare ``ValueError``.
+
+    **The type-dispatch order below is load-bearing (R-5).** This helper
+    originally led with ``if isinstance(raw, date): return raw`` — which is the
+    ``datetime``-is-a-``date`` trap fixed in ``openbb_client.to_observation_date``
+    (R-4), repeated in a sibling module. ``pd.Timestamp`` and ``datetime`` are
+    BOTH ``date`` subclasses, so that branch returned them unchanged and the
+    ``-> date`` contract was violated. It is reachable, not theoretical:
+    ``OpenBBClient._coerce_records`` converts a DataFrame-shaped payload with
+    ``to_dict(orient="records")``, and a datetime column becomes ``Timestamp``
+    values (measured). Those rows reach this function at the two
+    ``fetch_records`` call sites (inventories, spare capacity).
+
+    The two measured consequences of letting one through:
+
+    * ``when > as_of`` raises ``TypeError: Cannot compare Timestamp with
+      datetime.date`` — an uncaught crash carrying a pandas message instead of
+      this module's own ``CommodityReadError``; and
+    * ``observation_date=when.isoformat()`` publishes ``'2026-09-18T00:00:00'``
+      rather than ``'2026-09-18'`` — a wrong-shape provenance fact.
+
+    So the most-derived type is tested FIRST and collapsed via ``.date()``,
+    exactly as ``openbb_client``/``snapshot_builder`` do.
     """
+    # ``pd.Timestamp`` is checked before ``date`` because it subclasses
+    # ``datetime``, which subclasses ``date`` -- testing the broad type first is
+    # what let the defect through.
+    #
+    # Order: collapse a bare ``datetime`` (and ``pd.Timestamp``, which IS one),
+    # then any other date-LIKE value that exposes ``.date()`` (``np.datetime64``,
+    # a legal frame cell after a pandas round-trip), then the plain ``date``,
+    # then a string. Nothing here imports pandas/numpy: this module deliberately
+    # owns no transport and no frame library, so the check is by capability.
+    if isinstance(raw, datetime):
+        return raw.date()
+    if not isinstance(raw, date):
+        # A date-like carrier (numpy.datetime64 and friends) exposes ``date()``
+        # or ``item()``; prefer ``.date()`` and fall back to a string parse
+        # below if neither is usable.
+        collapse = getattr(raw, "date", None)
+        if callable(collapse):
+            collapsed = collapse()
+            if isinstance(collapsed, date):
+                return collapsed
     if isinstance(raw, date):
         return raw
     text = str(raw).strip()

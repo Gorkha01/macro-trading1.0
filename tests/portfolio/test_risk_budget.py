@@ -1116,6 +1116,26 @@ _ENVELOPE_LEAVES: dict[str, CalibratedValue] = {
     "thesis_demotion_fraction_value": CalibratedValue(
         value=0.03, calibration_status="uncalibrated_illustrative"
     ),
+    # D-131's three Tier-1 risk WARNING thresholds. Same reasoning as the entry
+    # above: `RiskSettings` requires every leaf, so a new leaf means every
+    # explicit construction needs it — adding it once here keeps the failure
+    # count from growing with the number of tests that build a `RiskSettings`.
+    "historical_var_min_tail_observations_value": CalibratedValue(
+        value=5.0, calibration_status="uncalibrated_illustrative"
+    ),
+    "expected_shortfall_heavy_tail_ratio_value": CalibratedValue(
+        value=1.5, calibration_status="uncalibrated_illustrative"
+    ),
+    "risk_contribution_overweight_multiple_value": CalibratedValue(
+        value=1.25, calibration_status="uncalibrated_illustrative"
+    ),
+    # D-132's rebalancing sum tolerance. Same reasoning as the entries above:
+    # `RiskSettings` requires every leaf, so a new leaf means every explicit
+    # construction in this file needs it — adding it once here keeps the failure
+    # count from growing with the number of tests that build a `RiskSettings`.
+    "rebalancing_contribution_sum_tolerance_value": CalibratedValue(
+        value=0.01, calibration_status="mechanical_rule"
+    ),
 }
 
 # D-106's Monte Carlo block (Tier 5, Section 17.1), taken from the SHIPPED

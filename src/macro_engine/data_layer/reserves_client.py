@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
 
@@ -262,20 +262,54 @@ def fetch_reserves(
 
 
 def _as_iso_date(index_value: object) -> str:
-    """Render a pandas index entry as an ISO date string.
+    """Render a date-like value as a bare ISO date string (``YYYY-MM-DD``).
 
     The index type varies by route (``DatetimeIndex`` here, and D-117 measured a
     bare ``datetime.date`` on a sibling path), so the conversion is defensive
     and the ``date`` parts are taken explicitly rather than by ``str()`` — a
     ``str()`` of a Timestamp carries a time and a timezone, which would make two
     dates for the same observation compare unequal.
+
+    **A ``pd.Timestamp`` must therefore be collapsed BEFORE ``isoformat`` is
+    called**, and that is what R-6 fixed. The original code led with
+    ``if isinstance(index_value, date): return index_value.isoformat()`` — and
+    because ``pd.Timestamp`` (and ``datetime``) are ``date`` subclasses, a
+    Timestamp took that branch and ``Timestamp.isoformat()`` produced
+    ``'2026-09-18T00:00:00'``, i.e. exactly the time-bearing string this
+    docstring says it exists to avoid. Measured, not assumed.
+
+    It is **not reachable through today's wiring** — ``reserves_client`` calls
+    ``fetch_series``, whose normalized ``date`` column holds real
+    ``datetime.date`` objects (measured: ``sort_values`` and ``tolist`` preserve
+    them) — so this is a latent defect, not a live one, and it is fixed anyway
+    because the two routes differ only in a call the module above could change.
+    A date-bearing carrier is collapsed by ``.date()`` first; a plain string is
+    passed through; anything with ``year``/``month``/``day`` is formatted
+    explicitly.
     """
+    # Collapse any date-bearing carrier (Timestamp, datetime) to a plain date
+    # so `.isoformat()` cannot attach a time. The `datetime` type is tested
+    # FIRST because it (and `pd.Timestamp`) are `date` subclasses: a plain
+    # `isinstance(x, date)` test is True for all three and cannot distinguish
+    # them, which is exactly how the defect hid.
+    if isinstance(index_value, datetime):
+        return index_value.date().isoformat()
+    collapse = getattr(index_value, "date", None)
+    if callable(collapse) and not isinstance(index_value, date):
+        collapsed = collapse()
+        if isinstance(collapsed, date):
+            return collapsed.isoformat()
     if isinstance(index_value, date):
         return index_value.isoformat()
-    # pandas Timestamp and anything else carrying the three attributes.
+    # Everything else: a value carrying year/month/day, OR an ISO-ish string.
+    # `numpy.datetime64` is the measured carrier that reaches here (it has no
+    # `.date()`, `.year`, or `.isoformat` with a bare date) -- taking the first
+    # whitespace/`T`-delimited token drops any time part, so it renders bare
+    # rather than leaking `'2026-09-18T13:45:00'`.
     year = getattr(index_value, "year", None)
     month = getattr(index_value, "month", None)
     day = getattr(index_value, "day", None)
-    if year is None or month is None or day is None:  # pragma: no cover
-        return str(index_value)
-    return f"{year:04d}-{month:02d}-{day:02d}"
+    if year is not None and month is not None and day is not None:
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    head = str(index_value).strip().split("T", 1)[0].split(" ", 1)[0]
+    return head

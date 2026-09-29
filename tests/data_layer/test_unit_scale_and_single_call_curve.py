@@ -431,3 +431,99 @@ def test_a_label_column_is_never_picked_as_the_value_column() -> None:
     )
     # And a genuinely nameless single-remaining value column is still usable.
     assert OpenBBClient._pick_value_column(["date", "obs"], exclude={"date"}) == "obs"
+
+
+# --------------------------------------------------------------------------
+# 5. R-4 — `to_observation_date` must return a real `date`, never a leak.
+# --------------------------------------------------------------------------
+# `docs/CODE_REVIEW_PHASE0-4.md` item 3.10 named this as the classic
+# `datetime`-is-a-`date` trap, and it was still live: the guard tested `date`
+# FIRST, so a `datetime` or `pd.Timestamp` (both `date` subclasses) matched that
+# branch and leaked through unchanged, violating the `-> date` annotation.
+# MEASURED before the fix:
+#
+#     to_observation_date(datetime(2026, 9, 29, 13, 45)) -> datetime(...)
+#     to_observation_date(pd.Timestamp("2026-09-29"))    -> Timestamp(...)
+#
+# `snapshot_builder._points_from_frame` gets this right by testing
+# `pd.Timestamp` BEFORE `date`; these tests pin the same ordering here, and a
+# test that only ever passed a plain `date` would have missed the defect
+# entirely — which is why every case below asserts `type(...) is date`, not
+# merely `isinstance`.
+
+
+def test_to_observation_date_collapses_a_datetime_to_a_date() -> None:
+    """A `datetime` is a `date` subclass; it must be collapsed, not passed on.
+
+    This is the exact input the old guard let through. `type(out) is date` (not
+    `isinstance`) is the assertion that matters: a `datetime` would satisfy
+    `isinstance(x, date)` and hide the leak.
+    """
+    from macro_engine.data_layer.openbb_client import to_observation_date
+
+    out = to_observation_date(datetime(2026, 9, 29, 13, 45, tzinfo=UTC))
+    assert type(out) is date
+    assert out == date(2026, 9, 29)
+
+
+def test_to_observation_date_collapses_a_pandas_timestamp() -> None:
+    """A `pd.Timestamp` is the shape `_normalize` actually produces downstream."""
+    from macro_engine.data_layer.openbb_client import to_observation_date
+
+    out = to_observation_date(pd.Timestamp("2026-09-29 13:45:00"))
+    assert type(out) is date
+    assert out == date(2026, 9, 29)
+
+
+def test_to_observation_date_passes_a_plain_date_through_unchanged() -> None:
+    """Positive control: the common case is untouched and is a real `date`."""
+    from macro_engine.data_layer.openbb_client import to_observation_date
+
+    original = date(2026, 9, 29)
+    out = to_observation_date(original)
+    assert type(out) is date
+    assert out is original
+
+
+def test_to_observation_date_parses_a_string_and_a_numpy_datetime() -> None:
+    """The last-resort branch still handles anything else `pd.Timestamp` accepts.
+
+    A string and a ``numpy.datetime64`` are the two shapes a provider JSON or a
+    parquet round-trip can deliver; both must resolve to a genuine `date`, so
+    the fallback cannot be a place a non-date slips through.
+    """
+    import numpy as np
+
+    from macro_engine.data_layer.openbb_client import to_observation_date
+
+    for raw in ("2026-09-29", np.datetime64("2026-09-29T13:45:00")):
+        out = to_observation_date(raw)
+        assert type(out) is date, f"{raw!r} leaked {type(out).__name__}"
+        assert out == date(2026, 9, 29)
+
+
+def test_to_observation_date_never_returns_a_time_bearing_value() -> None:
+    """Invariant sweep: EVERY accepted shape yields a time-of-day-free `date`.
+
+    The property the two live defects violated is not "handles datetime" or
+    "handles Timestamp" but "the return carries no clock time". Asserting the
+    invariant across all shapes at once is what catches a future third shape
+    added without extending the explicit branches.
+    """
+    import numpy as np
+
+    from macro_engine.data_layer.openbb_client import to_observation_date
+
+    shapes: list[object] = [
+        datetime(2026, 9, 29, 23, 59, 59, tzinfo=UTC),
+        pd.Timestamp("2026-09-29 23:59:59"),
+        np.datetime64("2026-09-29T23:59:59"),
+        date(2026, 9, 29),
+        "2026-09-29T23:59:59",
+    ]
+    for raw in shapes:
+        out = to_observation_date(raw)
+        assert type(out) is date, f"{raw!r} -> {type(out).__name__} (leak)"
+        # A `date` has no `.hour`; a leaked `datetime` would. Belt and braces.
+        assert not hasattr(out, "hour"), f"{raw!r} -> carries a clock time"
+        assert out == date(2026, 9, 29)

@@ -540,6 +540,16 @@ def _thresholds_calibrated() -> bool:
     no entry for "the bands are illustrative but the structure is sound", and
     these bands are Section 6.2's own literals.
 
+    **Exactly the four leaves a branch reads.** An earlier version also listed
+    the specification's ``late_expansion_output_gap_min`` and
+    ``disinflation_output_gap_max`` — two thresholds the grid supersedes and no
+    rule reads (MEASURED 2026-09-29, D-132: moving them changes no
+    classification). Their presence here made the published confidence depend on
+    the calibration status of two thresholds that decide nothing, which is a
+    disclosure that cannot fire wearing the same name as one that can. The
+    confidence penalty is now justified by exactly the bands the classifier
+    enforces.
+
     Uses the module-level ``get_settings`` rather than importing it locally.
     Both spellings work at runtime, but a local import binds the name *inside*
     this function and so cannot be redirected by patching the module attribute —
@@ -553,8 +563,6 @@ def _thresholds_calibrated() -> bool:
         for leaf in (
             settings.recession_output_gap_max,
             settings.weak_growth_output_gap_max,
-            settings.late_expansion_output_gap_min,
-            settings.disinflation_output_gap_max,
             settings.neutral_inflation_trend_band_pp,
             settings.growth_momentum_band_pp,
         )
@@ -1538,6 +1546,91 @@ def check_trilemma_tension(inputs: TrilemmaInputs) -> ModelResult:
         ),
         inputs_used=inputs_used,
         warnings=warnings,
+        # --- Section 3/4: the reasoning object, populated -------------------
+        # Added by D-132. This function previously published NONE of the
+        # Section 3-4 reasoning fields, while the two other functions in this
+        # file populate every one — an unequal application of the contract
+        # within a single module, invisible because every field on
+        # ``ModelResult`` defaults to an honest "not supplied". A consumer had
+        # no statement of the severity's units, of what the severity means in
+        # words, of the assumptions it rests on, or of how it may NOT be read.
+        unit="categorical (trilemma severity label)",
+        direction=(
+            f"severity '{severity}' escalates with evidence: NO_TENSION (not all "
+            f"three legs claimed) < TRILEMMA_TENSION (all three, no conflict yet) "
+            f"< TRILEMMA_VIOLATION (all three AND policy directions conflict) < "
+            f"CRITICAL_PEG_STRESS (+ reserves burning). Direction of travel in the "
+            f"world is PRESSURE ON THE PEG, not a policy stance."
+        ),
+        assumptions=[
+            "The three trilemma legs are MANUAL CLASSIFICATIONS of a country's "
+            "institutional structure, not series. The caller asserts them and no "
+            "data can disagree, so a misclassified peg makes every severity here "
+            "wrong at once (O-28).",
+            "The reserves thresholds are the specification's 3-month literal plus "
+            "one 1-month threshold fitted to a single episode (Black Wednesday), "
+            "not estimated across crises.",
+            "The two policy directions, when supplied, are the caller's reading of "
+            "what domestic conditions call for and what peg defense requires — "
+            "neither is measured by this function.",
+            "Section 22.3 makes this a US-only build and the dollar floats, so "
+            "`has_fixed_or_managed_fx` is structurally False for every admissible "
+            "input and the severity is `NO_TENSION` by construction.",
+        ],
+        data_provenance=[
+            "has_fixed_or_managed_fx / has_free_capital_movement / "
+            "claims_monetary_independence — MANUAL CLASSIFICATIONS supplied by the "
+            "caller; Section 21.1 names no series route for any of them",
+            "domestic_policy_direction_needed / peg_defense_direction_required — "
+            "supplied by the caller, or absent (an unassessed direction is not a "
+            "conflict)",
+            "reserves_trend_pct_change_3mo / reserves_trend_pct_change_1mo — "
+            "supplied by the caller as FRACTIONS total-reserves change excluding "
+            "gold; the UK and Korean episodes used by the live check are FIXTURES, "
+            "not thesis countries",
+        ],
+        limitations=[
+            "STRUCTURAL, NOT PROBABILISTIC: this reports that a configuration is "
+            "impossible or under stress; it does not estimate the probability that "
+            "the peg breaks and it carries no timing. The trilemma says a "
+            "configuration cannot persist; it says nothing about when it ends.",
+            "NON-US ON A US-ONLY BUILD: every severity other than `NO_TENSION` is "
+            "unreachable for the one supported country, so a non-`NO_TENSION` "
+            "reading can only come from a caller passing a non-US country — which "
+            "the country guard REFUSES. The function is validated against UK and "
+            "Korean history as fixtures (D-048).",
+            "The 3-month reserves trend LAGS and is published MONTHLY. The "
+            "specification's own Black Wednesday observation is a rate hike "
+            "reversed within a day, which no monthly reserves figure can resolve; "
+            "the added 1-month measure narrows but does not close that gap.",
+            "The measured base rates are frequencies of the TEST firing, not of a "
+            "peg crisis occurring, and are measured on non-US history (the US has "
+            "no peg to measure).",
+        ],
+        decision_relevance=(
+            "Section 18.1's Black Wednesday detection rule and Section 18.7's "
+            "Asian Crisis mechanism. It is the structural check a peg-related "
+            "thesis must clear, and `models/intervention.py` points its reader to "
+            "`check_trilemma_tension()` before any peg-related thesis; a "
+            "CRITICAL_PEG_STRESS reading is the setup that piece names."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a probability or a forecast of a peg break, and "
+            "it carries no timing (Section 1.1: this system reasons, it does not "
+            "execute — no position is implied).",
+            "MUST NOT be consumed without its base rates: the specified 3-month "
+            "test fires on roughly a tenth of all months, so 'reserves are "
+            "depleting' is a PRECONDITION, not a crisis signal, and the escalation "
+            "to CRITICAL_PEG_STRESS requires it to coincide with all three claimed "
+            "legs AND a direction conflict.",
+            "MUST NOT be treated as evidence about a supported (US) country: the "
+            "dollar's exchange rate is not fixed or managed, so a severity above "
+            "NO_TENSION cannot have come from the supported-country path and any "
+            "caller seeing one must verify which country was passed.",
+            "MUST NOT be used alone to stand a thesis down; Section 18.7's rule "
+            "that MULTIPLE failing checks override a favourable statistical signal "
+            "is the operative one.",
+        ],
         source_family=EvidenceSourceFamily.MANUAL_ASSESSMENT,
     )
 

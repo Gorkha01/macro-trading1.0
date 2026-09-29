@@ -542,3 +542,112 @@ def test_the_coverage_disclosure_names_both_legs_and_their_years(
     _, disclosure = world_bank_client.reserves_to_short_term_debt("TUR")
     assert "2024" in disclosure and "2023" in disclosure
     assert "no unit conversion" in disclosure
+
+
+# ===========================================================================
+# R-3 — the registry `symbol` and the client constant are ONE fact, twice
+# ===========================================================================
+# The defect these tests close is a **duplicated fact with one copy dead**.
+#
+# A `world_bank` registry entry declares its indicator code in TWO places:
+#
+#   1. `config/series_registry.yaml`, as the entry's `symbol`; and
+#   2. `data_layer/world_bank_client.py`, as a module constant.
+#
+# For a SNAPSHOT field that duplication is harmless, because
+# `snapshot_builder` reads `entry.symbol` and would fetch whatever the registry
+# says. But ALL FIVE World Bank entries are `not_a_snapshot_field: true` — the
+# builder SKIPS them (`validation.py:547`) and the only thing that ever fetches
+# these series is this client, which uses its OWN constant and never read the
+# registry at all. So the registry `symbol` was **dead at runtime**: the code
+# path that fetches and the declaration that is supposed to name the source
+# could disagree and nothing would notice until a wrong-series number appeared
+# in a verdict.
+#
+# MEASURED (2026-09-29): all five pairs happened to MATCH — but only because
+# they were transcribed carefully when written, not because anything ENFORCED
+# it. `grep` over `tests/` found no test loading the registry for these
+# entries, and the seven client tests that do assert the codes
+# (`test_the_indicator_codes_are_the_ones_the_authority_names`) compare them
+# against HARDCODED literals, which pins the client to a value without pinning
+# it to the registry. Two independently-editable copies of one fact, with no
+# link, is the exact "two copies of a fact drift" class this repository names —
+# the same shape as O-141's undeclared key and R-1's dead `event_map` join.
+#
+# The fix is a binding: the registry `symbol` is the DECLARED source of a
+# series (Section 21.1's whole purpose is that the source is auditable), so the
+# two copies must be provably the same value. `test_registry_symbols_match_...`
+# is the KILLER — it fails the moment either copy is edited alone.
+
+#: `registry series name -> the client constant that fetches it`. Written
+#: explicitly rather than derived, because the MAPPING is itself the fact under
+#: test: a rename on either side must fail here rather than fall through a
+#: comprehension. The five entries are the complete set of `provider: world_bank`
+#: series; `test_every_world_bank_registry_entry_is_bound_here` proves that below.
+_REGISTRY_TO_CLIENT_INDICATOR = {
+    "current_account_pct_gdp_world_bank": world_bank_client.CURRENT_ACCOUNT_PCT_GDP_INDICATOR,
+    "reserves_total_usd_world_bank": world_bank_client.RESERVES_TOTAL_USD_INDICATOR,
+    "short_term_external_debt_usd": world_bank_client.SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR,
+    "ppp_conversion_factor_eur": world_bank_client.PPP_CONVERSION_FACTOR_INDICATOR,
+    "ppp_conversion_factor_usd": world_bank_client.PPP_CONVERSION_FACTOR_INDICATOR,
+}
+
+
+def test_registry_symbols_match_the_client_indicator_constants() -> None:
+    """R-3 KILLER: the registry `symbol` and the client constant must agree.
+
+    This is the test that would have caught a drift. Both a registry edit that
+    left the client alone and a client edit that left the registry alone fail
+    here — which is the point, because either one silently changes WHICH series
+    the engine fetches while the other keeps claiming the old source.
+    """
+    from macro_engine.config import get_registry
+
+    registry = get_registry()
+    mismatches: list[str] = []
+    for name, constant in _REGISTRY_TO_CLIENT_INDICATOR.items():
+        entry = registry.series.get(name)
+        assert entry is not None, (
+            f"registry series '{name}' is gone, but the client ({constant}) still fetches it. "
+            f"The registry is the auditable declaration of this source (Section 21.1) — a "
+            f"deletion here must be deliberate, not a side effect."
+        )
+        if entry.symbol != constant:
+            mismatches.append(
+                f"  {name}: registry symbol={entry.symbol!r}, client constant={constant!r}"
+            )
+    assert not mismatches, (
+        "The World Bank registry `symbol` and the client's indicator constant disagree "
+        "(R-3 — a duplicated fact with one copy dead):\n"
+        + "\n".join(mismatches)
+        + "\nThese entries are not_a_snapshot_field, so the snapshot builder never reads "
+        "`symbol`; the client is the only fetcher and it uses its own constant. Fix BOTH "
+        "to the same code — the registry records the source, the constant performs the fetch."
+    )
+
+
+def test_every_world_bank_registry_entry_is_bound_here() -> None:
+    """The binding table above must cover EVERY `provider: world_bank` entry.
+
+    Without this, a sixth World Bank entry could be added to the registry and
+    slip past the killer above simply by not being listed — the coverage gap
+    that turns an enforcement into a coincidence. Derived from the registry, so
+    a new entry with no client constant FAILS here.
+    """
+    from macro_engine.config import get_registry
+
+    registry = get_registry()
+    world_bank_entries = {
+        name for name, entry in registry.series.items() if entry.provider == "world_bank"
+    }
+    unbound = sorted(world_bank_entries - set(_REGISTRY_TO_CLIENT_INDICATOR))
+    assert not unbound, (
+        f"registry series {unbound} declare `provider: world_bank` but are not bound to a "
+        f"client indicator constant in _REGISTRY_TO_CLIENT_INDICATOR. Add each to the table "
+        f"so its `symbol` is provably the code the client fetches (R-3); an unbound entry "
+        f"can drift from the client with nothing to detect it."
+    )
+    assert world_bank_entries, (
+        "no registry series declares `provider: world_bank` — the binding table is now "
+        "vacuous, which means the killer above tests nothing."
+    )

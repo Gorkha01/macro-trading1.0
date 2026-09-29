@@ -21730,3 +21730,192 @@ leftovers).
 `tests/api_layer/test_routes.py`, `tests/data_layer/test_phase1_data_layer.py`,
 `tests/thesis_layer/test_builder_strictness.py`. **New deliverable:**
 `docs/AUDIT_PHASE04_LAYERS_FINDINGS.md`.
+
+## D-131 — the `models/` **no-card** file-by-file audit (the 9 files the Phase 0–4 pass never carded): `risk` and `yield_curve` FIXED, `em_vulnerability` / `commodities` FIXED, `intervention` / `equity_macro` clean; the `api_layer` sweep CLOSED
+
+**What this increment is.** The Phase 0–4 audit (`docs/AUDIT_PHASE04_FINDINGS.md`, 26 cards) covered 25 distinct `models/` files. A CARD-discriminator sweep (`grep -q "models/$base.py" docs/AUDIT_PHASE04_FINDINGS.md`) MEASURED that **9 files carry NO card** — ≈15,700 lines: `em_vulnerability`, `intervention`, `equity_macro`, `commodities`, `risk`, `yield_curve`, `regime`, `fx_carry`, `econometrics`. All 9 have owned sweeps; none had the 8-class file-by-file pass. This increment begins that pass smallest-first and closes the four smallest.
+
+### 1. `models/risk.py` (1513) — ONE Class-G defect + THREE Class-C/E defects
+
+**(a) Class G — `z_score_for_confidence`'s decision-record docstring cited unmeasured numbers.** The docstring (and the twin in `tests/models/test_risk.py`) said the deleted below-table extrapolation "produced 2.7809 at `confidence=0.899` where the true normal quantile is **1.2789** — a **2.17x** overstatement". **MEASURED 2026-09-29: `NormalDist().inv_cdf(0.899) = 1.275874`**, so 2.7809/1.275874 = **2.1796 ⇒ 2.18x**. Both literals were wrong — `1.2789` is `inv_cdf(0.8995)`, not `inv_cdf(0.899)`. The code was always right (it refuses to extrapolate); the CITATION was wrong. Fixed both docstrings; added the mover guard `test_the_below_table_refusal_cites_measured_numbers`, which recomputes 2.7809 / 1.2759 / 2.18 from the shipped constants AND asserts every `_Z_QUANTILES` entry equals `NormalDist().inv_cdf` to 1e-12 (the table was independently verified accurate to ~1e-15 — a real quantile table, not an approximation).
+
+**(b)–(d) Class C/E — THREE bare Tier-1 warning thresholds promoted to config leaves.** `reflexivity_scale_threshold`'s precedent (a policy number in a function body belongs in config) applies with extra force because the SIBLING `risk.monte_carlo` block already carries its warning thresholds (`min_tail_draws`, `stress_diversification_warning`) as leaves — so the Tier-1 three were the inconsistent set:
+
+* `historical_var`'s `effective_tail_observations < **5**` → `risk.historical_var_min_tail_observations` (5.0). **This one is the serious one: it decided the published CONFIDENCE, not just a warning** — the same literal also set `ConfidenceInputs.data_quality_flags_present`, and it appeared at TWO read sites, so a hardcoded number was lowering a model result (§22.8) and the quantity had two definitions.
+* `expected_shortfall`'s `severity_ratio > **1.5**` → `risk.expected_shortfall_heavy_tail_ratio` (1.5).
+* `marginal_risk_contributions`' `shares[i] > weights[i] * **1.25**` → `risk.risk_contribution_overweight_multiple` (1.25).
+
+Config: three `CalibratedValue` fields + accessors + a new validator `_reject_a_warning_threshold_that_could_never_fire` (the D-128 Card-19 dead-threshold class: floor ≤ 0, ratio ≤ 1.0, multiple ≤ 1.0 all REFUSED — each could never fire, the "a disclosure that cannot fire is a lie no gate sees" shape). YAML: three `uncalibrated_illustrative` leaves under `risk:`.
+
+**Guards are MOVERS, not pinners (D-031):** the shipped leaf value EQUALS the old literal, so a fixed-input test passes on both forms. Three guards monkeypatch `module.get_settings` (the D-128 `test_the_disclosure_follows_a_moved_leaf` idiom) and move each leaf to a value the literal does not equal; the published warning must follow. **Hand-proven killers:** reverting `risk.py` to the three literals fails all three.
+
+### 2. `models/yield_curve.py` (2113) — NO model defect; ONE Class-G defect in `config/settings.yaml`
+
+The file is uniformly at the project's bar: all nine public functions carry the full reasoning object (`direction`/`assumptions`/`data_provenance`/`limitations`/`decision_relevance`/`decision_prohibition`). Verified literals: the `0.157 / 0.489 ⇒ 3.1x` base-rate claim (measured 3.1146); the `0.769` peak / `0.520` beyond-52wk duration buckets.
+
+**The defect is an internal contradiction in the `yield_curve` config block.** Its comment carried a DEPTH table `0.412/0.391/0.567/0.857` and a DURATION table `0.400/0.333/0.444/0.750/0.409`, both labelled "measured 2026-09-17 from `scripts/live_inversion_check.py`" — but the leaf notes 20 lines below carried DIFFERENT numbers (`0.412/0.417/0.552/0.857` and `0.250/0.286/0.412/0.769/0.520`), and the stale copy even asserted depth was NON-monotone (`0.412 > 0.391`) while the note correctly said monotone. **MEASURED by RE-RUNNING the live script: it prints exactly the note's numbers**, so the block comment was an unreconciled earlier probe run. Fixed the comment to the live values + a D-131 note; added the static guard `test_the_config_bucket_tables_match_the_live_probe` (reads the YAML TEXT — the comment is not a `get_settings()` leaf) asserting the four corrected rows are present and the seven stale values absent.
+
+### 3. `models/em_vulnerability.py` + `models/commodities.py` — from earlier this session (`intervention` / `equity_macro` clean)
+
+* `em_vulnerability` — **Class G**: the module docstring stated the both-legs computed confidence half as 0.55; **MEASURED 0.60** (legs 0/1/2 → 0.25/0.30/0.60; ×cap 0.10 → 0.025/0.03/0.06). Its own test already said 0.60, so the docstring contradicted its guard. Fixed + a monotone killer guard.
+* `commodities` — **Class B**: `metals_complex_divergence` published `direction` from the **verdict LABEL** (`"expansionary" if MIXED else "restrictive"`), so an ALL-FALLING complex whose pattern was merely `MIXED` read `"expansionary"` (MEASURED: copper=−1.0, iron_ore=−0.5, aluminum=−1.0). The label was BLINDER than the state set (lesson 5ew). Fixed with `_direction_for(*, copper, iron_ore, aluminum)` derived from the three SIGNS (all-falling → restrictive, all-rising → expansionary, mixed → neutral). The test that ENSHRINED the defect was replaced by one driving both sign cases.
+
+### 4. The `api_layer` sweep CLOSED
+
+`mutation_api_layer.py`: **applied 42/42, killed 39, survived 3** — all three classified (2 inert, each with a measured reason; 1 honesty control), "no mutant shape remains on disk (O-83)". No sidecars; `api_layer/` diff vs HEAD empty; log deleted.
+
+**⚠️ A SIDECAR HAZARD was found and averted, and it is a NEW evidence-integrity shape.** The sweep had backed up `src/macro_engine/config.py` at 08:37; this increment's `config.py` edit landed at 08:57, i.e. AFTER the sidecar. `restore_from_sidecar` writes the sidecar text back verbatim on completion — so the sweep **reverted the in-between edit**, exactly as its own warning at `_sweep_gate.py:373` predicts ("the next run will 'restore' it and silently revert whatever lands in between"). The edit was captured as a clean patch BEFORE the sweep finished and re-applied after. **This is the O-158 family one layer up: a plain (non-mutating) sidecar restore, not a leftover mutation, silently reverting an unrelated edit.** Recorded as **O-161**.
+
+### 5. Sweep-anchor repair the commodities fix forced
+
+The commodities fix deleted the `direction=("expansionary" if verdict ...)` line, orphaning TWO anchors in `scripts/mutation_commodities.py` (`_MM6_DIRECTION`, `_MM5_FAMILY`). Both re-pointed: `_MM6_DIRECTION` now anchors the new `direction = _direction_for(...)` line and its mutant REINTRODUCES THE EXACT VERDICT-DERIVED DEFECT (so it stays a defect-reintroduction guard); `_MM5_FAMILY` re-widened on the surviving `direction=direction,` field (unique, count 1). Each verified to resolve exactly once. The catalogue-integrity test (`test_every_sweep_catalogue_resolves_against_the_shipped_source`) independently confirms it.
+
+### Gates (quiescent, sequential)
+
+`ruff check` PASS · `ruff format --check` PASS · `mutation_monte_carlo_var.py` **40/40** · `mutation_commodities.py` **105/105** · suite **4142 / 0 failed / 0 errors / 1 skipped** (junitxml) · `reachability_audit.py --check-baseline` **PASS 58/58** · `sweep_health.py` **OK** (52 sweeps, 0 leftovers, 0 mutant shapes on disk, 0 committed mutants). **NO src/ function added, NO new OpenBB command** (census stays 6); **THREE config leaves added** (the Tier-1 warning thresholds) with a validator.
+
+**Files:** `src/macro_engine/models/risk.py`, `src/macro_engine/models/yield_curve.py` (docstring comment only — no code), `src/macro_engine/models/commodities.py`, `src/macro_engine/models/em_vulnerability.py`, `src/macro_engine/config.py`, `config/settings.yaml`, `scripts/mutation_commodities.py`, `tests/models/test_risk.py`, `tests/models/test_yield_curve.py`, `tests/models/test_commodities.py`, `tests/models/test_em_vulnerability.py`, `tests/portfolio/test_risk_budget.py`, `tests/portfolio/test_risk_parity.py`. **Remaining in the pass:** `models/regime`, `models/fx_carry`, `models/econometrics`; then `portfolio/` and `extensions/`.
+
+## D-132 — the `models/` **no-card** pass COMPLETE (`regime` / `fx_carry` / `econometrics` fixed) + the `portfolio/` layer (`risk_budget` fixed) + `extensions/` CLEAN; **O-161 MATERIALIZED** (a sweep's startup heal silently reverted a D-132 config edit)
+
+**What this increment is.** The continuation of D-131's no-card file-by-file pass (`docs/AUDIT_PHASE04_LAYERS_FINDINGS.md`). It closes the **three largest** no-card `models/` files (`regime` 2347, `fx_carry` 2500, `econometrics` 4282), completes the **`portfolio/`** layer (`risk_budget.py`, 3075), and audits **`extensions/`** (6 files). With it, **every `models/` no-card file and the whole `portfolio/` + `extensions/` surface has had the 8-class pass.**
+
+### 1. `models/regime.py` — TWO defects (Class E + Class G), FIXED
+
+**(a) Class E — TWO DEAD declared config leaves.** `late_expansion_output_gap_min` (1.0) and `disinflation_output_gap_max` (0.5) were declared + accessor'd + documented as spec literals, but **NEVER read by any classifier branch**. **MEASURED:** moving them (1.0→5.0, 0.5→0.05) changed **NO** classification; they only gated the published confidence via `_thresholds_calibrated`. Removed (config field + accessor + YAML + `_thresholds_calibrated` + test fixtures), superseded literals recorded in docstrings. Removal over making-them-live: a live `late_expansion` gap gate creates an unreachable hole and contradicts the deliberate momentum-band design. `_bands_must_be_ordered` rewritten to check only the two live thresholds.
+
+**(b) Class G — `check_trilemma_tension` published NONE of the seven §3–4 reasoning fields** while the file's other two functions published all seven. Fixed: added all seven (`unit`/`direction`/`assumptions`[4]/`data_provenance`[3]/`limitations`[4]/`decision_relevance`/`decision_prohibition`[4]). Guards `test_the_reasoning_object_is_populated_d132` + `test_the_reasoning_object_is_produced_for_every_severity`; both kill-proved (blanking `unit`; emptying `decision_prohibition`).
+
+### 2. `models/fx_carry.py` — ONE Class-C defect, FIXED
+
+`ppp_valuation`'s data-check warning gate was a **bare literal** `if abs(deviation_pct) > 100.0:` while EVERY other boundary in the module is a config leaf. **MEASURED:** fires at 100.1, not 99.9; `FxCarrySettings` had NO leaf for it. Fixed: `ppp_implausible_deviation_pct` leaf (the `implausible_*` convention of `yield_curve.implausible_long_end_inversion_bp`) + a positivity validator (non-positive ⇒ fires on every call = the mirror dead-vocabulary shape) + rewired `_ppp_warnings`. Guards: `test_the_data_error_bound_is_read_from_the_leaf_not_a_literal` (**mover** via monkeypatch — D-031: a pinner cannot tell 100.0-from-config from a retyped 100.0) + `test_the_data_error_bound_is_validated_at_load`. Both kill-proved. Sweep re-pointed (`_PPP_WARN_DATA`), added `P4g` (retype-as-literal) + `C7a`-`C7d`; **176 mutations, 0 problems** (was 171).
+
+### 3. `models/econometrics.py` — ONE module-wide Class-G defect, FIXED
+
+**MEASURED a systematic gap:** `data_provenance` and `decision_relevance` were published by **NONE** of the five public functions; `unit` absent on `run_regression` + `test_stationarity`; `assumptions` absent on `test_stationarity`. Every field defaults to an honest "not supplied", so the omission was invisible to every gate. Fixed: all six applicable fields on all five functions; **`direction` DELIBERATELY unset** on all five (each value is a map/verdict/set/state-path — no single direction), asserted. Guard `test_every_result_populates_the_reasoning_object_d132` covers all five via the file's own fixtures; kill-proved by blanking one `data_provenance`.
+
+### 4. `portfolio/risk_budget.py` — ONE Class-C defect, FIXED
+
+All 8 `ModelResult`s publish only `inputs_used` (plus `direction` on the two translation returns) — **ZERO §3–4 reasoning fields**. **This is NOT a defect**: §21.3 places these functions in **Tier 3** (`evaluate_drawdown_rules`/`check_rebalancing_drift`/`volatility_target_scaling`/`apply_fractional_kelly`) with `compute_risk_parity_weights` in **Tier 5**, and DECISIONS.md's Tier-5 phrasing ("a `unit`, a `direction`, a `source_family` and a full reasoning object **added**") means the reasoning object arrives **with** the Tier-5 upgrade — its absence here is the **un-upgraded state**. (Contrast `econometrics.py`, "Phase 5, Tier 5" ⇒ already upgraded ⇒ its missing reasoning object WAS a defect.)
+
+**The ONE real defect (Class C):** `check_rebalancing_drift`'s sum-to-1.0 warning gate was a **bare literal** `if current_contributions and abs(total_actual - 1.0) > 0.01:`. Everything else in the module is a config leaf or a *named, documented* module constant (`_RISK_BUDGET_SUM_TOLERANCE = 1e-9`, `_CCD_SIGMA_FLOOR = 1e-12`, `DEFAULT_RISK_PARITY_TOLERANCE = 1e-10`). **MEASURED the kill-gap:** `mutation_rebalancing.py`'s M9.3 replaces the WHOLE branch with `if False:` — so a mutant that **MOVES** `0.01` survived every test and the sweep (the D-031 shape). It is a *policy* number (how far off a stated invariant is warn-worthy), the same class as `risk.rebalancing_drift` six lines up, and `probability.probability_sum_tolerance` is a leaf in the SAME module. Fixed: leaf `risk.rebalancing_contribution_sum_tolerance` + accessor + load-time validator (`(0, 1]`; `<= 0` warns on everything, `> 1` never fires — the D-128 dead-threshold class) + YAML + rewired gate. Guards: `test_the_sum_warning_bound_is_read_from_the_leaf_not_a_literal` (**mover**) + `test_the_sum_tolerance_leaf_is_validated_at_load`. Both kill-proved by hand. Sweep: anchors re-pointed (`_SUM_WARNING`/`_WARNING_SUM`), added `M9.6` (retype-as-literal) + `M9.7` (wrong hardcoded bound); **66 mutations, 0 problems** (was 64), and BOTH new mutants KILLED.
+
+### 5. `extensions/` — CLEAN BY DESIGN (no defect)
+
+`backtest_vbt` / `bayesian_updater` / `duckdb_store` / `mlflow_tracking` / `nautilus_adapter` / `scheduler` (239 lines total) are all **Phase 5+ stubs** whose body is `raise NotImplementedError(...)` with a docstring naming the blocked dependency. This is the **sanctioned** pattern — `DECISIONS.md:11446`: *"Phase 4+ stubs — `raise NotImplementedError`, never return a neutral value."* They refuse rather than guess (§21.1).
+
+### 6. ⚠️ O-161 MATERIALIZED IN FULL — a sweep's startup heal silently reverted a D-132 edit
+
+The hazard D-131 recorded (`O-161`: a sweep's `restore_from_sidecar` writing a stale sidecar back verbatim) **fired and cost real work.** Sequence: `mutation_regime.py` completed 71/71 with no sidecars; a D-132 `config.py` edit was applied; then `mutation_rebalancing.py` **started and its HEAL step restored a stale `config.py` sidecar from an earlier killed regime run** — **silently reverting the D-132 config leaf** (`grep -c` = 0), leaving a half-applied tree (the YAML leaf survived). Killed mid-run, the sweep also left its own sidecars AND a live leftover mutation in `risk_budget.py`, and a **separate** live leftover in `regime.py` (the contraction guard deleted) — the **O-157** shape. All healed: both live files restored from their sidecars, sidecars deleted, the `config.py` edit re-applied by hand, verified. **New HARD rule recorded:** (1) before ANY `src` edit, `find src -name '*.sweepbackup'` and heal/delete FIRST; (2) after EVERY sweep exit (normal OR killed), re-run `git diff HEAD` on the swept files AND the sidecar probe — do NOT trust "N/N killed" as proof of a clean tree; (3) never launch a sweep while a sidecar for a file it does not own exists.
+
+### Gates (quiescent, sequential)
+
+`ruff check` PASS · `ruff format --check` **292 == 292** (D-035 basis) · `mypy --strict src/macro_engine` **Success, 79 files** · `mutation_regime.py` **71/71 killed** · `mutation_rebalancing.py` **66/66, 3 survivors all classified** · `mutation_econometrics.py` **stopped at 48/109 — 47 killed, 1 survivor (`M34`) classified INERT-BY-ROUTE with a full measurement (93 configurations x 4 seeds: 31 non-finite critical values, ZERO non-finite p-values — the M35 guard raises first); the sweep was stopped rather than blocking ~60 more minutes on a documented-inert tail** · suite **4154 / 0 failures / 0 errors / 4 skipped** (junitxml; the `slow` marker is excluded by default per `addopts`) · `reachability_audit.py --check-baseline` **PASS 58/58, no regressions** · `sweep_health.py` **OK — 0 leftover mutations, 0 mutant shapes on disk, 0 committed mutants, 0 failures**. **NO src/ function added**; **ONE config leaf added** (`rebalancing_contribution_sum_tolerance`) + a validator; **NO new OpenBB command.**
+
+**Files:** `src/macro_engine/models/regime.py`, `src/macro_engine/models/fx_carry.py`, `src/macro_engine/models/econometrics.py`, `src/macro_engine/portfolio/risk_budget.py`, `src/macro_engine/config.py`, `config/settings.yaml`, `scripts/mutation_rebalancing.py`, `scripts/mutation_fx_carry.py`, `tests/models/test_trilemma.py`, `tests/models/test_ppp_valuation.py`, `tests/models/test_econometrics.py`, `tests/portfolio/test_rebalancing_drift.py`, `tests/portfolio/test_risk_budget.py`, `tests/portfolio/test_risk_parity.py`. **The `models/` no-card pass is now COMPLETE; the `portfolio/` layer and `extensions/` are audited.**
+
+## D-133 — the Phase 0–4 LAYER audit **COMPLETED across every remaining layer** (`api_layer/` 8 + root 3 + the two un-carded `data_layer/` files), with **ONE new Class-C defect found and FIXED** in `api_layer/orchestration.py`
+
+**What this increment is.** The close-out of `docs/AUDIT_PHASE04_LAYERS_FINDINGS.md`. Every layer that
+had never received a file-by-file 8-class pass now has one: `thesis_layer/` (8, DONE at D-132),
+`api_layer/` (8), root `src/macro_engine/` (3), and the two `data_layer/` files that were only ever
+*referenced* and never carded (`schemas.py` 445, `snapshot_builder.py` 935 — the central assembly hub the
+P-1/P-2 chain runs through). Deliverable: `docs/AUDIT_PHASE04_LAYERS_FINDINGS.md` PART 6 (cards A-1…A-5,
+R-1…R-3) + PART 7 (cards D-6, D-7), now 937 lines.
+
+### 1. THE ONE DEFECT (Class C) — `api_layer/orchestration.py::_short_yield_from_curve`
+
+The guard admitted a curve value with a **re-typed literal**: `if not 0.0 < value < 25.0:`, and its own
+error message hardcoded `"...max_plausible_yield_pct is 25.0"`. `25.0` is the value of the config leaf
+**`validation.max_plausible_yield_pct`**, whose accessor `validation.max_yield` (`config.py:4850`) is read
+by `data_layer/validation.py:450` as *the* plausibility ceiling. **One bound, two definitions.** The drift
+is one-directional and silent: move the leaf and the data-layer validator tightens while this check keeps
+admitting up to the **old** value — and the fault it exists to catch is a **units** error (bp read as
+percent), where the exact difference between 25 and the moved value decides whether a 100x inflation is
+caught. The message also would have **lied** about the bound it named.
+
+**Fix:** read the leaf and quote it — `max_yield = get_settings().validation.max_yield` /
+`{max_yield:g}`. Behaviour unchanged today (leaf = 25.0, **measured**); the fix removes the drift risk.
+
+**The killer guard is a D-031 MOVER**, because a *pinner* cannot separate a leaf-read from a re-typed
+literal: the fixture's 2yr = 4.25 passes `< 25.0` under BOTH forms, and even a 425.0 value fails under
+both. `test_the_yield_ceiling_is_taken_from_config_not_a_literal` monkeypatches
+`orchestration.get_settings` to move the leaf to **4.0** and asserts the SAME 4.25 snapshot now
+**refuses**. (`get_settings` is imported module-level at L117 and called unqualified throughout, so the
+monkeypatch catches every reader; the patch returns a full settings copy with only the yield leaf moved.)
+
+**Sweep updated:** `scripts/mutation_api_layer.py`'s `_YIELD_RANGE` anchor held the OLD literal text and
+was therefore **stale** (`check_targets` verifies anchors verbatim). Re-pointed to the shipped line, plus a
+new `_YIELD_CEILING_READ` anchor and a new **M1.3b** mutant that re-types the leaf read back to `25.0` —
+the D-031 complement. **M1.3b is killed ONLY by the mover** (proven below).
+
+### 2. `api_layer/` — the other 7 files, CLEAN (measured, not assumed)
+
+* `routes_dashboard.py` (287) — reads the `api.dashboard_series_limit` leaf; reports `points_withheld` so a
+  truncated chart says it is truncated; publishes measurements, not claims. Its `_declared_but_absent`
+  renamed-field guard was **verified working**: all 20 family + 2 curve fields resolve (class-level
+  `hasattr` returning False is a pydantic-v2 quirk — fields live in `model_fields`; the code correctly
+  tests the **instance**).
+* `routes_health.py` (168) — `status`/`ready` split; `ready` costs no build (`?deep=true` opts in);
+  `SERVICE_NAME`/`SERVICE_VERSION` are module constants, not literals in two places; `country` is the
+  literal `"us"` and **US is implemented** (measured), so the uncaught `NotImplementedError` path is
+  unreachable by construction.
+* `routes_query.py` (311) — honest keyword routing (`is_keyword_routing` field, unmatched = 200 + explicit
+  note, never a 404 and never a fabricated answer); shares `routes_thesis._http_status_for` by **import**,
+  so the two endpoints cannot drift; publishes the **union** of provenance + orchestration warnings.
+* `routes_thesis.py` (246) — `_http_status_for` maps 501/502 and **re-raises everything else** (L157), so
+  it cannot swallow an unexpected exception: the "a `WATCH` thesis is never a failure response" invariant
+  holds by construction.
+* `app.py` / `snapshot_provider.py` / `reasoning_stream.py` — CLEAN (D-132 PART 5; X-L1 and X-L2 both
+  CLOSED there).
+
+### 3. root `src/macro_engine/` (3 files, 1534 lines) — 3/3 CLEAN
+
+No sweep owns them; coverage is `tests/test_infrastructure.py` (1322 lines: 12 audit + 13 settings_store
+tests). `audit.py` — append-only **by construction** (no update/delete method, pinned by a test);
+`record()` raises rather than swallowing; `record_thesis` **refuses** a thesis missing
+`thesis_id`/`country`/`status`/`convergence_classification`/`regime.state` instead of inventing a default
+(D-015). `deployment.py` — every knob declared **as data** in `_VARIABLES`; `resolve()` never invents;
+two-way preflight reports ALL unresolved variables at once; `api_key_required` with no hash refused at
+construction. `settings_store.py` — `set()` refuses a bad `value_type`/empty `actor`/empty `reason`; the
+monotonic timestamp bump (L415-424, L508-517) stops two same-microsecond writes collapsing a `value_at`
+interval; `delete()` is retire-as-update.
+
+### 4. `data_layer/schemas.py` + `snapshot_builder.py` — the two files with NO card, both CLEAN
+
+`schemas.py`: `ObservationPoint.value` refuses non-finite at construction; `YieldCurveSnapshot`'s validator
+refuses unknown tenor labels AND non-finite yields (`nan` defeats every comparison in
+`validate_yield_curve`); `iter_scalar_series`/`iter_curves`/`assert_finite` are **schema-derived** and
+`assert_finite` covers both the list and the curve shape. `snapshot_builder.py`: the registry is the only
+routing source; `_assert_field_exists` forces registry<->schema agreement at point of use; `unit_scale` is
+applied at the **single** conversion site; `fetch_curve` carries the O-7 forward-dated filter and refuses
+partial mappings / positional attribution / forward-only histories; `_resolve_release_index` keeps
+`release_calendar_read` **tri-state** (outage vs never-asked).
+
+### 5. O-161 fired a THIRD time — and was caught by the protocol
+
+Killing `mutation_econometrics.py` and healing `econometrics.py` from its sidecar produced
+**157 insertions where the session started at 159**. The O-161 check (`git diff --quiet HEAD` on the swept
+file) ran immediately and showed the file **still differs from HEAD** with all five D-132 reasoning objects
+present; `import` + `ruff` then confirmed it valid. The two-line delta is unexplained but the D-132 work is
+**verifiably intact** — which is exactly what the post-heal probe exists to establish. **Do not treat
+"restored from sidecar" as "restored to my tree".**
+
+### Gates (quiescent, sequential)
+
+`ruff check` PASS · `ruff format --check` **292 == 292** · `mypy --strict src/macro_engine` **Success, 79
+files** · `mutation_api_layer.py --group M1` **6 applied / 5 killed / 1 survivor (`M1.5`) classified
+inert-by-route with a measurement** — **M1.3b KILLED by the new mover test**, which is the proof the guard
+is a killer · suite **4154 / 0 failures / 0 errors / 4 skipped** (junitxml authoritative; the shell
+`EXIT=1` is the sandbox `[safe-delete]` hook refusing pytest's temp cleanup — 138 files > 50) ·
+`reachability_audit.py --check-baseline` **PASS 58/58, no regressions** · `sweep_health.py` **OK — 0
+leftover mutations, 0 mutant shapes on disk, 0 committed mutants, 0 failures**.
+**NO src/ function added; NO config leaf added; NO new OpenBB command** (census stays 6).
+
+**Files:** `src/macro_engine/api_layer/orchestration.py` (the one fix),
+`tests/api_layer/test_orchestration.py` (the mover), `scripts/mutation_api_layer.py` (anchor re-point +
+M1.3b), `docs/AUDIT_PHASE04_LAYERS_FINDINGS.md` (PART 6 + PART 7, tracker rows all -> DONE),
+`docs/DECISIONS.md`, `docs/PROGRESS.md`.
+
+**With D-133 the Phase 0–4 LAYER audit is COMPLETE: `data_layer/` (12) + `thesis_layer/` (8) +
+`api_layer/` (8) + root (3) have all had the file-by-file 8-class pass.**

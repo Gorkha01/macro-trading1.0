@@ -731,11 +731,21 @@ def _short_yield_from_curve(
             fields=("yield_curve",),
         )
     value = curve.tenors[field]
-    if not 0.0 < value < 25.0:
+    # The ceiling is READ from the config leaf, not re-typed. `25.0` used to sit
+    # here as a literal that ALSO hardcoded "is 25.0" in its own message — a
+    # second definition of the very number `data_layer/validation.py:450` reads
+    # via `validation.max_yield` (leaf `validation.max_plausible_yield_pct`).
+    # Two definitions of one bound drift silently: moving the leaf would tighten
+    # the data-layer validator while this check still admitted up to the old
+    # value, and the failure is a units fault (bp read as percent) that this
+    # check exists to be LOUD about. Reading the leaf is the same single-source
+    # rule the sibling readers follow — one number, one place.
+    max_yield = get_settings().validation.max_yield
+    if not 0.0 < value < max_yield:
         raise OrchestrationError(
             f"the snapshot's {field} yield is {value}, outside the plausible bond "
-            f"range (Section 5.4's max_plausible_yield_pct is 25.0). A value in "
-            f"basis points would read as a percent and inflate every downstream "
+            f"range (Section 5.4's max_plausible_yield_pct is {max_yield:g}). A value "
+            f"in basis points would read as a percent and inflate every downstream "
             f"gap; this is a units fault, not a market state.",
             fields=("yield_curve",),
         )

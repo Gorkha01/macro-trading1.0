@@ -3634,3 +3634,93 @@ def test_kalman_the_constant_refusal_is_scale_relative_not_absolute() -> None:
     )
     result = _kalman(pd.DataFrame({"s": varying}))
     assert _value(result)["n_obs"] == _KALMAN_N
+
+
+# ---------------------------------------------------------------------------
+# Section 3-4 reasoning object, module-wide (D-132)
+# ---------------------------------------------------------------------------
+#
+# Before D-132, `data_provenance` and `decision_relevance` were published by
+# NONE of this module's five functions, `unit` was absent from two, and
+# `assumptions` from one. Every field on `ModelResult` defaults to an honest
+# "not supplied", so a model that omits them does NOT fail validation — the
+# omission is invisible to every gate, which is exactly why it survived. This
+# test is the mover's structural half: it asserts POPULATED-ness (not prose),
+# so a blanking edit fails here.
+
+#: The six Section 3-4 fields every econometrics result must populate. The
+#: SEVENTH, `direction`, is deliberately EXCLUDED: each of these five values is
+#: a coefficient map, a verdict, a test result, a set of components, or a state
+#: path — none has a single direction the output moves in, so `direction`
+#: left unset is the honest value and asserting it would be wrong.
+_ECONOMETRICS_REASONING_FIELDS = (
+    "unit",
+    "assumptions",
+    "data_provenance",
+    "limitations",
+    "decision_relevance",
+    "decision_prohibition",
+)
+
+
+def _all_five_results() -> list[tuple[str, ModelResult]]:
+    """One result per public function, built from the file's own fixtures."""
+    return [
+        ("run_regression", _golden_result()),
+        ("test_stationarity", _stationarity(_white_noise())),
+        ("test_cointegration", _cointegration(*_coint_pair())),
+        ("compute_pca", _pca_result()),
+        ("kalman_latent_state", _kalman_level_result()),
+    ]
+
+
+def test_every_result_populates_the_reasoning_object_d132() -> None:
+    """Every one of the five functions publishes all six applicable fields."""
+    for name, result in _all_five_results():
+        for field in _ECONOMETRICS_REASONING_FIELDS:
+            value = getattr(result, field)
+            if isinstance(value, str):
+                assert value.strip(), f"{name}.{field} is blank (D-132)"
+            else:
+                assert value, f"{name}.{field} is empty (D-132)"
+
+        # `direction` is the deliberate seventh: it must be None here, because
+        # no value in this module has a single direction. Asserted so a future
+        # edit that invents one is a conscious choice rather than a default.
+        assert result.direction is None, (
+            f"{name} set a `direction`; the module's values are maps/verdicts/"
+            f"sets/paths that have no single direction (D-132). If a real "
+            f"direction now exists, update this assertion and say why."
+        )
+
+
+def test_the_provenance_names_the_supplied_series_d132() -> None:
+    """`data_provenance` must say WHERE the inputs came from, not just restate them.
+
+    Section 4 wants the SOURCES, complementing `inputs_used`'s field names. A
+    placeholder that echoed the field names would satisfy a only non-empty check,
+    so this asserts the caller-supplied disclosure is actually present.
+    """
+    for name, result in _all_five_results():
+        joined = " ".join(result.data_provenance).lower()
+        assert "caller" in joined or "supplied" in joined, (
+            f"{name}.data_provenance does not disclose that the inputs are "
+            f"caller-supplied (D-132); got {result.data_provenance!r}"
+        )
+
+
+def test_the_decision_relevance_names_a_downstream_consumer_d132() -> None:
+    """`decision_relevance` must name what the output is FOR (Section 3).
+
+    A value that only restated the model name would pass a non-empty check. This
+    asserts the relevance text reaches a real consumer — a Section reference, a
+    sibling model, or a named gate.
+    """
+    for name, result in _all_five_results():
+        relevance = result.decision_relevance or ""
+        assert len(relevance) > 40, f"{name}.decision_relevance is too thin (D-132)"
+        lowered = relevance.lower()
+        assert any(
+            marker in lowered
+            for marker in ("section", "gate", "test_stationarity", "run_regression", "module 13")
+        ), f"{name}.decision_relevance names no downstream consumer (D-132)"

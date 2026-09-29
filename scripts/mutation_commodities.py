@@ -443,8 +443,18 @@ _MM1_CONSTRUCTION = (
 _MM2_BROAD = (
     "        value < -broad_weakness_threshold_pct for value in (copper, iron_ore, aluminum)"
 )
+# ⚠️ D-131 RETARGET. This anchor used to be the shipped
+#    ``direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else
+#    "restrictive"),`` line inside the ``ModelResult(...)``. D-131 replaced that
+#    label-derived rule with ``_direction_for(...)``, derived from the metal
+#    SIGNS, so the old anchor now resolves 0 times. The mutation is re-pointed at
+#    the NEW computation line and REINTRODUCES THE EXACT DEFECT (a verdict-
+#    derived direction) — which is precisely what the D-131 guard test
+#    ``test_metals_the_direction_is_derived_from_the_signs_not_the_verdict``
+#    exists to kill. Previously the mutant swapped which label mapped where;
+#    now it restores the wrong RULE, so it still discriminates.
 _MM6_DIRECTION = (
-    '        direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else "restrictive"),'
+    "    direction = _direction_for(copper=copper, iron_ore=iron_ore, aluminum=aluminum)"
 )
 _MM7_ROUND_CU = '            "copper_change_pct": round(copper, metals.value_decimals),'
 _MM7_ROUND_FE = '            "iron_ore_change_pct": round(iron_ore, metals.value_decimals),'
@@ -490,10 +500,13 @@ _MM4_FLAG = "            data_quality_flags_present=fetched_legs < 3,"
 
 # ⚠️ ``            EvidenceSourceFamily.MARKET_COMMODITY\n            if fetched_legs > 0``
 #    occurs at THREE sites (oil, gold, metals). WIDENED with the metals block's
-#    own ``direction=`` line, which carries the metals-only verdict vocabulary: 1.
+#    own preceding line. **D-131 re-pointed this**: the old widening used the
+#    ``direction=("expansionary" if verdict ...)`` line, which the fix deleted;
+#    the replacement widening is the shipped ``direction=direction,`` field (the
+#    metals result passes the computed variable, unique in the file) immediately
+#    above the ``source_family=`` block: 1.
 _MM5_FAMILY = (
-    '        direction=("expansionary" if verdict == "MIXED_no_clear_pattern"'
-    ' else "restrictive"),\n'
+    "        direction=direction,\n"
     "        source_family=(\n"
     "            EvidenceSourceFamily.MARKET_COMMODITY\n"
     "            if fetched_legs > 0"
@@ -1126,10 +1139,10 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
     ),
     # --- MM6: the direction vocabulary -------------------------------------
     (
-        "MM6a the restrictive branch swapped for expansionary",
+        "MM6a the sign-derived direction replaced by the verdict-derived rule",
         MODEL,
         _MM6_DIRECTION,
-        '        direction=("expansionary" if verdict != "MIXED_no_clear_pattern" else "restrictive"),',
+        '        direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else "restrictive"),',
     ),
     # --- MM7: the rounding --------------------------------------------------
     (

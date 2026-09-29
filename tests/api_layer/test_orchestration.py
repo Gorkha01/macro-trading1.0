@@ -792,6 +792,55 @@ def test_a_curve_in_basis_points_refuses(consistent_snapshot: MacroDataSnapshot)
     assert "plausible bond range" in str(caught.value)
 
 
+def test_the_yield_ceiling_is_taken_from_config_not_a_literal(
+    consistent_snapshot: MacroDataSnapshot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-132 / D-031 — the ceiling must be READ, not re-typed.
+
+    ``_short_yield_from_curve`` used to admit ``if not 0.0 < value < 25.0``: a
+    bare literal that ALSO hardcoded "is 25.0" in its own message, a second
+    definition of the very number ``data_layer/validation.py`` reads via
+    ``validation.max_yield`` (leaf ``validation.max_plausible_yield_pct``).
+    Two definitions of one bound drift silently.
+
+    A *pinner* cannot tell a leaf-read from a re-typed literal: the fixture's
+    2yr = 4.25 passes ``< 25.0`` under BOTH forms, and even 425.0 fails under
+    both. The measurement that separates them is a **mover**: set the leaf to a
+    value the shipped literal does NOT equal — 4.0 — and a 4.25 yield, which the
+    shipped leaf admits, must now REFUSE. If the code still held ``25.0`` it
+    would keep admitting and this test fails.
+    """
+    import macro_engine.api_layer.orchestration as module
+
+    settings = get_settings()
+    assert settings.validation.max_yield == pytest.approx(25.0), (
+        "the shipped leaf moved; this mover's 4.0/4.25 split assumes 25.0"
+    )
+    # Baseline: the shipped leaf admits the fixture's 2yr = 4.25.
+    snapshot_to_thesis_inputs(consistent_snapshot)
+
+    def _patched(ceiling: float) -> object:
+        moved_validation = settings.validation.model_copy(
+            update={
+                "max_plausible_yield_pct": (
+                    settings.validation.max_plausible_yield_pct.model_copy(
+                        update={"value": ceiling}
+                    )
+                )
+            }
+        )
+        return settings.model_copy(update={"validation": moved_validation})
+
+    # Move the leaf BELOW the fixture's 2yr: the same snapshot must now refuse.
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(4.0))
+    with pytest.raises(OrchestrationError) as caught:
+        snapshot_to_thesis_inputs(consistent_snapshot)
+
+    assert caught.value.fields == ("yield_curve",)
+    assert "plausible bond range" in str(caught.value), "the ceiling is not read from the leaf"
+
+
 def test_a_curve_without_the_configured_tenor_refuses(
     consistent_snapshot: MacroDataSnapshot,
 ) -> None:

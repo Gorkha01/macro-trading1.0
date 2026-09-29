@@ -397,6 +397,81 @@ def test_dollar_contributions_against_fractional_targets_flag_everything() -> No
     assert any("not 1.0" in w for w in result.warnings)
 
 
+def test_the_sum_warning_bound_is_read_from_the_leaf_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A **mover**, not a pinner (D-031): the bound must be READ, not retyped.
+
+    The shipped leaf (``0.01``) equals the literal this replaced, so a fixed-input
+    test passes whether the function reads the config or hardcodes ``0.01``. The
+    test therefore MOVES the leaf to values the old literal does not equal and
+    requires the published warning to follow — the only shape that can tell a
+    config read from a retyped literal.
+
+    At a 5% deviation from 1.0 (``_CURRENT`` sums to 0.56): a bound of ``0.5``
+    must SUPPRESS the warning, and the shipped ``0.01`` must raise it. Before
+    this fix both used ``0.01`` and the sweep could not see the difference —
+    ``mutation_rebalancing.py``'s M9.3 deletes the whole branch, so a mutant that
+    MOVES the bound survived.
+    """
+    import macro_engine.portfolio.risk_budget as module
+    from macro_engine.config import get_settings as _real_get_settings
+
+    settings = _real_get_settings()
+
+    def _with_bound(bound: float) -> Any:
+        moved_risk = settings.risk.model_copy(deep=True)
+        object.__setattr__(
+            moved_risk,
+            "rebalancing_contribution_sum_tolerance_value",
+            moved_risk.rebalancing_contribution_sum_tolerance_value.model_copy(
+                update={"value": bound}
+            ),
+        )
+        return settings.model_copy(update={"risk": moved_risk})
+
+    # The shipped bound (0.01) fires on a 44%-off-1.0 input; that is the control.
+    monkeypatch.setattr(module, "get_settings", lambda: _with_bound(0.01))
+    assert any("not 1.0" in w for w in _check(_CURRENT).warnings)
+
+    # A LOOSE bound (0.5) is above the 0.44 deviation, so the warning must vanish:
+    # only a live config read can make this pass.
+    monkeypatch.setattr(module, "get_settings", lambda: _with_bound(0.5))
+    assert not any("not 1.0" in w for w in _check(_CURRENT).warnings)
+
+    # A TIGHT bound (1e-9) fires on a set that is off 1.0 by more than a part in
+    # 10^9 but far less than the shipped 0.01: only a live read of the leaf can
+    # make this pass, and it proves the bound is what decides the warning.
+    monkeypatch.setattr(module, "get_settings", lambda: _with_bound(1e-9))
+    slightly_off = {"ust2y": 0.35, "ust10y": 0.25, "spx": 0.25, "eurusd": 0.1500001}
+    targets = [*_TARGETS, RiskBudgetTarget(instrument="eurusd", target_risk_contribution_pct=0.15)]
+    # The shipped 0.01 would not fire on a 1e-7 deviation; the moved 1e-9 does.
+    assert any("not 1.0" in w for w in check_rebalancing_drift(slightly_off, targets).warnings)
+
+
+def test_the_sum_tolerance_leaf_is_validated_at_load() -> None:
+    """A bound outside ``(0, 1]`` is refused (the D-128 dead-threshold class).
+
+    ``<= 0`` would warn on every input (the warning carries no information) and
+    ``> 1`` would never fire (dead code). The validator is exercised by rebuilding
+    the live settings with a bad leaf, mirroring the config-load refusal.
+    """
+    from pydantic import ValidationError
+
+    settings = get_settings()
+    risk = settings.risk
+
+    for bad in (0.0, -0.01, 1.5):
+        raw = risk.model_dump()
+        raw["rebalancing_contribution_sum_tolerance_value"] = {
+            "value": bad,
+            "calibration_status": "mechanical_rule",
+            "note": "test",
+        }
+        with pytest.raises(ValidationError, match="rebalancing_contribution_sum_tolerance"):
+            type(risk)(**raw)
+
+
 # --------------------------------------------------------------------------
 # The structural-separation contract (Section 15.18's whole purpose).
 # --------------------------------------------------------------------------

@@ -390,3 +390,89 @@ def test_the_reserve_entries_record_the_source_unit_as_millions() -> None:
     registry = get_registry()
     for name in ("fx_reserves_japan", "fx_reserves_uk", "fx_reserves_china"):
         assert registry.series[name].units == "millions_of_usd"
+
+
+# ===========================================================================
+# R-6 — `_as_iso_date` must render a BARE date, never a time-bearing string
+# ===========================================================================
+# The third transcription of the `datetime`-is-a-`date` trap this increment
+# fixed (after `openbb_client.to_observation_date` R-4 and
+# `commodities_client._parse_date` R-5). Here the failure mode is different: the
+# function returns a STRING, and the original guard led with
+# `if isinstance(index_value, date): return index_value.isoformat()` — so a
+# `pd.Timestamp` (a `date` subclass) took that branch and `.isoformat()` produced
+# `'2026-09-18T00:00:00'`. MEASURED, not assumed.
+#
+# That is precisely the string the function's own docstring says it exists to
+# avoid ("a ``str()`` of a Timestamp carries a time and a timezone, which would
+# make two dates for the same observation compare unequal") — so the code
+# contradicted its own stated intent, which is why it is a defect even though it
+# is not reachable through today's `fetch_series` wiring (the normalized `date`
+# column holds real `datetime.date` objects; `sort_values`/`tolist` preserve
+# them). A latent defect is fixed at the same standard as a live one when the fix
+# is cheap and the intent is documented.
+
+
+def test_as_iso_date_renders_a_bare_date_for_a_plain_date() -> None:
+    """Positive control: the common case is already a bare ISO string."""
+    assert reserves_client._as_iso_date(date(2026, 9, 18)) == "2026-09-18"
+
+
+def test_as_iso_date_drops_the_time_from_a_timestamp() -> None:
+    """A `pd.Timestamp` must not carry its `T00:00:00` into the published date.
+
+    The pre-fix code returned `'2026-09-18T00:00:00'` here. Two observations for
+    the same calendar day rendered through different carriers would then compare
+    unequal, which is the inequality the docstring names.
+    """
+    assert reserves_client._as_iso_date(pd.Timestamp("2026-09-18")) == "2026-09-18"
+    assert reserves_client._as_iso_date(pd.Timestamp("2026-09-18 13:45:00")) == "2026-09-18"
+
+
+def test_as_iso_date_drops_the_time_and_zone_from_an_aware_timestamp() -> None:
+    """An aware Timestamp must not leak its offset either."""
+    assert (
+        reserves_client._as_iso_date(pd.Timestamp("2026-09-18 13:45:00", tz="UTC")) == "2026-09-18"
+    )
+
+
+def test_as_iso_date_drops_the_time_from_a_datetime() -> None:
+    """A bare `datetime` is the same trap and must collapse the same way."""
+    from datetime import UTC, datetime
+
+    assert reserves_client._as_iso_date(datetime(2026, 9, 18, 13, 45, tzinfo=UTC)) == "2026-09-18"
+
+
+def test_as_iso_date_accepts_an_iso_string_unchanged() -> None:
+    """A string carrier is passed through as-is (the defensive fallback)."""
+    assert reserves_client._as_iso_date("2026-09-18") == "2026-09-18"
+
+
+def test_as_iso_date_never_emits_a_time_component_for_any_carrier() -> None:
+    """Invariant sweep: no accepted carrier yields a ``T``-bearing string.
+
+    The property the defect violated is not "handles Timestamp" but "the result
+    is a bare ``YYYY-MM-DD``". Asserting the invariant across every carrier
+    catches a future fourth carrier added without extending the branches.
+    ``numpy.datetime64`` is included because it has neither ``.date()`` nor
+    ``.year`` -- it reaches the string fallback, where an incomplete fix would
+    have leaked ``'2026-09-18T23:59:59'`` (measured before the fallback was
+      completed).
+    """
+    from datetime import UTC, datetime
+
+    import numpy as np
+
+    carriers: list[object] = [
+        date(2026, 9, 18),
+        datetime(2026, 9, 18, 23, 59, 59, tzinfo=UTC),
+        pd.Timestamp("2026-09-18 23:59:59"),
+        pd.Timestamp("2026-09-18 23:59:59", tz="UTC"),
+        np.datetime64("2026-09-18T23:59:59"),
+        "2026-09-18",
+        "2026-09-18T23:59:59",
+    ]
+    for carrier in carriers:
+        rendered = reserves_client._as_iso_date(carrier)
+        assert "T" not in rendered, f"{carrier!r} -> {rendered!r} carries a time"
+        assert rendered == "2026-09-18", f"{carrier!r} -> {rendered!r}"

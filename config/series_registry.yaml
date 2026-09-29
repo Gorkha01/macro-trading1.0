@@ -2017,23 +2017,33 @@ release_calendar:
   # and CPI MoM both appear as "CPI"). That is fine for a DATE lookup — the
   # timestamp is what is taken — but it is why the event name alone is not a
   # sufficient key for anything but a date.
+  #
+  # ⚠️ EVERY VALUE HERE MUST BE A KEY IN `series:` ABOVE (enforced by a
+  # `SeriesRegistry` validator, Class C/F, audit finding R-1 2026-09-29).
+  # A join whose target is not a real registry series is DEAD: the calendar
+  # still matches the event and still publishes a date into the index, but
+  # `build_snapshot` looks the index up by REGISTRY SERIES KEY
+  # (`snapshot_builder.py:_points_from_frame`, `release_index.get(series_id)`),
+  # so a phantom key is never read and the date is silently discarded. Four such
+  # rows shipped here — `ppi_core`, `nfp`, `gdp_deflator`,
+  # `industrial_production` — none of which is a series this engine declares
+  # (NFP is a documented absent snapshot field; core PPI is not a consumed
+  # input). They are removed rather than repointed, because no real series
+  # exists to point at: a join to a series the engine never fetches would be a
+  # second kind of lie. Re-add a row ONLY together with its registry series.
   event_map:
     "CPI": cpi_headline
     "Core CPI": cpi_core
     "Core PCE Price Index": pce_core
     "PPI": ppi
-    "Core PPI": ppi_core
     "JOLTS Job Openings": jolts_openings
     "JOLTS Job Quits": jolts_quits
     "Unemployment Rate": unemployment_rate
-    "Nonfarm Payrolls": nfp
     "Initial Jobless Claims": initial_claims
     "Continuing Jobless Claims": continuing_claims
     "GDP": gdp_real
-    "GDP Price Index": gdp_deflator
     "Retail Sales": retail_sales
     "Durable Goods Orders": durable_goods_orders
-    "Industrial Production": industrial_production
 
 # ---------------------------------------------------------------------------
 # publication_dates — Section 6's EXACT route for release_datetime (PRIMARY)

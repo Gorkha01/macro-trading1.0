@@ -132,11 +132,16 @@ function's own structure, because a mutation that does not correspond to a
 * **P3** breaks the PUBLISHED VALUE — each rounded field, the leg, and the
   published threshold. ``P3a`` leaves the deviation unrounded (float dust).
 * **P4** breaks the WARNING GUARDS — including the two BOUNDARY moves (``P4a``
-  ``<`` to ``<=``, ``P4e`` ``> 100`` to ``>= 100``) that only a boundary fixture
-  can see.
+  ``<`` to ``<=``, ``P4e`` ``> bound`` to ``>= bound``) that only a boundary
+  fixture can see, and ``P4g`` (D-132) which retypes the data-check bound as the
+  bare ``100.0`` literal it used to be, so the mover test that perturbs
+  ``ppp_implausible_deviation_pct`` catches it.
 * **P5** breaks the unit and the confidence (the hardcoded-literal revert).
 * **C5**-``C6`` hardcode or cross-wire the two accessors, stop reading the leaf,
-  and remove the two validators.
+  and remove the two validators. **``C7a``-``C7d`` do the same for D-132's new
+  ``ppp_implausible_deviation_pct`` leaf**: hardcode the accessor, cross-wire it
+  to the tactical-horizon leaf, stop reading it in the model, and remove its
+  load-time positivity validator.
 
 **⚠️ ONE SURVIVOR WAS FOUND AND FIXED ON THE FIRST RUN — ``C6b``** ("the
 tactical-horizon leaf is not read at all"), and it is D-050's trap in its
@@ -628,7 +633,7 @@ _PPP_STATUS_NEG = '    if deviation_pct < 0.0:\n        return "undervalued"'
 # The warning guards, each unique to this function.
 _PPP_WARN_TACTICAL = "    if horizon_years < tactical_horizon_years:"
 _PPP_WARN_OVER = '    if status == "overvalued" and horizon_years < tactical_horizon_years:'
-_PPP_WARN_DATA = "    if abs(deviation_pct) > 100.0:"
+_PPP_WARN_DATA = "    if abs(deviation_pct) > implausible_deviation_pct:"
 
 # The published value and the contract.
 _PPP_DEV_KEY = '        "deviation_pct": round(deviation_pct, 2),'
@@ -655,6 +660,10 @@ _PPP_PROP = "        return float(self.ppp_reliability_cap.value)"
 _PPP_PROP_TACTICAL = "        return float(self.ppp_tactical_horizon_years.value)"
 _PPP_VALIDATOR = "        if not 0.0 <= self.ppp_reliability_value <= 1.0:"
 _PPP_TACTICAL_VALIDATOR = "        if self.ppp_tactical_horizon_value <= 0.0:"
+# D-132's new leaf: the data-check bound that used to be a bare `100.0`.
+_PPP_DATA_READ = "    implausible_deviation_pct = fx_carry.ppp_implausible_deviation_value"
+_PPP_PROP_DATA = "        return float(self.ppp_implausible_deviation_pct.value)"
+_PPP_DATA_VALIDATOR = "        if self.ppp_implausible_deviation_value <= 0.0:"
 
 
 _MUTATIONS: list[tuple[str, Path, str, str]] = [
@@ -1744,16 +1753,22 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         '    if status == "overvalued":',
     ),
     (
-        "P4e the data-error guard becomes >= 100 instead of > 100",
+        "P4e the data-error guard becomes >= bound instead of > bound",
         SRC,
         _PPP_WARN_DATA,
-        "    if abs(deviation_pct) >= 100.0:",
+        "    if abs(deviation_pct) >= implausible_deviation_pct:",
     ),
     (
         "P4f the data-error guard is removed entirely",
         SRC,
         _PPP_WARN_DATA,
         "    if False:",
+    ),
+    (
+        "P4g the data-error bound is retyped as a bare 100.0 literal (D-132)",
+        SRC,
+        _PPP_WARN_DATA,
+        "    if abs(deviation_pct) > 100.0:",
     ),
     # --- P5: the contract and the confidence ------------------------------
     (
@@ -1811,6 +1826,31 @@ _MUTATIONS: list[tuple[str, Path, str, str]] = [
         "C6c the positivity validator on the tactical horizon removed",
         CONFIG,
         _PPP_TACTICAL_VALIDATOR,
+        "        if False:",
+    ),
+    # --- C7: the D-132 data-check bound leaf ------------------------------
+    (
+        "C7a the data-check accessor is a hardcoded literal",
+        CONFIG,
+        _PPP_PROP_DATA,
+        "        return 100.0",
+    ),
+    (
+        "C7b the data-check accessor returns the tactical-horizon leaf instead",
+        CONFIG,
+        _PPP_PROP_DATA,
+        "        return float(self.ppp_tactical_horizon_years.value)",
+    ),
+    (
+        "C7c the data-check leaf is not read at all (the model ignores config)",
+        SRC,
+        _PPP_DATA_READ,
+        "    implausible_deviation_pct = 100.0",
+    ),
+    (
+        "C7d the positivity validator on the data-check bound removed",
+        CONFIG,
+        _PPP_DATA_VALIDATOR,
         "        if False:",
     ),
 ]

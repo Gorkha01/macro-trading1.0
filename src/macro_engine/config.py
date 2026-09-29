@@ -771,6 +771,24 @@ class RiskSettings(BaseModel):
     historical_var_lookback_days: CalibratedValue
     drawdown_thresholds: dict[str, Any]
     rebalancing_drift: CalibratedValue
+    # The tolerance on the sum of `check_rebalancing_drift`'s current risk
+    # contributions (Module 17.3 / Section 15.18). It was a bare `0.01` in the
+    # function body — a *judgement* about how far off a STATED invariant (the
+    # shares sum to 1) an input may be before it is worth warning about, and
+    # therefore a policy number Section 21 keeps out of the function body. Its
+    # sibling `risk.rebalancing_drift` six lines up is the same class of number.
+    #
+    # It is NOT the `1e-9` exactness floor the `_RISK_BUDGET_SUM_TOLERANCE`
+    # module constant is: that one only admits float summation, whereas this
+    # one decides whether a *disclosure* fires, so it is deliberately loose.
+    # A value outside `(0, 1]` is refused by the validator below (D-128's
+    # dead-threshold class: `<= 0` warns on everything, `> 1` never fires).
+    #
+    # `_value`-suffixed because the reader property (`rebalancing_contribution_
+    # sum_tolerance`) is named for the *quantity* the caller wants and the field
+    # for the *envelope* it is stored in — the D-126/D-128 pattern; a shared name
+    # would shadow the property against the model field.
+    rebalancing_contribution_sum_tolerance_value: CalibratedValue
     # Module 17.2's hard constraints (Section 17.3's `RiskLimits`). These were
     # literals inside a Pydantic class body in the specification, which
     # Section 21 prohibits; they live here so a policy change is a config
@@ -797,6 +815,28 @@ class RiskSettings(BaseModel):
     # carries a risk-layer finding back into the thesis LIFECYCLE. `_value`-
     # suffixed because the reader is named for the quantity the caller wants.
     thesis_demotion_fraction_value: CalibratedValue
+    # The three Tier-1 risk *warning* thresholds (Section 21.2 Step 5).
+    #
+    # These were bare literals in `models/risk.py` — `effective_tail_observations
+    # < 5`, `severity_ratio > 1.5`, `shares[i] > weights[i] * 1.25` — and they
+    # move here for the reason `reflexivity_scale_threshold` did: each is a
+    # POLICY number (the point at which a sample is too thin to trust, at which
+    # a tail is judged heavy, at which a position is judged to over-contribute
+    # risk), not a mechanical constant. Section 21 keeps policy numbers out of
+    # a function body so a change to the standard is a reviewable diff.
+    #
+    # The first is the one with teeth: `effective_tail_observations < 5` decides
+    # not only a warning but `ConfidenceInputs.data_quality_flags_present`, i.e.
+    # a hardcoded number was lowering the PUBLISHED CONFIDENCE — the §22.8 class
+    # the project forbids. It also appeared at TWO read sites in the function
+    # (the warning and the flag), the dual-definition shape a leaf removes.
+    #
+    # `_value`-suffixed because the reader is named for the quantity the caller
+    # wants and the field for the envelope it is stored in (the D-126 pattern;
+    # a shared name would shadow the property against the model field).
+    historical_var_min_tail_observations_value: CalibratedValue
+    expected_shortfall_heavy_tail_ratio_value: CalibratedValue
+    risk_contribution_overweight_multiple_value: CalibratedValue
     # Section 17.1's Monte Carlo VaR — the Tier-5 replacement for the three
     # Tier-1 estimators already in `models/risk.py`. Nested rather than flat
     # because the block is a self-contained simulation configuration (a size, a
@@ -821,6 +861,26 @@ class RiskSettings(BaseModel):
         field is bounded, because a magnitude argument is not a contract.
         """
         return float(self.rebalancing_drift.value)
+
+    @property
+    def rebalancing_contribution_sum_tolerance(self) -> float:
+        """Tolerance on the sum of current risk contributions being 1.0.
+
+        ``check_rebalancing_drift`` expects its ``current_contributions`` to be
+        **shares** of total portfolio risk, so they must sum to 1; this is how
+        far off 1.0 a set may be before the function warns that the basis is
+        wrong (partial book, or dollar figures read as shares). It is looser
+        than the ``1e-9`` exactness floor the solver's ``_RISK_BUDGET_SUM_TOLERANCE``
+        uses because it drives a *warning*, not a numerical check.
+
+        **This was a bare ``0.01`` in the function body until D-132.** The
+        sweep could not see it: ``mutation_rebalancing.py``'s M9.3 deletes the
+        whole warning branch, so a mutant that MOVED the bound survived every
+        test — the D-031 shape (a value read from config and a retyped literal
+        are indistinguishable without a **mover**). The bound is a policy
+        number, so it belongs here.
+        """
+        return float(self.rebalancing_contribution_sum_tolerance_value.value)
 
     @property
     def max_position_fraction(self) -> float:
@@ -966,6 +1026,51 @@ class RiskSettings(BaseModel):
         return float(self.thesis_demotion_fraction_value.value)
 
     @property
+    def historical_var_min_tail_observations(self) -> float:
+        """Expected tail observations below which ``historical_var`` warns.
+
+        Compared against ``len(returns) * (1 - confidence)``. A FLOAT because
+        the realised count is fractional for most (sample, level) pairs and the
+        comparison should not round before it decides — the same reasoning as
+        ``MonteCarloSettings.min_tail_draws``.
+
+        **This leaf decides the published CONFIDENCE, not only a warning.**
+        The literal it replaces (`5`) gated both the tail warning and
+        ``ConfidenceInputs.data_quality_flags_present``, so a hardcoded number
+        was lowering a model result — the §22.8 class. It appeared twice in the
+        function; the leaf gives that quantity one definition.
+        """
+        return float(self.historical_var_min_tail_observations_value.value)
+
+    @property
+    def expected_shortfall_heavy_tail_ratio(self) -> float:
+        """``ES / VaR`` above which ``expected_shortfall`` warns of a heavy tail.
+
+        A MULTIPLE, not a fraction. The ES of a normal tail sits only slightly
+        above its VaR; a ratio materially above 1 marks a tail whose severity is
+        concentrated past the quantile, which is the finding the warning exists
+        to surface. A VaR-only report understates such a book. Must be ``> 1.0``
+        — the coherent-risk-measure property guarantees ``ES >= VaR`` for the
+        same sample, so a threshold at or below 1 would fire on every input and
+        carry no information.
+        """
+        return float(self.expected_shortfall_heavy_tail_ratio_value.value)
+
+    @property
+    def risk_contribution_overweight_multiple(self) -> float:
+        """Risk-share / notional-share multiple above which a position is flagged.
+
+        ``1.25`` means a position contributing more than ``1.25x`` its notional
+        share of total risk is surfaced as over-contributing. A MULTIPLE, not a
+        fraction of 1. Must be ``> 1.0``: below 1 every position would flag
+        (each position's risk share exceeds a *fraction* of its notional share
+        only when the book is concentrated elsewhere), and 1.0 would flag the
+        exact break-even with no margin, so the finding would be indistinguishable
+        from rounding.
+        """
+        return float(self.risk_contribution_overweight_multiple_value.value)
+
+    @property
     def drawdown_tiers(self) -> list[DrawdownTier]:
         """Drawdown tiers, sorted ascending by trigger level.
 
@@ -1040,6 +1145,75 @@ class RiskSettings(BaseModel):
                 raise ValueError(
                     f"VaR confidence level {level} is outside the sensible range (0.5, 1.0)."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_sum_tolerance_that_could_never_discriminate(self) -> RiskSettings:
+        """Refuse a rebalancing sum tolerance outside the range that can fire.
+
+        Same class as ``_reject_a_warning_threshold_that_could_never_fire``: a
+        tolerance that cannot discriminate makes the sum-to-one warning either
+        DEAD (``> 1`` can never be exceeded by a set of fractional shares, so the
+        disclosure never fires) or NOISE (``<= 0`` fires on every input,
+        including the ones that do sum to 1 within float error) — both are a lie
+        no gate sees, because the branch exists and simply never runs (or always
+        runs). The admissible range is ``(0, 1]``: strictly positive (a zero
+        tolerance would flag every float sum) and at most 1 (a set of shares
+        summing to more than 2 is not a set of shares, but the tolerance is a
+        *disclosure* bound, not a validity bound, so it may not exceed the full
+        scale).
+        """
+        tolerance = self.rebalancing_contribution_sum_tolerance
+        if not 0.0 < tolerance <= 1.0:
+            raise ValueError(
+                f"risk.rebalancing_contribution_sum_tolerance is {tolerance}, "
+                f"which is outside (0, 1]. A tolerance at or below 0 fires the "
+                f"sum-to-one warning on every input (including a set that sums to "
+                f"1 within float error), and one above 1 can never be exceeded by "
+                f"fractional shares, so the warning becomes DEAD CODE — the "
+                f"D-128 class. Leave it at the shipped 0.01 unless you are "
+                f"deliberately widening or tightening the disclosure."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_warning_threshold_that_could_never_fire(self) -> RiskSettings:
+        """Refuse the Tier-1 warning thresholds outside their producible range.
+
+        Same class as ``base_state_warning_threshold`` (D-128 Card 19): a
+        disclosure threshold that cannot fire makes the warning DEAD CODE — a
+        lie no gate sees, because the branch exists and simply never runs. Each
+        bound is the range the quantity can actually take:
+
+        * ``historical_var_min_tail_observations > 0`` — the expected tail count
+          is ``n * (1 - confidence) >= 0``. A non-positive floor warns about
+          nothing.
+        * ``expected_shortfall_heavy_tail_ratio > 1.0`` — ES is coherent, so
+          ``ES >= VaR`` for the same sample and the ratio never falls below 1.
+        * ``risk_contribution_overweight_multiple > 1.0`` — a multiple at or
+          below 1 flags every position, so the flag stops discriminating.
+        """
+        if self.historical_var_min_tail_observations <= 0.0:
+            raise ValueError(
+                f"risk.historical_var_min_tail_observations is "
+                f"{self.historical_var_min_tail_observations}. A non-positive "
+                f"floor warns about nothing; the expected tail count "
+                f"n * (1 - confidence) is never negative."
+            )
+        if self.expected_shortfall_heavy_tail_ratio <= 1.0:
+            raise ValueError(
+                f"risk.expected_shortfall_heavy_tail_ratio is "
+                f"{self.expected_shortfall_heavy_tail_ratio}. ES is coherent, so "
+                f"ES >= VaR on the same sample and the ratio never falls below "
+                f"1; a threshold at or below 1 would fire on every input."
+            )
+        if self.risk_contribution_overweight_multiple <= 1.0:
+            raise ValueError(
+                f"risk.risk_contribution_overweight_multiple is "
+                f"{self.risk_contribution_overweight_multiple}. A multiple at or "
+                f"below 1 marks every position as over-contributing, which "
+                f"carries no information."
+            )
         return self
 
 
@@ -1708,6 +1882,51 @@ class SeriesRegistry(BaseModel):
                     updates[key] = self.defaults[key]
             if updates:
                 self.series[name] = entry.model_copy(update=updates)
+        return self
+
+    @model_validator(mode="after")
+    def _release_calendar_joins_real_series(self) -> SeriesRegistry:
+        """Refuse an ``event_map`` target that is not a real registry series.
+
+        Class C/E (input wiring / input-not-taken), audit finding R-1
+        (2026-09-29). ``release_calendar.event_map`` maps the provider's
+        human-readable event names onto **registry series keys**. The calendar
+        matches the event and writes a date into ``ReleaseDateIndex`` keyed by
+        that target, and ``build_snapshot`` then reads the index by the registry
+        series key it is fetching (``release_index.get(series_id)``). So a target
+        that is not a key in ``self.series`` is a **dead join**: the event still
+        matches, the index still carries the date, and **no observation can ever
+        read it** — nothing raises, and the only symptom is a series whose
+        ``release_datetime`` is silently ``None`` while the calendar reported a
+        healthy read.
+
+        Four such rows shipped (``ppi_core``, ``nfp``, ``gdp_deflator``,
+        ``industrial_production``) and passed every gate, because the existing
+        registry test asserted that the event **names** resolve — never that
+        their **targets** do. A validator is the repair rather than a stronger
+        test: a value that can only be checked by a test can be reintroduced by
+        the next edit, whereas a ``ValidationError`` at load refuses it for
+        every consumer of the registry.
+
+        The ``enabled: false`` default does not excuse the check. The block is
+        shipped populated precisely so re-enabling it works, so its joins must be
+        valid while it is off — otherwise the defect is merely deferred to the
+        day someone flips the flag.
+        """
+        unknown = {
+            target
+            for target in self.release_calendar.event_map.values()
+            if target not in self.series
+        }
+        if unknown:
+            raise ValueError(
+                "release_calendar.event_map maps to series that are not defined "
+                f"in this registry: {sorted(unknown)}. A release date attributed "
+                "to a nonexistent series is unreachable "
+                "(snapshot_builder reads the index by registry series key), so "
+                "the join would be silently dead. Add the series, or remove the "
+                "event_map row."
+            )
         return self
 
     def require_verified(self, field_name: str) -> RegistrySeries:
@@ -4105,22 +4324,43 @@ class MarkovRegimeSettings(BaseModel):
 class RegimeSettings(BaseModel):
     """Module 3's rule-based regime classifier bands (Section 6.2).
 
-    Six thresholds, externalised from the specification's sample code so the
-    bands are reviewable together and so a test can assert the classifier's
-    **coverage** — that every declared state is reachable and no point in the
-    input plane falls outside all of them.
+    **FOUR thresholds the classifier actually reads**, externalised from the
+    specification's sample code so the bands are reviewable together and so a
+    test can assert the classifier's **coverage** — that every declared state is
+    reachable and no point in the input plane falls outside all of them.
+
+    Two of the specification's SIX gap literals are deliberately **absent**
+    here, and the absence is a correction rather than an omission. Section 6.2
+    writes four output-gap thresholds — ``< -1.5``, ``< -0.5``, ``> 1.0`` and
+    the ``-0.5 <= gap <= 0.5`` band — but its own branch chain can reach only
+    six of the nine declared states (see ``models/regime.py``). The grid this
+    block configures replaces that chain with a **two-axis** partition: the
+    growth axis is bucketed by ``recession_output_gap_max`` and
+    ``weak_growth_output_gap_max`` (two thresholds, three bands), and the
+    remaining structure — including the ``late_expansion`` / ``disinflation``
+    distinction the spec drew on the GAP — is decided on the inflation-momentum
+    axis plus the ``growth_momentum_band_pp`` hysteresis strip.
+
+    So the spec's ``output_gap > 1.0`` and ``-0.5 <= output_gap <= 0.5`` literals
+    are **superseded, not parameterised**: the shipped classifier returns
+    ``late_expansion`` / ``disinflation`` on the momentum reading, not on the
+    gap crossing those values. Declaring them as leaves here would advertise two
+    thresholds that no code path reads — MEASURED 2026-09-29 (D-132): moving
+    both (1.0 -> 5.0 and 0.5 -> 0.05) changes no classification, yet both gated
+    the published confidence through ``_thresholds_calibrated``. They are
+    therefore removed, and this note is the record of the literals.
 
     The two properties below are the derived quantities the classifier
     actually compares against; the raw leaves are kept so a reader can see the
-    specification's literals unaltered.
+    specification's literals unaltered. The ORDERING validator likewise checks
+    only thresholds a branch reads, so it cannot assert a partition the code does
+    not build.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     recession_output_gap_max: CalibratedValue
     weak_growth_output_gap_max: CalibratedValue
-    late_expansion_output_gap_min: CalibratedValue
-    disinflation_output_gap_max: CalibratedValue
     neutral_inflation_trend_band_pp: CalibratedValue
     growth_momentum_band_pp: CalibratedValue
     measured_rising_inflation_rate: CalibratedValue
@@ -4137,16 +4377,6 @@ class RegimeSettings(BaseModel):
     def weak_growth_gap(self) -> float:
         """Upper bound of the negative-output-gap bands. Appears in two rules."""
         return float(self.weak_growth_output_gap_max.value)
-
-    @property
-    def late_expansion_gap(self) -> float:
-        """Output gap above which, with rising inflation, the state is late expansion."""
-        return float(self.late_expansion_output_gap_min.value)
-
-    @property
-    def disinflation_gap(self) -> float:
-        """Upper bound of the near-trend output-gap band."""
-        return float(self.disinflation_output_gap_max.value)
 
     @property
     def neutral_inflation_band(self) -> float:
@@ -4177,30 +4407,31 @@ class RegimeSettings(BaseModel):
 
     @model_validator(mode="after")
     def _bands_must_be_ordered(self) -> RegimeSettings:
-        """The output-gap bands must partition in the order the rules assume.
+        """The two growth-band thresholds must be ordered as the rules assume.
 
-        The classifier's branches assume ``recession_gap < weak_growth_gap <
-        disinflation_gap < late_expansion_gap``. If a future edit inverts two of
-        them, individual rules still evaluate — each is a self-contained
-        comparison — but the bands overlap, one branch becomes unreachable, and
+        ``_growth_axis`` builds a three-band partition from exactly two
+        thresholds and assumes ``recession_gap < weak_growth_gap``. If a future
+        edit inverts them, individual rules still evaluate — each is a
+        self-contained comparison — but the lower band becomes unreachable, the
+        ``deep_contraction`` and ``contraction`` buckets collapse into one, and
         the state a point lands in depends on branch *order* rather than on its
         position. That is silent: no rule raises, and the model keeps returning
         a plausible label. This check turns it into a startup error.
+
+        Only the two thresholds a branch reads are checked. An earlier version
+        also ordered ``disinflation_output_gap_max`` and
+        ``late_expansion_output_gap_min`` — the specification's two superseded
+        gap literals — so it asserted a four-way partition the grid does not
+        build (D-132). A validator must not claim more structure than the code
+        has.
         """
-        ordered = [
-            self.recession_gap,
-            self.weak_growth_gap,
-            self.disinflation_gap,
-            self.late_expansion_gap,
-        ]
-        if ordered != sorted(ordered):
+        if self.weak_growth_gap <= self.recession_gap:
             raise ValueError(
-                f"regime output-gap bands are not strictly ordered: "
-                f"recession_gap={self.recession_gap}, weak_growth_gap={self.weak_growth_gap}, "
-                f"disinflation_gap={self.disinflation_gap}, "
-                f"late_expansion_gap={self.late_expansion_gap}. They must satisfy "
-                f"recession < weak_growth < disinflation < late_expansion, or the "
-                f"branches overlap and a state becomes unreachable by position."
+                f"regime growth bands are not ordered: recession_gap="
+                f"{self.recession_gap}, weak_growth_gap={self.weak_growth_gap}. "
+                f"The classifier requires recession_gap < weak_growth_gap, or the "
+                f"deep-contraction band is unreachable and the boundary falls to "
+                f"branch order rather than to a threshold."
             )
         return self
 
@@ -5308,6 +5539,7 @@ class FxCarrySettings(BaseModel):
     uip_reliability_cap: CalibratedValue
     ppp_reliability_cap: CalibratedValue
     ppp_tactical_horizon_years: CalibratedValue
+    ppp_implausible_deviation_pct: CalibratedValue
 
     @property
     def volatility_floor(self) -> float:
@@ -5441,6 +5673,24 @@ class FxCarrySettings(BaseModel):
         """
         return float(self.ppp_tactical_horizon_years.value)
 
+    @property
+    def ppp_implausible_deviation_value(self) -> float:
+        """``|deviation_pct|`` above which ``ppp_valuation`` reports a data-check.
+
+        Consumed by :func:`~macro_engine.models.fx_carry.ppp_valuation` as the
+        gate on its third warning. The unit is the **percent deviation**, the
+        same unit the model publishes ``deviation_pct`` in — not the ratio.
+
+        It gates a WARNING, never the ``status`` label or a refusal: a
+        four-figure gap is published unchanged and the warning only says the gap
+        is more likely a unit or convention error than a market state. Must be
+        strictly positive — a non-positive bound makes every non-zero deviation
+        "implausible", so the warning collapses from a data check into a phrase
+        that fires on every ordinary call, which is how a real warning gets
+        ignored. See the leaf's note.
+        """
+        return float(self.ppp_implausible_deviation_pct.value)
+
     @model_validator(mode="after")
     def _order_the_stress_bands(self) -> FxCarrySettings:
         """Refuse a band pair that cannot express its own three-way vocabulary.
@@ -5512,6 +5762,16 @@ class FxCarrySettings(BaseModel):
                 f"no-tactical-timing warning would be dead vocabulary and the "
                 f"model would look compliant while warning nothing (D-037's "
                 f"class)."
+            )
+        if self.ppp_implausible_deviation_value <= 0.0:
+            raise ValueError(
+                f"fx_carry.ppp_implausible_deviation_pct is "
+                f"{self.ppp_implausible_deviation_value}. A non-positive bound "
+                f"makes EVERY non-zero deviation 'implausible', so the data-check "
+                f"warning fires on every ordinary call — dead vocabulary in the "
+                f"opposite direction to a threshold that never fires, and just as "
+                f"useless: a warning that always appears is one a reader learns "
+                f"to skip (D-037's class)."
             )
         return self
 

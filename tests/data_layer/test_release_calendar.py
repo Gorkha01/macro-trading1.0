@@ -27,6 +27,7 @@ provider on 2026-09-20, including its well-formed failure body.
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -976,3 +977,69 @@ def test_shipped_registry_block_is_loadable_and_joins_real_event_names() -> None
     for event in ("CPI", "Core CPI", "Core PCE Price Index", "PPI", "JOLTS Job Openings"):
         assert event in cfg.event_map, f"{event!r} missing from event_map"
     assert cfg.event_map["CPI"] == "cpi_headline"
+
+
+def test_every_shipped_event_map_target_is_a_real_registry_series() -> None:
+    """Every join target must RESOLVE, not merely exist as a string.
+
+    Audit finding R-1, Class C/E (2026-09-29). The test above asserts the event
+    *names* are present — which four dead rows passed. But the value of each row
+    is a **registry series key**, and ``build_snapshot`` reads the release index
+    by that key (``release_index.get(series_id)``). So a target that is not in
+    ``registry.series`` is unreachable: the calendar matches the event, the index
+    carries the date, and no observation ever reads it — silently.
+
+    This test pins the SHIPPED config so the four phantom rows
+    (``ppi_core``/``nfp``/``gdp_deflator``/``industrial_production``) cannot
+    return; the validator in ``SeriesRegistry`` is what refuses them at load.
+    """
+    from macro_engine.config import get_registry
+
+    registry = get_registry()
+    targets = set(registry.release_calendar.event_map.values())
+    unknown = sorted(targets - set(registry.series))
+    assert not unknown, (
+        f"release_calendar.event_map joins to series that do not exist in the "
+        f"registry: {unknown}. A release date attributed to a nonexistent series "
+        f"is unreachable, so the join is dead."
+    )
+
+
+def test_the_registry_refuses_an_event_map_join_to_a_missing_series() -> None:
+    """The validator FIRES — the killer half of finding R-1.
+
+    Without this, the guard above is only a snapshot assertion: it would pass on
+    a config that still shipped the defect-free map while the validator sat
+    unreachable. So the validator is driven directly, with a dead join planted
+    into an otherwise-valid registry, and both the refusal and the message that
+    NAMES the offending target are asserted.
+    """
+    import yaml
+
+    from macro_engine.config import SeriesRegistry
+
+    root = Path(__file__).resolve().parent.parent.parent
+    raw = yaml.safe_load((root / "config" / "series_registry.yaml").read_text(encoding="utf-8"))
+    raw["release_calendar"]["event_map"]["Core PPI"] = "ppi_core"
+
+    with pytest.raises(ValueError, match="ppi_core"):
+        SeriesRegistry.model_validate(raw)
+
+
+def test_the_validator_accepts_a_join_to_a_series_that_exists() -> None:
+    """The validator is not a blanket refusal — a legitimate new row passes.
+
+    The negative control: a join to a declared series must load. Without it, a
+    validator that rejected every map would satisfy the firing test above while
+    breaking the feature.
+    """
+    import yaml
+
+    from macro_engine.config import SeriesRegistry
+
+    root = Path(__file__).resolve().parent.parent.parent
+    raw = yaml.safe_load((root / "config" / "series_registry.yaml").read_text(encoding="utf-8"))
+    raw["release_calendar"]["event_map"]["Producer Price Index"] = "ppi"
+
+    validated = SeriesRegistry.model_validate(raw)
+    assert validated.release_calendar.event_map["Producer Price Index"] == "ppi"

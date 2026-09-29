@@ -186,11 +186,17 @@ def z_score_for_confidence(confidence: float) -> float:
     extended the *first* segment by scaling the **last** tabulated point
     (``3.0902 · c / 0.999``), which is the secant through the origin and the
     0.999 point rather than the 0.90→0.95 segment. That produced 2.7809 at
-    ``confidence=0.899`` where the true normal quantile is 1.2789 — a 2.17x
+    ``confidence=0.899`` where the true normal quantile is 1.2759 — a 2.18x
     overstatement, discontinuous with the tabulated 1.2816 at exactly 0.90, and
     wrong in the same direction as the upper-boundary error it was written to
     avoid. A caller needing a quantile outside the table must extend the table
     deliberately, which keeps the approximation visible rather than hidden.
+    (MEASURED 2026-09-29: the true quantile here is ``NormalDist().inv_cdf(0.899)
+    = 1.275874`` and 2.7809/1.275874 = 2.1796, i.e. 2.18x. This docstring
+    previously read "1.2789 ... a 2.17x" — both literals were wrong; 1.2789 is
+    ``inv_cdf(0.8995)``, not ``inv_cdf(0.899)``. The guard
+    ``test_the_below_table_refusal_reason_cites_a_measured_ratio`` recomputes
+    these two numbers from the shipped constants.)
 
     Raises:
         ValueError: if ``confidence`` is outside the tabulated range, in either
@@ -271,13 +277,18 @@ def historical_var(inputs: ReturnsInputs) -> ModelResult:
     tail_quantile = _quantile(sorted_returns, 1.0 - inputs.confidence)
     var_loss = -tail_quantile
 
+    # §22.8: the floor is read from config, not a body literal. It decides BOTH
+    # the warning and the published confidence, so a hardcoded value here would
+    # silently lower a model result (the D-131 / D-128-Card-19 class).
+    min_tail_observations = get_settings().risk.historical_var_min_tail_observations
+
     observations = len(inputs.returns)
     # Sample size is a first-class confidence determinant here: a 30-observation
     # 99% VaR is being read off the 0.3rd observation, which is not an estimate
     # so much as an extrapolation from one point.
     effective_tail_observations = observations * (1.0 - inputs.confidence)
     warnings: list[str] = []
-    if effective_tail_observations < 5:
+    if effective_tail_observations < min_tail_observations:
         warnings.append(
             f"Only {effective_tail_observations:.1f} observations lie in the tail beyond "
             f"the {inputs.confidence:.1%} quantile (of {observations} total). The estimate "
@@ -291,7 +302,7 @@ def historical_var(inputs: ReturnsInputs) -> ModelResult:
 
     confidence = compute_confidence(
         ConfidenceInputs(
-            data_quality_flags_present=effective_tail_observations < 5,
+            data_quality_flags_present=effective_tail_observations < min_tail_observations,
             source_independence_count=0,
         )
     )
@@ -343,8 +354,10 @@ def expected_shortfall(inputs: ReturnsInputs) -> ModelResult:
     var_loss = -tail_quantile
 
     severity_ratio = es_loss / var_loss if var_loss != 0 else None
+    # §22.8: the heaviness threshold is a config policy number, not a literal.
+    heavy_tail_ratio = get_settings().risk.expected_shortfall_heavy_tail_ratio
     warnings: list[str] = []
-    if severity_ratio is not None and severity_ratio > 1.5:
+    if severity_ratio is not None and severity_ratio > heavy_tail_ratio:
         warnings.append(
             f"Expected shortfall is {severity_ratio:.2f}x the VaR threshold — the tail "
             f"is heavy relative to its boundary. A VaR-only risk report materially "
@@ -756,10 +769,12 @@ def marginal_risk_contributions(
     # A position contributing more than its notional share is the specific,
     # actionable finding — it means the position is more dangerous than its
     # size suggests. Surfaced as a warning rather than left for the reader.
+    # §22.8: the overweight multiple is a config policy number, not a literal.
+    overweight_multiple = get_settings().risk.risk_contribution_overweight_multiple
     over_contributing = [
         f"asset {i} (weight {weights[i]:.2%}, risk share {shares[i]:.2%})"
         for i in range(n)
-        if weights[i] > 0 and shares[i] > weights[i] * 1.25
+        if weights[i] > 0 and shares[i] > weights[i] * overweight_multiple
     ]
     if over_contributing:
         warnings.append(

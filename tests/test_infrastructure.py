@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from macro_engine.audit import AuditLedger, reset_audit_ledger_cache
-from macro_engine.data_layer.logging_json import JsonFormatter, _redact
+from macro_engine.data_layer.logging_json import JsonFormatter, _redact, get_logger
 from macro_engine.deployment import (
     AppEnvironment,
     MissingConfigurationError,
@@ -457,6 +457,62 @@ def test_formatter_survives_an_unserialisable_context_value() -> None:
     """A logger that can throw is worse than one that loses type fidelity."""
     payload = json.loads(JsonFormatter().format(_record(moment=datetime.now(UTC))))
     assert "moment" in payload["context"]
+
+
+def test_get_logger_returns_the_namespaced_stdlib_logger() -> None:
+    """``get_logger`` is exported in ``__all__`` but had no caller and no test.
+
+    Audit finding R-2 (2026-09-29), Class E. The wrapper is thin and correct,
+    but an exported symbol nothing exercises is indistinguishable from dead
+    code — the same shape as the removed ``isoformat_or_none``. It is kept
+    (a namespaced accessor is a legitimate convenience the module documents),
+    so it is pinned here: it must return the *same* object the stdlib returns,
+    so the ``macro_engine`` handler config in ``logging.yaml`` applies.
+    """
+    logger = get_logger("macro_engine.foo")
+    assert logger is logging.getLogger("macro_engine.foo")
+    assert logger.name == "macro_engine.foo"
+
+
+def test_configure_logging_refuses_a_missing_config_file() -> None:
+    """A missing logging config is a hard error, never a silent fallback.
+
+    The module's own contract: a service that logs unstructured output when its
+    config is absent cannot be trusted during the incident that removed the
+    config. This is the one behaviour of ``configure_logging`` that a live
+    process cannot exercise, so it lives here.
+    """
+    from macro_engine.data_layer.logging_json import configure_logging
+
+    with pytest.raises(FileNotFoundError, match="Logging config missing"):
+        configure_logging("/nonexistent/does-not-exist-logging.yaml")
+
+
+def test_configure_logging_applies_the_shipped_config() -> None:
+    """The shipped ``config/logging.yaml`` must apply without raising.
+
+    Guards the seam between the YAML and this module: the file names
+    ``JsonFormatter`` by dotted path, so a rename here (or a typo there) would
+    make every process that calls ``configure_logging`` fail at startup — and
+    nothing else in the suite constructs the real dict config.
+    """
+    import logging.config
+
+    from macro_engine.data_layer.logging_json import configure_logging
+
+    # Snapshot the tree so the process-wide side effect is undone afterwards;
+    # the root logger is shared with pytest's own capture.
+    manager = logging.root.manager
+    saved = {name: manager.loggerDict[name] for name in list(manager.loggerDict)}
+    try:
+        configure_logging()
+        macro_logger = logging.getLogger("macro_engine")
+        assert macro_logger.propagate is False
+        handler = macro_logger.handlers[0]
+        assert isinstance(handler.formatter, JsonFormatter)
+    finally:
+        manager.loggerDict.clear()
+        manager.loggerDict.update(saved)
 
 
 # ---------------------------------------------------------------------------

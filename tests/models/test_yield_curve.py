@@ -1290,3 +1290,51 @@ def test_yield_curve_pca_context_names_the_tenors_in_maturity_order() -> None:
     assert "3mo (0.25y)" in context
     assert "30yr (30y)" in context
     assert "Computed by `compute_pca` on DAILY CHANGES" in context
+
+
+def test_the_config_bucket_tables_match_the_live_probe() -> None:
+    """The YAML block comment's bucket tables must equal the authoritative note values.
+
+    Class G (D-131): the `yield_curve` block comment quoted a DEPTH table
+    (`0.412/0.391/0.567/0.857`) and a DURATION table (`0.400/0.333/0.444/0.750/
+    0.409`) that a re-run of `scripts/live_inversion_check.py` does NOT produce —
+    the live script returns `0.412/0.417/0.552/0.857` and `0.250/0.286/0.412/
+    0.769/0.520`, which the leaf notes further down carried CORRECTLY. One file
+    therefore held two different measurements for the same probe, and the stale
+    copy even contradicted the monotone claim (0.412 > 0.391). This guard reads
+    the YAML TEXT (the comment is not a config leaf, so `get_settings()` cannot
+    see it) and asserts the comment's numbers are the note's numbers, so the
+    copy cannot drift from the record again.
+
+    The live script itself is a network check, not a unit test; the equality
+    pinned here is between the TWO in-repo records of the same measurement.
+    """
+    from pathlib import Path
+
+    yaml_text = (Path(__file__).resolve().parents[2] / "config" / "settings.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    # The block comment must carry the LIVE probe's rows verbatim (the leaf notes
+    # below it already do, so the two records now agree).
+    for line in (
+        "#   depth is MONOTONE      -0..-25bp 0.412   -25..-50bp 0.417",
+        "#                          -50..-100bp 0.552  -100bp+   0.857",
+        "#   duration is HUMP-SHAPED  0-4wk 0.250   4-13wk 0.286   13-26wk 0.412",
+        "#                            26-52wk 0.769  >=52wk 0.520",
+    ):
+        assert line in yaml_text, f"the re-measured bucket row is missing:\n  {line!r}"
+
+    # The STALE tables must be gone — the defect was a duplicate, not an override.
+    for stale_row in (
+        "-25..-50bp 0.391",
+        "-50..-100bp 0.567",
+        "4-13wk   0.333",
+        "13-26wk 0.444",
+        "26-52wk 0.750",
+        ">=52wk   0.409",
+        "0-4wk 0.400",
+    ):
+        assert stale_row not in yaml_text, (
+            f"a stale bucket value survives in settings.yaml: {stale_row!r}"
+        )

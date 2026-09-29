@@ -399,6 +399,65 @@ def test_a_deviation_exactly_at_one_hundred_percent_does_not_warn() -> None:
     assert not any("UNIT OR CONVENTION ERROR" in w for w in result.warnings)
 
 
+def test_the_data_error_bound_is_read_from_the_leaf_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Perturbing the leaf must MOVE the warning gate (D-132, D-050's trap).
+
+    Until D-132 the gate was a bare ``100.0`` in the function body. The shipped
+    leaf is also ``100.0``, so every test comparing behaviour against ``100.0``
+    — including ``test_a_deviation_exactly_at_one_hundred_percent_does_not_warn``
+    above — passes identically whether the bound is read from config or retyped
+    into the source. A **pinner cannot tell the two apart**; only a **mover**
+    can (D-031).
+
+    This test moves the leaf to a value no retyped literal would equal and
+    asserts the gate follows: a deviation of +20 % is silent at the shipped
+    bound, warns when the bound is lowered below it, and is silent again when
+    the bound is raised above it. A hardcoded ``100.0`` fails all three.
+    """
+    leaf = get_settings().fx_carry.ppp_implausible_deviation_pct
+    # +20 %: silent at the shipped 100.0 bound.
+    assert _dev(ppp_valuation(_inputs(1.50))) == pytest.approx(20.0)
+    assert not any("UNIT OR CONVENTION ERROR" in w for w in ppp_valuation(_inputs(1.50)).warnings)
+
+    # Lower the bound below the deviation: the warning must now fire.
+    monkeypatch.setattr(leaf, "value", 10.0, raising=False)
+    lowered = ppp_valuation(_inputs(1.50))
+    assert any("UNIT OR CONVENTION ERROR" in w for w in lowered.warnings), (
+        "the leaf was moved to 10.0 and a +20% deviation did not warn — the "
+        "bound is not read from config (D-132)"
+    )
+    assert "(10.0%)" in " ".join(lowered.warnings), "the warning must cite the moved bound"
+
+    # Raise the bound above the deviation: silent again.
+    monkeypatch.setattr(leaf, "value", 250.0, raising=False)
+    assert not any("UNIT OR CONVENTION ERROR" in w for w in ppp_valuation(_inputs(1.50)).warnings)
+
+
+def test_the_data_error_bound_is_validated_at_load() -> None:
+    """A non-positive bound would make the data-check warning fire on every call.
+
+    The bound is a config leaf (D-132), so it needs the same load-time guard its
+    sibling ``ppp_tactical_horizon_years`` carries: a non-positive value makes
+    the warning fire on EVERY non-zero deviation — dead vocabulary in the
+    opposite direction to a threshold that never fires, and just as useless.
+
+    The settings object is seeded from the SHIPPED block, so a future required
+    field breaks the construction here for a *missing field* rather than turning
+    this into a tautology — hence ``match=``, which distinguishes the rejection
+    under test from a missing-field error of the same exception type (O-127).
+    """
+    base: dict[str, CalibratedValue] = dict(get_settings().fx_carry)
+    base["ppp_implausible_deviation_pct"] = CalibratedValue(
+        value=0.0,
+        calibration_status="uncalibrated_illustrative",
+        note="synthetic: a non-positive bound must be refused at load",
+    )
+    with pytest.raises(ValidationError, match="ppp_implausible_deviation_pct"):
+        FxCarrySettings(**base)
+
+
 def test_an_ordinary_long_horizon_call_carries_no_warnings() -> None:
     """The all-clear control: a plausible input at a long horizon warns nothing."""
     result = ppp_valuation(_inputs(1.30, horizon_years=_LONG_HORIZON))

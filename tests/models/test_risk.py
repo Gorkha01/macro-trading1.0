@@ -9,6 +9,7 @@ Section 11.1 mandates ``test_historical_var_matches_hand_calculation``.
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 
 import pytest
 
@@ -187,16 +188,47 @@ def test_z_score_refuses_to_extrapolate_below_the_table() -> None:
     the LAST tabulated point — ``3.0902 * c / 0.999`` — which is the secant
     through the origin and the 0.999 point, not the 0.90->0.95 segment. At
     ``confidence=0.899`` it returned 2.7809 where the true normal quantile is
-    1.2789: a 2.17x overstatement, in the same direction as the upper-boundary
+    1.2759: a 2.18x overstatement, in the same direction as the upper-boundary
     error the refusal exists to prevent. The interpolation loop below the table
     was never exercised because the tabulated points (0.90/0.95/0.99) and the
     upper boundary were the only confidences any test used, so the branch
     survived to feed ``parametric_var`` with a doubled z. Asserting the refusal
     pins the behaviour at the value that used to be wrong.
+
+    ⚠️ The two literals above are MEASURED, not recalled (D-131). This docstring
+    previously read "1.2789 ... 2.17x"; 1.2789 is ``NormalDist().inv_cdf(0.8995)``,
+    not ``inv_cdf(0.899)``. ``test_the_below_table_refusal_cites_measured_numbers``
+    recomputes both from ``NormalDist`` so a future edit cannot silently re-drift.
     """
     for confidence in (0.899, 0.85, 0.80, 0.50):
         with pytest.raises(ValueError, match="below the tabulated minimum"):
             z_score_for_confidence(confidence)
+
+
+def test_the_below_table_refusal_cites_measured_numbers() -> None:
+    """The docstring's 1.2759 / 2.18x must be the MEASURED values (Class G, D-131).
+
+    A decision-record docstring is a citation, and the citation here was wrong:
+    it read "1.2789 ... a 2.17x overstatement". ``NormalDist().inv_cdf(0.899)``
+    is 1.2759 (1.2789 is ``inv_cdf(0.8995)``), so the ratio is 2.18x. This guard
+    recomputes BOTH numbers from the shipped constants — the ``_Z_QUANTILES``
+    top point and the ``0.90`` knot — so the prose cannot drift from the code
+    again. It is a mover, not a pinner: it would fail on the old literals.
+    """
+    top_confidence, top_z = max(_Z_QUANTILES.items())
+    probe = 0.899
+    old_extrapolation = top_z * probe / top_confidence
+
+    true_quantile = NormalDist().inv_cdf(probe)
+    assert old_extrapolation == pytest.approx(2.7809, abs=5e-5), old_extrapolation
+    assert true_quantile == pytest.approx(1.2759, abs=5e-5), true_quantile
+    assert old_extrapolation / true_quantile == pytest.approx(2.18, abs=5e-3)
+
+    # And the tabulated points themselves are real quantiles, not approximations:
+    # every shipped z is the normal quantile to floating-point (D-131).
+    normal = NormalDist()
+    for confidence, z in _Z_QUANTILES.items():
+        assert z == pytest.approx(normal.inv_cdf(confidence), abs=1e-12), confidence
 
 
 def test_z_score_is_continuous_at_the_tabulated_boundaries() -> None:
@@ -725,3 +757,137 @@ def test_n_asset_confidences_come_from_the_formula() -> None:
     rc_result = marginal_risk_contributions(_HAND_WEIGHTS, _HAND_COVARIANCE)
     assert vol_result.confidence == pytest.approx(base, abs=1e-9)
     assert rc_result.confidence == pytest.approx(base, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# D-131 — the three Tier-1 WARNING thresholds are config leaves, not literals.
+#
+# Each guard below is a MOVER, not a pinner (D-031): the shipped leaf value
+# EQUALS the old literal (5.0 / 1.5 / 1.25), so a test against a fixed input
+# would pass on both the literal and the leaf. The only discriminating test
+# monkeypatches the leaf and asserts the published behaviour follows it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_sample_size_floor_is_taken_from_config_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`historical_var_min_tail_observations` must drive BOTH the warning and the flag.
+
+    The literal it replaces (``5``) gated the tail warning AND
+    ``ConfidenceInputs.data_quality_flags_present`` — so it decided the published
+    CONFIDENCE, which is the §22.8 violation. Moving the leaf to 0.4 (below the
+    0.5 tail count of the 10-observation fixture) must silence BOTH the warning
+    and the confidence penalty; the shipped 5.0 fires both. A literal read would
+    fail the moved-leaf half. The patch idiom is D-128's
+    ``test_the_disclosure_follows_a_moved_leaf``: monkeypatch ``get_settings``
+    in the module rather than mutating the cached singleton.
+    """
+    import macro_engine.models.risk as module
+    from macro_engine.config import get_settings
+
+    settings = get_settings()
+    fixture = ReturnsInputs(returns=_HAND_RETURNS, confidence=0.95)  # 0.5 tail obs
+
+    shipped = historical_var(fixture)
+    assert any("tail" in w.lower() for w in shipped.warnings)
+    penalised = settings.scalar("confidence.base") - settings.scalar(
+        "confidence.data_quality_flag_penalty"
+    )
+    assert shipped.confidence == pytest.approx(penalised, abs=1e-9)
+
+    def _patched(floor: float) -> object:
+        moved_risk = settings.risk.model_copy(
+            update={
+                "historical_var_min_tail_observations_value": (
+                    settings.risk.historical_var_min_tail_observations_value.model_copy(
+                        update={"value": floor}
+                    )
+                )
+            }
+        )
+        return settings.model_copy(update={"risk": moved_risk})
+
+    # Move the leaf below the fixture's tail count: BOTH must go quiet.
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(0.4))
+    moved = historical_var(fixture)
+    assert not any("few points" in w for w in moved.warnings), (
+        "the tail warning fired below its configured floor — the code is not reading the leaf"
+    )
+    assert moved.confidence == pytest.approx(settings.scalar("confidence.base"), abs=1e-9), (
+        "the confidence penalty survived a floor below the tail count — the leaf is not taken"
+    )
+
+
+def test_the_heavy_tail_threshold_is_taken_from_config_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`expected_shortfall_heavy_tail_ratio` must drive the warning.
+
+    The 10-observation fixture has ES/VaR = 1.6 (> shipped 1.5 ⇒ warns). Raising
+    the leaf to 5.0 must silence it; a literal read would keep warning.
+    """
+    import macro_engine.models.risk as module
+    from macro_engine.config import get_settings
+
+    settings = get_settings()
+    fixture = ReturnsInputs(returns=_HAND_RETURNS, confidence=0.95)
+
+    assert any("heavy relative to its boundary" in w for w in expected_shortfall(fixture).warnings)
+
+    def _patched(ratio: float) -> object:
+        moved_risk = settings.risk.model_copy(
+            update={
+                "expected_shortfall_heavy_tail_ratio_value": (
+                    settings.risk.expected_shortfall_heavy_tail_ratio_value.model_copy(
+                        update={"value": ratio}
+                    )
+                )
+            }
+        )
+        return settings.model_copy(update={"risk": moved_risk})
+
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(5.0))
+    moved = expected_shortfall(fixture)
+    assert not any("heavy relative to its boundary" in w for w in moved.warnings), (
+        "the heavy-tail warning fired above its configured threshold — the leaf is not taken"
+    )
+
+
+def test_the_overweight_multiple_is_taken_from_config_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`risk_contribution_overweight_multiple` must drive the over-contribution flag.
+
+    Asset 0 has 4x the vol of asset 1 at equal weight, so its risk share is 4x
+    its notional share (> shipped 1.25 ⇒ warns). Raising the leaf to 5.0 must
+    silence it; a literal read would keep warning.
+    """
+    import macro_engine.models.risk as module
+    from macro_engine.config import get_settings
+
+    settings = get_settings()
+    covariance = [[0.1600, 0.0], [0.0, 0.0100]]
+
+    assert any(
+        "materially more risk" in w
+        for w in marginal_risk_contributions([0.5, 0.5], covariance).warnings
+    )
+
+    def _patched(multiple: float) -> object:
+        moved_risk = settings.risk.model_copy(
+            update={
+                "risk_contribution_overweight_multiple_value": (
+                    settings.risk.risk_contribution_overweight_multiple_value.model_copy(
+                        update={"value": multiple}
+                    )
+                )
+            }
+        )
+        return settings.model_copy(update={"risk": moved_risk})
+
+    monkeypatch.setattr(module, "get_settings", lambda: _patched(5.0))
+    moved = marginal_risk_contributions([0.5, 0.5], covariance)
+    assert not any("materially more risk" in w for w in moved.warnings), (
+        "the over-contribution flag fired above its configured multiple — the leaf is not taken"
+    )

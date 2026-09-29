@@ -1088,3 +1088,104 @@ def test_the_registry_carries_the_three_metal_series_as_fred() -> None:
         assert entry["symbol"] == symbol
         assert entry["units"] == "usd_per_metric_ton"
         assert entry["frequency"] == "monthly"
+
+
+# ===========================================================================
+# R-5 — `_parse_date` must return a real `date`, never a leaked datetime
+# ===========================================================================
+# The SAME `datetime`-is-a-`date` trap fixed in `openbb_client.to_observation_date`
+# (R-4), repeated in this module's own date parser. The original guard led with
+# `if isinstance(raw, date): return raw`, and because `pd.Timestamp` and
+# `datetime` are both `date` subclasses, that branch returned them UNCHANGED.
+#
+# It is reachable rather than theoretical. MEASURED: `OpenBBClient._coerce_records`
+# converts a DataFrame-shaped payload with `to_dict(orient="records")`, and a
+# datetime column becomes `pd.Timestamp` values; those rows reach `_parse_date`
+# at the two `fetch_records` call sites (inventories at line 278, spare capacity
+# at line 405). The name collision with R-4 is not a coincidence — it is one
+# defect class, transcribed twice, which is why the fix uses the same
+# most-derived-type-first ordering.
+#
+# The two live consequences, both measured against the pre-fix code: a
+# `Timestamp > date` comparison raises `TypeError` and escapes as an uncaught
+# crash instead of `CommodityReadError`; and `observation_date=when.isoformat()`
+# publishes `'2026-09-18T00:00:00'` instead of `'2026-09-18'`.
+
+
+def test_parse_date_collapses_a_datetime_to_a_date() -> None:
+    """A `datetime` must be collapsed, not passed through (the R-5 defect)."""
+    from datetime import UTC, datetime
+
+    out = commodities_client._parse_date(datetime(2026, 9, 18, 13, 45, tzinfo=UTC), context="probe")
+    assert type(out) is date
+    assert out == date(2026, 9, 18)
+
+
+def test_parse_date_collapses_a_pandas_timestamp() -> None:
+    """A `pd.Timestamp` is the shape `_coerce_records` actually produces.
+
+    This is the reachable input: a table endpoint that returns a DataFrame has
+    its datetime column converted to `Timestamp` by `to_dict(orient="records")`,
+    and the inventory/spare-capacity paths then parse it here.
+    """
+    import pandas as pd
+
+    out = commodities_client._parse_date(pd.Timestamp("2026-09-18 13:45:00"), context="probe")
+    assert type(out) is date
+    assert out == date(2026, 9, 18)
+
+
+def test_parse_date_collapses_a_numpy_datetime64() -> None:
+    """A `numpy.datetime64` is a legal frame cell after a pandas round-trip."""
+    import numpy as np
+
+    out = commodities_client._parse_date(np.datetime64("2026-09-18T13:45:00"), context="probe")
+    assert type(out) is date
+    assert out == date(2026, 9, 18)
+
+
+def test_parse_date_passes_a_plain_date_through_unchanged() -> None:
+    """Positive control: the common case is untouched and is a real `date`."""
+    original = date(2026, 9, 18)
+    out = commodities_client._parse_date(original, context="probe")
+    assert type(out) is date
+    assert out is original
+
+
+def test_parse_date_handles_strings_with_and_without_a_time_part() -> None:
+    """The string branch still accepts both shapes the routes were measured sending."""
+    for raw in ("2026-09-18", "2026-09-18T00:00:00", "2026-09-18 00:00:00"):
+        out = commodities_client._parse_date(raw, context="probe")
+        assert type(out) is date, f"{raw!r} -> {type(out).__name__} (leak)"
+        assert out == date(2026, 9, 18)
+
+
+def test_parse_date_still_refuses_empty_and_unparseable_values() -> None:
+    """The fix must not weaken the refusal contract while widening the accept set."""
+    for bad in ("", "   ", "not-a-date"):
+        with pytest.raises(CommodityReadError):
+            commodities_client._parse_date(bad, context="probe")
+
+
+def test_a_timestamp_dated_row_does_not_crash_the_inventory_as_of_clip() -> None:
+    """End-to-end: a `Timestamp`-dated row must clip cleanly, not raise `TypeError`.
+
+    This is the defect's live blast radius reproduced through the real fetch
+    path. `_parse_date` returning a `Timestamp` made `when > as_of` raise
+    `TypeError: Cannot compare Timestamp with datetime.date`, which is not a
+    `CommodityReadError` and would escape the model's handler. With the fix the
+    comparison is between two `date`s and the row clips normally.
+    """
+    import pandas as pd
+
+    rows = _inventory_rows([(date(2026, 9, 18), 426_398.0), (date(2026, 9, 11), 423_429.0)])
+    # Replace the ISO date strings with `Timestamp`s, as a DataFrame-shaped
+    # payload would arrive after `_coerce_records`.
+    for row in rows:
+        if row.get("symbol") == INVENTORY_SYMBOL:
+            row["date"] = pd.Timestamp(row["date"])
+
+    client = _StubClient(rows)
+    reading = fetch_crude_inventories(as_of=date(2026, 9, 22), client=client)
+    assert reading.observation_date == "2026-09-18"
+    assert reading.level_thousand_barrels == 426_398.0

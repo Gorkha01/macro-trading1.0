@@ -1500,6 +1500,28 @@ risk:
       4-instrument covariance, drift trips 10.8% of the time — `balanced` is
       modal, which is what a maintenance check should look like.
 
+  rebalancing_contribution_sum_tolerance_value:
+    value: 0.01
+    # How far the set of current risk contributions may be from summing to 1.0
+    # before `check_rebalancing_drift` warns that the basis is wrong. A FRACTION
+    # (0.01 = one percentage point), deliberately LOOSER than the solver's
+    # `1e-9` exactness floor (`_RISK_BUDGET_SUM_TOLERANCE`): that one admits
+    # float summation, this one decides whether a DISCLOSURE fires, so it has to
+    # tolerate a genuinely-off input (a partial book, or dollar figures read as
+    # shares). The reader bounds it to (0, 1] because a value that cannot fire —
+    # or that fires always — is the D-128 dead-threshold class.
+    calibration_status: mechanical_rule
+    note: >
+      Tolerance on the sum of `check_rebalancing_drift`'s current contributions
+      being 1.0 (Module 17.3 / Section 15.18). `current_contributions` are
+      SHARES of total portfolio risk, so they must sum to 1; this is how far off
+      1.0 a set may be before the function says so. It shipped as a bare `0.01`
+      in the function body until D-132, where it was invisible to
+      `mutation_rebalancing.py`: M9.3 deletes the whole warning branch, so a
+      mutant that MOVED the bound survived every test — the D-031 shape (a value
+      read from config and a retyped literal are indistinguishable without a
+      mover). The bound is a policy number, so it belongs here.
+
   # --- Module 17.1 — risk-budgeted weight construction (Section 9.2) ------
   #
   # The three leaves below parameterise `compute_risk_parity_weights`. They are
@@ -1633,6 +1655,59 @@ risk:
       `min_fractional_divisor`: the divisor bounds how much of full Kelly may be
       taken, while this bounds how small the resulting notional may be before
       the thesis stops being actionable.
+
+  # --- the Tier-1 risk WARNING thresholds (Section 21.2 Step 5) ------------
+  #
+  # The three estimators in `models/risk.py` (`historical_var`,
+  # `expected_shortfall`, `marginal_risk_contributions`) each carry a heuristic
+  # threshold that decides whether a warning is published. They shipped as bare
+  # literals in the function bodies (`< 5`, `> 1.5`, `> 1.25`) and move here for
+  # the reason `vol_target_reflexivity_scale` did: each is a POLICY number, not
+  # a mechanical constant, so a change to the standard is a reviewable diff.
+  #
+  # The first has teeth beyond a warning: it also sets
+  # `ConfidenceInputs.data_quality_flags_present`, so the literal was lowering
+  # the PUBLISHED CONFIDENCE of every `historical_var` result — the §22.8 class.
+  historical_var_min_tail_observations_value:
+    value: 5.0
+    # An EXPECTED COUNT of observations (n * (1 - confidence)), not a fraction.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Expected tail observations below which `historical_var` warns that its
+      quantile is read off too few points to be an estimate. At 95% confidence a
+      100-observation window leaves 5, which is the boundary; a 30-observation
+      window at 99% leaves 0.3 — an extrapolation from less than one point.
+
+      Illustrative because nothing in the data says 5 is where a sample becomes
+      trustworthy; what it does establish is that the flag must be POSITIVE (a
+      zero floor never fires) and small, since the whole 99% tail of a realistic
+      window is single-digit. The value is a `_value` leaf and the reader is
+      `historical_var_min_tail_observations`.
+  expected_shortfall_heavy_tail_ratio_value:
+    value: 1.5
+    # A MULTIPLE (ES / VaR), not a fraction.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      `ES / VaR` above which `expected_shortfall` warns that the tail is heavy
+      relative to its boundary. A normal tail sits close to 1; a book whose mean
+      loss past VaR is half again the VaR threshold is one where a VaR-only
+      report materially understates the expected loss.
+
+      Illustrative: 1.5 is a judgement about when the gap becomes material, not
+      a calibrated crisis feature. It must be > 1.0 because ES >= VaR by the
+      coherence of the measure, so a threshold at 1 or below fires always.
+  risk_contribution_overweight_multiple_value:
+    value: 1.25
+    # A MULTIPLE of the notional share, not a fraction of 1.
+    calibration_status: uncalibrated_illustrative
+    note: >
+      A position whose RISK share exceeds this multiple of its NOTIONAL share is
+      surfaced by `marginal_risk_contributions` as contributing more risk than
+      its size suggests. A 25% margin is the point where the divergence is a
+      finding rather than rounding noise — the concentration the function exists
+      to expose.
+
+      Illustrative; must be > 1.0 or every position flags.
 
   # --- Section 17.1 — Monte Carlo VaR (the Tier-5 REPLACEMENT) -------------
   #
@@ -2279,10 +2354,20 @@ minsky:
 # WHAT THE PROBE FOUND (2026-09-17, DGS2/DGS10 1976-06..2026-09 vs USREC,
 # 592 months with a COMPLETE 12-month forward window):
 #
-#   depth is MONOTONE      -0..-25bp 0.412   -25..-50bp 0.391
-#                          -50..-100bp 0.567  -100bp+   0.857
-#   duration is HUMP-SHAPED  0-4wk 0.400   4-13wk   0.333   13-26wk 0.444
-#                            26-52wk 0.750  >=52wk   0.409
+#   depth is MONOTONE      -0..-25bp 0.412   -25..-50bp 0.417
+#                          -50..-100bp 0.552  -100bp+   0.857
+#   duration is HUMP-SHAPED  0-4wk 0.250   4-13wk 0.286   13-26wk 0.412
+#                            26-52wk 0.769  >=52wk 0.520
+#
+# ⚠️ Every number above is RE-MEASURED from scripts/live_inversion_check.py
+# (re-run 2026-09-29), which is the same script the leaf notes below cite. This
+# block comment previously carried a DIFFERENT set for both tables — depth
+# 0.412/0.391/0.567/0.857 and duration 0.400/0.333/0.444/0.750/0.409 — from an
+# earlier probe run. That stale copy claimed depth was non-monotone (0.412 >
+# 0.391) while the leaf note 20 lines below correctly reported it monotone, so
+# the two contradicted each other inside one file (Class G: a decision-record
+# literal that is not the measured value). The live script is authoritative;
+# `test_the_config_bucket_tables_match_the_live_probe` pins these to it.
 #
 # The duration turning point matters: the >=52-week bucket is dominated by the
 # 2022-2024 inversion (~107 weeks), which has NOT yet been followed by a
@@ -2865,17 +2950,29 @@ regime:
       because it is ONE threshold appearing in two tests -- two entries could
       drift apart and open a gap no rule covers.
 
-  late_expansion_output_gap_min:
-    value: 1.0
-    calibration_status: uncalibrated_illustrative
-    note: Section 6.2's literal (`output_gap > 1.0`).
-
-  disinflation_output_gap_max:
-    value: 0.5
-    calibration_status: uncalibrated_illustrative
-    note: >
-      Section 6.2's literal, the upper bound of the near-trend band
-      `-0.5 <= output_gap <= 0.5`.
+  # --- the TWO specification gap literals this grid SUPERSEDES --------------
+  #
+  # Section 6.2 writes FOUR output-gap thresholds:
+  #
+  #     output_gap < -1.5            -> recession        [recession_output_gap_max]
+  #     output_gap < -0.5            -> stagflation      [weak_growth_output_gap_max]
+  #     output_gap > 1.0             -> late_expansion   <-- SUPERSEDED
+  #     -0.5 <= output_gap <= 0.5    -> disinflation      <-- SUPERSEDED
+  #
+  # The last two are NOT config leaves, deliberately (D-132). The specification's
+  # own chain can reach only six of its nine declared states; the grid corrected
+  # that by deciding `late_expansion` and `disinflation` on the INFLATION-MOMENTUM
+  # axis (plus the `growth_momentum_band_pp` hysteresis strip), not on the gap
+  # crossing 1.0 or leaving 0.5. The shipped classifier returns `late_expansion`
+  # for any gap past the momentum band with rising momentum, and `disinflation`
+  # for any such gap with falling momentum.
+  #
+  # MEASURED 2026-09-29 (D-132): when these two were declared as `CalibratedValue`
+  # leaves, moving them (1.0 -> 5.0 and 0.5 -> 0.05) changed NO classification --
+  # yet both gated the published confidence through `_thresholds_calibrated()`.
+  # A leaf that no rule reads but that still moves the confidence is a disclosure
+  # that cannot fire, so the leaves were removed and these literals are recorded
+  # here instead. Their absence is the correction; the record is this comment.
 
   # --- the inflation-momentum side ---------------------------------------
   #
@@ -4256,6 +4353,38 @@ fx_carry:
       genuinely long-run valuation view. Calibrating it means measuring the
       half-life of real exchange-rate deviations from absolute PPP, which needs
       the same long real-rate panel `ppp_reliability_cap` would need.
+  ppp_implausible_deviation_pct:
+    value: 100.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The `|deviation_pct|` above which `ppp_valuation` publishes a DATA-CHECK
+      warning: a purchasing-power gap this wide is far more often a UNIT or
+      QUOTE-CONVENTION ERROR — a transposed pair, a rate passed where a level was
+      expected — than a market state.
+
+      ⚠️ THIS WAS A BARE `100.0` LITERAL IN THE FUNCTION BODY (D-132). Section 21
+      requires every tunable judgement to be a config leaf, and every OTHER
+      boundary in this module already is: the notable/extreme CIP bands, the
+      carry-vol floor, the VIX gate, the sign boundary, the tactical horizon.
+      The data-check gate was the sole exception — a threshold that decides
+      whether a PUBLISHED disclosure appears, coupled to no leaf, so a
+      re-measurement of "what gap is implausible" had nowhere to live. It now
+      follows the established `implausible_*` convention already used by
+      `yield_curve.implausible_long_end_inversion_bp` in this file.
+
+      ⚠️ IT GATES A WARNING, NEVER A LABEL OR A REFUSAL. The `status`
+      (overvalued/undervalued/at_parity) and the `deviation_pct` are computed
+      and published unchanged whatever this leaf is: the four-figure gap is a
+      well-defined number a caller may legitimately want, and the discipline is
+      to SURFACE the likely data error, not to suppress the call (Section 21.4 —
+      the same posture `ppp_tactical_horizon_years` takes).
+
+      ⚠️ THE UNIT IS PERCENT DEVIATION, matching `deviation_pct`'s own unit. The
+      value is the specification's own illustration and is NOT calibrated: a real
+      calibration would measure the distribution of genuine absolute-PPP gaps
+      across pairs, which needs the long price-level panel `ppp_reliability_cap`
+      would need — so the warning is priced into nothing and claims only "this is
+      more likely an input error than a valuation", never a probability.
 # ---------------------------------------------------------------------------
 # Module 9's intervention asymmetry (Section 20.9). Section 20.9's reference
 # implementation hardcodes two confidences (`0.8` / `0.7`) and both capacity

@@ -980,6 +980,12 @@ def metals_complex_divergence(inputs: MetalsComplexInputs) -> ModelResult:
     taken FROM and not only the label — a bare label over unreported inputs is
     the D-037 shape (a reader cannot tell what produced it).
 
+    ``direction`` is derived from the SIGN of the three moves (all down ->
+    ``restrictive``, all up -> ``expansionary``, a genuine mix -> ``neutral``),
+    **never from the verdict label** — see :func:`_direction_for` for the measured
+    defect this replaces, in which an all-falling complex published
+    ``"expansionary"`` whenever its pattern was ``MIXED``.
+
     Raises ``ValueError`` only when **a leg cannot be resolved and none was
     supplied**. All three are inputs to the pattern, so a missing leg is not a
     weaker verdict — it is a different pattern, and the function refuses rather
@@ -1052,6 +1058,7 @@ def metals_complex_divergence(inputs: MetalsComplexInputs) -> ModelResult:
         aluminum_band_pct=metals.aluminum_band_pct,
         broad_weakness_threshold_pct=metals.broad_weakness_threshold_pct,
     )
+    direction = _direction_for(copper=copper, iron_ore=iron_ore, aluminum=aluminum)
     # --- confidence: two producers, both load-bearing (D-118/D-119 rule) -----
     # ⚠️ MULTIPLICATIVE, NOT `min()`. The computed half prices THIS run's inputs
     # (how many legs were fetched); the cap states what the METHOD is worth (a
@@ -1141,7 +1148,7 @@ def metals_complex_divergence(inputs: MetalsComplexInputs) -> ModelResult:
         },
         confidence=confidence,
         unit="driver_classification",
-        direction=("expansionary" if verdict == "MIXED_no_clear_pattern" else "restrictive"),
+        direction=direction,
         source_family=(
             EvidenceSourceFamily.MARKET_COMMODITY
             if fetched_legs > 0
@@ -1202,6 +1209,46 @@ def _classify_metals(
     if broad_industrial:
         return "BROAD_INDUSTRIAL_WEAKNESS"
     return "MIXED_no_clear_pattern"
+
+
+def _direction_for(*, copper: float, iron_ore: float, aluminum: float) -> str:
+    """The economic direction of the complex, from the SIGN of the three moves.
+
+    ⚠️ THIS IS A FIX (audit finding D-131, Class B). The published direction used
+    to be ``"expansionary" if verdict == "MIXED_no_clear_pattern" else
+    "restrictive"`` — derived from the VERDICT LABEL rather than from the data.
+    That made the label BLINDER THAN THE STATE SET it describes (lesson 5ew): a
+    ``MIXED`` verdict is a statement that the *pattern* is unclear, which is
+    orthogonal to which way the metals moved. Measured before the fix
+    (2026-09-29): ``copper=-1.0, iron_ore=-0.5, aluminum=-1.0`` — EVERY metal
+    falling — published ``direction="expansionary"``; and ``copper=-1.9,
+    iron_ore=-0.1, aluminum=-1.9`` did too. A consumer reading the direction as
+    a growth signal took an expansionary call from an all-falling complex.
+
+    The fix DERIVES the direction from the three changes themselves, so the
+    published label can never contradict the inputs:
+
+    * every metal below zero -> ``"restrictive"`` (a broad contraction in the
+      benchmark complex);
+    * every metal above zero -> ``"expansionary"``;
+    * a genuine mix of signs -> ``"neutral"``, which ``ModelResult.direction``
+      explicitly permits ("'expansionary', 'restrictive', 'neutral'"). ``neutral``
+      is the correct claim for a complex whose members disagree — the honest
+      reading of "no clear direction", not an expansionary one.
+
+    A value exactly ``0.0`` is treated as non-negative (``>= 0``) for the rising
+    test and as not-below-zero for the falling test, so a flat metal makes the
+    falling test fail and the rising test pass: three flat metals read
+    ``"expansionary"``, which is the pre-existing behaviour for the all-flat
+    case and is defensible — a flat complex is not contracting.
+    """
+    all_falling = copper < 0.0 and iron_ore < 0.0 and aluminum < 0.0
+    all_rising = copper >= 0.0 and iron_ore >= 0.0 and aluminum >= 0.0
+    if all_falling:
+        return "restrictive"
+    if all_rising:
+        return "expansionary"
+    return "neutral"
 
 
 def _resolve_metal_leg(

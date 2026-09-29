@@ -126,8 +126,6 @@ _SYNTHETIC_BREAK_1MO = -0.03
 _SYNTHETIC = RegimeSettings(
     recession_output_gap_max=_leaf(-2.0),
     weak_growth_output_gap_max=_leaf(-0.75),
-    late_expansion_output_gap_min=_leaf(1.25),
-    disinflation_output_gap_max=_leaf(0.6),
     neutral_inflation_trend_band_pp=_leaf(0.2),
     growth_momentum_band_pp=_leaf(0.35),
     measured_rising_inflation_rate=_leaf(0.775),
@@ -1433,3 +1431,88 @@ def test_severity_is_a_string_not_a_dict_entry() -> None:
     assert isinstance(result.value, dict)
     assert result.value["severity"] in TRILEMMA_SEVERITIES
     assert as_float(result, key="depletion_threshold_3mo") < 0.0
+
+
+# ---------------------------------------------------------------------------
+# 6. Section 3-4 reasoning object (D-132)
+# ---------------------------------------------------------------------------
+
+
+#: ``unit`` and ``direction`` are `str | None` on ``ModelResult``.
+_REASONING_SCALAR_FIELDS = ("unit", "direction")
+#: The four list-valued reasoning fields; empty ``[]`` is the "not supplied" default.
+_REASONING_LIST_FIELDS = (
+    "assumptions",
+    "data_provenance",
+    "limitations",
+    "decision_prohibition",
+)
+
+
+def test_the_reasoning_object_is_populated_d132() -> None:
+    """D-132: every Section 3-4 field is SUPPLIED, not left at its honest default.
+
+    This function previously published NONE of them, while
+    ``classify_regime_rule_based`` and ``classify_regime_markov_switching`` in
+    the same module populate every one — an unequal application of the contract
+    that no gate could see, because every field on ``ModelResult`` defaults to
+    a defensible "not supplied". A blanking edit therefore looks exactly like
+    an honest omission.
+
+    The assertion is on **populated-ness, not on prose**: the point is that the
+    field is no longer ``None``/``[]``. This is the mover's structural half; the
+    behavioural half is the sign/escalation tests above.
+    """
+    result = check_trilemma_tension(_inputs(**_BW_CONFLICT))
+
+    for field in _REASONING_SCALAR_FIELDS:
+        value = getattr(result, field)
+        assert value is not None, f"{field} left at its 'not supplied' default (D-132)"
+        assert value.strip(), f"{field} is blank (D-132)"
+
+    # `decision_relevance` is the one scalar required to be a non-empty string.
+    assert result.decision_relevance is not None, "decision_relevance left unset (D-132)"
+    assert result.decision_relevance.strip(), "decision_relevance is blank (D-132)"
+
+    for field in _REASONING_LIST_FIELDS:
+        value = getattr(result, field)
+        assert value, f"{field} left at its empty default (D-132)"
+
+    # The prohibition is the load-bearing list: it must carry the "not a
+    # probability" restriction, because the severity vocabulary reads as
+    # probabilistic and is not.
+    joined = " ".join(result.decision_prohibition)
+    assert "probability" in joined, "the 'not a probability' prohibition is missing"
+
+
+def test_the_reasoning_object_is_produced_for_every_severity() -> None:
+    """The reasoning object is not a special case of one branch.
+
+    A patch applied only to the ``CRITICAL_PEG_STRESS`` path would satisfy the
+    test above while leaving ``NO_TENSION`` — the severity every supported (US)
+    run actually returns — undocumented. This drives the fallthrough branch too.
+    """
+    # NO_TENSION: the US default — the dollar floats, no leg is claimed.
+    no_tension = check_trilemma_tension(_inputs(has_fixed_or_managed_fx=False))
+    assert as_str(no_tension, key="severity") == "NO_TENSION"
+    assert no_tension.unit is not None
+    assert no_tension.direction is not None
+    assert no_tension.decision_relevance is not None
+    assert no_tension.assumptions
+    assert no_tension.limitations
+    assert no_tension.decision_prohibition
+
+    # CRITICAL_PEG_STRESS: all three legs + conflict + the acute 1-month break.
+    # (The shipped 3-month threshold is -10%; Black Wednesday's own month reads
+    # -5.37% on it and does NOT breach — the -7.25% 1-month reading does, which
+    # is the whole reason the second threshold exists. See the file docstring.)
+    critical = check_trilemma_tension(
+        _inputs(**_BW_CONFLICT, reserves_trend_pct_change_1mo=_BW_1MO)
+    )
+    assert as_str(critical, key="severity") == "CRITICAL_PEG_STRESS"
+    assert critical.unit is not None
+    assert critical.direction is not None
+    assert critical.decision_relevance is not None
+    assert critical.assumptions
+    assert critical.limitations
+    assert critical.decision_prohibition

@@ -816,6 +816,24 @@ def _risk_settings(**overrides: object) -> RiskSettings:
         "thesis_demotion_fraction_value": CalibratedValue(
             value=0.03, calibration_status="uncalibrated_illustrative"
         ),
+        # D-131's three Tier-1 risk WARNING thresholds. Same reason as the entry
+        # above: `RiskSettings` requires every leaf, so each explicit
+        # construction must carry them too.
+        "historical_var_min_tail_observations_value": CalibratedValue(
+            value=5.0, calibration_status="uncalibrated_illustrative"
+        ),
+        "expected_shortfall_heavy_tail_ratio_value": CalibratedValue(
+            value=1.5, calibration_status="uncalibrated_illustrative"
+        ),
+        "risk_contribution_overweight_multiple_value": CalibratedValue(
+            value=1.25, calibration_status="uncalibrated_illustrative"
+        ),
+        # D-132's rebalancing sum tolerance. Same reason as the entries above:
+        # `RiskSettings` requires every leaf, so each explicit construction must
+        # carry it too.
+        "rebalancing_contribution_sum_tolerance_value": CalibratedValue(
+            value=0.01, calibration_status="mechanical_rule"
+        ),
         # D-106's Monte Carlo block: a nested settings object, not a bare
         # `CalibratedValue`, so it cannot be written as a literal here with the
         # rest. Passed through from the shipped tree — this builder is only

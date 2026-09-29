@@ -534,12 +534,23 @@ def check_rebalancing_drift(
         )
 
     total_actual = sum(current_contributions.values())
-    if current_contributions and abs(total_actual - 1.0) > 0.01:
+    # The tolerance is a config leaf (`risk.rebalancing_contribution_sum_tolerance`)
+    # and not the bare `0.01` it shipped as. It is the SAME class of number as
+    # `risk.rebalancing_drift` six lines up: a judgement about how far off a
+    # *stated* invariant an input may be before it is worth warning about, and
+    # therefore a policy number Section 21 keeps out of the function body. A
+    # literal here is also invisible to the sweep — `mutation_rebalancing.py`'s
+    # M9.3 deletes the whole branch (`if False:`), so a mutant that MOVES the
+    # bound survives every test (the D-031 shape: a value read from config and a
+    # retyped literal are indistinguishable without a mover).
+    sum_tolerance = settings.risk.rebalancing_contribution_sum_tolerance
+    if current_contributions and abs(total_actual - 1.0) > sum_tolerance:
         warnings.append(
-            f"Current contributions sum to {total_actual:.4f}, not 1.0. Risk "
-            f"contributions are SHARES of total portfolio risk, so a set that does "
-            f"not sum to 1 is either partial or not shares at all (dollar amounts, "
-            f"say) — and against fractional targets every dollar figure 'drifts'."
+            f"Current contributions sum to {total_actual:.4f}, not 1.0 (within "
+            f"{sum_tolerance}). Risk contributions are SHARES of total portfolio "
+            f"risk, so a set that does not sum to 1 is either partial or not shares "
+            f"at all (dollar amounts, say) — and against fractional targets every "
+            f"dollar figure 'drifts'."
         )
 
     outcome: RebalancingOutcome = "rebalance" if drifted else "balanced"

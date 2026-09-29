@@ -1766,15 +1766,59 @@ def test_metals_the_result_carries_its_contract_fields() -> None:
     ]
 
 
-def test_metals_the_direction_is_expansionary_only_when_mixed() -> None:
-    mixed = metals_complex_divergence(
+def test_metals_the_direction_is_derived_from_the_signs_not_the_verdict() -> None:
+    """``direction`` follows the metal SIGNS, never the verdict label (D-131).
+
+    This test REPLACES one that asserted ``mixed.direction == "expansionary"``
+    for the all-positive ``(1, 1, 1)`` fixture — the verdict label happened to
+    coincide with an expansionary sign there, which hid the defect. The old rule
+    (``"expansionary" if MIXED else "restrictive"``) published ``"expansionary"``
+    for an ALL-FALLING complex whose pattern was merely ``MIXED``: measured with
+    ``copper=-1.0, iron_ore=-0.5, aluminum=-1.0`` (every metal down) before the
+    fix. A label derived from the verdict is BLINDER than the state set (5ew).
+
+    The guard drives both a falling-MIXED case and a rising-MIXED case, so a
+    regression to the label-derived rule fails here.
+    """
+    # MIXED *and* all-falling: must read restrictive, NOT expansionary.
+    falling_mixed = metals_complex_divergence(
+        _metals_inputs(copper_change_pct=-1.0, iron_ore_change_pct=-0.5, aluminum_change_pct=-1.0)
+    )
+    assert falling_mixed.value["verdict"] == "MIXED_no_clear_pattern"
+    assert falling_mixed.direction == "restrictive"
+
+    # MIXED *and* all-rising: expansionary, the case the old test happened to hit.
+    rising_mixed = metals_complex_divergence(
         _metals_inputs(copper_change_pct=1.0, iron_ore_change_pct=1.0, aluminum_change_pct=1.0)
     )
+    assert rising_mixed.value["verdict"] == "MIXED_no_clear_pattern"
+    assert rising_mixed.direction == "expansionary"
+
+    # MIXED with a genuine mix of signs: NEUTRAL, which is the honest reading.
+    mixed_signs = metals_complex_divergence(
+        _metals_inputs(copper_change_pct=0.5, iron_ore_change_pct=-0.5, aluminum_change_pct=0.0)
+    )
+    assert mixed_signs.value["verdict"] == "MIXED_no_clear_pattern"
+    assert mixed_signs.direction == "neutral"
+
+    # The two FIRING verdicts are NOT automatically restrictive — the direction
+    # follows the signs, exactly as for MIXED. BROAD_INDUSTRIAL_WEAKNESS here has
+    # every metal falling, so it reads restrictive.
     broad = metals_complex_divergence(
         _metals_inputs(copper_change_pct=-5.0, iron_ore_change_pct=-6.0, aluminum_change_pct=-4.0)
     )
-    assert mixed.direction == "expansionary"
+    assert broad.value["verdict"] == "BROAD_INDUSTRIAL_WEAKNESS"
     assert broad.direction == "restrictive"
+
+    # CHINA_CONSTRUCTION_SPECIFIC: iron ore collapses while aluminum RISES, so the
+    # signs genuinely DISAGREE and the honest reading is NEUTRAL — not restrictive.
+    # A verdict-derived direction would have published "restrictive" here purely
+    # from the label, which is the defect this test replaces.
+    construction = metals_complex_divergence(
+        _metals_inputs(copper_change_pct=-4.0, iron_ore_change_pct=-9.0, aluminum_change_pct=0.5)
+    )
+    assert construction.value["verdict"] == "CHINA_CONSTRUCTION_SPECIFIC"
+    assert construction.direction == "neutral"
 
 
 def test_metals_the_value_carries_every_reading() -> None:

@@ -191,7 +191,13 @@ _MISSING = (
 )
 
 # --- risk_budget.py, the share-basis warning -------------------------------
-_SUM_WARNING = "    if current_contributions and abs(total_actual - 1.0) > 0.01:"
+#
+# D-132 moved the tolerance from a bare ``> 0.01`` to a config leaf, so the
+# anchors are re-pointed at the new two-line form. The leaf is READ on the line
+# above the comparison, which is what ``M9.6`` below mutates to prove the read
+# is live.
+_SUM_TOLERANCE_READ = "    sum_tolerance = settings.risk.rebalancing_contribution_sum_tolerance"
+_SUM_WARNING = "    if current_contributions and abs(total_actual - 1.0) > sum_tolerance:"
 _TOTAL_ACTUAL = "    total_actual = sum(current_contributions.values())"
 
 # --- risk_budget.py, the outcome literal and the branch that sets it -------
@@ -243,7 +249,7 @@ _WARNING_MAINTENANCE = (
 )
 _WARNING_UNBUDGETED = "    if unbudgeted:"
 _WARNING_MISSING = "    if missing:"
-_WARNING_SUM = "    if current_contributions and abs(total_actual - 1.0) > 0.01:"
+_WARNING_SUM = "    if current_contributions and abs(total_actual - 1.0) > sum_tolerance:"
 
 # --- risk_budget.py, the contract / identity / confidence ------------------
 _MODEL_NAME = '        model_name="rebalancing_drift_check",'
@@ -704,6 +710,14 @@ def _warning_mutations() -> list[tuple[str, Path, str, str]]:
     ``M9.3`` deletes the sum-to-one warning, which is the ONLY thing that tells
     a caller their dollar figures were read as shares. The arithmetic beneath it
     is unchanged, so a test that only checks the drift rows cannot kill it.
+
+    ``M9.6`` and ``M9.7`` close the gap D-132 found in THIS sweep: before the
+    fix the bound was a bare ``0.01``, and ``M9.3`` replaced the whole branch —
+    so a mutant that MOVED the bound (rather than deleting the branch) survived
+    every test and this sweep. ``M9.6`` retypes the leaf read back to a literal
+    (the D-031 shape: only a **mover** test can tell a config read from a retyped
+    literal) and ``M9.7`` hardcodes a *wrong* bound in its place. Both must die
+    on ``test_the_sum_warning_bound_is_read_from_the_leaf_not_a_literal``.
     """
     return [
         (
@@ -733,6 +747,18 @@ def _warning_mutations() -> list[tuple[str, Path, str, str]]:
             SRC,
             _WARNING_MISSING,
             "    if False:",
+        ),
+        (
+            "M9.6 the sum tolerance is retyped as a bare literal (the config read is dropped)",
+            SRC,
+            _SUM_TOLERANCE_READ + "\n" + _SUM_WARNING,
+            _SUM_WARNING.replace("sum_tolerance", "0.01"),
+        ),
+        (
+            "M9.7 the sum tolerance is hardcoded to a WRONG bound (0.5, wider than the deviation)",
+            SRC,
+            _SUM_TOLERANCE_READ,
+            "    sum_tolerance = 0.5",
         ),
     ]
 

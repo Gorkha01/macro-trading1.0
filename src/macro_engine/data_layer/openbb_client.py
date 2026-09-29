@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 from math import isfinite
 from typing import Any
 
@@ -685,7 +685,33 @@ class OpenBBClient:
 
 
 def to_observation_date(value: object) -> date:
-    """Coerce a provider date value to ``datetime.date``."""
+    """Coerce a provider date value to a ``datetime.date`` — ALWAYS a real date.
+
+    The defect this replaces (``docs/CODE_REVIEW_PHASE0-4.md`` item 3.10, R-4)
+    was the classic ``datetime``-is-a-``date`` trap, and it was measured rather
+    than assumed:
+
+        to_observation_date(datetime(2026, 9, 29, 13, 45)) -> datetime(...)   # WRONG
+        to_observation_date(pd.Timestamp("2026-09-29"))   -> Timestamp(...)   # WRONG
+
+    Both leak the input through unchanged, violating the ``-> date`` contract,
+    because ``isinstance(datetime, date)`` is ``True`` and
+    ``isinstance(pd.Timestamp, date)`` is ``True`` — the guard tested the
+    BROADEST type first and returned the value it matched. A downstream
+    consumer comparing against a bare ``date`` (the ``as_of`` filter, the
+    release lookup) would silently hold a time-bearing object.
+
+    The ordering below is the one ``snapshot_builder._points_from_frame`` uses
+    (``pd.Timestamp`` tested BEFORE ``date``): the most-derived type first, then
+    the plain ``date``, then a last-resort parse. That guarantees a genuine
+    ``datetime.date`` out, with any time component dropped rather than carried.
+    """
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    if isinstance(value, datetime):
+        # `datetime` is a `date` subclass, so it must be caught before the
+        # `date` branch below or the time component would ride along.
+        return value.date()
     if isinstance(value, date):
         return value
     return pd.Timestamp(value).date()  # type: ignore[arg-type]

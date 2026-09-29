@@ -355,9 +355,45 @@ def run_regression(
             f"y:{y.name if y.name is not None else 'unnamed'}",
             *(f"X:{name}" for name in x_frame.columns),
         ],
+        # --- Section 3/4 reasoning object (D-132) ---------------------------
+        # Added by D-132: `data_provenance` and `decision_relevance` were
+        # published by NONE of this module's five functions, and `unit` was
+        # absent here specifically. What a coefficient is measured in, and what
+        # downstream gate consumes it, are the two things a reader cannot
+        # recover from the numbers — and every field defaults to an honest
+        # "not supplied", so the omission was invisible.
+        #
+        # `direction` is deliberately LEFT UNSET: `value` is a coefficient MAP,
+        # so there is no single direction the output moves in — the sign is per
+        # regressor, and inventing one direction would assert an ordering the
+        # estimator does not have (the same reasoning `dollar_smile_regime`
+        # gives for its categorical partition).
+        unit=(
+            "coefficient units are (unit of y) per (unit of the named regressor); "
+            "value is the coefficient map, keyed by regressor name"
+        ),
         warnings=warnings,
         assumptions=[f"Mechanism hypothesised before fitting: {mechanism}"],
+        data_provenance=[
+            "y and every column of X are SERIES SUPPLIED BY THE CALLER, aligned "
+            "and date-matched by the caller. Section 15.18 makes this module "
+            "fetch nothing, so it cannot verify the vintages, the alignment, or "
+            "that either side is actually the quantity its name claims.",
+            "A single dataset supplies every input: y and each regressor come "
+            "from the same sample, so there is no independent corroboration to "
+            "credit and `source_independence_count` is 0 (Module 13's census).",
+        ],
         limitations=_limitations(),
+        decision_relevance=(
+            "Section 15.18's mechanism gate: the measurement step a stated "
+            "economic hypothesis must clear BEFORE a thesis may lean on it. It "
+            "carries the mechanism under test onto the record (in "
+            "`assumptions`), so a later reader can see whether the relationship "
+            "was hypothesised or data-mined. Its verdict is conditioned by "
+            "`test_stationarity` — a fit on non-stationary levels is spurious — "
+            "and it is the estimator `test_cointegration`'s Engle-Granger step "
+            "reuses."
+        ),
         decision_prohibition=[
             "Do not read a fitted coefficient as a causal effect. OLS on "
             "observational macro data identifies a conditional association under "
@@ -493,8 +529,52 @@ def test_stationarity(series: pd.Series) -> ModelResult:
             f"({'constant only' if regression == 'c' else 'constant and linear trend'})."
         ),
         inputs_used=[f"series:{name}"],
+        # --- Section 3/4 reasoning object (D-132) ---------------------------
+        # D-132: this function published NONE of `unit`, `direction`,
+        # `assumptions`, `data_provenance` or `decision_relevance` — five of the
+        # seven fields — while its siblings published most of them. A verdict
+        # like `inconclusive_low_power` is uninterpretable without knowing that
+        # it is a SAMPLE property, on which data, under what nulls.
+        unit=(
+            "categorical (stationarity verdict label: 'stationary' | "
+            "'non_stationary' | 'inconclusive_conflict' | 'inconclusive_low_power')"
+        ),
+        # `direction` is deliberately LEFT UNSET: the value is a verdict, and
+        # two of the four verdicts are inconclusive — there is no direction the
+        # output moves in that a "stationary vs not" flag could honestly carry.
+        assumptions=[
+            "The series is a SINGLE, correctly-ordered time series at a constant "
+            "frequency. Neither test can see a gap, a duplicated period, or an "
+            "irregular spacing — the verdict is a statement about the sample as "
+            "ordered, not about an economic quantity.",
+            "ADF's null is a unit root and KPSS's null is stationarity — the two "
+            "nulls are INVERTED, so agreement (not the size of either p-value) is "
+            "what a confident verdict rests on.",
+            "The deterministic specification is the same for both tests and is "
+            "the configured `adf_regression` ('c' = constant only, or 'ct' = "
+            "constant and linear trend). A trend-stationary series tested under "
+            "'c' is the textbook false non-rejection.",
+            "The lag selection is the configured rule (`adf_autolag` for ADF; "
+            "KPSS's own `nlags`), and the p-values are read at the configured "
+            "`significance_level`.",
+        ],
+        data_provenance=[
+            f"series:{name} — SUPPLIED BY THE CALLER as an already-aligned "
+            f"pandas Series. This module fetches nothing (Section 6/15.18), so it "
+            f"cannot verify the series' definition, vintage, or frequency.",
+        ],
         warnings=warnings,
         limitations=_stationarity_limitations(),
+        decision_relevance=(
+            "Section 15.18's stationarity gate, and the precondition "
+            "`run_regression` names in its own prohibitions: a significant "
+            "coefficient on a non-stationary level regression is the spurious "
+            "regression the module exists to refuse. A `non_stationary` verdict "
+            "is the trigger for the difference/cointegrate decision that "
+            "`test_cointegration` resolves — differencing discards the level "
+            "information cointegration depends on, which is why this verdict must "
+            "be read before either is chosen."
+        ),
         decision_prohibition=[
             "Do not treat a `stationary` verdict as a property of the economic "
             "relationship. This tests ONE series over ONE window; a unit root is "
@@ -724,7 +804,30 @@ def test_cointegration(
             "tested here; run test_stationarity on each level first.",
             f"The relationship is estimated with deterministic terms '{trend}'.",
         ],
+        # --- Section 3/4 reasoning object (D-132) ---------------------------
+        # D-132: `data_provenance` and `decision_relevance` were published by no
+        # function in this module; the direction is left unset because the value
+        # is a test verdict (reject/fail-to-reject), not a signed quantity.
+        data_provenance=[
+            "y and x are SERIES SUPPLIED BY THE CALLER, already aligned and "
+            "date-matched. This module fetches nothing, so it cannot verify "
+            "either level's definition or vintage, and the whole test is only as "
+            "meaningful as the two series being the economic quantities their "
+            "names claim.",
+            "Both legs come from the same sample, so `source_independence_count` "
+            "is 0 — a cointegrating relationship between two series from one "
+            "dataset has no independent corroboration to credit (Module 13).",
+        ],
         limitations=_cointegration_limitations(),
+        decision_relevance=(
+            "Section 15.18's cointegration gate, and the resolution of the "
+            "difference-versus-cointegrate choice `test_stationarity` leaves "
+            "open: two I(1) series that are cointegrated must NOT be differenced "
+            "independently, because differencing discards the level information "
+            "the equilibrium relationship lives in. It replaces the plain "
+            "regression for a pair, and its published spread and half-life are "
+            "the mean-reversion inputs a pairs thesis is conditioned on."
+        ),
         decision_prohibition=[
             "Do not read a rejected null as a tradable spread. This statistic "
             "describes the sample window; it is not a forecast that the spread "
@@ -1030,7 +1133,33 @@ def compute_pca(daily_changes: pd.DataFrame, n_components: int = 3) -> ModelResu
             f"weights each series by its own variance; the correlation route "
             f"gives every series equal weight regardless of scale.",
         ],
+        # --- Section 3/4 reasoning object (D-132) ---------------------------
+        # D-132: `data_provenance` and `decision_relevance` were published by no
+        # function in this module. `direction` is left unset: a component is a
+        # DIRECTION in the panel's own space, but the published quantity is the
+        # set of components and their shares — a single `direction` field would
+        # have to pick one component and assert it, which the estimator does not.
+        data_provenance=[
+            "The panel is a DataFrame of DAILY CHANGES SUPPLIED BY THE CALLER "
+            "with one column per series. This module fetches nothing, so it "
+            "cannot verify the panel really holds changes (see "
+            "`_pca_panel_suspicion`, which only scores the shape), nor the "
+            "definition or vintage of any column.",
+            "All columns come from the same panel, so `source_independence_count` "
+            "is 0 — the components are a description of ONE dataset, not a "
+            "relationship corroborated across independent sources (Module 13).",
+        ],
         limitations=_pca_limitations(),
+        decision_relevance=(
+            "Section 15.20-F's factor-extraction step. It is the dimensional "
+            "reduction a multi-series view is built on — how many independent "
+            "moves actually drive a panel, and what each is made of — and its "
+            "published ratios are the share-of-variance evidence a factor thesis "
+            "cites. It supersedes nothing: it describes structure in a panel "
+            "rather than testing a hypothesis about it, so it PAIRS with the "
+            "hypothesis tests (a regression on the extracted components still "
+            "needs its mechanism gate)."
+        ),
         decision_prohibition=[
             "MUST NOT label the components level/slope/curvature, or any other "
             "name. The labels are an interpretation of the loadings, and an "
@@ -2144,7 +2273,35 @@ def kalman_latent_state(observations: pd.DataFrame, state_dim: int = 1) -> Model
         inputs_used=_kalman_inputs_used(spec, column_names),
         warnings=warnings_,
         assumptions=_kalman_assumptions(spec, column_names),
+        # --- Section 3/4 reasoning object (D-132) ---------------------------
+        # D-132: `data_provenance` and `decision_relevance` were published by no
+        # function in this module. `direction` is left unset: the state is a
+        # LEVEL (r*, potential GDP) or a ratio, and the filter reports a path
+        # with a band — it does not move the underlying quantity in one
+        # direction, so a `direction` field would be a claim the estimator does
+        # not make.
+        data_provenance=[
+            "`observations` is a DataFrame SUPPLIED BY THE CALLER, one column "
+            "per observed series, already aligned and date-ordered. This module "
+            "fetches nothing, so it cannot verify the definition or vintage of "
+            "any column, and the latent state is only as meaningful as the "
+            "observed series being the quantity the specification presumes.",
+            "Every observed column comes from the same dataset, so "
+            "`source_independence_count` is 0 — the state estimate is fitted to "
+            "ONE sample and has no independent corroboration to credit "
+            "(Module 13).",
+        ],
         limitations=_kalman_limitations(),
+        decision_relevance=(
+            "Section 15.20-F's unobservable-state estimator, and the one place "
+            "the build reads an unobservable directly: r*, potential GDP, and a "
+            "cointegrated pair's time-varying hedge ratio are its three named "
+            "uses, so it is the input a Taylor-rule gap, an output-gap measure, "
+            "or a dynamic-hedge thesis consumes. Its published band and the "
+            "filtered-vs-smoothed distinction are part of that consumption — the "
+            "filtered state is the real-time one and the smoothed state is "
+            "look-ahead-biased."
+        ),
         decision_prohibition=[
             "MUST NOT present the filtered state as observed truth, and MUST NOT "
             "drop the band when reporting it. `r*`, potential GDP and a "

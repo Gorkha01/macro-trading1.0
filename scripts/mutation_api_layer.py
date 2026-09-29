@@ -300,7 +300,15 @@ _POLICY_FALLBACK = """            )
 
 #: ``_short_yield_from_curve``'s magnitude check — the only thing standing
 #: between a basis-point value and a market-implied policy path of 430%.
-_YIELD_RANGE = "    if not 0.0 < value < 25.0:"
+#:
+#: D-132: the ceiling moved from a re-typed ``25.0`` literal to the config leaf
+#: ``validation.max_yield`` (``validation.max_plausible_yield_pct``), which
+#: ``data_layer/validation.py`` also reads. The anchor below is the SHIPPED text
+#: (``check_targets`` verifies it verbatim); the literal form is now a MUTANT —
+#: see M1.3b, which re-types the leaf back to ``25.0`` and is killed only by the
+#: D-031 mover ``test_the_yield_ceiling_is_taken_from_config_not_a_literal``.
+_YIELD_CEILING_READ = "    max_yield = get_settings().validation.max_yield"
+_YIELD_RANGE = "    if not 0.0 < value < max_yield:"
 
 #: ``_claims_4wk_change``'s minimum. Eight is not a style choice: four recent
 #: plus four prior, with no overlap.
@@ -600,6 +608,23 @@ def build_mutations() -> list[Mutation]:
                 "market-implied path by 100x and produces a gap of thousands of "
                 "bp — loud in the response, but only after it has been computed "
                 "and published. Killed by test_a_basis_point_curve_is_refused."
+            ),
+        ),
+        Mutation(
+            group="M1",
+            name="M1.3b the yield ceiling is re-typed as a literal instead of read",
+            path=ORCH,
+            old=_YIELD_CEILING_READ,
+            new="    max_yield = 25.0  # MUTANT: a second definition of the leaf",
+            intent=(
+                "D-132/D-031. The ceiling is READ from ``validation.max_yield`` at "
+                "the call site so one bound has one definition; this mutant re-types "
+                "``25.0`` — the very form that shipped before D-132 — which passes "
+                "the shipped-value refusal test and even a 425.0 pinner, so ONLY a "
+                "MOVer catches it. Killed by "
+                "test_the_yield_ceiling_is_taken_from_config_not_a_literal, which "
+                "moves the leaf to 4.0 and asserts the same 4.25 snapshot now "
+                "refuses. A pinner cannot tell a leaf-read from a re-typed literal."
             ),
         ),
         Mutation(

@@ -88,8 +88,6 @@ def _leaf(value: float | int) -> CalibratedValue:
 _SYNTHETIC = RegimeSettings(
     recession_output_gap_max=_leaf(-2.0),
     weak_growth_output_gap_max=_leaf(-0.75),
-    late_expansion_output_gap_min=_leaf(1.25),
-    disinflation_output_gap_max=_leaf(0.6),
     neutral_inflation_trend_band_pp=_leaf(0.2),
     growth_momentum_band_pp=_leaf(0.35),
     # Distinct from every other leaf AND from the shipped 0.9375, so a property
@@ -379,8 +377,11 @@ def test_the_below_trend_disinflating_zone_is_the_slowdown_we_recover() -> None:
 # 3. Each band boundary, built by ADDITION (D-029)
 # ---------------------------------------------------------------------------
 
-# With the synthetic config: recession < -2.0, weak < -0.75, disinflation <= 0.6,
-# late >= 1.25, neutral momentum band 0.2, growth momentum band 0.35.
+# With the synthetic config: recession < -2.0, weak < -0.75, neutral momentum
+# band 0.2, growth momentum band 0.35. The specification's two superseded gap
+# literals (``> 1.0`` for late_expansion, the ``-0.5..0.5`` disinflation band)
+# are NOT config leaves -- the grid decides those states on the momentum axis
+# (D-132).
 
 
 def test_growth_band_boundaries_are_exclusive_at_the_stated_edge() -> None:
@@ -510,6 +511,106 @@ def test_every_grid_cell_maps_to_the_stated_state(
             )
             == expected
         )
+
+
+def test_every_regime_gap_leaf_actually_decides_a_classification() -> None:
+    """No declared band leaf is DEAD: moving each one must move a label (D-132).
+
+    The specification declares FOUR output-gap thresholds, but its own chain can
+    reach only six of nine states, and the corrected grid decides
+    ``late_expansion`` / ``disinflation`` on the inflation-momentum axis rather
+    than on the gap crossing ``1.0`` or leaving the ``-0.5..0.5`` band. So the
+    spec's last two gap literals are SUPERSEDED, and an earlier version declared
+    them anyway as ``CalibratedValue`` leaves — where they decided nothing yet
+    still gated the published confidence through ``_thresholds_calibrated``.
+
+    This is the guard that makes that un-repeatable. It is a MOVER test (D-031),
+    not a pinner: for each live leaf it swaps in a variant (via
+    ``_PatchedSettings``) whose value would change the outcome IF any branch
+    read it, and asserts the label moves. A leaf that no branch reads survives
+    every swap and fails here — which is exactly the signature the removed pair
+    had (MEASURED: 1.0 -> 5.0 and 0.5 -> 0.05 changed no classification).
+    """
+
+    def _variant(**leaf_overrides: float) -> RegimeSettings:
+        return _SYNTHETIC.model_copy(
+            update={
+                name: _leaf(value)
+                for name, value in leaf_overrides.items()
+                if name in RegimeSettings.model_fields
+            }
+        )
+
+    def _label(gap: float, trend: float, settings: RegimeSettings) -> str:
+        with _PatchedSettings(settings):
+            return _state(output_gap=gap, inflation_trend_3m=trend)
+
+    # `weak_growth_gap` = -0.75 synthetic. A gap of -0.9 is contraction; raise
+    # the threshold above -0.9 and the same gap becomes above_trend.
+    baseline = _label(-0.9, -1.0, _SYNTHETIC)
+    assert baseline == "slowdown", "fixture drift: the baseline is not the contraction cell"
+    moved = _label(-0.9, -1.0, _variant(weak_growth_output_gap_max=-0.95))
+    assert moved != baseline, (
+        "moving weak_growth_output_gap_max did not change the label — the leaf is dead"
+    )
+
+    # `recession_output_gap_max` = -2.0 synthetic. A gap of -1.5 is slowdown;
+    # lower the recession threshold to -1.0 and the same gap is a recession.
+    baseline = _label(-1.5, -1.0, _SYNTHETIC)
+    assert baseline == "slowdown", "fixture drift: -1.5 is not the contraction cell"
+    moved = _label(-1.5, -1.0, _variant(recession_output_gap_max=-1.0))
+    assert moved == "recession", (
+        "moving recession_output_gap_max did not change the label — the leaf is dead"
+    )
+
+    # `growth_momentum_band_pp` = 0.35 synthetic. A gap of +0.3 with flat
+    # momentum is mid_expansion (inside the band); shrink the band below 0.3 and
+    # the same gap is outside it, where flat momentum reads reflation.
+    baseline = _label(+0.3, 0.0, _SYNTHETIC)
+    assert baseline == "mid_expansion", "fixture drift: +0.3 flat is not mid_expansion"
+    moved = _label(+0.3, 0.0, _variant(growth_momentum_band_pp=0.1))
+    assert moved == "reflation", (
+        "moving growth_momentum_band_pp did not change the label — the leaf is dead"
+    )
+
+    # `neutral_inflation_trend_band_pp` = 0.2 synthetic. At a gap INSIDE the
+    # momentum band, momentum +0.15 is FLAT (inside the 0.2 neutral band) and
+    # the state is mid_expansion; NARROW the neutral band below 0.15 and the
+    # same reading is rising, so the state becomes reflation.
+    baseline = _label(+0.2, +0.15, _SYNTHETIC)
+    assert baseline == "mid_expansion", "fixture drift: +0.15 is not inside the 0.2 neutral band"
+    moved = _label(+0.2, +0.15, _variant(neutral_inflation_trend_band_pp=0.05))
+    assert moved == "reflation", (
+        "moving neutral_inflation_trend_band_pp did not change the label — the leaf is dead"
+    )
+
+
+def test_the_superseded_gap_literals_are_not_config_leaves() -> None:
+    """The two spec gap literals the grid supersedes are ABSENT, not dead (D-132).
+
+    Asserted structurally rather than behaviourally: the whole point of the fix
+    is that no leaf exists to move. A regression that re-adds
+    ``late_expansion_output_gap_min`` or ``disinflation_output_gap_max`` as a
+    leaf fails here immediately, before it can become a second disclosure that
+    cannot fire.
+    """
+    declared = set(RegimeSettings.model_fields)
+    assert "late_expansion_output_gap_min" not in declared, (
+        "the superseded late_expansion gap literal is declared again; the grid "
+        "decides late_expansion on the momentum axis, so this leaf would read no branch"
+    )
+    assert "disinflation_output_gap_max" not in declared, (
+        "the superseded disinflation gap literal is declared again; the grid "
+        "decides disinflation on the momentum axis, so this leaf would read no branch"
+    )
+    # And the four that DO decide the grid are present.
+    for name in (
+        "recession_output_gap_max",
+        "weak_growth_output_gap_max",
+        "neutral_inflation_trend_band_pp",
+        "growth_momentum_band_pp",
+    ):
+        assert name in declared, f"the live band leaf {name!r} is missing"
 
 
 def test_recovery_requires_the_gap_to_be_closing() -> None:
@@ -987,12 +1088,10 @@ def test_config_bands_must_be_ordered() -> None:
     nothing — the branches simply overlap and one state disappears. The
     validator turns that into a startup error.
     """
-    with pytest.raises(ValueError, match="not strictly ordered"):
+    with pytest.raises(ValueError, match="not ordered"):
         RegimeSettings(
             recession_output_gap_max=_leaf(-0.5),
             weak_growth_output_gap_max=_leaf(-1.5),
-            late_expansion_output_gap_min=_leaf(1.0),
-            disinflation_output_gap_max=_leaf(0.5),
             neutral_inflation_trend_band_pp=_leaf(0.1),
             growth_momentum_band_pp=_leaf(0.25),
             measured_rising_inflation_rate=_leaf(0.775),
@@ -1008,8 +1107,6 @@ def test_negative_half_width_band_is_rejected() -> None:
         RegimeSettings(
             recession_output_gap_max=_leaf(-1.5),
             weak_growth_output_gap_max=_leaf(-0.5),
-            late_expansion_output_gap_min=_leaf(1.0),
-            disinflation_output_gap_max=_leaf(0.5),
             neutral_inflation_trend_band_pp=_leaf(0.1),
             growth_momentum_band_pp=_leaf(-0.25),
             measured_rising_inflation_rate=_leaf(0.775),
