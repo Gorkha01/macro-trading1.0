@@ -21616,3 +21616,117 @@ clean re-run of `mutation_statement_text.py` left no sidecar at all. **Standing 
 every sweep, `find src -name '*.sweepbackup'` **beside** the `git status` check; `diff` each survivor vs
 its live file (IDENTICAL ⇒ inert, remove; DIFFERENT ⇒ live mutation, restore from it). Recorded as
 **O-158**.
+
+---
+
+## D-130 — the **Phase 0–4 LAYER audit's** findings FIXED to production grade, plus **TWO new defects found by the fix pass itself** (four snapshots series silently erased; the same series fetched by no build), a **dead public helper removed**, and a **bare horizon literal** promoted to a named constant
+
+**Date:** 2026-09-29 (session clock). **Trigger:** the operator's *"another agent does the audit but i
+think it doesn't understand … **you do audit and fixes** of defects, bugs, logic, math, reasonings,
+values, inputs and realworld thinking all form start to finish all."* The audit itself is
+`docs/AUDIT_PHASE04_LAYERS_FINDINGS.md` (Part 1, audit-only); this decision is the **fix pass**
+(Part 2) plus the new cards the fixes exposed. **Scope:** the `src/` layers the Tier-5 and Phase 0–4
+models passes did **not** cover — `data_layer/`, `thesis_layer/`, `api_layer/`, root. **NO new OpenBB
+command** (census stays 6). **NO config leaf added** (one config *list* gained two members).
+
+### 1. The findings carried in from Part 1, all fixed
+
+| # | File | Class | Fix |
+|---|---|---|---|
+| X-L1 / D-1 | `api_layer/app.py` | F | `configure_logging()` had **zero callers**; added a `@asynccontextmanager` `_lifespan` wired via `lifespan=_lifespan`, so `config/logging.yaml` is applied when the app is SERVED |
+| X-L2 | `api_layer/snapshot_provider.py`, `data_layer/schemas.py`, `data_layer/validation.py` | G | three false "flags reduce confidence" disclosures corrected to state the per-model boolean that `compute_confidence` actually reads |
+| D-2 | `data_layer/publication_dates.py` | H | docstring's filter claim corrected (two real conditions; `status` deliberately not consulted) |
+| D-3 | `data_layer/validation.py` | E + G | dead `out_of_range` counter removed; module docstring's confidence claim corrected |
+| D-4 | `data_layer/reserves_client.py` | H + E | module docstring corrected (the model converts, not this module); dead `OUTPUT_UNIT` removed (its VALUE neighbour `MILLIONS_PER_BILLION` left untouched — swept live by `R6a`) |
+
+Proven killers: the lifespan guard fails if `lifespan=_lifespan` is removed (hand-run); `mutation_intervention.py` **60/60** and `mutation_lei_proxy.py` **37/37** still kill after the D-4/D-3 edits.
+
+### 2. NEW DEFECT **P-1** — `persistence.py` silently ERASED four series from every snapshot
+
+`long_frame_from_snapshot` iterates `SCALAR_SERIES_FIELDS` / `CURVE_SERIES_FIELDS` /
+`MAPPING_SERIES_FIELDS` and **nothing else**, so a schema scalar field absent from those tuples is
+written by no path and read by no path — **silently erased, no error**. Measured pre-fix:
+`SCALAR_SERIES_FIELDS` held **20** names vs **24** schema scalar series; `fed_total_assets`,
+`reserve_balances`, `ppi_stage_crude`, `ppi_stage_intermediate` were missing, and a snapshot populating
+all four round-tripped to **ZERO rows**. **Fixed:** added all four (now 24). The existing coverage test
+asserted only `declared ⊆ schema` (catches a *typo*) and never `schema_series_fields ⊆ declared`
+(catches *data loss*) — rewritten to assert **both** directions, plus a new round-trip **effect** test.
+
+### 3. NEW DEFECT **P-2** — the P-1 fix EXPOSED a second defect in the same chain, the exact `gdi` class
+
+With P-1 fixed, `test_every_scalar_snapshot_field_is_in_the_bootstrap_fetch_list` — the guard written
+for the historical `gdi` defect — **failed**, naming `ppi_stage_crude` and `ppi_stage_intermediate`.
+Both were `verified`, resolvable, **not** `not_a_snapshot_field`, present on `MacroDataSnapshot` — but
+**absent from `snapshot_fields.us`**, the ONLY list `build_snapshot` iterates. So `setattr` was never
+reached and each snapshot carried two permanently empty stage series; `ppi_pipeline_signal` had no
+snapshot data path. **Fixed:** added both to `snapshot_fields.us` (26 fields). **Scope honesty:**
+`ppi_pipeline_signal` is **not** yet wired into `build_us_macro_thesis` (a known Phase-5 boundary,
+D-096), so this is a **precondition** for that wiring, not the wiring.
+
+**The decisive measurement — the old guard was BLIND to the real pre-fix tree:**
+
+| tree state | old `bootstrap_fetch_list` | NEW registry-driven guard |
+|---|---|---|
+| both P-1 and P-2 reverted | **PASSES (blind)** | **FAILS**, names both |
+| fixed | passes | passes |
+
+Because the old guard iterates `SCALAR_SERIES_FIELDS`, and the fields were in *neither* that tuple nor
+the fetch list, they were outside its iteration set entirely — which is why the defect survived every
+gate for the module's whole life. New guard: `test_every_snapshot_field_registry_entry_is_actually_fetched`,
+**registry-driven** (the only complete enumeration), membership by registry **KEY** (a target-based
+version was measured to false-positive on `treasury_curve` → `yield_curve`).
+
+### 4. CARD **B-1** — a bare horizon literal beside its named neighbour
+
+`builder.py` held `timeframe="6-12 months"` **two lines below** `sizing_logic=SIZING_LOGIC_PHASE_1` in
+the same call — one field to the named-constant standard, its neighbour not — while the
+`SIZING_LOGIC_PHASE_1` comment states the exact hazard (*"a re-typed string at a call site is the drift
+this project has measured repeatedly"*). Promoted to `THESIS_TIMEFRAME_PHASE_1`; two guard tests added;
+**guard proven a killer** by re-typing the literal. **⚠️ The constant does NOT fix the structural gap:**
+the horizon is a **free-text `str`**, never parsed into a numeric holding period, and **O-75 already
+records** that "a stated thesis-timeframe convention … does not exist yet." Recorded, not improvised.
+
+### 5. CARD **D-5** — a dead public helper with a false activity claim
+
+`alfred_client.isoformat_or_none` had the docstring *"used by callers building log lines"* and **zero
+callers** repo-wide (`src/`, `scripts/`, `tests/` — definition only), and is absent from `__all__`.
+**Removed**, with the now-unused `datetime` import (ruff flagged it the moment its only user vanished).
+Same Class E+H shape as the `OUTPUT_UNIT` / `out_of_range` removals. `describe_route` was **kept and
+verified live** — its stated purpose (route-distinctness) IS asserted at
+`test_alfred_client.py:229`.
+
+### 6. O-157 and O-158 both REPRODUCED, and O-158's recorded premise CORRECTED
+
+* **O-157 reproduced.** A background `mutation_api_layer.py` run was killed after ~13 min; the tree
+  then showed `routes_query.py` modified — a file this session never touched — with **no `MUTANT`
+  marker**; `git diff` showed a real mutation (`is_keyword_routing` `default=True` → `False`). Repaired
+  via `git checkout HEAD --`. Confirms O-157: *clean-looking tree + no marker + no sidecar is NOT
+  evidence of a clean tree.*
+* **O-158 reproduced, and its premise corrected.** `mutation_lei_proxy.py` exited **0** with
+  **37/37 killed** and left **four** `.sweepbackup` sidecars, all **byte-identical** to their live
+  files. **The ledger says the sweep "prints NO refusal WARNING" and calls that "the part that
+  contradicts the contract" — MEASURED, that is WRONG.** The sweep printed **four** explicit
+  `WARNING: could not remove the sidecar <name>.sweepbackup` lines; the contract at
+  `_sweep_gate.py:381–426` was **honored** (a refused delete IS loud). The earlier "silence" was an
+  artifact of reading a truncated `tail`. What remains true: the sidecars are real, all four share a
+  near-identical mtime, `sweep_health.py` correctly reports `OK` (content-equal sidecars are not
+  *mutations*), and a green health check is therefore **not** evidence that no sidecar remains.
+  **Standing probe reaffirmed:** `find src -name '*.sweepbackup'` after EVERY sweep, `diff` each vs its
+  live file.
+
+### 7. Gates (all green, quiescent)
+
+`ruff check` **PASS** (repo-wide) · `ruff format --check` **292 files** · `mypy --strict` **79 source
+files** · full suite **4110 tests / 0 failures / 0 errors / 1 skipped** (junitxml) · sweeps:
+`mutation_builder.py` **18/18** (1 survivor = the documented CONTROL), `mutation_intervention.py`
+**60/60**, `mutation_lei_proxy.py` **37/37** · `tools/sweep_health.py` **OK** (**52 sweeps**, 0
+leftovers).
+
+**Files changed:** `config/settings.yaml`, `src/macro_engine/api_layer/app.py`,
+`src/macro_engine/api_layer/snapshot_provider.py`, `src/macro_engine/data_layer/persistence.py`,
+`src/macro_engine/data_layer/publication_dates.py`, `src/macro_engine/data_layer/reserves_client.py`,
+`src/macro_engine/data_layer/schemas.py`, `src/macro_engine/data_layer/validation.py`,
+`src/macro_engine/data_layer/alfred_client.py`, `src/macro_engine/thesis_layer/builder.py`,
+`tests/api_layer/test_routes.py`, `tests/data_layer/test_phase1_data_layer.py`,
+`tests/thesis_layer/test_builder_strictness.py`. **New deliverable:**
+`docs/AUDIT_PHASE04_LAYERS_FINDINGS.md`.

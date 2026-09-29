@@ -202,6 +202,27 @@ SIZING_LOGIC_PHASE_1 = (
     "Phase 1: human-determined; Phase 4+: fractional_kelly(scenarios, confidence)"
 )
 
+#: The Phase-1 thesis horizon sentence. A module constant for the SAME reason
+#: its neighbour above is one (audit finding B-1, 2026-09-29): it was a bare
+#: ``"6-12 months"`` literal at the ``TradeIdea`` call site, which is exactly the
+#: re-typed-string drift the ``SIZING_LOGIC_PHASE_1`` comment warns about — and
+#: the two sit two lines apart in the same call, so the standard was applied to
+#: one field and missed on its neighbour. Named here so a guard test can assert
+#: the call site binds the NAME (``test_the_horizon_is_used_not_re_typed``).
+#:
+#: ⚠️ **This is a disclosure-bearing STRING, not a structured horizon, and that
+#: is a known open gap — not something this constant fixes.** O-75 records that
+#: "a stated thesis-timeframe convention … does not exist yet", and §16.4's spec
+#: writes a free-text ``timeframe``. Measured: ``TradeIdea.timeframe`` is a bare
+#: ``str`` defaulting to ``"n/a"``, and the only consumers
+#: (``portfolio/risk_budget.py:2932/2938``) INTERPOLATE it into prose and copy it
+#: onto ``PositionSize.timeframe`` — nothing parses it into a numeric holding
+#: period. So a backtest or a sizing model that wants a horizon in days has no
+#: machine-readable value to read; it must be given a real field (and a
+#: convention) first. Promoting the literal to a constant removes the *drift*
+#: defect and makes the gap single-sourced; it does NOT invent the convention.
+THESIS_TIMEFRAME_PHASE_1 = "6-12 months"
+
 #: The thesis-id prefix, so an id is legible in a log without a lookup.
 THESIS_ID_PREFIX = "us"
 
@@ -993,7 +1014,7 @@ def build_us_macro_thesis(
         trade_idea=TradeIdea(
             instrument=instrument,
             direction=_direction_for(selection, gap),
-            timeframe="6-12 months",
+            timeframe=THESIS_TIMEFRAME_PHASE_1,
             sizing_logic=SIZING_LOGIC_PHASE_1,
             stop_or_invalidation=invalidation.text,
             catalysts=list(catalysts),

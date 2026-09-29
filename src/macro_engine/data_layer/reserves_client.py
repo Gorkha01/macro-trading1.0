@@ -27,12 +27,14 @@ country, monthly, in **millions of US dollars**:
 
 **The unit is the trap and it is named everywhere it appears.** ``TRESEGJPM052N``
 reads ``1083420.49``, which is USD 1.083 **trillion** — the number is in millions,
-and a reader who takes it at face value is off by 1000x. The model's contract is
-**billions**, so the conversion happens here, once, and both the source unit and
-the conversion are named on the returned disclosure. A 1000x error in a reserve
-stock produces a plausible-looking figure at either scale, which is exactly the
-silent class the registry's ``source_units`` field exists to prevent — this
-module performs the equivalent conversion rather than delegating it to a reader.
+and a reader who takes it at face value is off by 1000x. Both the source unit and
+the fact that no conversion was applied are named on the returned disclosure, and
+the **model performs the conversion** (``models/intervention.py`` divides by
+``MILLIONS_PER_BILLION``), deliberately *not* here: a client that returns a
+pre-converted number hides which unit it read, and with a factor of 1000 between
+the two units the conversion is exactly where a defect would hide. A 1000x error
+in a reserve stock produces a plausible-looking figure at either scale, which is
+the silent class the registry's ``source_units`` field exists to prevent.
 
 What this module is NOT
 -----------------------
@@ -95,17 +97,19 @@ RESERVE_SERIES: dict[str, tuple[str, str]] = {
     "chn": ("TRESEGCNM052N", "china"),
 }
 
-#: The engine's unit for a reserve stock, as it appears on the model's output.
-#: Named here so the conversion below and the field description cannot drift.
+#: The unit the PROVIDER returns a reserve stock in, as declared on the reading.
+#: The engine's own unit is ``billions`` and the conversion is performed by the
+#: MODEL (``models/intervention.py``), not here — see the class docstring on
+#: ``ReservesReading`` for why the source unit is what crosses this boundary.
 SOURCE_UNIT = "millions of USD"
-OUTPUT_UNIT = "billions of USD"
 
-#: The divisor between the two, named rather than typed as a bare ``1000.0`` in
-#: the model's conversion expression — a mutation that changes the exponent then
-#: has to change THIS constant, which is a difference a test can see. It is the
-#: single source of truth for the 1000x step, imported by the model so the two
-#: cannot drift apart; the sweep's ``I9a``/``I9b`` mutations pin the model's use
-#: of it and ``R6a`` pins the value here.
+#: The divisor between the source unit (millions) and the engine's unit
+#: (billions), named rather than typed as a bare ``1000.0`` in the model's
+#: conversion expression — a mutation that changes the exponent then has to
+#: change THIS constant, which is a difference a test can see. It is the single
+#: source of truth for the 1000x step, imported by the model so the two cannot
+#: drift apart; the sweep's ``I9a``/``I9b`` mutations pin the model's use of it
+#: and ``R6a`` pins the value here.
 MILLIONS_PER_BILLION = 1000.0
 
 #: How many monthly observations the twelve-month change is measured over. The

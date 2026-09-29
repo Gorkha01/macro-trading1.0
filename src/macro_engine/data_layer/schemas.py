@@ -346,7 +346,16 @@ class MacroDataSnapshot(BaseModel):
         description=(
             "Section 5.4, 'flag, don't fix'. Every anomaly found by "
             "data_layer/validation.py is appended here. Never silently dropped, "
-            "never silently corrected. Fed into compute_confidence()."
+            "never silently corrected.\n\n"
+            "IMPORTANT (measured 2026-09-29): this list is NOT what "
+            "compute_confidence() reads. That function takes a per-model BOOLEAN "
+            "(ConfidenceInputs.data_quality_flags_present) which each model sets "
+            "from its OWN inputs, and no model populates it from this snapshot-"
+            "level list — so a flagged snapshot does not automatically lower any "
+            "model's confidence. A consumer that must degrade confidence on a "
+            "flagged snapshot has to do so explicitly. (A prior version of this "
+            "description said 'Fed into compute_confidence()', which was false — "
+            "audit finding X-L2.)"
         ),
     )
     field_sources: dict[str, str] = Field(

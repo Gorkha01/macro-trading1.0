@@ -1140,3 +1140,80 @@ def test_terminator_survives_a_raise_from_the_error_path_itself(
     assert any(frame.strip() == "data: [DONE]" for frame in frames), (
         "the terminator was skipped because the error message could not be built"
     )
+
+
+# --------------------------------------------------------------------------
+# The lifespan installs the configured logging tree (audit fix X-L1 / D-1)
+# --------------------------------------------------------------------------
+
+
+def test_the_app_lifespan_installs_the_json_formatter() -> None:
+    """Serving the app applies ``config/logging.yaml`` — measured, not assumed.
+
+    Before the fix, ``configure_logging()`` had ZERO callers repo-wide, so the
+    ``JsonFormatter`` named in ``logging.yaml`` was never installed and the
+    service logged unstructured output while the spec (§10.3) mandated JSON.
+    The defect was invisible to every gate because the formatter itself is
+    correct and well-tested — only its *installation* was missing.
+
+    This asserts the EFFECT (a handler on ``macro_engine`` carrying the
+    ``JsonFormatter``), not that ``configure_logging`` was called: a test that
+    patched the function would pass on a version that called it and then
+    clobbered the handlers. The record is emitted through the tree and parsed
+    back as JSON, which is the property the mandate actually promises.
+    """
+    import json as _json
+    import logging
+
+    from macro_engine.data_layer.logging_json import JsonFormatter
+
+    logger = logging.getLogger("macro_engine")
+    # The test process may have started without any handler; empty it so the
+    # assertion cannot be satisfied by a pre-existing one.
+    saved = list(logger.handlers)
+    logger.handlers.clear()
+    try:
+        with TestClient(create_app()):
+            handler = logger.handlers[0] if logger.handlers else None
+            assert handler is not None, (
+                "the lifespan did not install any handler on the 'macro_engine' logger"
+            )
+            assert isinstance(handler.formatter, JsonFormatter), (
+                "the installed formatter is not the JsonFormatter named in logging.yaml"
+            )
+
+            record = logging.LogRecord(
+                name="macro_engine.test",
+                level=logging.INFO,
+                pathname=__file__,
+                lineno=1,
+                msg="audit probe",
+                args=(),
+                exc_info=None,
+            )
+            payload = _json.loads(handler.formatter.format(record))
+            assert payload["message"] == "audit probe"
+    finally:
+        logger.handlers.clear()
+        logger.handlers.extend(saved)
+
+
+def test_building_an_app_without_serving_it_does_not_touch_the_root_logger() -> None:
+    """``create_app()`` alone must NOT install the process-global logging config.
+
+    This is the negative control for the test above. The config is applied in
+    the lifespan, not at construction, because ~20 tests build an app object and
+    never serve it — if construction mutated the root logger, every one of them
+    would run under a logging config it never asked for. Without this control,
+    "the fix" could be satisfied by moving the call back into ``create_app``,
+    and the resulting test-isolation damage would be invisible.
+    """
+    import logging
+
+    logger = logging.getLogger("macro_engine")
+    before = list(logger.handlers)
+    create_app()
+    assert logger.handlers == before, (
+        "create_app() installed a handler as a construction side effect; the "
+        "logging config belongs in the lifespan so unsaved apps stay untouched"
+    )

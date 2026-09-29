@@ -698,11 +698,22 @@ def test_snapshot_field_alias_is_resolvable() -> None:
 
 
 def test_persistence_field_lists_match_schema() -> None:
-    """Every persisted field must exist on the schema, and vice versa.
+    """Every persisted field must exist on the schema — AND every schema series
+    field must be persisted.
 
     The write and read paths previously held two parallel literal tuples; a
     field added to one and forgotten in the other would vanish from every
     snapshot with no error at all.
+
+    **BOTH directions are asserted (added 2026-09-29, audit finding P-1).** The
+    original test checked only ``declared - schema`` — that nothing persisted is
+    absent from the schema. It never checked the direction that loses data:
+    a *schema* field omitted from these tuples is silently erased, because
+    ``long_frame_from_snapshot`` iterates the tuples and nothing else. Measured
+    on the pre-fix tree: ``fed_total_assets``, ``reserve_balances``,
+    ``ppi_stage_crude`` and ``ppi_stage_intermediate`` were all declared,
+    populated and dropped — a snapshot carrying all four round-tripped to ZERO
+    rows, and no gate noticed.
     """
     from macro_engine.data_layer.persistence import (
         CURVE_SERIES_FIELDS,
@@ -712,8 +723,79 @@ def test_persistence_field_lists_match_schema() -> None:
     from macro_engine.data_layer.schemas import MacroDataSnapshot
 
     declared = set(SCALAR_SERIES_FIELDS) | set(CURVE_SERIES_FIELDS) | set(MAPPING_SERIES_FIELDS)
-    missing = sorted(declared - set(MacroDataSnapshot.model_fields))
-    assert not missing, f"persistence declares fields absent from the schema: {missing}"
+    fields = set(MacroDataSnapshot.model_fields)
+
+    absent_from_schema = sorted(declared - fields)
+    assert not absent_from_schema, (
+        f"persistence declares fields absent from the schema: {absent_from_schema}"
+    )
+
+    # The direction that catches silent data loss. Metadata fields are not
+    # series and are legitimately not persisted (they are snapshot-level, not
+    # observations), so they are excluded BY NAME — a blanket "everything must be
+    # persisted" would be wrong and would force a metadata field into the long
+    # frame.
+    non_series_fields = {
+        "country",
+        "as_of",
+        "decision_cutoff",
+        "data_quality_flags",
+        "field_sources",
+    }
+    series_fields = fields - non_series_fields
+    never_persisted = sorted(series_fields - declared)
+    assert not never_persisted, (
+        f"these schema series fields are absent from every persistence tuple and "
+        f"are therefore SILENTLY ERASED from every snapshot: {never_persisted}. "
+        f"Add each to SCALAR_SERIES_FIELDS / CURVE_SERIES_FIELDS / "
+        f"MAPPING_SERIES_FIELDS (or to the non-series exclusion set if it is "
+        f"genuinely metadata)."
+    )
+
+
+def test_every_scalar_series_field_survives_a_persistence_round_trip() -> None:
+    """A populated scalar field must come back populated (audit finding P-1).
+
+    The tuple-coverage test above is a *name* check; this one is an *effect*
+    check. It exists because a name check can be satisfied by a list that is
+    wrong in a way no name comparison sees, and because the pre-fix defect was
+    measured as total erasure (zero rows), not a partial one — every field in
+    ``SCALAR_SERIES_FIELDS`` is populated here and must return.
+    """
+    from datetime import UTC, date, datetime
+
+    from macro_engine.data_layer.persistence import (
+        SCALAR_SERIES_FIELDS,
+        long_frame_from_snapshot,
+        snapshot_from_long_frame,
+    )
+    from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
+
+    snapshot = MacroDataSnapshot(as_of=datetime(2026, 9, 29, tzinfo=UTC))
+    for name in SCALAR_SERIES_FIELDS:
+        setattr(
+            snapshot,
+            name,
+            [
+                ObservationPoint(
+                    observation_date=date(2026, 8, 1),
+                    value=123.0,
+                    series_id=name,
+                )
+            ],
+        )
+
+    frame = long_frame_from_snapshot(snapshot)
+    assert not frame.empty, (
+        "a snapshot with every scalar field populated persisted ZERO rows — the "
+        "persistence tuples do not cover the schema"
+    )
+
+    restored = snapshot_from_long_frame(frame)
+    for name in SCALAR_SERIES_FIELDS:
+        got = getattr(restored, name)
+        assert len(got) == 1, f"{name} was dropped by the persistence round-trip"
+        assert got[0].value == 123.0
 
 
 def test_every_scalar_snapshot_field_is_in_the_bootstrap_fetch_list() -> None:
@@ -746,6 +828,81 @@ def test_every_scalar_snapshot_field_is_in_the_bootstrap_fetch_list() -> None:
         f"fetched by the snapshot builder: {unfetched}. Either add them to "
         f"snapshot_fields.us in config/settings.yaml or remove them from "
         f"SCALAR_SERIES_FIELDS."
+    )
+
+
+def test_every_snapshot_field_registry_entry_is_actually_fetched() -> None:
+    """A registry entry that populates a snapshot field must be in the fetch list.
+
+    **Registry-driven companion to the test above (added 2026-09-29, audit
+    finding P-2).** The test above iterates ``SCALAR_SERIES_FIELDS`` — the
+    *persistence* tuple. That is the wrong direction to catch this defect class,
+    and the measurement proves it: ``ppi_stage_crude`` and
+    ``ppi_stage_intermediate`` were absent from *both* the persistence tuple and
+    ``snapshot_fields.us``, so the test's iteration set did not contain them and
+    it could not see them at all. The P-1 fix (adding them to
+    ``SCALAR_SERIES_FIELDS``) is what made the test above able to fail — a
+    genuine fix exposing a second defect behind it, not a regression.
+
+    The registry is the only complete enumeration. Every entry that resolves
+    into a real ``MacroDataSnapshot`` field is, by declaration, a series the
+    snapshot is *supposed* to carry; if it is not in ``snapshot_fields`` then no
+    build will ever ``setattr`` it, and its schema field stays empty forever.
+    The three states that make this legitimate are excluded, and each is a
+    declaration rather than an omission:
+
+    * ``not_a_snapshot_field: true`` — documentation-only (Module 7.3).
+    * a ``not_a_snapshot_field`` resolution that raises — same, at the
+      ``resolve_snapshot_field`` boundary.
+    * ``status`` other than ``verified`` — ``build_snapshot`` calls
+      ``require_verified`` and reports it as ``skipped_unverified``, which is an
+      explicit, visible absence. An *unverified* series is allowed to be
+      unfetched; a *verified* one is not.
+
+    Curve fields (``entry.tenors``) and explicit ``snapshot_field`` aliases are
+    included: they resolve to real schema attributes and are fetched from the
+    same list, so the same rule applies. The membership test is on the registry
+    KEY, because that is what the list holds — measured: a version comparing the
+    resolved target instead flagged ``treasury_curve`` (key) -> ``yield_curve``
+    (schema), which is fetched under its key.
+    """
+    from macro_engine.config import get_registry, get_settings
+    from macro_engine.data_layer.openbb_client import OpenBBFetchError
+    from macro_engine.data_layer.schemas import MacroDataSnapshot
+    from macro_engine.data_layer.snapshot_builder import resolve_snapshot_field
+
+    registry = get_registry()
+    fetched = set(get_settings().snapshot_fields["us"])
+
+    unaccounted: list[str] = []
+    for name, entry in registry.series.items():
+        if entry.not_a_snapshot_field or entry.status != "verified":
+            continue
+        try:
+            target = resolve_snapshot_field(name, entry)
+        except OpenBBFetchError:
+            # A not_a_snapshot_field boundary refusal: provenance-only.
+            continue
+        if target not in MacroDataSnapshot.model_fields:
+            # Belongs to test_snapshot_field_alias_is_resolvable, not here.
+            continue
+        # ``snapshot_fields`` names REGISTRY KEYS, not schema attributes:
+        # build_snapshot does ``get_registry().series.get(field_name)`` for each
+        # entry. ``treasury_curve`` (key) -> ``yield_curve`` (schema), and it is
+        # the key that must appear in the list. Comparing the resolved target
+        # instead would report every aliased entry as unaccounted — measured:
+        # it flagged ``treasury_curve`` even though it IS fetched.
+        if name not in fetched:
+            unaccounted.append(f"{name} (-> {target})")
+
+    assert not unaccounted, (
+        f"these registry entries are `verified`, resolve into a real "
+        f"MacroDataSnapshot field, and are NOT `not_a_snapshot_field`, yet are "
+        f"absent from snapshot_fields.us — so no snapshot build will ever "
+        f"populate them and their schema fields stay empty forever: "
+        f"{sorted(unaccounted)}. Either add each to snapshot_fields.us in "
+        f"config/settings.yaml, or declare it `not_a_snapshot_field: true` if it "
+        f"is genuinely provenance-only."
     )
 
 

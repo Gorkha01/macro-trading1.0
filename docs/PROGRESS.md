@@ -1,7 +1,39 @@
 # Build Progress
 
 **Live tracking file.** Updated in place at each milestone — never restarted.
-Last updated: **2026-09-29** (after **D-129 — the fresh Tier-5 RE-AUDIT's TWO DEFECTs fixed to
+Last updated: **2026-09-29** (after **D-130 — the Phase 0–4 LAYER audit's findings FIXED to production
+grade, plus TWO new defects the fix pass itself exposed.** Audit deliverable:
+**`docs/AUDIT_PHASE04_LAYERS_FINDINGS.md`** (Part 1 audit-only; Part 2 = the fix pass). Part-1 findings
+fixed: **X-L1/D-1** `configure_logging()` had **zero callers** → a `@asynccontextmanager` lifespan wired
+via `lifespan=_lifespan` (the §10.3 mandate now actually runs when the app is served); **X-L2** three
+false "flags reduce confidence" disclosures corrected (`snapshot_provider.py`, `schemas.py`,
+`validation.py`) to the per-model boolean `compute_confidence` really reads; **D-2** `publication_dates`
+docstring; **D-3** dead `out_of_range` counter removed; **D-4** `reserves_client` module docstring
+corrected + dead `OUTPUT_UNIT` removed (its VALUE neighbour `MILLIONS_PER_BILLION` untouched — swept
+live by `R6a`). **NEW DEFECT P-1 (Class C/F):** `persistence.SCALAR_SERIES_FIELDS` omitted
+`fed_total_assets`, `reserve_balances`, `ppi_stage_crude`, `ppi_stage_intermediate` — and
+`long_frame_from_snapshot` iterates the tuples and **nothing else**, so **four series were silently
+ERASED from every snapshot**; measured: a snapshot populating all four round-tripped to **ZERO rows**
+(20 → **24** fields; both test directions now asserted + a round-trip EFFECT test). **NEW DEFECT P-2,
+exposed BY the P-1 fix:** the same two PPI-stage series were absent from `snapshot_fields.us` — the
+ONLY list `build_snapshot` iterates — while being `verified`, resolvable, **not**
+`not_a_snapshot_field`, and present on `MacroDataSnapshot`: the **exact `gdi` class**, and
+`ppi_pipeline_signal` had no snapshot data path. **Decisive measurement:** with both defects present the
+old `bootstrap_fetch_list` guard **PASSED (blind)** — the fields were outside its iteration set — while
+the NEW registry-driven guard **FAILS and names both**; hence the defect survived every gate. **CARD
+B-1:** `timeframe="6-12 months"` was a bare literal two lines below `sizing_logic=SIZING_LOGIC_PHASE_1`
+in the same call → promoted to `THESIS_TIMEFRAME_PHASE_1` + two killer guards; **⚠️ the constant does
+NOT fix the structural gap** (the horizon is free-text, never parsed to a holding period — O-75 already
+records the missing convention). **CARD D-5:** dead public helper `alfred_client.isoformat_or_none`
+(zero callers, false "used by callers" docstring) **removed**. **O-157 reproduced** (a SIGTERM'd sweep
+left a live `routes_query.py` mutation with no marker) and **O-158 reproduced with its premise
+CORRECTED** — the sweep **does** print the four refusal WARNINGs (the earlier "silence" was a truncated
+`tail`), recorded as **O-159**. **NO src/ function added, NO config leaf added, NO new OpenBB command**
+(census stays 6). **Gates (quiescent):** `ruff check` PASS (repo-wide) · **292** formatted · `mypy
+--strict` **79 source files** · full suite **4110 tests / 0 failures / 0 errors / 1 skipped** (junitxml) · `mutation_builder.py`
+**18/18** (1 survivor = documented CONTROL) · `mutation_intervention.py` **60/60** ·
+`mutation_lei_proxy.py` **37/37** · `sweep_health.py` **52 sweeps · 0 leftovers · OK**.)
+Previous update: **2026-09-29** (after **D-129 — the fresh Tier-5 RE-AUDIT's TWO DEFECTs fixed to
 production grade**: `monte_carlo_var`'s `_uniform_correlation_stress` shipped **`min` where the
 contract says `max`** — the fallback stress CAPPED at the target, so a normal book (rho 0.3) under a
 0.9 stress kept 0.3 (**no correlation stress at all**, and the end-to-end ratio equalled the

@@ -101,7 +101,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 import httpx
@@ -454,13 +454,3 @@ def describe_route() -> dict[str, str]:
         "route": ROUTE_NAME,
         "host": FRED_HOST,
     }
-
-
-def isoformat_or_none(value: datetime | None) -> str | None:
-    """Small helper used by callers building log lines. ``None`` stays ``None``.
-
-    Exists so a caller never reaches for ``str(vintage_datetime)`` and prints
-    ``"None"`` as though it were a date — the same substitution this module's
-    callers are being fixed to stop making.
-    """
-    return None if value is None else value.isoformat()

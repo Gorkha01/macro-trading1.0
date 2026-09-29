@@ -28,6 +28,9 @@ implies a loopback bind.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,8 +42,37 @@ from macro_engine.api_layer import (
     routes_thesis,
 )
 from macro_engine.config import get_settings
+from macro_engine.data_layer.logging_json import configure_logging
 
 __all__ = ["create_app"]
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Apply the configured logging tree once, when the service starts.
+
+    Section 10.3 mandates structured JSON logging, and ``config/logging.yaml``
+    implements it — but measured 2026-09-29 the mandate was **declared and not in
+    effect**: ``configure_logging()`` (the only function that applies the YAML)
+    had **zero callers** anywhere in the repo, uvicorn was not started with
+    ``--log-config``, and this module had no startup hook, so the JSON formatter
+    never ran. A structured-logging spec whose formatter is never installed is a
+    spec that produces unstructured logs during exactly the incident it was
+    written for.
+
+    It is called in the **lifespan** rather than at ``create_app()`` time on
+    purpose: ``create_app`` is called by ~20 tests that build an app object and
+    never serve it, and applying a process-global logging config as a side effect
+    of construction would mutate the test process's root logger. The lifespan
+    runs only when the app is actually served (uvicorn, or ``TestClient`` used as
+    a context manager), which is the moment the config is meant to take effect.
+
+    A missing/invalid ``config/logging.yaml`` raises here (``configure_logging``
+    refuses rather than falling back to ``basicConfig``) — startup fails loudly
+    rather than serving with untrustworthy logs.
+    """
+    configure_logging()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -62,6 +94,7 @@ def create_app() -> FastAPI:
             "US-only through Phase 4 (Section 22.3). This service produces a "
             "MacroThesis; it does not place orders and it does not manage positions."
         ),
+        lifespan=_lifespan,
     )
 
     if settings.api.cors_origins:

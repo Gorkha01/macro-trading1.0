@@ -98,10 +98,26 @@ class PublicationDateError(Exception):
 def _resolve_series_symbols() -> dict[str, str]:
     """Registry series name -> provider symbol, for series that have one.
 
-    Curve entries (``tenors``) are skipped: a curve is not a single series and
-    has no one publication time, so attributing the first tenor's stamp to the
-    whole curve would be a fabricated fact. ``blocked``/``unverified`` entries
-    are skipped too, since a series the caller may not use does not need timing.
+    Two conditions, and only two:
+
+    * Curve entries (``tenors``) are skipped: a curve is not a single series and
+      has no one publication time, so attributing the first tenor's stamp to the
+      whole curve would be a fabricated fact.
+    * An entry with no ``symbol`` is skipped, because there is nothing to query.
+
+    ``status`` is **deliberately not consulted here** (measured 2026-09-29). An
+    earlier version of this docstring claimed ``blocked``/``unverified`` entries
+    were "skipped too"; they are not, and they do not need to be. Measured: the
+    registry declares **59** series and **every one is ``status: verified``**
+    (``grep -c "status: verified" config/series_registry.yaml`` → 59; the same
+    grep for ``unverified``/``blocked`` → 0), and ``blocked`` entries are not
+    carried in ``.series`` at all, so they are absent by construction rather
+    than by this filter. The sentence described an outcome that is true today
+    for a reason other than the code it named — the classic way a reader is
+    reassured about a guard that is not there. Should a route ever be re-pointed
+    to ``unverified``, **this function would still return its symbol** and the
+    fetch would raise at the boundary that owns that rule (Section 21.0 rule 5),
+    which is the correct place for the refusal.
     """
     resolved: dict[str, str] = {}
     for name, entry in get_registry().series.items():

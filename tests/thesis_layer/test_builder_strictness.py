@@ -392,6 +392,38 @@ def test_the_sizing_sentence_is_used_not_re_typed() -> None:
     assert "sizing_logic=SIZING_LOGIC_PHASE_1," in _function_source("build_us_macro_thesis")
 
 
+def test_the_horizon_is_used_not_re_typed() -> None:
+    """The Phase-1 horizon must be bound by NAME, not re-typed (audit finding B-1).
+
+    Measured 2026-09-29: ``timeframe="6-12 months"`` sat two lines below
+    ``sizing_logic=SIZING_LOGIC_PHASE_1`` in the SAME ``TradeIdea(...)`` call —
+    one field held to the named-constant standard and its neighbour not. The
+    comment on ``SIZING_LOGIC_PHASE_1`` names the exact hazard ("a re-typed
+    string at a call site is the drift this project has measured repeatedly"),
+    and it applied verbatim. This is the symmetry-breaking companion to the test
+    above: a mutation re-typing the horizon literal — or deleting the binding —
+    must fail here and nowhere else.
+    """
+    function_source = _function_source("build_us_macro_thesis")
+    assert "timeframe=THESIS_TIMEFRAME_PHASE_1," in function_source, (
+        "the thesis horizon is not bound by name; a bare '6-12 months' literal "
+        "at the call site is the drift the SIZING_LOGIC_PHASE_1 constant exists "
+        "to prevent"
+    )
+    assert '"6-12 months"' not in function_source, (
+        "the horizon literal appears at the call site as well as in the "
+        "constant — the constant is being bypassed"
+    )
+
+
+def test_the_horizon_constant_is_a_single_definition() -> None:
+    """One declaration, so the value cannot drift between two copies."""
+    assert SOURCE.count("THESIS_TIMEFRAME_PHASE_1 = ") == 1
+    from macro_engine.thesis_layer.builder import THESIS_TIMEFRAME_PHASE_1
+
+    assert THESIS_TIMEFRAME_PHASE_1 == "6-12 months"
+
+
 def test_every_public_name_is_reexported_or_documented() -> None:
     """The builder's public surface is small and each name is used by a test."""
     from macro_engine.thesis_layer import builder as module
@@ -403,6 +435,7 @@ def test_every_public_name_is_reexported_or_documented() -> None:
         "NO_TRADE_INSTRUMENT",
         "SIZING_LOGIC_PHASE_1",
         "THESIS_ID_PREFIX",
+        "THESIS_TIMEFRAME_PHASE_1",
         "build_policy_gap",
         "build_us_macro_thesis",
         "classify_thesis_convergence",

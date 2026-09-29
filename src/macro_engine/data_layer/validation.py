@@ -7,9 +7,24 @@ never silently dropped and never silently corrected.
 
 Why this matters more than it looks: a silently-dropped observation changes a
 YoY calculation by making the wrong two points adjacent, and a silently-clamped
-one fabricates a number. Both produce output that looks completely normal. The
-flag list is also what ``compute_confidence()`` reads — so a flagged snapshot
-*cannot* report high confidence downstream.
+one fabricates a number. Both produce output that looks completely normal.
+
+**What the flag list does and does not reach (measured 2026-09-29).** The flags
+are what a reader sees; they are **not** an automatic confidence penalty. An
+earlier version of this docstring claimed the flag list "is also what
+``compute_confidence()`` reads — so a flagged snapshot *cannot* report high
+confidence downstream." That was **false**, and it is the reassuring kind of
+false: ``compute_confidence`` reads a **per-model** boolean
+(``ConfidenceInputs.data_quality_flags_present``, ``models/contracts.py``) that
+each model sets from **its own** inputs — ``commodities.py`` from
+``fetched_legs < 2``, ``equity_macro.py`` from ``not has_prior``,
+``convergence.py`` from its constituent signals. No model reads
+``snapshot.data_quality_flags`` into ``ConfidenceInputs``
+(``grep -rn data_quality_flags src/macro_engine/models/*.py
+src/macro_engine/thesis_layer/*.py`` finds only the per-model boolean). So a
+snapshot may carry flags while every model still reports full confidence. A
+consumer that needs the snapshot's flags to reduce confidence must apply that
+itself; nothing here does it for them. (Audit finding X-L2 / D-3, Class G.)
 
 Each check returns ``ValidationFinding`` records rather than raising, so a
 single bad series degrades that series rather than the whole snapshot fetch.
@@ -159,7 +174,6 @@ def validate_observations(
 
     seen_dates: set[date] = set()
     previous_date: date | None = None
-    out_of_range = 0
     future_dates: list[date] = []
     tolerated_future_dates: list[date] = []
 
@@ -245,8 +259,12 @@ def validate_observations(
         previous_date = point.observation_date
 
         # --- range ---------------------------------------------------------
+        # Each violation is reported per-point. An aggregate counter existed here
+        # (``out_of_range``, incremented at both branches and never read) — a dead
+        # variable with no consumer, removed 2026-09-29 (audit finding D-3, Class E).
+        # Deleting it changes no behaviour: both branches already append their own
+        # ERROR finding, so every out-of-range point is visible in ``report``.
         if min_value is not None and point.value < min_value:
-            out_of_range += 1
             report.findings.append(
                 ValidationFinding(
                     series_id=series_id,
@@ -257,7 +275,6 @@ def validate_observations(
                 )
             )
         if max_value is not None and point.value > max_value:
-            out_of_range += 1
             report.findings.append(
                 ValidationFinding(
                     series_id=series_id,

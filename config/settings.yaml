@@ -5182,6 +5182,21 @@ snapshot_fields:
     - cpi_core
     - pce_core
     - ppi
+    # ppi_stage_crude (WPSID62) and ppi_stage_intermediate (WPSID61) are
+    # Module 5.4's second and third pipeline stages — the signal IS the
+    # comparison across all three, which 'ppi' (PPIFIS, the final-demand stage)
+    # cannot supply on its own. Added 2026-09-29 (audit finding P-2, the same
+    # defect class as the `gdi` and `fed_total_assets` notes above): both were
+    # declared in the registry (status: verified, resolvable, NOT
+    # not_a_snapshot_field), on MacroDataSnapshot, and in
+    # persistence.SCALAR_SERIES_FIELDS — but absent HERE, so build_snapshot
+    # (which iterates only this list) never fetched them. Every snapshot
+    # therefore carried two permanently empty stage series, and
+    # ppi_pipeline_signal had no data path from the snapshot even though the
+    # model is implemented, tested, and mutation-tested. Measured before the
+    # fix: ppi_stage_crude/intermediate round-tripped as 0 observations.
+    - ppi_stage_crude
+    - ppi_stage_intermediate
     - unemployment_rate
     - initial_claims
     - continuing_claims

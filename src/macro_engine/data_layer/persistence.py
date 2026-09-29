@@ -56,6 +56,16 @@ logger = logging.getLogger(__name__)
 # literal tuples, which meant adding a field to one and forgetting the other
 # would have silently dropped it from every persisted snapshot — a data-loss bug
 # with no error message. The test suite asserts this list matches the schema.
+#
+# ⚠️ ``fed_total_assets``, ``reserve_balances``, ``ppi_stage_crude`` and
+# ``ppi_stage_intermediate`` were added 2026-09-29 (audit finding P-1, Class C/F).
+# They were DECLARED on the schema, POPULATED by the snapshot builder and the
+# registry, and — measured — silently ERASED by this tuple's omission: a
+# snapshot holding all four round-tripped to ZERO rows, because
+# ``long_frame_from_snapshot`` iterates THIS list and nothing else. The coverage
+# test only asserted the reverse direction (``declared ⊆ schema``), so the loss
+# was invisible to every gate. Two guards now cover it: the test asserts BOTH
+# directions, and a round-trip test pins a populated value for each.
 SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "gdp_real",
     "gdp_nominal",
@@ -65,6 +75,8 @@ SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "cpi_core",
     "pce_core",
     "ppi",
+    "ppi_stage_crude",
+    "ppi_stage_intermediate",
     "unemployment_rate",
     "initial_claims",
     "continuing_claims",
@@ -75,6 +87,8 @@ SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "iorb",
     "on_rrp_rate",
     "on_rrp_volume_bn",
+    "fed_total_assets",
+    "reserve_balances",
     "credit_spread_hy",
     "credit_spread_ig",
 )

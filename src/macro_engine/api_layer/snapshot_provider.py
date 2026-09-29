@@ -136,8 +136,12 @@ class SnapshotProvenance(BaseModel):
         if self.data_quality_flag_count:
             messages.append(
                 f"SNAPSHOT FLAGGED: {self.data_quality_flag_count} data-quality "
-                f"flag(s) on the snapshot; every model derived from it carries a "
-                f"reduced confidence (Section 5.4 / 22.8)."
+                f"flag(s) on the snapshot. NOTE: these flags are NOT applied as a "
+                f"confidence penalty automatically — compute_confidence() reads each "
+                f"model's OWN data_quality_flags_present input, which no model "
+                f"populates from this snapshot-level list (Section 5.4 / 22.8). A "
+                f"consumer that must degrade confidence on a flagged snapshot has to "
+                f"do so explicitly."
             )
         if self.from_cache:
             messages.append(
