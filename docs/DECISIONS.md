@@ -22965,3 +22965,132 @@ in `CIPInputs`.
 `scripts/mutation_{fx_carry,intervention,commodities,em_vulnerability}.py`,
 `docs/{DECISIONS,PROGRESS,OPEN_ISSUES}.md`.
 **No config leaf, no new OpenBB command** (census stays 6).
+
+## D-143 — the call-graph audit: what "wired" actually means, and the per-function evidence
+
+**Trigger:** the operator asked for **call verification** — not availability, not
+reliability — of the production code across Phases 0-2: *"confirm the exact call path
+and the trigger conditions … provide concrete evidence … if any part is never invoked,
+report it as a broken or missing integration."*
+
+### 1. The three words, separated
+
+The words were being used interchangeably, and they are not the same claim:
+
+| term | the claim | how it is proved |
+|---|---|---|
+| **defined** | the symbol exists in a shipped module | the AST has a `FunctionDef` |
+| **reachable** | an import edge connects it to the entry point | import-graph BFS from `api_layer/app.py` (D-142/O-162) |
+| **wired / integrated** | another production function **calls it** on a path that a request triggers | a **call site**, plus a chain of call sites up to an HTTP handler |
+
+**A module can be reachable and still have nothing call it.** That is exactly the
+distinction O-162 was missing: reachability is an *import* fact, wiring is a *call*
+fact. `bond_math` is the clean example — it is imported by nothing reachable, and its
+six public functions have **zero** call sites in `src/`.
+
+**"Another backend service" here means another production module**, not an external
+system: this is a single FastAPI process, and its only outbound dependency is the
+OpenBB data API (a *data* provider, not a caller). So the caller of a model function is
+another module in this same tree, and the ultimate trigger is an HTTP request.
+
+### 2. The tool — `tools/call_graph_audit.py`
+
+Function-granular, import-aware, and scoped to `src/` **only**; calls from `tests/` and
+`scripts/` are reported **separately** as `test/script-only`, because counting them is
+precisely how a dead path gets reported as integrated.
+
+Resolution is import-aware rather than a bare name match (`from x.y import f` → `f()`
+resolves to `x.y.f`; `alias.f()` resolves through the alias; `self.m()` resolves to the
+enclosing class), because a name match silently merges two different functions that
+share a name — the O-150/O-155 class.
+
+**Two correctness traps found and fixed while building it — both of which produced a
+plausible-looking but wrong report:**
+
+1. **A walker that descends only into `FunctionDef`/`ClassDef` sees almost no calls.**
+   A call usually sits inside an expression (`x = f(...)`, `return g(...)`,
+   `if h(...)`), so the first version reported **0 edges** and the tool printed
+   *"called by other production code: 0"* — which reads exactly like *"nothing is
+   wired"*. It must recurse into every node.
+2. **A `@property` is used by ATTRIBUTE ACCESS, never by a call.** A call-only graph
+   reported all **296** `config.py` accessors (and 37 more) as dead code — a
+   false-positive class large enough to make the report useless. The tool now records
+   attribute accesses and checks properties against those.
+
+Both are the project's standing lesson in a new place: **a green/plausible number is
+not evidence until the instrument has been shown to detect the thing it claims to
+measure.** The tool was validated against known cases before any number was trusted —
+`taylor_rule` resolves to `builder.py:388`, and `build_us_macro_thesis` to
+`reasoning_stream.py:268` / `routes_query.py:239`.
+
+### 3. Measured result
+
+| | count |
+|---|---|
+| production modules parsed | **71** |
+| functions/methods defined | **975** (of which `@property`: 333) |
+| **used by other production code** | **685** |
+| **NOT used by production code** | **290** |
+| — public | 186 |
+| — private (`_`) | 104 |
+| — of the unused, called from tests/scripts only | 93 |
+
+The unused set is pinned in `tools/call_graph_baseline.txt`; `--check-baseline` fails on
+drift, so the number cannot move silently.
+
+**Spot-verified by hand (not just by the tool):** `modified_duration`,
+`get_audit_ledger`, `marginal_risk_contributions`, `policy_mix_classifier`,
+`fisher_index` each have **0** call sites in `src/` by direct grep. `price_bond`'s four
+grep hits are **docstring mentions**, not calls — which is itself the trap a grep-based
+audit falls into and an AST-based one does not.
+
+### 4. The worked example — `taylor_rule`, with trigger conditions
+
+Chosen because it is a *wired* function, so the chain is the contrast case to the 290.
+
+```
+GET /thesis/us  ->  routes_thesis.get_thesis()          (routes_thesis.py:200)
+                ->  builder.build_us_macro_thesis()     (builder.py:859)
+                ->  builder.build_policy_gap()          (builder.py:388)
+                ->  policy_rules.taylor_rule()          <-- THE FUNCTION
+```
+
+and the same function is reached by two other triggers:
+
+```
+GET  /thesis/us/stream -> stream_thesis_reasoning()     (reasoning_stream.py:337)
+                       -> reasoning_step_generator()    (reasoning_stream.py:147)
+                       -> _reasoning_frames()           (reasoning_stream.py:245)
+                       -> build_policy_gap() -> taylor_rule()
+
+POST /query            -> routes_query.query()          (routes_query.py:239)
+                       -> build_us_macro_thesis() -> build_policy_gap() -> taylor_rule()
+```
+
+**Trigger conditions:** the function fires on any request that builds a thesis — i.e.
+`GET /thesis/{country}` for `country="us"`, the SSE stream at `/thesis/us/stream`, and
+`POST /query` with a routing intent that builds one. It does **not** fire on
+`GET /health` or `GET /dashboard_data`.
+
+**Evidence class, stated honestly:** this is **static** evidence — an AST call site plus
+a chain of call sites to a decorated route handler. It is NOT a runtime trace. The
+service writes **no access log** (`config/logging.yaml` has a console handler only, and
+no request-logging middleware exists), so there is **no captured record of a real
+inbound request** anywhere in the tree. A runtime confirmation would require either an
+added access-log middleware plus a real OpenBB Workspace call, or a request trace from
+the Workspace side — neither exists today. That gap is recorded rather than papered
+over.
+
+### 5. What is broken / missing
+
+The 186 public unused definitions and the 93 test/script-only ones are the same
+population O-162 describes, now with per-function evidence rather than a module count.
+**They are recorded, not fixed**: wiring a model into the thesis changes published
+output, so each is its own increment, and the operator's decision on wire-vs-re-phase
+is still outstanding.
+
+**Gates:** `ruff check` PASS · `ruff format --check` 298 clean · bare `mypy` 298 clean ·
+`call_graph_audit --check-baseline` **PASS** · reachability PASS 58/58 · suite 4368/0/23.
+
+**Files:** `tools/call_graph_audit.py`, `tools/call_graph_baseline.txt`,
+`docs/{DECISIONS,OPEN_ISSUES}.md`.
