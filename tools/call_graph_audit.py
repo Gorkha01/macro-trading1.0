@@ -354,7 +354,11 @@ def main() -> int:
     if args.check_baseline:
         current = "\n".join(unused) + "\n"
         if not BASELINE.exists():
-            BASELINE.write_text(current, encoding="utf-8")
+            # `newline="\n"` explicitly: the default translates to `os.linesep`,
+            # which writes CRLF on Windows and makes the committed baseline
+            # differ from the LF form git stores — a whole-file diff on every
+            # platform that touches it.
+            BASELINE.write_text(current, encoding="utf-8", newline="\n")
             print(f"\nwrote baseline -> {BASELINE.relative_to(REPO_ROOT)} ({len(unused)} entries)")
             return 0
         expected = BASELINE.read_text(encoding="utf-8").split()
