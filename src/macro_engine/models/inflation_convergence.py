@@ -282,11 +282,23 @@ def _attainable_fracs(n: int) -> list[float]:
 def _tagged_measures(
     inputs: InflationConvergenceInputs, as_of_directions: list[int]
 ) -> tuple[list[ModelResult], int]:
-    """Build one ``ModelResult`` per supplied measure, tagged by family.
+    """Build one ``ModelResult`` per supplied **directional** measure, tagged by family.
 
     Each measure becomes its own result so ``count_independent_families`` can do
     its job: the count it returns is over *these* objects, and the tagging is
     what stops four CPI-derived readings from counting as four votes.
+
+    **The census runs over the DIRECTIONAL measures only** (Section 15.19-D /
+    D-050, the same correction ``convergence.py`` and ``scorecard.py`` already
+    carry, applied here by the D-051 cross-check). A flat reading carries no
+    direction, so its family cannot be one of the families backing a directional
+    verdict; counting it lets a read be promoted by appending flat measures from
+    new families, which is exactly the false-convergence failure the census
+    exists to prevent. Measured here: headline and core both flat with only
+    core_pce moving counted **two** families against one moving measure, which
+    bought a 0.05 confidence credit and opened the HIGH band
+    (``min_families('high') == 2``) on the strength of two measures that said
+    nothing happened.
 
     Returns the results and the count of measures they represent.
     """
@@ -297,6 +309,10 @@ def _tagged_measures(
             continue
         direction = getattr(inputs, field_name)
         if direction is None:  # pragma: no cover - excluded by `supplied`
+            continue
+        if direction == 0:
+            # A neutral reading sets no direction, so it contributes no family to
+            # the census. It is still reported as `flat` in the verdict.
             continue
         if direction > 0:
             reading = "up"
@@ -320,9 +336,13 @@ def _tagged_measures(
             inputs_used=[field_name],
         )
         results.append(tag_evidence_source(result, family))
+    # The invariant is now against the DIRECTIONAL measures: every non-zero
+    # reading supplied is tagged, so the two counts must agree. (The parameter is
+    # renamed at the call site to `directional_directions` so this reads true.)
     assert len(results) == len(as_of_directions), (
-        f"tagged {len(results)} measures but {len(as_of_directions)} directions were "
-        "supplied — the family map and _all_directions have diverged"
+        f"tagged {len(results)} directional measures but {len(as_of_directions)} "
+        "directional directions were supplied — the family map and the directional "
+        "subset have diverged"
     )
     return results, len(results)
 
@@ -470,7 +490,12 @@ def inflation_convergence_classifier(
 
     # Section 15.19-D: the count of INDEPENDENT FAMILIES, computed by the
     # Module 13 machinery over per-measure results that carry a typed tag.
-    tagged, _ = _tagged_measures(inputs, directions)
+    #
+    # The census is taken over the DIRECTIONAL subset: `direction != 0`. A flat
+    # measure is not part of the evidence behind a directional verdict, so its
+    # family may not be counted (D-050 / D-051).
+    directional_directions = [d for d in directions if d != 0]
+    tagged, _ = _tagged_measures(inputs, directional_directions)
     census = count_independent_families(tagged)
     census_value = census.value
     assert isinstance(census_value, dict)
@@ -530,7 +555,19 @@ def inflation_convergence_classifier(
         )
 
     # --- Section 15.19-D's ceiling (the integration requirement) -----------
-    if classification in bands:
+    # CONFLICTED is NOT a band. It is reached by the conflict gates, never by the
+    # agreement fraction, and it is not a member of `bands_available` — so the
+    # `classification in bands` test below is False for EVERY conflicted read and
+    # the ceiling branch fires with text that is false in two ways: it says "the
+    # agreement fraction satisfied CONFLICTED" (it did not — no fraction produced
+    # this verdict) and "supports no better than {bands[0]}" where bands[0] is
+    # usually "HIGH", which is the *strongest* band and therefore describes no
+    # ceiling at all. A reader is told a HIGH claim was nearly earned in the one
+    # month the measures openly disagree. The ceiling logic is a statement about
+    # how much evidence backs a *band* claim, so it is applied to bands only.
+    if classification == "CONFLICTED":
+        pass
+    elif classification in bands:
         pass
     elif bands:
         warnings.append(
@@ -561,7 +598,11 @@ def inflation_convergence_classifier(
         warnings.append(
             f"{flat} measure(s) read exactly flat and are EXCLUDED from both "
             "sides. A zero change is absence of evidence, not corroboration for "
-            "the larger side."
+            "the larger side. They are likewise EXCLUDED from the "
+            "independent-family census (Section 15.19-D / D-050): a measure with "
+            "no direction cannot be one of the families backing a directional "
+            "verdict. They remain in the `frac_agreeing` denominator, so they "
+            "reduce breadth — which is what a breadth indicator should do."
         )
 
     # --- the corrected conflict gate in action (correction 1) -------------

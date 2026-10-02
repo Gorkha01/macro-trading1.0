@@ -317,7 +317,6 @@ def _build_curve_instrument(
 
 def _sentinel_result(
     *,
-    thesis_type: ThesisType,
     value: str,
     interpretation: str,
     context: str,
@@ -500,7 +499,6 @@ def select_instrument(
 
     if inputs.thesis_type in (ThesisType.CROSS_COUNTRY_DIVERGENCE,):
         return _sentinel_result(
-            thesis_type=inputs.thesis_type,
             value=BLOCKED_MULTI_COUNTRY_NOT_BUILT,
             interpretation=(
                 "Cross-country RV instrument selection requires a second country's "
@@ -518,7 +516,6 @@ def select_instrument(
 
     if inputs.thesis_type in (ThesisType.CREDIT_QUALITY_GAP, ThesisType.EM_VULNERABILITY):
         return _sentinel_result(
-            thesis_type=inputs.thesis_type,
             value=ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT,
             interpretation=(
                 f"{inputs.thesis_type.value} is outside the production execution "
@@ -625,6 +622,35 @@ def select_instrument(
             f"universe refuses, even though the category check above passed."
         )
 
+    # `direction` is built from `direction_word`, which is None on every
+    # NON-curve route — so the three non-curve executable routes published the
+    # literal string "None: the thesis's gap direction, expressed through
+    # <instrument>". That is a None-leak, and worse, it reads as a FINDING: it
+    # says the direction was evaluated and came out absent, when gap_direction is
+    # a required, validated input that this branch does consume (it is listed in
+    # `inputs_used`). The result's own decision_prohibition tells consumers the
+    # instrument "MUST NOT be consumed without `direction_word`", so the field
+    # that prohibition leans on was the one field saying "None".
+    #
+    # There is no slope word off the curve — "steepener"/"flattener" describe a
+    # curve, not a policy path or an equity index — but the direction itself is
+    # still known and must still be stated. GapDirection's documented semantics:
+    # positive = the thesis expects the traded variable to move UP relative to
+    # what the market prices; negative = DOWN.
+    if direction_word is not None:
+        direction_text = (
+            f"{direction_word}: the thesis's gap direction, expressed through {instrument}"
+        )
+    else:
+        direction_text = (
+            f"{inputs.gap_direction.value} (the thesis expects the traded variable to "
+            f"move {'up' if inputs.gap_direction is GapDirection.POSITIVE else 'down'} "
+            f"relative to what the market prices). This route has no slope word — "
+            f"'steepener'/'flattener' name a curve trade, not a "
+            f"{instrument} — so the raw direction is published rather than a "
+            f"curve term, rather than reporting the direction as absent."
+        )
+
     confidence = compute_confidence(
         ConfidenceInputs(
             data_quality_flags_present=False,
@@ -650,7 +676,7 @@ def select_instrument(
         inputs_used=["thesis_type", "gap_direction"],
         # --- Section 3/4: the reasoning object, populated -------------------
         unit="categorical (an instrument name from the production universe)",
-        direction=(f"{direction_word}: the thesis's gap direction, expressed through {instrument}"),
+        direction=direction_text,
         assumptions=[
             "The instrument named by Section 15's selection table for this "
             "(thesis_type, gap_direction) pair is the correct expression of the "
@@ -719,16 +745,26 @@ def select_instrument(
 
 
 def _selection_value(result: ModelResult) -> dict[str, Any]:
-    """Narrow ``result.value`` to its documented dict shape.
+    """Narrow ``result.value`` to the EXECUTABLE route's dict shape.
 
     A helper rather than an inline ``isinstance`` so the narrowing is stated
-    once. ``ModelResult.value`` is the deliberately broad union of Section 22.9;
-    a consumer that knows this function returns a dict should assert that rather
-    than cast.
+    once. ``ModelResult.value`` is the deliberately broad union of Section 22.9.
+
+    **``select_instrument`` does not "always return a dict", and this helper's
+    raise text no longer says it does** (O-87). The function returns TWO shapes
+    by design: a ``dict`` on the four executable routes and a **bare sentinel
+    string** on the three refused ones. The old message asserted the opposite of
+    the truth and fired on exactly the answer a caller most needs explained — a
+    reader hitting the TypeError was told the function had broken a contract it
+    never made. Read defensively on both shapes at the boundary.
     """
     value = result.value
     if not isinstance(value, dict):
         raise TypeError(
-            f"select_instrument always returns a dict value; got {type(value).__name__}."
+            f"select_instrument returns a dict only on its EXECUTABLE routes; this "
+            f"result is a {type(value).__name__}, i.e. the sentinel shape "
+            f"(ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT / "
+            f"BLOCKED_MULTI_COUNTRY_NOT_BUILT) or an unexpected type. Branch on the "
+            f"sentinel set before reading `value` as an instrument — see O-87."
         )
     return value

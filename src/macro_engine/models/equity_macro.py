@@ -459,7 +459,14 @@ def duration_sensitivity(inputs: DurationSensitivityInputs) -> ModelResult:
     )
 
     est_pct_move = -proxy_duration * (inputs.rate_change_bp / 10000.0)
-    published = round(est_pct_move * 100.0, 2)
+    # `+ 0.0` is not decoration: `-proxy_duration * 0.0` is IEEE-754 NEGATIVE
+    # ZERO, and `round(-0.0, 2)` is `-0.0`. A rate move of exactly zero therefore
+    # published `value = -0.0` and an interpretation reading "-0.00%" — a
+    # published percentage with a sign, for a move that has no sign. `-0.0` does
+    # compare equal to `0.0`, so nothing downstream mis-computed; but it survives
+    # JSON serialisation and reads as a tiny negative move. Adding positive zero
+    # normalises the sign without changing any other value (-0.0 + 0.0 == 0.0).
+    published = round(est_pct_move * 100.0, 2) + 0.0
 
     # --- confidence: two producers, both load-bearing ------------------------
     # The computed half prices THIS run's input quality: the proxy durations are
@@ -499,7 +506,10 @@ def duration_sensitivity(inputs: DurationSensitivityInputs) -> ModelResult:
         source_family=EvidenceSourceFamily.MANUAL_ASSESSMENT,
         interpretation=(
             f"Illustrative price impact of a {inputs.rate_change_bp:+.0f}bp rate "
-            f"move on a {style} equity: {est_pct_move * 100:+.2f}%"
+            # `published`, not a recomputation from `est_pct_move`: the two must
+            # be the same number, and formatting the raw value is what produced
+            # "-0.00%" for a zero rate move while `value` was corrected.
+            f"move on a {style} equity: {published:+.2f}%"
         ),
         context=(
             f"Illustrative duration proxy ({style} = {proxy_duration}yr): a growth "
@@ -744,6 +754,29 @@ assert set(get_args(RegimeState)) == set(REGIME_STATES), (
 assert set(FACTOR_REGIME_MAP) == set(REGIME_STATES), (
     "factor_tilt_prior keys on the classifier's vocabulary; FACTOR_REGIME_MAP "
     "must be exhaustive over REGIME_STATES (see models/regime.py)."
+)
+# The sector map gets the SAME import-time guard, and for the stronger reason:
+# this is the map whose coverage hole the module exists to close. Before this
+# line the exhaustiveness of SECTOR_ROTATION_PRIOR was guarded ONLY by a
+# docstring citation to `tests/models/test_equity_macro.py` — a file that did not
+# exist — while FACTOR_REGIME_MAP, the map that never had a hole, was asserted
+# here. The one map with a known history of silently answering "no strong prior"
+# for a live regime was the one map with no guard at import (F-EM-001).
+assert set(SECTOR_ROTATION_PRIOR) == set(REGIME_STATES), (
+    "sector_rotation_prior keys on the classifier's vocabulary; "
+    "SECTOR_ROTATION_PRIOR must be exhaustive over REGIME_STATES (see "
+    "models/regime.py). A missing row is Section 6.9's own defect: a regime the "
+    "classifier emits answers 'no strong prior' instead of erroring."
+)
+# The specification/extension split must also cover the vocabulary exactly, so a
+# reader's map of which rows are Section 6.9's cannot silently drift.
+assert (
+    set(SPECIFICATION_REGIMES) | set(SECTOR_PRIOR_EXTENSION_REGIMES) == set(REGIME_STATES)
+    and not set(SPECIFICATION_REGIMES) & set(SECTOR_PRIOR_EXTENSION_REGIMES)
+), (
+    "SPECIFICATION_REGIMES and SECTOR_PRIOR_EXTENSION_REGIMES must partition "
+    "REGIME_STATES: every regime is either Section 6.9's row or a declared "
+    "extension row, never both and never neither."
 )
 assert all(set(row) == set(FACTOR_NAMES) for row in FACTOR_REGIME_MAP.values()), (
     "every FACTOR_REGIME_MAP row must tilt exactly the five FACTOR_NAMES."
