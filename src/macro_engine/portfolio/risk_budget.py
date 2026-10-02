@@ -92,7 +92,7 @@ converse habit — applying lesson 5g mechanically — would have produced a
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -2186,6 +2186,33 @@ PositionTranslationOutcome = Literal[
     "clipped_by_position_limit",
 ]
 
+_TRANSLATION_OUTCOMES: frozenset[str] = frozenset(get_args(PositionTranslationOutcome))
+
+
+def _as_translation_outcome(value: str) -> PositionTranslationOutcome:
+    """Narrow a runtime string to the ``PositionTranslationOutcome`` Literal.
+
+    The Kelly gate reports its verdict as a plain ``str``. mypy cannot narrow a
+    ``str`` to a ``Literal``, so the previous line here was
+    ``outcome: PositionTranslationOutcome = kelly_outcome  # type: ignore[assignment]``
+    — a suppression that made the declaration a lie the checker was told not to
+    look at. A suppression hides the invariant; this function checks it.
+
+    The membership test is the point. If the Kelly gate ever emits a verdict
+    that is not in the Literal, this raises naming the value, instead of the
+    value flowing into ``TranslationOutcome`` and being rejected later by
+    Pydantic at a distance from its cause.
+    """
+    if value not in _TRANSLATION_OUTCOMES:
+        raise ValueError(
+            f"kelly gate produced outcome={value!r}, which is not a "
+            f"PositionTranslationOutcome. Permitted: {sorted(_TRANSLATION_OUTCOMES)}. "
+            "Either the gate gained a verdict this function does not model, or the "
+            "two have drifted apart — both must be reconciled, not suppressed."
+        )
+    return cast("PositionTranslationOutcome", value)
+
+
 #: The **one** constraint that produced the published notional.
 #:
 #: Named as a single member rather than a list because a list invites a caller
@@ -2911,7 +2938,7 @@ def translate_thesis_to_position(inputs: ThesisPositionInputs) -> ModelResult:
             )
 
     final_fraction = fraction
-    outcome: PositionTranslationOutcome = kelly_outcome  # type: ignore[assignment]
+    outcome = _as_translation_outcome(kelly_outcome)
 
     warnings = [
         SIGN_OFF_REQUIRED,

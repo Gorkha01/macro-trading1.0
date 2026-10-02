@@ -4877,6 +4877,7 @@ class ValidationSettings(BaseModel):
     unemployment_max: CalibratedValue
     stale_series_days: CalibratedValue
     max_plausible_yield_pct: CalibratedValue
+    zero_yield_permitted_tenors: CalibratedValue
     implausible_long_end_inversion_bp: CalibratedValue
     scenario_probability_tolerance: CalibratedValue
     fed_total_assets_min_millions: CalibratedValue
@@ -4910,6 +4911,21 @@ class ValidationSettings(BaseModel):
     @property
     def long_end_inversion_floor(self) -> float:
         return float(self.implausible_long_end_inversion_bp.value)
+
+    @property
+    def zero_yield_tenors(self) -> frozenset[str]:
+        """Tenors at which a yield of exactly 0.00 is a real market state.
+
+        Read from config rather than written here because the membership of
+        this set is a MEASURED claim about the Treasury's published history
+        (see the ``zero_yield_permitted_tenors`` note in settings.yaml), and a
+        threshold a reviewer cannot find is a threshold that cannot be
+        reviewed. Returned as a frozenset so callers cannot mutate config.
+        """
+        raw = self.zero_yield_permitted_tenors.value
+        if isinstance(raw, str):
+            return frozenset({raw})
+        return frozenset(str(item) for item in raw)
 
     @property
     def prob_tolerance(self) -> float:

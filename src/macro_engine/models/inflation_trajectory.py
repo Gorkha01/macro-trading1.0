@@ -421,9 +421,16 @@ def project_inflation_trajectory(inputs: InflationTrajectoryInputs) -> ModelResu
                 is_heuristic_not_calibrated=True,
                 depends_on_unobservable=True,
                 source_independence_count=(
+                    # Per the docstring (lines 311-312): independence comes from
+                    # whether the growth reading is an independent second family
+                    # that CORROBORATES the labor reading OR DISAGREES with it.
+                    # Both are two genuinely independent families being compared,
+                    # which is exactly what source independence measures; only
+                    # "unavailable" (growth was not a number) or "not_directional"
+                    # (flat score, nothing to corroborate) deny the credit.
                     1
-                    if corroboration.startswith("agrees")
-                    else 0  # disagrees / unavailable / not_directional = no corroboration
+                    if corroboration not in ("unavailable", "not_directional")
+                    else 0
                 ),
             )
         ),

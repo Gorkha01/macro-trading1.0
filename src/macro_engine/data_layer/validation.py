@@ -435,16 +435,56 @@ def validate_yield_curve(
         )
         return report
 
+    # A yield of exactly 0.00 is NOT uniformly a fault. Measured against the
+    # U.S. Treasury's own Daily Treasury Par Yield Curve Rates, the row for
+    # 2020-03-25 reads 1 Mo = 0.00, 3 Mo = 0.00 with every tenor from 6 Mo
+    # outward at 0.07 or above; no tenor printed below 0.00 on any 2020 date.
+    # So the two cases are separated: a strictly NEGATIVE yield is a fault at
+    # every tenor, and a ZERO yield is a fault only at tenors the official
+    # series never reached zero on. The permitted set is config, not a literal
+    # here, because it is a measured claim that has to be reviewable.
+    zero_permitted = get_settings().validation.zero_yield_tenors
     for tenor, yld in curve.tenors.items():
-        if yld <= 0.0:
+        if yld < 0.0:
             report.findings.append(
                 ValidationFinding(
                     series_id=series_id,
                     code="NON_POSITIVE_YIELD",
                     severity=Severity.ERROR,
                     detail=(
-                        f"{tenor} yield {yld}% is non-positive — a data fault, not a market state."
+                        f"{tenor} yield {yld}% is negative — no US Treasury tenor has "
+                        "printed below zero in the official par yield curve, so this is "
+                        "a data fault, not a market state."
                     ),
+                )
+            )
+        elif yld == 0.0 and tenor not in zero_permitted:
+            report.findings.append(
+                ValidationFinding(
+                    series_id=series_id,
+                    code="NON_POSITIVE_YIELD",
+                    severity=Severity.ERROR,
+                    detail=(
+                        f"{tenor} yield is exactly 0.00%. A zero at this tenor is a data "
+                        "fault: the official par yield curve has never printed zero here. "
+                        f"(Zero IS a real market state at {sorted(zero_permitted)} — "
+                        "measured 2020-03-25 — and is reported there as INFO, not ERROR.)"
+                    ),
+                )
+            )
+        elif yld == 0.0:
+            report.findings.append(
+                ValidationFinding(
+                    series_id=series_id,
+                    code="ZERO_SHORT_END_YIELD",
+                    severity=Severity.INFO,
+                    detail=(
+                        f"{tenor} yield is exactly 0.00%. This is a real published market "
+                        "state at this tenor (the Treasury par curve printed 0.00 for "
+                        "1 Mo and 3 Mo on 2020-03-25), not a data fault — so it is NOT "
+                        "flagged as an error."
+                    ),
+                    observation_date=curve.as_of,
                 )
             )
         if yld > get_settings().validation.max_yield:

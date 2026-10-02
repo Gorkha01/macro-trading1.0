@@ -348,9 +348,20 @@ def growth_accounting_decomposition(
             f"unreliability rather than averaging it away."
         )
 
-    if labor_force_growth_pct < 0.0 and productivity_growth_pct > 0.0:
-        # Both conditions are required. With productivity also negative there is
-        # no offset to describe, and the both-negative branch below handles it.
+    if (
+        labor_force_growth_pct < 0.0
+        and productivity_growth_pct > 0.0
+        and total > 0.0
+    ):
+        # All three conditions are required. The docstring's stated case is "a
+        # shrinking labor force can produce POSITIVE potential growth only if
+        # productivity growth EXCEEDS the decline" -- i.e. total > 0. A bare
+        # `labor < 0 and prod > 0` fires even when total <= 0 (e.g. labor=-0.5,
+        # prod=+0.5 -> total=0; or labor=-0.8, prod=+0.3 -> total<0), emitting a
+        # "Positive potential growth here rests entirely on productivity" claim
+        # that is then false. The `total > 0` guard makes the warning match the
+        # arithmetic it describes. The both-negative branch below handles the
+        # prod<0 case, which needs no offset description.
         warnings.append(
             f"Labor force growth is NEGATIVE ({labor_force_growth_pct:+.2f}%). "
             f"Positive potential growth here rests entirely on productivity "

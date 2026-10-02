@@ -23094,3 +23094,115 @@ is still outstanding.
 
 **Files:** `tools/call_graph_audit.py`, `tools/call_graph_baseline.txt`,
 `docs/{DECISIONS,OPEN_ISSUES}.md`.
+
+## D-144 — the production review: two gates were red on the untouched tree, and the Treasury's own data refutes `yld <= 0.0`
+
+### 1. What was found, and why the baseline is the first finding
+
+`REVIEW_PROMPT.md` section 0.3 forbids reviewing on a red baseline. Measured on
+the committed tree before any file was added, **two of the four section-0.2 gates
+were red**:
+
+* `uv run mypy` → exit **2**, `There are no .py[i] files in directory 'tools'`
+  (then the same for `'scripts'`). `pyproject.toml` sets
+  `files = ["src", "tests", "tools", "scripts"]`; both directories were empty, so
+  the configured gate could never pass.
+* `uv run pytest -m "not live and not slow" -q` → exit **2**,
+  `ModuleNotFoundError: No module named 'tests'` from
+  `tests/data_layer/test_phase1_data_layer.py:56`. The committed suite imports
+  `tests.conftest`, but neither `tests/__init__.py` nor `tests/conftest.py` was
+  ever committed — so **zero tests ran** on the committed tree.
+
+Both were repaired by adding what the tree already declared, never by narrowing a
+gate: `tools/` and `scripts/` now hold tooling the review requires
+(`gates.py`, `import_smoke.py`, `callgraph.py`, `selfaudit.py`,
+`check_config_leaves.py`), and `tests/conftest.py` builds its three helpers over
+the real production types — `ObservationPoint`, `YieldCurveSnapshot`,
+`MacroDataSnapshot` — rather than over stand-in structures. mypy's configured
+scope is unchanged and now reports **99 source files** clean. 373 tests run.
+
+The reason this is decision-grade rather than housekeeping: a tree whose suite
+cannot be collected has no regression signal at all, and the 367 tests that were
+committed had never been observed to pass.
+
+### 2. The finding the primary source settled: a yield of 0.00 is not a data fault
+
+`data_layer/validation.py` flagged `yld <= 0.0` as
+`NON_POSITIVE_YIELD` / `Severity.ERROR` — "a data fault, not a market state" —
+for **every** tenor, including `1mo` and `3mo`.
+
+I expected the short end to have gone *negative* in March 2020, which would have
+made this a sign error on live data. That hypothesis is **wrong**, and the
+primary source is what killed it. The U.S. Treasury's own Daily Treasury Par
+Yield Curve Rates for 2020 give, for 2020-03-25:
+
+```
+03/25/2020,0.00,0.00,0.00,0.07,0.19,0.34,0.41,0.56,0.77,0.88,1.23,1.45
+```
+
+i.e. 1 Mo = 0.00, 3 Mo = 0.00, and every tenor from 6 Mo outward at 0.07 or
+above. **No tenor printed below 0.00 on any 2020 date.** So the defect is not
+the sign — it is the **boundary**: the rule rejects zero, and zero is real at the
+short end. A curve carrying genuine 2020-03-25 history collected false ERROR
+flags, which is precisely the failure that trains a reader to ignore
+`data_quality_flags`.
+
+The check is now split three ways: strictly negative is an ERROR at every tenor;
+exactly zero is an ERROR only at tenors the official series never reached zero
+on, and an INFO (`ZERO_SHORT_END_YIELD`) elsewhere. The permitted-tenor set
+lives in config as `validation.zero_yield_permitted_tenors` with a note quoting
+the Treasury row, because a threshold a reviewer cannot find is a threshold that
+cannot be reviewed.
+
+The lesson for the rest of this file: the widely-reported "negative US yields"
+story was about *secondary-market bill* prints, and the official par curve is a
+different series. Two series, two verdicts — and only one of them is what the
+curve schema holds.
+
+### 3. What the AST call graph says that grep did not
+
+`tools/callgraph.py` resolves calls with the AST and classifies every function:
+**WIRED 173, REACHABLE-ONLY 206, ORPHAN 1054, WIRED-BUT-DEAD 0**; restricted to
+public functions, **851 of 946 are ORPHAN**. Five HTTP route handlers are the
+entry points. `WIRED-BUT-DEAD` is 0 — every route module declaring a handler is
+referenced by `api_layer/app.py`, so no handler is unreachable by HTTP.
+
+Two AST traps are handled explicitly because both were hit before:
+`@router.get(...)` parses as a `Call` whose `func` is an `Attribute`, so an alias
+is only resolved when it names a module that actually exists; and same-module
+calls resolve through a local symbol table, without which every intra-module
+call is dropped (the previous measurement dropped 1,337).
+
+### 4. The country question, answered with a measurement rather than an opinion
+
+LAW 1 says `us` is a config value and no country literal belongs in `src/`.
+AGENTS.md 22.3 says `country: str = "us"` is "a label, not a generalization".
+These cannot both hold, and there is **no `country` key anywhere in
+`config/settings.yaml`** — so LAW 1 is violated at 137 sites.
+
+The measurement that matters is whether any of those sites can *mislabel* real
+data. It cannot: of the **96** functions that emit `country="us"`, **0** take a
+snapshot parameter. No model can stamp `us` onto a snapshot that says otherwise,
+and `gdp_nowcast.py:557` actively refuses non-`us`. So this is a
+single-point-of-change defect, not a wrong-output defect — recorded as SEV-3,
+not escalated.
+
+### 5. Honest scope
+
+1,376 of 56,454 source lines were reviewed line-by-line (**2.44%**); 68 of 79
+files were not opened, `api_layer/` not at all (section 3 puts it last). Five
+defects are open, one is fixed and mutation-proved, and the live gate never ran
+because it needs the OpenBB API at `127.0.0.1:6900`. The verdict is therefore
+**FAIL**, and it is produced by `tools/selfaudit.py` rather than asserted here.
+
+**Gates:** `ruff check` PASS · `ruff format --check` 79 clean · bare `mypy` 99
+files clean · import smoke 79/79 · suite **377 passed, 5 deselected** ·
+`selfaudit.py` **FAIL** — 9 of 11 checks pass; the two failing checks are the
+four still-open defects and the incomplete line-by-line scope, not a broken gate.
+
+**Files:** `tools/{gates,import_smoke,callgraph,selfaudit}.py`,
+`scripts/check_config_leaves.py`, `tests/__init__.py`, `tests/conftest.py`,
+`tests/data_layer/test_yield_zero_boundary.py`,
+`src/macro_engine/data_layer/validation.py`,
+`src/macro_engine/config.py`, `config/settings.yaml`, `REVIEW_REPORT.md`,
+`.review-evidence/*`.

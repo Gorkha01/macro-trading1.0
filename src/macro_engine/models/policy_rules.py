@@ -1259,61 +1259,53 @@ def statement_text_diff(inputs: StatementTextInputs) -> ModelResult:
         # the phrase that MOVED is the signal, in either direction.
         tilt = (hawkish_net - dovish_net) / (abs(hawkish_net) + abs(dovish_net))
 
-        # The naming is over DIRECTION OF MOVEMENT, not over which side is
-        # non-zero. A side moving hawkish-ward is either HAWKISH language
-        # ENTERING (its net rises) or DOVISH language LEAVING (the mirror
-        # side's net falls); a side moving dovish-ward is the reverse. Reducing
-        # both sides to those two flags makes the classification exhaustive and
-        # total, and — crucially — keeps a hawkish phrase LEAVING (hawkish_net
-        # < 0) on the dovish side of the ledger, where it belongs. An earlier
-        # reduction keyed on "the dovish side did not move" instead, which read
-        # a hawkish REMOVAL as MORE_HAWKISH.
-        hawkish_ward = hawkish_net > 0 or dovish_net < 0
-        dovish_ward = hawkish_net < 0 or dovish_net > 0
+        # The naming is over BOTH sides' net SIGN, because the detailed labels
+        # exist to say which side moved which way — and they must fire for the
+        # crossover cases (one side's language leaving while the other enters),
+        # which is exactly the D-125 class of a reduction keyed on the wrong
+        # predicate. So the decision is: did BOTH sides move (both nets
+        # non-zero)? If so the tilt is named by the opposite side's own net sign;
+        # if only one side moved, the net sign alone gives a plain MORE_* read.
+        #
+        # A prior version gated the detailed labels behind two "ward" flags and
+        # short-circuited to MORE_DOVISH whenever exactly one ward flag was set,
+        # which made DOVISH_TILT_WITH_HAWKISH_REMOVALS UNREACHABLE for the
+        # "hawkish left + dovish entered" crossover — the label that names the
+        # trade was silently dropped in favour of a vaguer one. The test
+        # test_statement_text_dovish_tilt_with_hawkish_removals pins the fix.
+        both_sides_moved = hawkish_net != 0 and dovish_net != 0
 
-        if hawkish_ward and not dovish_ward:
-            # Every tracked phrase that moved moved hawkish-ward (hawkish
-            # entered, dovish left, or both).
-            direction = "MORE_HAWKISH"
-        elif dovish_ward and not hawkish_ward:
-            # Every tracked phrase that moved moved dovish-ward.
-            direction = "MORE_DOVISH"
-        elif tilt > 0:
-            # Language moved in BOTH directions and the net is hawkish. WHICH
-            # side's language was added and which was dropped is a separate
-            # question from the sign of the net, and the label must answer it —
-            # a hawkish net built by DROPPING dovish phrases is a different
-            # trade from one built by ADDING hawkish ones (Section 20.4: the
-            # phrase that MOVED is the signal).
-            #
-            # The earlier reduction keyed only on `tilt > 0`, so `dovish_net > 0`
-            # (dovish language ADDED) and `dovish_net < 0` (dovish language
-            # REMOVED) both read "…_WITH_DOVISH_REMOVALS". A dovish ADDITION
-            # labelled a dovish REMOVAL is exactly the D-125 class: a reduction
-            # keyed on the wrong predicate. Here the predicate is the SIGN of
-            # the opposite side's own net, which is what the state name asserts.
-            direction = (
-                "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
-                if dovish_net < 0
-                else "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"
-            )
-        elif tilt < 0:
-            # The mirror, with the mirror defect: a dovish net built by dropping
-            # hawkish phrases is `..._WITH_HAWKISH_REMOVALS`; one built by adding
-            # dovish phrases is `..._WITH_HAWKISH_ADDITIONS`.
-            direction = (
-                "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
-                if hawkish_net < 0
-                else "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"
-            )
+        if both_sides_moved:
+            # Language moved in BOTH directions. The net sign picks the
+            # side; the OPPOSITE side's own net sign picks the phrase that
+            # moved, because a hawkish net built by DROPPING dovish phrases
+            # and one built by ADDING hawkish ones are different trades
+            # (Section 20.4: the phrase that MOVED is the signal). A prior
+            # reduction keyed the label on `tilt` alone, so a dovish ADDITION
+            # and a dovish REMOVAL both read "…_WITH_DOVISH_REMOVALS" — the
+            # D-125 defect class. Here the bond is the opposite side's net sign.
+            if tilt > 0:
+                direction = (
+                    "HAWKISH_TILT_WITH_DOVISH_REMOVALS"
+                    if dovish_net < 0
+                    else "HAWKISH_TILT_WITH_DOVISH_ADDITIONS"
+                )
+            elif tilt < 0:
+                direction = (
+                    "DOVISH_TILT_WITH_HAWKISH_REMOVALS"
+                    if hawkish_net < 0
+                    else "DOVISH_TILT_WITH_HAWKISH_ADDITIONS"
+                )
+            else:
+                # Both sides moved and cancelled exactly (e.g. one hawkish
+                # phrase added and one dovish phrase added). No tilt to name,
+                # so say the language moved both ways without netting.
+                direction = "MIXED_BOTH_DIRECTIONS_NET_FLAT"
         else:
-            # Both directions moved and they cancel exactly (the two nets are
-            # equal, e.g. one hawkish phrase added and one dovish phrase added).
-            # There is no tilt to name, so the direction says the language
-            # MOVED both ways without netting — labelling it as a one-sided
-            # tilt would be a confident answer to a question the input does not
-            # settle.
-            direction = "MIXED_BOTH_DIRECTIONS_NET_FLAT"
+            # Exactly one side moved (the other net is zero): a plain
+            # directional read. Note a hawkish phrase LEAVING is a move in the
+            # dovish direction, so it reads MORE_DOVISH, not MORE_HAWKISH.
+            direction = "MORE_HAWKISH" if tilt > 0 else "MORE_DOVISH"
 
     # Section 22.8's confidence, COMBINED AS A PRODUCT (D-118's CAP-PRODUCT rule),
     # never a `min()`. The cap states how much the *method* is worth; the

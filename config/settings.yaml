@@ -5330,6 +5330,24 @@ validation:
     value: 25.0
     calibration_status: uncalibrated_illustrative
     note: Far above any observed US Treasury yield; only reached by a units error.
+  zero_yield_permitted_tenors:
+    value: ["1mo", "3mo"]
+    calibration_status: institutional_fact
+    note: >
+      Tenors at which a yield of EXACTLY 0.00 is a real published market state
+      rather than a data fault. MEASURED against the U.S. Treasury's own Daily
+      Treasury Par Yield Curve Rates (full-year 2020 CSV,
+      https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/2020/all?type=daily_treasury_yield_curve&field_tdr_date_value=2020&page&_format=csv ):
+      the row for 03/25/2020 reads "0.00,0.00,0.00,0.07,0.19,0.34,0.41,0.56,0.77,0.88,1.23,1.45"
+      across 1Mo..30Yr, i.e. 1 Mo = 0.00, 2 Mo = 0.00, 3 Mo = 0.00, and every
+      tenor from 6 Mo outward was >= 0.07. A yield of 0.00 at 1mo/3mo is
+      therefore NOT corrupt data, and an unconditional "yield <= 0 is an ERROR"
+      rule emits false ERROR findings on real 2020 history. No tenor in that
+      official series printed BELOW 0.00 on any 2020 date, so a strictly
+      negative yield remains a fault at every tenor.
+      Note the 2 Mo tenor also reached 0.00 but is not in CANONICAL_TENORS, so
+      it is not listed here — the list is checked against the tenors this system
+      can actually hold.
   implausible_long_end_inversion_bp:
     value: -50.0
     calibration_status: uncalibrated_illustrative

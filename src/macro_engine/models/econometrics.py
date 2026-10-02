@@ -3862,12 +3862,35 @@ def _estimate_half_life(spread: pd.Series | None) -> _HalfLife:
             ),
         }
 
+    half_life = -math.log(2.0) / phi
+    periods = round(half_life, 8)
+    # The half-life must be resolvable by the sample. A half-life longer than the
+    # entire series is indistinguishable from no reversion at all (Section 15.18:
+    # a number the data cannot span is not a time the data can observe). The
+    # arithmetic-trend edge fits phi to a value a hair below zero
+    # (floating-point), so the strict `phi >= 0` test above lets it through to an
+    # astronomically large but finite H; refusing on the sample-length bound
+    # catches exactly that case without a magic epsilon on the sign test, and
+    # matches the rationale of `_half_life_disclosure`.
+    if periods > len(values):
+        return {
+            "periods": None,
+            "phi": round(phi, 8),
+            "note": (
+                f"No half-life: the AR(1) slope phi = {phi:+.6f} implies "
+                f"H = -ln(2)/phi = {half_life:.4f} periods, which is LONGER than the "
+                f"{len(values)}-observation sample it was estimated from. A half-life "
+                f"the data cannot span is not estimable -- it is indistinguishable from "
+                f"no reversion -- so it is refused rather than returned as a finite "
+                f"number that looks complete."
+            ),
+        }
     return {
-        "periods": round(-math.log(2.0) / phi, 8),
+        "periods": periods,
         "phi": round(phi, 8),
         "note": (
             f"AR(1) on the spread: phi = {phi:+.6f} (persistence rho = "
-            f"{1.0 + phi:.6f}), so H = -ln(2)/phi = {-math.log(2.0) / phi:.4f} periods."
+            f"{1.0 + phi:.6f}), so H = -ln(2)/phi = {half_life:.4f} periods."
         ),
     }
 
