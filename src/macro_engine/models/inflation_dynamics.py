@@ -60,7 +60,15 @@ worth naming here because most of them are *structural* rather than numeric:
   genuinely unobservable, so the honest answer is ``unresolved``.
 * **Three keys driven by one predicate.** ``bonds``,
   ``long_duration_growth_equities`` and ``value_vs_growth`` all test
-  ``nominal_yield_change_bp > 0``, so four asset keys carry two bits.
+  ``nominal_yield_change_bp > 0``, so those three publish **one** fact three
+  ways. Measured over the swept input space they take exactly three joint
+  states (down/down/value_outperforms, up/up/growth_outperforms, flat/flat/flat)
+  — one bit plus a flat. ``gold`` is **not** in that family: it keys on the
+  REAL leg, which is a different quantity, so it takes all three of its values
+  for each of the three ``bonds`` states and the four asset keys carry
+  **nine** joint states, not four (F-IDB-001; this paragraph previously said
+  "four asset keys carry two bits", which under-counts the map's real content
+  by one bit and is what a reader would have used to size the census).
 * **A stated trigger that differs from the implemented one.** The gold
   paragraph argues from "a hot CPI print with real yields rising"; the code
   tests only ``real_yield_change > 0``, so a *cool* print with rising real
@@ -540,10 +548,20 @@ def cross_asset_transmission(inputs: InflationTransmissionInputs) -> ModelResult
        start depending on it silently.
     2. **Three keys from one predicate.** ``bonds``, ``long_duration_growth_equities``
        and ``value_vs_growth`` all key on ``nominal_yield_change_bp > 0``, so
-       the map's four asset keys carry at most **two** independent bits. The
-       three are kept (each names a distinct mechanism) but the shared
+       those three are one reading published three ways — **three** joint states.
+       The three are kept (each names a distinct mechanism) but the shared
        predicate is published as its own key so the coupling is visible rather
        than implied.
+       **The count is three keys, not four, and the difference is one bit.**
+       ``gold`` keys on the REAL leg (``nominal - breakeven``) while these three
+       key on the nominal leg, so ``gold`` ranges freely over ``down`` / ``up`` /
+       ``flat`` for every one of the three joint states. Enumerated over the
+       declared input space the four keys therefore produce **nine** distinct
+       tuples, not the four a "two independent bits" reading predicts. The
+       census rule this defect is about is unaffected — the three coupled keys
+       are still one vote — but the *information* the map carries was
+       under-stated, and a reader sizing coverage from "two bits" would be
+       sizing it from the wrong number (F-IDB-001).
     3. **``usd`` was not a direction.** The specification emits the *sentence*
        ``"up_if_relative_rate_expectations_rose"`` into a directional map. A
        value no caller can compare, branch on or evaluate is not an output, it
