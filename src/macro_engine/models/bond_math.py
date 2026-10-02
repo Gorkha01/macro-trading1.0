@@ -186,13 +186,28 @@ def price_bond(inputs: BondPricingInputs) -> ModelResult:
     years_to_maturity = inputs.periods
 
     price = _price_exact(coupon, inputs.face_value, yield_rate, years_to_maturity)
+    display_price = round(price, 2)
 
-    if price > inputs.face_value:
-        relation = "premium"
-    elif price < inputs.face_value:
-        relation = "discount"
-    else:
+    # The relation label must agree with the price the reader is shown.
+    #
+    # This was a real defect, caught by hand-verification: the comparison ran on
+    # the UNROUNDED price, so a bond that is exactly at par — coupon rate equals
+    # yield — priced to 999.9999999999999 and was labelled "discount" while the
+    # published value printed 1000.00. The two disagree, and the reader has no
+    # way to tell which is the model's finding. The label is therefore derived
+    # from the ROUNDED price, which is what `value` carries, with a tolerance
+    # scaled to the bond's own size rather than a bare `==` on floats.
+    #
+    # The tolerance is deliberately tight (half of the smallest unit the price is
+    # published to, i.e. 0.005) and is the smallest that absorbs float noise: at
+    # face values where a real premium/discount is smaller than half a cent, the
+    # bond is economically at par and "at par" is the truer label.
+    if abs(display_price - inputs.face_value) <= 0.005:
         relation = "at par"
+    elif display_price > inputs.face_value:
+        relation = "premium"
+    else:
+        relation = "discount"
 
     return ModelResult(
         model_name="price_bond",

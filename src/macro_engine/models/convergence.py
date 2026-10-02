@@ -111,6 +111,16 @@ pointing the same way. The reachable dissent count past that gate is exactly
   * no ratio ever lands in ``[0.8, 1.0)`` for ``n <= 4``;
   * ``MEDIUM`` requires ``n >= 5`` **and** two families simultaneously.
 
+**Corrected after the F-SC-001 cross-check (D-051).** The paragraph above is
+incomplete: it describes the gates as reachable only at ``n >= 5``, but ``CONFLICTED``
+was ``opposed = up > 0 and down > 0``, so at **every** ``n`` a read reaching the
+agreement gates was unanimous and ``MEDIUM`` (which needs ``dissent > 0`` together
+with ``not opposed``) was unreachable outright — not merely hard to reach. The
+predicate is now ``opposed = up >= 2 and down >= 2`` (a genuine standoff needs at
+least two signals pointing each way), so a clear majority with one dissenter
+reaches ``MEDIUM`` at any ``n >= 3`` while 2-vs-2 standoffs stay ``CONFLICTED``.
+The same correction is applied to ``scorecard.py`` (F-SC-001/F-CV-001).
+
 The repaired form expresses the gates as what they can actually be — **is there
 agreement at all, and is it backed by independent sources** — while still
 publishing the fraction so the thresholds remain auditable from the output.
@@ -311,7 +321,15 @@ def classify_convergence(inputs: ConvergenceInputs) -> ModelResult:
 
     up = sum(1 for d in non_neutral if d > 0)
     down = sum(1 for d in non_neutral if d < 0)
-    opposed = up > 0 and down > 0
+    # CONFLICTED requires a genuine STANDOFF — at least two signals pointing each
+    # way. A 3-vs-1 split (or any split with a clear majority and one dissenter) is
+    # NOT a standoff; the §22.10 severity model assigns it to MEDIUM. The prior
+    # `up > 0 and down > 0` gate routed every such split to CONFLICTED, which made
+    # the MEDIUM branch (requires NOT opposed AND dissent>0) unreachable — the same
+    # dead-branch contradiction found in scorecard.py (F-SC-001 / D-051 cross-check).
+    # Narrowing to `>= 2 on each side` keeps 2-vs-2 splits CONFLICTED while letting
+    # a clear-majority-with-one-dissenter read reach MEDIUM.
+    opposed = up >= 2 and down >= 2
     # The denominator is the NON-NEUTRAL count (Defect 3). Two measures are
     # published: `agree_frac` is the specification's measure, and the margin is
     # the share by which the larger side leads -- it reaches 0.0 on a tie and

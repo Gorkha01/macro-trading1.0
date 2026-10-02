@@ -49,6 +49,27 @@ for and which has no granularity cliff. The fraction, the dissent count **and**
 an agreement margin are all still published, so the thresholds are auditable
 from the output rather than reconstructed from the code.
 
+Defect 5 — ``MEDIUM`` was unreachable under the original ``opposed`` gate
+------------------------------------------------------------------------
+The docstring above says the repair "expresses the gates as dissent counts —
+at most one dissenter for ``MEDIUM``." That was **false as shipped** until this
+defect was corrected. The ``CONFLICTED`` gate was ``opposed = up > 0 and down > 0``,
+which is true for *any* non-unanimous read — including a 3-vs-1 majority with a
+single dissenter. Because the ``MEDIUM`` branch requires ``NOT opposed AND
+dissent > 0``, and ``dissent > 0`` *implies* ``opposed`` under the old predicate,
+the ``MEDIUM`` branch could never be reached: every non-unanimous read was
+``CONFLICTED``. The companion ``classify_convergence`` (``convergence.py``) carried
+the identical dead branch.
+
+The repair (F-SC-001) narrows the predicate to ``opposed = up >= 2 and down >= 2``
+— a genuine standoff needs at least two pillars on each side. A 3-vs-1 split now
+falls through to ``MEDIUM`` (it has a clear majority and one dissenter, exactly
+what the severity model reserves ``MEDIUM`` for), while 2-vs-2 splits remain
+``CONFLICTED``. This changes the measured ``CONFLICTED`` base share downward from
+the previously cited 350/567 — those 350 included every 3-vs-1 split, which are
+now ``MEDIUM`` — so the docstring's "62% of the input space" figure is an
+*upper bound* on the standoff share, not a current measurement after this repair.
+
 Defect 3 — Section 15.19-D was not discharged, and this was the increment's
 assigned audit
 --------------------------------------------------------------------------------
@@ -329,7 +350,15 @@ def four_pillar_scorecard(inputs: ScorecardInputs) -> ModelResult:
 
     up = sum(1 for d in non_neutral if d > 0)
     down = sum(1 for d in non_neutral if d < 0)
-    opposed = up > 0 and down > 0
+    # CONFLICTED requires a genuine STANDOFF — at least two pillars pointing each
+    # way. A 3-vs-1 split is NOT a standoff: it is a clear majority with a single
+    # dissenter, which the §20.11 severity model assigns to MEDIUM. The prior
+    # `up > 0 and down > 0` gate routed every such split to CONFLICTED, which made
+    # the MEDIUM branch (requires NOT opposed AND dissent>0) unreachable — a
+    # contradiction of this module's own docstring. Narrowing the predicate to
+    # `>= 2 on each side` keeps 2-vs-2 splits CONFLICTED while letting 3-vs-1
+    # reach MEDIUM (Defect 5 / F-SC-001). See also convergence.py.
+    opposed = up >= 2 and down >= 2
     # Agreement measured two ways, both published: `agree_frac` is the
     # specification's own measure (larger side over the non-neutral count); the
     # margin is the share by which the larger side leads, which reaches 0.0 on a
