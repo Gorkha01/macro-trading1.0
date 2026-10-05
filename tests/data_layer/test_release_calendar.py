@@ -1043,3 +1043,102 @@ def test_the_validator_accepts_a_join_to_a_series_that_exists() -> None:
 
     validated = SeriesRegistry.model_validate(raw)
     assert validated.release_calendar.event_map["Producer Price Index"] == "ppi"
+
+
+# ---------------------------------------------------------------------------
+# F-REL-001 / F-REL-002 — two documentation claims
+# ---------------------------------------------------------------------------
+def test_the_window_is_built_around_the_date_not_centred_on_it() -> None:
+    """F-REL-002: the docstring said 'centred', which the shipped config is not.
+
+    `window_days_back` (400) and `window_days_forward` (45) differ by an order of
+    magnitude, so 'centred' describes a symmetric window the config never had.
+    """
+    from macro_engine.data_layer.release_calendar import _build_query, fetch_release_dates
+
+    cfg = _cfg()
+    query = _build_query(cfg, as_of=AS_OF)
+    start = date.fromisoformat(query["start_date"])
+    end = date.fromisoformat(query["end_date"])
+    assert (AS_OF - start).days == cfg.window_days_back
+    assert (end - AS_OF).days == cfg.window_days_forward
+    assert cfg.window_days_back != cfg.window_days_forward, "the window is asymmetric"
+    assert "centred on this date" not in (fetch_release_dates.__doc__ or "")
+
+
+def test_the_two_release_sources_return_different_datetime_shapes() -> None:
+    """F-REL-001: naive here, aware in ``publication_dates`` — now recorded.
+
+    Both land in ``ObservationPoint.release_datetime`` and
+    ``_resolve_release_index`` merges the two maps. Nothing compares them today,
+    which is why this is latent rather than live: a comparison would raise rather
+    than silently return a wrong answer, and the calendar is disabled in the
+    shipped config.
+    """
+    import macro_engine.data_layer.release_calendar as mod
+    from macro_engine.data_layer.publication_dates import _extract_exact
+
+    calendar_stamp = mod._parse_event_datetime("2026-08-13T08:30:00")
+    metadata_stamp = _extract_exact(
+        "CPIAUCSL",
+        {"results": [{"series_id": "CPIAUCSL", "last_updated": "2026-09-11T08:37:49-05:00"}]},
+    )
+    assert calendar_stamp is not None and calendar_stamp.tzinfo is None
+    assert metadata_stamp is not None and metadata_stamp.tzinfo is not None
+    with pytest.raises(TypeError):
+        _ = calendar_stamp < metadata_stamp  # the latent cross-source fault
+
+    doc = mod._parse_event_datetime.__doc__ or ""
+    assert "AWARE" in doc and "NAIVE" in doc
+
+
+# ---------------------------------------------------------------------------
+# F-REL-003 / F-REL-004 — an undocumented member, and an untested claim
+# ---------------------------------------------------------------------------
+def test_bool_is_not_a_route_health_check() -> None:
+    """F-REL-003: `__bool__` was the ONE member with no docstring.
+
+    It is False for a read-but-unmatched index as well as for an unreadable one,
+    so truthiness cannot answer "did the route answer?" — ``route_read`` must.
+    The reviewer of this module misread exactly that, which is why the meaning is
+    now stated on the member rather than only discoverable from a test.
+    """
+    import macro_engine.data_layer.release_calendar as mod
+
+    read_but_empty = ReleaseDateIndex(dates={}, match_counts={}, route_read=True)
+    unreadable = ReleaseDateIndex(dates={}, match_counts={}, route_read=False)
+    assert bool(read_but_empty) is False
+    assert bool(unreadable) is False
+    assert read_but_empty.route_read is not unreadable.route_read
+
+    doc = mod.ReleaseDateIndex.__bool__.__doc__ or ""
+    assert "route_read" in doc and "route was read" in doc
+
+
+def test_an_injected_client_is_never_closed_by_this_module() -> None:
+    """F-REL-004: an injected client belongs to the caller, not to this module."""
+    client = _client_returning(SUCCESS_PAYLOAD)
+    fetch_release_dates(as_of=AS_OF, client=client, cfg=_cfg())
+    client.close.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("served", "expected_route_read"),
+    [(SUCCESS_PAYLOAD, True), (httpx.ConnectError("boom"), False)],
+    ids=["success", "exhausted"],
+)
+def test_an_owned_client_is_closed_on_every_path(
+    monkeypatch: pytest.MonkeyPatch, served: Any, expected_route_read: bool
+) -> None:
+    """The `finally` must close an OWNED client on the fall-through path too.
+
+    Previously only read, never tested: the close sits in a `finally` around a
+    loop that `return`s early on success, so both paths had to be exercised.
+    """
+    owned = _client_returning(served)
+    monkeypatch.setattr(httpx, "Client", MagicMock(return_value=owned))
+
+    index = fetch_release_dates(as_of=AS_OF, cfg=_cfg())
+
+    assert index.route_read is expected_route_read
+    owned.close.assert_called_once()

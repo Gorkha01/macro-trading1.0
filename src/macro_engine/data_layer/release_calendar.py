@@ -147,6 +147,24 @@ class ReleaseDateIndex:
         return self.dates.get(series)
 
     def __bool__(self) -> bool:
+        """Whether this index carries any DATES — not whether the route was read.
+
+        ``bool(index)`` is False in TWO different situations, and this is the
+        only place that says so:
+
+        * the route could not be read (``route_read=False``), and
+        * the route answered but nothing matched the event map
+          (``route_read=True`` with ``dates={}``).
+
+        A caller that needs to know whether the ROUTE answered must read
+        ``route_read``; using truthiness for that is exactly the conflation this
+        class's docstring warns about, and it is an easy mistake to make — the
+        reviewer of this module made it, because ``__bool__`` was the one member
+        with no docstring and nothing else in the module mentions it. The test
+        ``test_events_with_no_matching_series_but_successful_read_is_route_read``
+        pins the behaviour; this docstring exists so the behaviour is readable
+        rather than only discoverable.
+        """
         return bool(self.dates)
 
 
@@ -171,6 +189,18 @@ def _parse_event_datetime(raw: object) -> datetime | None:
     datetime is returned as-is rather than being localised: assigning a timezone
     would be an inference this module has no basis for, and an invented offset
     could move a release across a day boundary relative to ``as_of``.
+
+    **This makes the two release-timing sources disagree about shape, and that is
+    worth knowing before comparing them.** ``publication_dates`` returns AWARE
+    datetimes (it preserves the provider's own ``-05:00`` offset), this module
+    returns NAIVE ones, and both land in the same field
+    (``ObservationPoint.release_datetime``) — and ``_resolve_release_index``
+    merges the two maps. Nothing compares them today, which is why this is not a
+    live fault: a ``<``/``min``/``sorted`` across the merged index would raise
+    ``TypeError`` rather than return a wrong answer. It is unreachable while
+    ``release_calendar.enabled`` is false (the shipped state), so it is recorded
+    here rather than normalised: deciding that a bare ``08:30`` means ET is the
+    same inference this function refuses to make.
     """
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -191,7 +221,11 @@ def fetch_release_dates(
     Parameters
     ----------
     as_of:
-        The window is centred on this date. Defaults to today.
+        The window is built AROUND this date, not centred on it: it reaches
+        ``window_days_back`` days into the past and ``window_days_forward`` days
+        into the future, and the shipped config is deliberately asymmetric (400
+        back for history, 45 forward, because the provider publishes few future
+        dates). Defaults to the process's local today.
     client:
         Injected for tests. When ``None`` a client is built from settings, with
         **keep-alive disabled** — the local OpenBB server serves 404 on a reused
