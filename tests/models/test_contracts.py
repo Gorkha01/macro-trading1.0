@@ -9,6 +9,7 @@ Every expected number is derived here, not copied from the implementation.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -33,19 +34,19 @@ def _conf() -> dict[str, float]:
 # ---------------------------------------------------------------------------
 # compute_confidence — the single LAW-1 confidence rule (Section 22.8)
 # ---------------------------------------------------------------------------
-def test_confidence_formula_baseline_no_factors():
+def test_confidence_formula_baseline_no_factors() -> None:
     # base 0.70, no penalties, count 0 -> 0.70, clamped & rounded.
     assert compute_confidence(ConfidenceInputs()) == pytest.approx(0.70)
 
 
-def test_confidence_heuristic_only():
+def test_confidence_heuristic_only() -> None:
     # 0.70 - 0.20 (heuristic) = 0.50
-    assert compute_confidence(
-        ConfidenceInputs(is_heuristic_not_calibrated=True)
-    ) == pytest.approx(0.50)
+    assert compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=True)) == pytest.approx(
+        0.50
+    )
 
 
-def test_confidence_all_penalties_no_bonus():
+def test_confidence_all_penalties_no_bonus() -> None:
     # 0.70 - 0.25 - 0.20 - 0.20 = 0.05 (== floor)
     c = compute_confidence(
         ConfidenceInputs(
@@ -57,7 +58,7 @@ def test_confidence_all_penalties_no_bonus():
     assert c == pytest.approx(0.05)
 
 
-def test_confidence_floor_cannot_be_breached():
+def test_confidence_floor_cannot_be_breached() -> None:
     # All three penalties WITHOUT bonus would be 0.05 (already floor); push harder
     # by adding a negative source count is impossible (ge=0). Confirm the floor
     # holds at exactly 0.05 even with all penalties.
@@ -73,7 +74,7 @@ def test_confidence_floor_cannot_be_breached():
     assert c == pytest.approx(0.05)
 
 
-def test_confidence_independence_bonus_added_before_clamp():
+def test_confidence_independence_bonus_added_before_clamp() -> None:
     # 0.70 - 0.20 (heuristic) + min(4*0.05, 0.25) = 0.50 + 0.20 = 0.70
     c = compute_confidence(
         ConfidenceInputs(is_heuristic_not_calibrated=True, source_independence_count=4)
@@ -81,7 +82,7 @@ def test_confidence_independence_bonus_added_before_clamp():
     assert c == pytest.approx(0.70)
 
 
-def test_confidence_bonus_capped_at_0_25():
+def test_confidence_bonus_capped_at_0_25() -> None:
     # 0.70 + min(10*0.05, 0.25) = 0.70 + 0.25 = 0.95 (== ceiling, no clipping
     # below since 0.95 is exactly the ceiling). With all three penalties too:
     # 0.70 - 0.65 + 0.25 = 0.30.
@@ -100,18 +101,23 @@ def test_confidence_bonus_capped_at_0_25():
     assert c_bonus == pytest.approx(0.95)
 
 
-def test_confidence_is_derived_not_asserted():
+def test_confidence_is_derived_not_asserted() -> None:
     # LAW 1: no model hardcodes confidence. The function reads every constant
     # from config; we prove the config is the single source by checking the
     # formula matches the config values directly (not magic numbers in code).
     p = _conf()
-    expected = p["base"] - p["heuristic_penalty"] + min(
-        3 * p["source_independence_bonus"], p["source_independence_bonus_cap"]
+    expected = (
+        p["base"]
+        - p["heuristic_penalty"]
+        + min(3 * p["source_independence_bonus"], p["source_independence_bonus_cap"])
     )
     expected = round(max(p["floor"], min(p["ceiling"], expected)), 3)
-    assert compute_confidence(
-        ConfidenceInputs(is_heuristic_not_calibrated=True, source_independence_count=3)
-    ) == expected
+    assert (
+        compute_confidence(
+            ConfidenceInputs(is_heuristic_not_calibrated=True, source_independence_count=3)
+        )
+        == expected
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,64 +152,64 @@ class _Nested(FiniteInputs):
     comp: _Sub
 
 
-def test_finite_scalar_ok():
+def test_finite_scalar_ok() -> None:
     assert _Scalar(x=1.5).x == 1.5
 
 
-def test_finite_scalar_nan_rejected():
+def test_finite_scalar_nan_rejected() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         _Scalar(x=float("nan"))
 
 
-def test_finite_scalar_inf_rejected():
+def test_finite_scalar_inf_rejected() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         _Scalar(x=float("inf"))
 
 
-def test_finite_list_ok():
+def test_finite_list_ok() -> None:
     assert _Series(xs=[1.0, 2.0, 3.0]).xs == [1.0, 2.0, 3.0]
 
 
-def test_finite_list_bad_element_rejected():
+def test_finite_list_bad_element_rejected() -> None:
     with pytest.raises(ValueError, match=r"xs\[1\]=inf"):
         _Series(xs=[1.0, float("inf"), 3.0])
 
 
-def test_finite_matrix_bad_diagonal_rejected():
+def test_finite_matrix_bad_diagonal_rejected() -> None:
     # A list[list[float]] — the matrix shape. One nan on the diagonal must be
     # caught at the inner level, named xs[0][0].
     with pytest.raises(ValueError, match=r"grid\[0\]\[0\]=nan"):
         _Matrix(grid=[[float("nan"), 1.0], [2.0, 3.0]])
 
 
-def test_finite_matrix_ok():
+def test_finite_matrix_ok() -> None:
     m = _Matrix(grid=[[1.0, 2.0], [3.0, 4.0]])
     assert m.grid == [[1.0, 2.0], [3.0, 4.0]]
 
 
-def test_finite_dict_value_bad_rejected():
+def test_finite_dict_value_bad_rejected() -> None:
     # A tenor->rate map; a nan rate must be caught, named tenors['10y'].
     with pytest.raises(ValueError, match=r"tenors\['10y'\]=nan"):
         _Curve(tenors={"3mo": 0.05, "10y": float("nan")})
 
 
-def test_finite_dict_ok():
+def test_finite_dict_ok() -> None:
     c = _Curve(tenors={"3mo": 0.05, "10y": 4.2})
     assert c.tenors["10y"] == 4.2
 
 
-def test_finite_mixed_dict_of_lists_rejected():
+def test_finite_mixed_dict_of_lists_rejected() -> None:
     with pytest.raises(ValueError, match=r"points\['q2'\]\[1\]=inf"):
         _Mixed(points={"q1": [1.0, 2.0], "q2": [3.0, float("inf")]})
 
 
-def test_finite_nested_model_rejected():
+def test_finite_nested_model_rejected() -> None:
     # A nested pydantic model field is still an input; nan inside it is refused.
     with pytest.raises(ValueError, match="non-finite"):
         _Nested(comp=_Sub(a=1.0, b=float("nan")))
 
 
-def test_finite_bool_not_treated_as_float():
+def test_finite_bool_not_treated_as_float() -> None:
     # bool is an int subclass in Python; it must NOT trip the float non-finite
     # check (a bool is never non-finite). A list containing True must pass.
     class _WithBool(FiniteInputs):
@@ -212,22 +218,22 @@ def test_finite_bool_not_treated_as_float():
     assert _WithBool(flags=[True, False]).flags == [True, False]
 
 
-def test_finite_none_field_ok():
+def test_finite_none_field_ok() -> None:
     class _Opt(FiniteInputs):
         maybe: float | None = None
 
     assert _Opt().maybe is None
 
 
-def test_finite_extra_field_forbidden():
+def test_finite_extra_field_forbidden() -> None:
     with pytest.raises(ValueError):
-        _Scalar(x=1.0, y=2.0)
+        _Scalar(x=1.0, y=2.0)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
 # ModelResult — the reasoning-object contract (Section 22.9 / Finding #9)
 # ---------------------------------------------------------------------------
-def _base_result(value: ModelValue, **kw) -> ModelResult:
+def _base_result(value: ModelValue, **kw: Any) -> ModelResult:
     return ModelResult(
         model_name="unit_test",
         country="us",
@@ -245,13 +251,13 @@ def _base_result(value: ModelValue, **kw) -> ModelResult:
     "value",
     [3.14, -7, "tightening", True, False, {"a": 1}, [1, 2, 3], None],
 )
-def test_model_result_accepts_full_value_union(value):
+def test_model_result_accepts_full_value_union(value: object) -> None:
     # The corrected union: float|int|str|bool|dict|list|None.
-    res = _base_result(value)
+    res = _base_result(value)  # type: ignore[arg-type]
     assert res.value == value
 
 
-def test_model_result_confidence_range_enforced():
+def test_model_result_confidence_range_enforced() -> None:
     with pytest.raises(ValueError):
         ModelResult(
             model_name="x",
@@ -265,17 +271,17 @@ def test_model_result_confidence_range_enforced():
         )
 
 
-def test_model_result_source_family_typed():
+def test_model_result_source_family_typed() -> None:
     res = _base_result(1.0, source_family=EvidenceSourceFamily.BLS_CPI)
     assert res.source_family is EvidenceSourceFamily.BLS_CPI
 
 
-def test_model_result_extra_field_forbidden():
+def test_model_result_extra_field_forbidden() -> None:
     with pytest.raises(ValueError):
         _base_result(1.0, not_a_field=9)
 
 
-def test_utc_now_is_timezone_aware_utc():
+def test_utc_now_is_timezone_aware_utc() -> None:
     now = utc_now()
     assert now.tzinfo is not None
     assert now.utcoffset() == datetime.now(tz=UTC).utcoffset()
@@ -288,20 +294,20 @@ def test_utc_now_is_timezone_aware_utc():
 # --------------------------------------------------------------------------
 
 
-def test_require_finite_scalars_accepts_finite_values():
+def test_require_finite_scalars_accepts_finite_values() -> None:
     """It must be a no-op for legitimate input, including zero and negatives."""
     require_finite_scalars(a=0.0, b=-1.5, c=1e300, d=0)
     require_finite_scalars()  # no arguments at all
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
-def test_require_finite_scalars_rejects_every_non_finite_form(bad):
+def test_require_finite_scalars_rejects_every_non_finite_form(bad: object) -> None:
     with pytest.raises(ValueError) as exc:
         require_finite_scalars(x=bad)
     assert "non-finite" in str(exc.value)
 
 
-def test_require_finite_scalars_names_the_offending_argument():
+def test_require_finite_scalars_names_the_offending_argument() -> None:
     """The message must name the argument, not merely report that something was
     wrong — that is the whole advantage the FiniteInputs guard has over a bare
     `assert isfinite(...)`."""
@@ -312,7 +318,7 @@ def test_require_finite_scalars_names_the_offending_argument():
     assert "good" not in msg
 
 
-def test_require_finite_scalars_reuses_the_shared_remedy_text():
+def test_require_finite_scalars_reuses_the_shared_remedy_text() -> None:
     """Same wording as a FiniteInputs rejection, so the explanation is identical
     wherever the guard fires (D-078)."""
     from macro_engine.models.contracts import NON_FINITE_INPUT_REMEDY
@@ -322,7 +328,7 @@ def test_require_finite_scalars_reuses_the_shared_remedy_text():
     assert NON_FINITE_INPUT_REMEDY in str(exc.value)
 
 
-def test_require_finite_scalars_covers_container_shapes_too():
+def test_require_finite_scalars_covers_container_shapes_too() -> None:
     """It delegates to FiniteInputs._non_finite_offenders, so a list element or a
     dict value is located exactly rather than merely flagged."""
     with pytest.raises(ValueError) as exc:
@@ -334,7 +340,34 @@ def test_require_finite_scalars_covers_container_shapes_too():
     assert "10y" in str(exc.value)
 
 
-def test_require_finite_scalars_ignores_non_numeric_values():
+def test_require_finite_scalars_ignores_non_numeric_values() -> None:
     """Non-numeric arguments are not this guard's business — FiniteInputs makes
     the same choice, and a bool must not be mistaken for a float."""
     require_finite_scalars(label="ok", flag=True, missing=None)
+
+
+# ---------------------------------------------------------------------------
+# ModelResult.value_dict() / value_float() — the typed narrowing accessors.
+#
+# ``value`` is a broad union (Section 22.9), so a consumer that KNOWS it
+# published a mapping or a number has to narrow it. These are the single typed
+# places to do that; each REFUSES the wrong shape rather than coercing it.
+# ---------------------------------------------------------------------------
+def test_value_dict_returns_the_mapping_and_refuses_a_non_dict() -> None:
+    assert _base_result({"a": 1.0}).value_dict() == {"a": 1.0}
+    with pytest.raises(TypeError, match="not a dict"):
+        _base_result(1.0).value_dict()
+    with pytest.raises(TypeError, match="not a dict"):
+        _base_result(["a"]).value_dict()
+
+
+def test_value_float_narrows_a_number_and_refuses_a_bool_or_mapping() -> None:
+    assert _base_result(1.5).value_float() == 1.5
+    assert _base_result(2).value_float() == 2.0
+    with pytest.raises(TypeError, match="not a number"):
+        _base_result({"a": 1.0}).value_float()
+    # A bool is an int subclass but is NOT a number here: silently turning
+    # ``True`` into ``1.0`` in an arithmetic comparison is the failure it
+    # exists to prevent.
+    with pytest.raises(TypeError, match="not a number"):
+        _base_result(True).value_float()

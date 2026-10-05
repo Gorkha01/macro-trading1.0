@@ -28,7 +28,7 @@ from macro_engine.models.evidence_family import EvidenceSourceFamily
 def _res(
     name: str = "m",
     val: float = 1.0,
-    family=None,
+    family: EvidenceSourceFamily | None = None,
     dq: bool = False,
     confidence: float = 0.7,
 ) -> ModelResult:
@@ -46,7 +46,7 @@ def _res(
     )
 
 
-def test_tag_is_copy_not_mutation():
+def test_tag_is_copy_not_mutation() -> None:
     r = _res()
     tagged = tag_evidence_source(r, EvidenceSourceFamily.BLS_CPI)
     assert r.source_family is None
@@ -55,13 +55,13 @@ def test_tag_is_copy_not_mutation():
     assert any("bls_cpi" in w for w in tagged.warnings)
 
 
-def test_retag_different_family_refused():
+def test_retag_different_family_refused() -> None:
     r = _res(family=EvidenceSourceFamily.BLS_CPI)
     with pytest.raises(ValueError):
         tag_evidence_source(r, EvidenceSourceFamily.BEA_PCE)
 
 
-def test_retag_same_family_idempotent():
+def test_retag_same_family_idempotent() -> None:
     r = _res(family=EvidenceSourceFamily.BLS_CPI)
     tagged = tag_evidence_source(r, EvidenceSourceFamily.BLS_CPI)
     assert tagged.source_family == EvidenceSourceFamily.BLS_CPI
@@ -69,20 +69,18 @@ def test_retag_same_family_idempotent():
     assert sum("bls_cpi" in w for w in tagged.warnings) == 1
 
 
-def test_data_quality_flag_recorded_not_confidence_changed():
+def test_data_quality_flag_recorded_not_confidence_changed() -> None:
     r = _res(confidence=0.9)
-    tagged = tag_evidence_source(
-        r, EvidenceSourceFamily.BLS_CPI, data_quality_flags_present=True
-    )
+    tagged = tag_evidence_source(r, EvidenceSourceFamily.BLS_CPI, data_quality_flags_present=True)
     assert tagged.data_quality_flags_present is True
     assert r.data_quality_flags_present is False  # original untouched
     assert tagged.confidence == 0.9  # confidence VALUE never rewritten here
 
 
-def test_count_single_family_merges_and_warns():
+def test_count_single_family_merges_and_warns() -> None:
     results = [_res(family=EvidenceSourceFamily.BLS_CPI) for _ in range(5)]
     res = count_independent_families(results)
-    t = res.value
+    t = res.value_dict()
     assert t["distinct_families"] == 1
     assert t["families"] == ["bls_cpi"]
     assert t["tagged"] == 5
@@ -92,7 +90,7 @@ def test_count_single_family_merges_and_warns():
     assert res.confidence == 0.50
 
 
-def test_count_mixed_families():
+def test_count_mixed_families() -> None:
     results = [
         _res(family=EvidenceSourceFamily.BLS_CPI),
         _res(family=EvidenceSourceFamily.BLS_CPI),
@@ -100,7 +98,7 @@ def test_count_mixed_families():
         _res(family=EvidenceSourceFamily.MARKET_BREAKEVEN),
     ]
     res = count_independent_families(results)
-    t = res.value
+    t = res.value_dict()
     assert t["distinct_families"] == 3
     assert t["families"] == ["bea_pce", "bls_cpi", "market_breakeven"]
     assert t["duplicate_results"] == 1
@@ -110,23 +108,23 @@ def test_count_mixed_families():
     assert res.confidence == 0.50
 
 
-def test_count_untagged_reported_separately():
+def test_count_untagged_reported_separately() -> None:
     results = [
         _res(family=EvidenceSourceFamily.BLS_CPI),
         _res(),  # untagged
         _res(),  # untagged
     ]
     res = count_independent_families(results)
-    t = res.value
+    t = res.value_dict()
     assert t["distinct_families"] == 1
     assert t["untagged"] == 2
     assert t["tagged"] == 1
     assert any("no source family" in w for w in res.warnings)
 
 
-def test_count_empty_no_results_warning():
+def test_count_empty_no_results_warning() -> None:
     res = count_independent_families([])
-    t = res.value
+    t = res.value_dict()
     assert t["distinct_families"] == 0
     assert any("NO RESULTS SUPPLIED" in w for w in res.warnings)
     assert res.confidence == 0.50

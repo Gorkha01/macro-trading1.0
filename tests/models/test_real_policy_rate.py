@@ -17,10 +17,8 @@ from macro_engine.models.real_policy_rate import (
 )
 
 
-def test_positive_real_rate():
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=5.0, inflation_rate=2.0)
-    )
+def test_positive_real_rate() -> None:
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=5.0, inflation_rate=2.0))
     # 5.0 - 2.0 = 3.0, rounded to 3 dp.
     assert res.value == pytest.approx(3.0)
     assert "real policy rate is +3.00%" in res.interpretation
@@ -29,37 +27,31 @@ def test_positive_real_rate():
     assert res.inputs_used == ["nominal_policy_rate", "inflation_rate"]
 
 
-def test_negative_real_rate():
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=1.0, inflation_rate=3.0)
-    )
+def test_negative_real_rate() -> None:
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=1.0, inflation_rate=3.0))
     # 1.0 - 3.0 = -2.0.
     assert res.value == pytest.approx(-2.0)
     assert "real policy rate is -2.00%" in res.interpretation
     assert res.confidence == pytest.approx(0.70)
 
 
-def test_zero_real_rate_and_confidence_is_base():
+def test_zero_real_rate_and_confidence_is_base() -> None:
     settings = get_settings()
     base = settings.confidence.values["base"]
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=4.0, inflation_rate=4.0)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=4.0, inflation_rate=4.0))
     assert res.value == pytest.approx(0.0)
     # +0.00% formatting.
     assert "real policy rate is +0.00%" in res.interpretation
     assert res.confidence == pytest.approx(round(base, 3))
 
 
-def test_pi_target_appears_in_warning():
+def test_pi_target_appears_in_warning() -> None:
     pi_target = get_settings().policy.pi_target_value
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=2.0, inflation_rate=2.0)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=2.0, inflation_rate=2.0))
     assert any(f"{pi_target:.1f}" in w for w in res.warnings)
 
 
-def test_pi_target_is_described_as_pce_specific_and_as_a_target_not_a_forecast():
+def test_pi_target_is_described_as_pce_specific_and_as_a_target_not_a_forecast() -> None:
     """F-RPR-001: the caveat used to name the 2% objective in a sentence about
     EXPECTED inflation — three mismatches in one clause.
 
@@ -75,9 +67,7 @@ def test_pi_target_is_described_as_pce_specific_and_as_a_target_not_a_forecast()
     The fixed text must (1) keep naming the target so the reader can find it,
     (2) say PCE, and (3) say "target, not a forecast".
     """
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=5.25, inflation_rate=3.0)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=5.25, inflation_rate=3.0))
     quoted = [w for w in res.warnings if "2.0%" in w]
     assert quoted, "the target should still be named so a reader can locate it"
     for w in quoted:
@@ -85,36 +75,30 @@ def test_pi_target_is_described_as_pce_specific_and_as_a_target_not_a_forecast()
         assert "TARGET" in w.upper(), "its role as a target, not a forecast, must be stated"
 
 
-def test_the_measure_independence_caveat_is_present_and_names_the_alternative_measures():
+def test_the_measure_independence_caveat_is_present_and_names_the_alternative_measures() -> None:
     """The function cannot constrain the measure, so it must SAY so.
 
     PCE and CPI are independent production processes in this project's own
     registry (BEA_PCE vs BLS_CPI), so the two answers genuinely differ.
     """
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=3.4)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=3.4))
     w = " ".join(res.warnings)
     assert "CPI" in w and "PCE" in w
     assert "record" in w.lower(), "the caveat must ask for the measure to be recorded"
 
 
-def test_two_measures_give_two_different_answers_from_one_nominal_rate():
+def test_two_measures_give_two_different_answers_from_one_nominal_rate() -> None:
     """The consequence, measured: same policy rate, different measure, different
     real rate. 4.33 - 2.6 (PCE) = 1.73 vs 4.33 - 3.4 (CPI) = 0.93.
     """
-    pce = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=2.6)
-    )
-    cpi = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=3.4)
-    )
+    pce = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=2.6))
+    cpi = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=4.33, inflation_rate=3.4))
     assert pce.value == 1.73
     assert cpi.value == 0.93
     assert pce.value != cpi.value
 
 
-def test_non_finite_inputs_rejected():
+def test_non_finite_inputs_rejected() -> None:
     with pytest.raises(ValueError):
         RealPolicyRateInputs(nominal_policy_rate=float("nan"), inflation_rate=2.0)
     with pytest.raises(ValueError):
@@ -137,7 +121,7 @@ def test_non_finite_inputs_rejected():
         (5.25, 7.00, -1.75),
     ],
 )
-def test_arithmetic_exact_as_literals(nominal, inflation, expected):
+def test_arithmetic_exact_as_literals(nominal: float, inflation: float, expected: float) -> None:
     """Exact equality, not approx: the operation is one subtraction of two
     doubles and the result is rounded to 3dp, so there is no floating slack
     that `approx` needs to absorb. `approx` here would hide a real regression
@@ -149,7 +133,7 @@ def test_arithmetic_exact_as_literals(nominal, inflation, expected):
     assert res.value == expected
 
 
-def test_zero_is_positive_zero_never_negative_zero():
+def test_zero_is_positive_zero_never_negative_zero() -> None:
     """i == pi must publish +0.0 and print "+0.00%", not "-0.00%".
 
     `i - pi` on two equal doubles is +0.0, but a refactor to `-(pi - i)` gives
@@ -157,29 +141,25 @@ def test_zero_is_positive_zero_never_negative_zero():
     equity_macro (F-EM-002), so the contract is pinned here before a refactor
     can introduce it.
     """
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=3.0, inflation_rate=3.0)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=3.0, inflation_rate=3.0))
     assert repr(res.value) == "0.0"
     assert "-0.00%" not in res.interpretation
     assert "+0.00%" in res.interpretation
 
 
-def test_value_keeps_three_dp_while_the_prose_shows_two():
+def test_value_keeps_three_dp_while_the_prose_shows_two() -> None:
     """The published value and the display string are allowed to differ.
 
     Hand: 5.2525 - 3.1234 = 2.1291 -> value round(...,3) = 2.129, while the
     interpretation formats to 2dp (+2.13%). Pinning both makes the split
     explicit, so a change to either is visible rather than assumed harmless.
     """
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=5.2525, inflation_rate=3.1234)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=5.2525, inflation_rate=3.1234))
     assert res.value == 2.129
     assert "+2.13%" in res.interpretation
 
 
-def test_confidence_is_untouched_by_the_input_values():
+def test_confidence_is_untouched_by_the_input_values() -> None:
     """No input can move confidence: no flag is keyed on any threshold.
 
     If this fails, a graded threshold was introduced, which would make the
@@ -194,7 +174,7 @@ def test_confidence_is_untouched_by_the_input_values():
     assert seen == {0.70}
 
 
-def test_confidence_does_not_carry_the_heuristic_penalty():
+def test_confidence_does_not_carry_the_heuristic_penalty() -> None:
     """Distinguish "no flags" from "the heuristic flag only".
 
     Both penalties are 0.20, so asserting the NUMBER 0.70 alone would not catch
@@ -206,14 +186,12 @@ def test_confidence_does_not_carry_the_heuristic_penalty():
 
     assert compute_confidence(ConfidenceInputs()) == 0.70
     assert compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=True)) == 0.50
-    res = real_policy_rate(
-        RealPolicyRateInputs(nominal_policy_rate=5.25, inflation_rate=3.0)
-    )
+    res = real_policy_rate(RealPolicyRateInputs(nominal_policy_rate=5.25, inflation_rate=3.0))
     assert res.confidence == 0.70
     assert res.confidence != 0.50
 
 
-def test_ex_post_caveat_is_unconditional():
+def test_ex_post_caveat_is_unconditional() -> None:
     """It is a property of the FORM, asserted for every input including the
     neutral one — the module does not gate it on the level of the result.
     """
@@ -224,15 +202,13 @@ def test_ex_post_caveat_is_unconditional():
         assert any("Ex-post, not ex-ante" in w for w in res.warnings)
 
 
-def test_inputs_are_required_and_extra_fields_are_forbidden():
+def test_inputs_are_required_and_extra_fields_are_forbidden() -> None:
     """A default on either term would be a second source of truth that silently
     wins when a caller omits it (the same rule phillips.beta is subject to).
     """
     with pytest.raises(ValueError):
-        RealPolicyRateInputs(inflation_rate=3.0)
+        RealPolicyRateInputs(inflation_rate=3.0)  # type: ignore[call-arg]
     with pytest.raises(ValueError):
-        RealPolicyRateInputs(nominal_policy_rate=5.0)
+        RealPolicyRateInputs(nominal_policy_rate=5.0)  # type: ignore[call-arg]
     with pytest.raises(ValueError):
-        RealPolicyRateInputs(
-            nominal_policy_rate=5.0, inflation_rate=3.0, unexpected=1.0
-        )
+        RealPolicyRateInputs(nominal_policy_rate=5.0, inflation_rate=3.0, unexpected=1.0)  # type: ignore[call-arg]

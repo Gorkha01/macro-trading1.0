@@ -359,11 +359,7 @@ def growth_accounting_decomposition(
             f"unreliability rather than averaging it away."
         )
 
-    if (
-        labor_force_growth_pct < 0.0
-        and productivity_growth_pct > 0.0
-        and total > 0.0
-    ):
+    if labor_force_growth_pct < 0.0 and productivity_growth_pct > 0.0 and total > 0.0:
         # All three conditions are required. The docstring's stated case is "a
         # shrinking labor force can produce POSITIVE potential growth only if
         # productivity growth EXCEEDS the decline" -- i.e. total > 0. A bare

@@ -34,8 +34,8 @@ def main() -> int:
 
     # callgraph.json keys nodes by dotted qualified name and stores a dotted
     # module, not a path. Convert: macro_engine.models.x -> src/macro_engine/models/x.py
-    wired = Counter()
-    orphan = Counter()
+    wired: Counter[str] = Counter()
+    orphan: Counter[str] = Counter()
     for node in graph["nodes"].values():
         module: str = node["module"]
         if not module.startswith("macro_engine."):
@@ -85,9 +85,7 @@ def main() -> int:
         if bucket not in agg:
             continue
         files, lines, reviewed, w, o = agg[bucket]
-        label = (
-            f"`{bucket}` (reviewed last)" if bucket == "api_layer/" else f"`{bucket}`"
-        )
+        label = f"`{bucket}` (reviewed last)" if bucket == "api_layer/" else f"`{bucket}`"
         print(f"| {label} | {files} | {lines:,} | {reviewed:,} | {w} | {o} |")
         for i, v in enumerate((files, lines, reviewed, w, o)):
             totals[i] += v

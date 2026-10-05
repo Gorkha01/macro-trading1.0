@@ -104,7 +104,6 @@ def make_snapshot(**fields: Any) -> MacroDataSnapshot:
     unknown = sorted(set(fields) - known)
     if unknown:
         raise ValueError(
-            f"unknown MacroDataSnapshot field(s) {unknown}; "
-            f"permitted fields: {sorted(known)}"
+            f"unknown MacroDataSnapshot field(s) {unknown}; permitted fields: {sorted(known)}"
         )
     return MacroDataSnapshot(**fields)

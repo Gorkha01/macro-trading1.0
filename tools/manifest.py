@@ -140,7 +140,7 @@ def main() -> int:
         "files": entries,
     }
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    OUT.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="")
     print(
         f"files={len(entries)} lines={total_lines} reviewed={reviewed_lines} "
         f"pct={pct} fully={fully} not_reached={not_reached}"

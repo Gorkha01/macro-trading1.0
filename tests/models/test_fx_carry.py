@@ -27,6 +27,7 @@ import math
 import pytest
 
 import macro_engine.models.fx_carry as fx_carry
+from macro_engine.models.contracts import ModelResult
 from macro_engine.models.fx_carry import (
     CarryScoreInputs,
     CIPInputs,
@@ -49,35 +50,35 @@ def _cip(*, forward: float, quote: str = "domestic_per_foreign") -> CIPInputs:
         i_foreign_annualized=0.03,
         tenor_days=90,
         day_count_basis="actual_360",
-        quote=quote,
+        quote=quote,  # type: ignore[arg-type]
     )
 
 
 # ---------------------------------------------------------------------------
 # cip_check
 # ---------------------------------------------------------------------------
-def test_cip_check_implied_forward_matches_the_identity():
+def test_cip_check_implied_forward_matches_the_identity() -> None:
     # F_imp = 1.10 * (1 + 0.05*0.25) / (1 + 0.03*0.25) = 1.10*1.0125/1.0075
-    v = cip_check(_cip(forward=1.105)).value
+    v = cip_check(_cip(forward=1.105)).value_dict()
     assert v["implied_forward"] == pytest.approx(1.10545906, abs=1e-8)
     assert v["i_domestic_period"] == pytest.approx(0.0125, abs=1e-9)
     assert v["i_foreign_period"] == pytest.approx(0.0075, abs=1e-9)
     assert v["day_count_basis_days"] == 360
 
 
-def test_cip_check_deviation_and_basis_match_hand_arithmetic():
+def test_cip_check_deviation_and_basis_match_hand_arithmetic() -> None:
     # deviation = (1.105/1.1054590570... - 1)*100 = -0.041526%
     # synthetic = (1.105/1.10)*1.0075 - 1 = 0.0120795455
     # basis_period = 0.0120795455 - 0.0125 = -0.0004204545 -> -16.8182 bp
-    v = cip_check(_cip(forward=1.105)).value
+    v = cip_check(_cip(forward=1.105)).value_dict()
     assert v["deviation_pct"] == pytest.approx(-0.041526, abs=1e-5)
     assert v["synthetic_domestic_funding_rate_period"] == pytest.approx(0.01207955, abs=1e-8)
     assert v["domestic_funding_basis_bp_annualized"] == pytest.approx(-16.8182, abs=1e-3)
 
 
-def test_cip_check_basis_identity_holds_between_two_published_keys():
+def test_cip_check_basis_identity_holds_between_two_published_keys() -> None:
     # basis_period == (1 + i_d_period) * deviation_fraction, EXACTLY.
-    v = cip_check(_cip(forward=1.105)).value
+    v = cip_check(_cip(forward=1.105)).value_dict()
     scale = v["tenor_days"] / v["day_count_basis_days"]
     basis_period = v["domestic_funding_basis_bp_annualized"] / 10_000.0 * scale
     deviation_fraction = v["deviation_pct"] / 100.0
@@ -86,29 +87,29 @@ def test_cip_check_basis_identity_holds_between_two_published_keys():
     )
 
 
-def test_cip_check_sign_convention_and_severity_bands():
+def test_cip_check_sign_convention_and_severity_bands() -> None:
     # forward ABOVE the implied one -> positive deviation -> domestic is the
     # expensive side. 1.107/1.105459 - 1 = +0.1394% -> NOTABLE (band 0.1..0.5).
     notable = cip_check(_cip(forward=1.107))
-    assert notable.value["deviation_pct"] > 0.0
-    assert notable.value["severity"] == "notable"
-    assert notable.value["stressed_currency"] == "domestic"
+    assert notable.value_dict()["deviation_pct"] > 0.0
+    assert notable.value_dict()["severity"] == "notable"
+    assert notable.value_dict()["stressed_currency"] == "domestic"
     assert notable.direction == "domestic_funding_stress"
     assert len(notable.warnings) == 1
     # 1.12 -> +1.315% -> EXTREME
     extreme = cip_check(_cip(forward=1.12))
-    assert extreme.value["severity"] == "extreme"
+    assert extreme.value_dict()["severity"] == "extreme"
     # inside the notable band -> no side, no warning
     quiet = cip_check(_cip(forward=1.105))
-    assert quiet.value["severity"] == "none"
-    assert quiet.value["stressed_currency"] == "none"
+    assert quiet.value_dict()["severity"] == "none"
+    assert quiet.value_dict()["stressed_currency"] == "none"
     assert quiet.warnings == []
 
 
-def test_cip_check_quote_inversion_round_trips():
+def test_cip_check_quote_inversion_round_trips() -> None:
     # A foreign_per_domestic quote is inverted before the identity, so a pair
     # quoted the other way with the reciprocal rates gives the SAME deviation.
-    direct = cip_check(_cip(forward=1.105)).value
+    direct = cip_check(_cip(forward=1.105)).value_dict()
     inverted = cip_check(
         CIPInputs(
             spot=1.0 / 1.10,
@@ -118,17 +119,17 @@ def test_cip_check_quote_inversion_round_trips():
             tenor_days=90,
             quote="foreign_per_domestic",
         )
-    ).value
+    ).value_dict()
     assert inverted["quote_was_inverted"] is True
     assert inverted["deviation_pct"] == pytest.approx(direct["deviation_pct"], abs=1e-4)
 
 
-def test_cip_check_refuses_non_positive_exchange_rate():
+def test_cip_check_refuses_non_positive_exchange_rate() -> None:
     with pytest.raises(ValueError, match="strictly positive"):
         _cip(forward=0.0)
 
 
-def test_cip_check_refuses_tenor_beyond_the_basis():
+def test_cip_check_refuses_tenor_beyond_the_basis() -> None:
     with pytest.raises(ValueError, match="money-market year"):
         CIPInputs(
             spot=1.1,
@@ -140,7 +141,7 @@ def test_cip_check_refuses_tenor_beyond_the_basis():
         )
 
 
-def test_cip_check_refuses_period_rate_at_minus_100pct():
+def test_cip_check_refuses_period_rate_at_minus_100pct() -> None:
     # annualised -5.0 over a full year is a period rate of -500% < -100%.
     with pytest.raises(ValueError, match="-100%"):
         CIPInputs(
@@ -152,7 +153,7 @@ def test_cip_check_refuses_period_rate_at_minus_100pct():
         )
 
 
-def test_cip_check_refuses_non_finite():
+def test_cip_check_refuses_non_finite() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         CIPInputs(
             spot=float("nan"),
@@ -163,18 +164,18 @@ def test_cip_check_refuses_non_finite():
         )
 
 
-def test_cip_check_negative_zero_publishes_positive_zero():
+def test_cip_check_negative_zero_publishes_positive_zero() -> None:
     # F-FX-002: a forward a hair BELOW the implied level makes the deviation (and
     # the basis, which is a tiny negative even at exact parity) round to -0.0.
     # The published values must be non-negative zeros.
     implied = 1.10 * (1.0 + 0.05 * 0.25) / (1.0 + 0.03 * 0.25)
-    v = cip_check(_cip(forward=implied * (1.0 - 1e-12))).value
+    v = cip_check(_cip(forward=implied * (1.0 - 1e-12))).value_dict()
     assert repr(v["deviation_pct"]) == "0.0"
     assert repr(v["domestic_funding_basis_bp_annualized"]) == "0.0"
     assert "-0.0000" not in cip_check(_cip(forward=implied)).interpretation
 
 
-def test_cip_check_sets_the_market_fx_source_family():
+def test_cip_check_sets_the_market_fx_source_family() -> None:
     # F-FX-004: its four siblings set MARKET_FX; cip_check did not.
     from macro_engine.models.contracts import EvidenceSourceFamily
 
@@ -184,103 +185,103 @@ def test_cip_check_sets_the_market_fx_source_family():
 # ---------------------------------------------------------------------------
 # carry_score
 # ---------------------------------------------------------------------------
-def test_carry_score_ratio_hand_computed():
+def test_carry_score_ratio_hand_computed() -> None:
     # 0.02 / 0.12 = 0.166667 (floor 0.1 does not bind)
     v = carry_score(
         CarryScoreInputs(rate_differential_annualized=0.02, realized_vol_annualized=0.12)
-    ).value
+    ).value_dict()
     assert v["score"] == pytest.approx(0.166667, abs=1e-6)
     assert v["effective_denominator"] == pytest.approx(0.12)
     assert v["volatility_floor_binding"] is False
     assert v["carry_outcome"] == "long_domestic"
 
 
-def test_carry_score_floor_binds_and_warns():
+def test_carry_score_floor_binds_and_warns() -> None:
     # 0.05 < floor 0.1, so the denominator is the FLOOR: 0.02/0.1 = 0.2
     res = carry_score(
         CarryScoreInputs(rate_differential_annualized=0.02, realized_vol_annualized=0.05)
     )
-    assert res.value["score"] == pytest.approx(0.2)
-    assert res.value["volatility_floor_binding"] is True
+    assert res.value_dict()["score"] == pytest.approx(0.2)
+    assert res.value_dict()["volatility_floor_binding"] is True
     assert len(res.warnings) == 1 and "FLOOR" in res.warnings[0]
 
 
-def test_carry_score_outcome_labels():
+def test_carry_score_outcome_labels() -> None:
     assert (
         carry_score(
             CarryScoreInputs(rate_differential_annualized=-0.02, realized_vol_annualized=0.12)
-        ).value["carry_outcome"]
+        ).value_dict()["carry_outcome"]
         == "long_foreign"
     )
     assert (
         carry_score(
             CarryScoreInputs(rate_differential_annualized=0.0, realized_vol_annualized=0.12)
-        ).value["carry_outcome"]
+        ).value_dict()["carry_outcome"]
         == "flat"
     )
 
 
-def test_carry_score_refuses_non_positive_volatility():
+def test_carry_score_refuses_non_positive_volatility() -> None:
     with pytest.raises(ValueError, match="strictly positive"):
         CarryScoreInputs(rate_differential_annualized=0.02, realized_vol_annualized=0.0)
 
 
-def test_carry_score_refuses_non_finite():
+def test_carry_score_refuses_non_finite() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         CarryScoreInputs(rate_differential_annualized=float("inf"), realized_vol_annualized=0.1)
 
 
-def test_carry_score_negative_zero_publishes_positive_zero():
+def test_carry_score_negative_zero_publishes_positive_zero() -> None:
     # F-FX-002: a differential a trillionth below zero rounds the score to -0.0.
     res = carry_score(
         CarryScoreInputs(rate_differential_annualized=-1e-12, realized_vol_annualized=0.12)
     )
-    assert repr(res.value["score"]) == "0.0"
+    assert repr(res.value_dict()["score"]) == "0.0"
     assert "-0.0000" not in res.interpretation
 
 
 # ---------------------------------------------------------------------------
 # dollar_smile_regime
 # ---------------------------------------------------------------------------
-def _smile(vix: float, growth: float, rate: float):
+def _smile(vix: float, growth: float, rate: float) -> ModelResult:
     return dollar_smile_regime(
         DollarSmileInputs(vix_level=vix, us_growth_surprise=growth, us_vs_row_rate_diff=rate)
     )
 
 
-def test_dollar_smile_left_when_vix_above_the_gate():
+def test_dollar_smile_left_when_vix_above_the_gate() -> None:
     res = _smile(26.0, -0.5, -0.5)
-    assert res.value["side"] == "left"
-    assert res.value["vix_above_threshold"] is True
+    assert res.value_dict()["side"] == "left"
+    assert res.value_dict()["vix_above_threshold"] is True
     assert len(res.warnings) == 1 and "LEFT" in res.warnings[0]
 
 
-def test_dollar_smile_right_when_both_signed_inputs_positive():
+def test_dollar_smile_right_when_both_signed_inputs_positive() -> None:
     res = _smile(20.0, 0.4, 0.3)
-    assert res.value["side"] == "right"
-    assert res.value["growth_above_boundary"] is True
-    assert res.value["rate_above_boundary"] is True
+    assert res.value_dict()["side"] == "right"
+    assert res.value_dict()["growth_above_boundary"] is True
+    assert res.value_dict()["rate_above_boundary"] is True
     assert res.warnings == []
 
 
-def test_dollar_smile_middle_and_the_neutral_case():
+def test_dollar_smile_middle_and_the_neutral_case() -> None:
     # VIX exactly at the gate is NOT left; one input exactly zero is NOT right.
     res = _smile(25.0, 0.0, 0.3)
-    assert res.value["side"] == "middle"
-    assert res.value["vix_above_threshold"] is False
-    assert res.value["is_neutral_input"] is True
+    assert res.value_dict()["side"] == "middle"
+    assert res.value_dict()["vix_above_threshold"] is False
+    assert res.value_dict()["is_neutral_input"] is True
     assert any("NEUTRAL" in w for w in res.warnings)
     # a middle limb reached by an outright NEGATIVE input is not "neutral"
     res2 = _smile(20.0, -0.4, 0.3)
-    assert res2.value["side"] == "middle"
-    assert res2.value["is_neutral_input"] is False
+    assert res2.value_dict()["side"] == "middle"
+    assert res2.value_dict()["is_neutral_input"] is False
 
 
-def test_dollar_smile_direction_is_unset():
+def test_dollar_smile_direction_is_unset() -> None:
     assert _smile(20.0, 0.4, 0.3).direction is None
 
 
-def test_dollar_smile_refuses_non_finite():
+def test_dollar_smile_refuses_non_finite() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         DollarSmileInputs(vix_level=float("nan"), us_growth_surprise=0.0, us_vs_row_rate_diff=0.0)
 
@@ -288,69 +289,69 @@ def test_dollar_smile_refuses_non_finite():
 # ---------------------------------------------------------------------------
 # uip_expected_move
 # ---------------------------------------------------------------------------
-def test_uip_exact_ratio_hand_computed():
+def test_uip_exact_ratio_hand_computed() -> None:
     # ((1.0125)/(1.0075) - 1)*100 = 0.496278%; the first-order form is 0.5%
     v = uip_expected_move(
         UIPInputs(i_domestic_annualized=0.05, i_foreign_annualized=0.03, tenor_days=90)
-    ).value
+    ).value_dict()
     assert v["expected_move_pct"] == pytest.approx(0.496278, abs=1e-6)
     assert v["expected_move_simple_pct"] == pytest.approx(0.5, abs=1e-9)
     assert v["differential_period"] == pytest.approx(0.005, abs=1e-9)
     assert v["direction"] == "domestic_depreciation"
 
 
-def test_uip_flat_case_warns():
+def test_uip_flat_case_warns() -> None:
     res = uip_expected_move(
         UIPInputs(i_domestic_annualized=0.03, i_foreign_annualized=0.03, tenor_days=90)
     )
-    assert res.value["direction"] == "flat"
-    assert res.value["expected_move_pct"] == 0.0
+    assert res.value_dict()["direction"] == "flat"
+    assert res.value_dict()["expected_move_pct"] == 0.0
     assert len(res.warnings) == 1
 
 
-def test_uip_confidence_is_the_configured_cap():
+def test_uip_confidence_is_the_configured_cap() -> None:
     res = uip_expected_move(
         UIPInputs(i_domestic_annualized=0.05, i_foreign_annualized=0.03, tenor_days=90)
     )
     assert res.confidence == pytest.approx(0.15)
 
 
-def test_uip_refuses_tenor_beyond_the_basis():
+def test_uip_refuses_tenor_beyond_the_basis() -> None:
     with pytest.raises(ValueError, match="money-market year"):
         UIPInputs(i_domestic_annualized=0.05, i_foreign_annualized=0.03, tenor_days=400)
 
 
-def test_uip_negative_zero_publishes_positive_zero():
+def test_uip_negative_zero_publishes_positive_zero() -> None:
     # F-FX-002: a differential a hair below zero rounds both forms to -0.0.
     res = uip_expected_move(
         UIPInputs(i_domestic_annualized=0.03, i_foreign_annualized=0.03 + 1e-12, tenor_days=90)
     )
-    assert repr(res.value["expected_move_pct"]) == "0.0"
-    assert repr(res.value["expected_move_simple_pct"]) == "0.0"
+    assert repr(res.value_dict()["expected_move_pct"]) == "0.0"
+    assert repr(res.value_dict()["expected_move_simple_pct"]) == "0.0"
     assert "-0.0000" not in res.interpretation
 
 
 # ---------------------------------------------------------------------------
 # ppp_valuation
 # ---------------------------------------------------------------------------
-def test_ppp_deviation_and_status_hand_computed():
+def test_ppp_deviation_and_status_hand_computed() -> None:
     # (1.20 - 1.10)/1.10*100 = 9.0909% -> overvalued
     over = ppp_valuation(PPPInputs(spot_rate=1.20, ppp_implied_rate=1.10, horizon_years=5.0))
-    assert over.value["deviation_pct"] == pytest.approx(9.09, abs=1e-6)
-    assert over.value["status"] == "overvalued"
-    assert over.value["ratio"] == pytest.approx(1.090909, abs=1e-6)
+    assert over.value_dict()["deviation_pct"] == pytest.approx(9.09, abs=1e-6)
+    assert over.value_dict()["status"] == "overvalued"
+    assert over.value_dict()["ratio"] == pytest.approx(1.090909, abs=1e-6)
     assert over.confidence == pytest.approx(0.2)
     # (1.05 - 1.10)/1.10*100 = -4.5455% -> undervalued
     under = ppp_valuation(PPPInputs(spot_rate=1.05, ppp_implied_rate=1.10, horizon_years=5.0))
-    assert under.value["deviation_pct"] == pytest.approx(-4.55, abs=1e-6)
-    assert under.value["status"] == "undervalued"
+    assert under.value_dict()["deviation_pct"] == pytest.approx(-4.55, abs=1e-6)
+    assert under.value_dict()["status"] == "undervalued"
     # exact tie -> at_parity, its own member
     par = ppp_valuation(PPPInputs(spot_rate=1.10, ppp_implied_rate=1.10, horizon_years=5.0))
-    assert par.value["status"] == "at_parity"
-    assert par.value["deviation_pct"] == 0.0
+    assert par.value_dict()["status"] == "at_parity"
+    assert par.value_dict()["deviation_pct"] == 0.0
 
 
-def test_ppp_tactical_horizon_and_implausible_warnings():
+def test_ppp_tactical_horizon_and_implausible_warnings() -> None:
     # horizon 1.0 < tactical 3.0 -> the no-tactical-timing warning fires
     short = ppp_valuation(PPPInputs(spot_rate=1.20, ppp_implied_rate=1.10, horizon_years=1.0))
     assert any("MULTI-YEAR" in w for w in short.warnings)
@@ -361,28 +362,30 @@ def test_ppp_tactical_horizon_and_implausible_warnings():
     assert any("UNIT OR CONVENTION ERROR" in w for w in wide.warnings)
 
 
-def test_ppp_negative_zero_publishes_positive_zero():
+def test_ppp_negative_zero_publishes_positive_zero() -> None:
     # F-FX-002: a spot within 0.005% of the PPP level rounds to -0.0 while the
     # status reads 'undervalued'.
     res = ppp_valuation(
         PPPInputs(spot_rate=1.10 * (1.0 - 1e-9), ppp_implied_rate=1.10, horizon_years=5.0)
     )
-    assert res.value["status"] == "undervalued"
-    assert repr(res.value["deviation_pct"]) == "0.0"
+    assert res.value_dict()["status"] == "undervalued"
+    assert repr(res.value_dict()["deviation_pct"]) == "0.0"
 
 
-def test_ppp_refuses_non_positive_implied_rate():
+def test_ppp_refuses_non_positive_implied_rate() -> None:
     with pytest.raises(ValueError):
         PPPInputs(spot_rate=1.10, ppp_implied_rate=-1.0, horizon_years=5.0)
 
 
-def test_ppp_refuses_a_malformed_fetch_request():
+def test_ppp_refuses_a_malformed_fetch_request() -> None:
     # the rate omitted is the FETCH path, so BOTH ISO3 codes are required
     with pytest.raises(ValueError, match="BOTH"):
         PPPInputs(spot_rate=1.10, horizon_years=5.0, domestic_iso3="DEU")
 
 
-def test_ppp_inputs_used_names_the_iso_pair_on_the_fetch_path(monkeypatch):
+def test_ppp_inputs_used_names_the_iso_pair_on_the_fetch_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # F-FX-005: on the fetch path the ISO pair IS an input, so it must be named.
     monkeypatch.setattr(
         fx_carry,
@@ -400,7 +403,7 @@ def test_ppp_inputs_used_names_the_iso_pair_on_the_fetch_path(monkeypatch):
 # ---------------------------------------------------------------------------
 # Module-level guards for F-FX-001 / F-FX-003 / F-FX-006
 # ---------------------------------------------------------------------------
-def test_module_docstring_names_ppp_and_its_fetch():
+def test_module_docstring_names_ppp_and_its_fetch() -> None:
     # F-FX-001: the module docstring claimed "this module never reaches for a
     # provider" and omitted ppp_valuation, which DOES fetch.
     doc = fx_carry.__doc__ or ""
@@ -409,7 +412,7 @@ def test_module_docstring_names_ppp_and_its_fetch():
     assert "FETCHED" in doc
 
 
-def test_uip_warnings_has_no_unread_parameter():
+def test_uip_warnings_has_no_unread_parameter() -> None:
     # F-FX-003: `_uip_warnings` accepted `expected_move_pct` and never read it.
     import inspect
 
@@ -417,12 +420,12 @@ def test_uip_warnings_has_no_unread_parameter():
     assert "expected_move_pct" not in params
 
 
-def test_uip_direction_is_exported():
+def test_uip_direction_is_exported() -> None:
     # F-FX-006: every other module Literal is in __all__; UIPDirection was not.
     assert "UIPDirection" in fx_carry.__all__
 
 
-def test_positive_zero_helper_maps_only_negative_zero():
+def test_positive_zero_helper_maps_only_negative_zero() -> None:
     assert repr(fx_carry._positive_zero(-0.0)) == "0.0"
     assert repr(fx_carry._positive_zero(0.0)) == "0.0"
     assert fx_carry._positive_zero(-1e-6) == -1e-6

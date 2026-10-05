@@ -47,6 +47,7 @@ The index-number arithmetic
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 
@@ -79,18 +80,18 @@ _CUR_PRICES = {"A": 3.0, "B": 2.5}
 _CUR_QTY = {"A": 4.0, "B": 8.0}
 
 
-def _basket(**over):
-    kw = dict(
-        base_prices=dict(_BASE_PRICES),
-        base_quantities=dict(_BASE_QTY),
-        current_prices=dict(_CUR_PRICES),
-        current_quantities=dict(_CUR_QTY),
-    )
+def _basket(**over: Any) -> IndexNumberInputs:
+    kw = {
+        "base_prices": dict(_BASE_PRICES),
+        "base_quantities": dict(_BASE_QTY),
+        "current_prices": dict(_CUR_PRICES),
+        "current_quantities": dict(_CUR_QTY),
+    }
     kw.update(over)
     return IndexNumberInputs(**kw)
 
 
-def test_config_values_this_file_hand_computed_against():
+def test_config_values_this_file_hand_computed_against() -> None:
     """Pin the leaves the arithmetic depends on. A failure here means this file
     is stale, not that the model is wrong — naming that distinction stops a
     recalibration from being read as a defect."""
@@ -107,7 +108,7 @@ def test_config_values_this_file_hand_computed_against():
 # --------------------------------------------------------------------------
 
 
-def test_sectoral_balances_identity_hand_computed():
+def test_sectoral_balances_identity_hand_computed() -> None:
     """S=18, I=21, T=17, G=24 (same unit).
 
     private = 18 - 21 = -3
@@ -130,7 +131,7 @@ def test_sectoral_balances_identity_hand_computed():
     assert "deficit" in r.interpretation
 
 
-def test_identity_holds_for_a_surplus_and_for_exact_balance():
+def test_identity_holds_for_a_surplus_and_for_exact_balance() -> None:
     """+2 and 0 must both be described correctly, and the components must sum."""
     surplus = savings_investment_identity(
         SavingsInvestmentInputs(
@@ -140,7 +141,7 @@ def test_identity_holds_for_a_surplus_and_for_exact_balance():
             government_spending=19.0,
         )
     )
-    assert surplus.value["implied_current_account"] == 8.0
+    assert surplus.value_dict()["implied_current_account"] == 8.0
     assert "surplus" in surplus.interpretation
 
     balanced = savings_investment_identity(
@@ -151,11 +152,11 @@ def test_identity_holds_for_a_surplus_and_for_exact_balance():
             government_spending=18.0,
         )
     )
-    assert balanced.value["implied_current_account"] == 0.0
+    assert balanced.value_dict()["implied_current_account"] == 0.0
     assert "balanced" in balanced.interpretation
 
 
-def test_identity_components_always_sum_to_the_current_account():
+def test_identity_components_always_sum_to_the_current_account() -> None:
     """The D-009 cross-field identity: a reader must be able to recompute the
     total from the two published components."""
     for s, i, t, g in [(18.0, 21.0, 17.0, 24.0), (30.0, 10.0, 5.0, 40.0), (1.0, 1.0, 1.0, 1.0)]:
@@ -164,11 +165,11 @@ def test_identity_components_always_sum_to_the_current_account():
                 private_saving=s, private_investment=i, tax_revenue=t, government_spending=g
             )
         )
-        v = r.value
+        v = r.value_dict()
         assert v["private_balance"] + v["fiscal_balance"] == v["implied_current_account"]
 
 
-def test_identity_confidence_is_the_unpenalised_base():
+def test_identity_confidence_is_the_unpenalised_base() -> None:
     """Exact arithmetic over four observed flows -> no penalty -> 0.70."""
     r = savings_investment_identity(
         SavingsInvestmentInputs(
@@ -178,7 +179,7 @@ def test_identity_confidence_is_the_unpenalised_base():
     assert r.confidence == 0.70
 
 
-def test_identity_warns_about_unit_mixing_unconditionally():
+def test_identity_warns_about_unit_mixing_unconditionally() -> None:
     """The identity is homogeneous, so a unit mismatch still balances — which is
     why the caveat is a property of the form and is always present."""
     r = savings_investment_identity(
@@ -194,7 +195,7 @@ def test_identity_warns_about_unit_mixing_unconditionally():
 # --------------------------------------------------------------------------
 
 
-def test_quantity_theory_arithmetic_hand_computed():
+def test_quantity_theory_arithmetic_hand_computed() -> None:
     """%dP ~= %dM + %dV - %dY.  10 + (-6) - 2 = 2."""
     r = quantity_theory_implied_inflation(
         QuantityTheoryInputs(
@@ -206,7 +207,7 @@ def test_quantity_theory_arithmetic_hand_computed():
     assert r.value == 2.0
 
 
-def test_quantity_theory_the_qe_case_money_growth_with_collapsing_velocity():
+def test_quantity_theory_the_qe_case_money_growth_with_collapsing_velocity() -> None:
     """The 2009-2015 episode in numbers: M up hard, V down hard, P barely moves.
 
     %dM=25, %dV=-22, %dY=2 -> 25 - 22 - 2 = 1. The naive "money printing"
@@ -222,7 +223,7 @@ def test_quantity_theory_the_qe_case_money_growth_with_collapsing_velocity():
     assert r.value == 1.0
 
 
-def test_quantity_theory_confidence_carries_the_heuristic_penalty():
+def test_quantity_theory_confidence_carries_the_heuristic_penalty() -> None:
     """It is explicitly a heuristic diagnostic: 0.70 - 0.20 = 0.50."""
     r = quantity_theory_implied_inflation(
         QuantityTheoryInputs(
@@ -232,7 +233,7 @@ def test_quantity_theory_confidence_carries_the_heuristic_penalty():
     assert r.confidence == 0.50
 
 
-def test_quantity_theory_warning_names_velocity_instability():
+def test_quantity_theory_warning_names_velocity_instability() -> None:
     """The warning IS the substance here — the module says so."""
     r = quantity_theory_implied_inflation(
         QuantityTheoryInputs(
@@ -249,39 +250,39 @@ def test_quantity_theory_warning_names_velocity_instability():
 # --------------------------------------------------------------------------
 
 
-def test_laspeyres_index_hand_computed():
+def test_laspeyres_index_hand_computed() -> None:
     """L = SUM[p_t q_0] / SUM[p_0 q_0] * 100 = 42.5 / 20.0 * 100 = 212.5."""
     r = laspeyres_index(_basket())
     assert r.value == 212.5
 
 
-def test_paasche_index_hand_computed():
+def test_paasche_index_hand_computed() -> None:
     """P = SUM[p_t q_t] / SUM[p_0 q_t] * 100 = 32.0 / 20.0 * 100 = 160.0."""
     r = paasche_index(_basket())
     assert r.value == 160.0
 
 
-def test_fisher_index_hand_computed_and_between_the_two():
+def test_fisher_index_hand_computed_and_between_the_two() -> None:
     """F = sqrt(212.5 * 160.0) = sqrt(34000) = 184.390889..."""
     r = fisher_index(FisherIndexInputs(laspeyres=212.5, paasche=160.0))
     assert r.value == round(math.sqrt(34000.0), 4)
     assert math.isclose(r.value, 184.3909, abs_tol=1e-4)
 
 
-def test_laspeyres_ge_fisher_ge_paasche_for_a_substituting_basket():
+def test_laspeyres_ge_fisher_ge_paasche_for_a_substituting_basket() -> None:
     """The bias ordering, asserted as an inequality rather than a shape.
 
     This is the module's stated reason for computing all three: Laspeyres holds
     the old basket (upward bias), Paasche already assumes the substitution
     (downward bias), and Fisher sits between.
     """
-    l = laspeyres_index(_basket()).value
-    p = paasche_index(_basket()).value
-    f = fisher_index(FisherIndexInputs(laspeyres=l, paasche=p)).value
-    assert l > f > p, (l, f, p)
+    las = laspeyres_index(_basket()).value_float()
+    p = paasche_index(_basket()).value_float()
+    f = fisher_index(FisherIndexInputs(laspeyres=las, paasche=p)).value_float()
+    assert las > f > p, (las, f, p)
 
 
-def test_no_substitution_makes_all_three_indices_agree():
+def test_no_substitution_makes_all_three_indices_agree() -> None:
     """When quantities do not move, L == P == F: the bias is zero.
 
     Hand: base {A:1,B:2} q {A:10,B:5}; current {A:3,B:4} q {A:10,B:5}
@@ -289,21 +290,23 @@ def test_no_substitution_makes_all_three_indices_agree():
         P numerator = 50, P denominator = 20 -> P = 250
         F = sqrt(250*250) = 250
     """
-    same_qty = _basket(current_prices={"A": 3.0, "B": 4.0}, current_quantities={"A": 10.0, "B": 5.0})
-    l = laspeyres_index(same_qty).value
-    p = paasche_index(same_qty).value
-    f = fisher_index(FisherIndexInputs(laspeyres=l, paasche=p)).value
-    assert (l, p, f) == (250.0, 250.0, 250.0)
+    same_qty = _basket(
+        current_prices={"A": 3.0, "B": 4.0}, current_quantities={"A": 10.0, "B": 5.0}
+    )
+    las = laspeyres_index(same_qty).value_float()
+    p = paasche_index(same_qty).value_float()
+    f = fisher_index(FisherIndexInputs(laspeyres=las, paasche=p)).value_float()
+    assert (las, p, f) == (250.0, 250.0, 250.0)
 
 
-def test_index_functions_confidence_is_the_unpenalised_base():
+def test_index_functions_confidence_is_the_unpenalised_base() -> None:
     """Exact arithmetic on supplied vectors -> 0.70, no penalty."""
     assert laspeyres_index(_basket()).confidence == 0.70
     assert paasche_index(_basket()).confidence == 0.70
     assert fisher_index(FisherIndexInputs(laspeyres=212.5, paasche=160.0)).confidence == 0.70
 
 
-def test_fisher_requires_positive_inputs():
+def test_fisher_requires_positive_inputs() -> None:
     """gt=0.0 on both fields: a zero or negative index has no geometric mean."""
     with pytest.raises(ValueError):
         FisherIndexInputs(laspeyres=0.0, paasche=100.0)
@@ -316,19 +319,17 @@ def test_fisher_requires_positive_inputs():
 # --------------------------------------------------------------------------
 
 
-def test_laspeyres_refuses_a_current_price_missing_a_base_item():
+def test_laspeyres_refuses_a_current_price_missing_a_base_item() -> None:
     """Before the fix this was a bare `KeyError: 'B'` — a dict-key error, not a
     statement about the baskets."""
     with pytest.raises(ValueError) as exc:
-        laspeyres_index(
-            _basket(current_prices={"A": 3.0}, current_quantities={"A": 10.0})
-        )
+        laspeyres_index(_basket(current_prices={"A": 3.0}, current_quantities={"A": 10.0}))
     msg = str(exc.value)
     assert "different item sets" in msg
     assert "only in base" in msg
 
 
-def test_laspeyres_refuses_a_current_price_with_an_extra_item():
+def test_laspeyres_refuses_a_current_price_with_an_extra_item() -> None:
     """THE SILENT CASE. Before the fix this returned 250.0 with item C simply
     dropped from the sum — a published number from a basket the caller did not
     supply. This is the failure the module's own docstring says must not happen.
@@ -346,22 +347,20 @@ def test_laspeyres_refuses_a_current_price_with_an_extra_item():
     assert "C" in msg
 
 
-def test_paasche_refuses_a_base_price_missing_a_current_item():
+def test_paasche_refuses_a_base_price_missing_a_current_item() -> None:
     """Mirror case: Paasche iterates current_prices and indexes base_prices."""
     with pytest.raises(ValueError) as exc:
-        paasche_index(
-            _basket(base_prices={"A": 1.0}, base_quantities={"A": 10.0})
-        )
+        paasche_index(_basket(base_prices={"A": 1.0}, base_quantities={"A": 10.0}))
     assert "different item sets" in str(exc.value)
 
 
-def test_aligned_baskets_still_compute():
+def test_aligned_baskets_still_compute() -> None:
     """The guard must not reject a legitimate call."""
     assert laspeyres_index(_basket()).value == 212.5
     assert paasche_index(_basket()).value == 160.0
 
 
-def test_within_period_mismatch_is_still_caught():
+def test_within_period_mismatch_is_still_caught() -> None:
     """The pre-existing check must not have been weakened: prices and quantities
     within one period must still describe the same items."""
     with pytest.raises(ValueError) as exc:
@@ -369,7 +368,7 @@ def test_within_period_mismatch_is_still_caught():
     assert "absent from prices" in str(exc.value)
 
 
-def test_empty_baskets_are_refused():
+def test_empty_baskets_are_refused() -> None:
     with pytest.raises(ValueError):
         laspeyres_index(_basket(base_prices={}, base_quantities={}))
     with pytest.raises(ValueError):
@@ -381,13 +380,13 @@ def test_empty_baskets_are_refused():
 # --------------------------------------------------------------------------
 
 
-def test_gdp_deflator_hand_computed():
+def test_gdp_deflator_hand_computed() -> None:
     """nominal / real * 100.  110 / 100 * 100 = 110.0;  25000 / 20000 * 100 = 125.0."""
     assert gdp_deflator(110.0, 100.0).value == 110.0
     assert gdp_deflator(25000.0, 20000.0).value == 125.0
 
 
-def test_gdp_deflator_refuses_zero_real_gdp():
+def test_gdp_deflator_refuses_zero_real_gdp() -> None:
     with pytest.raises(ValueError):
         gdp_deflator(110.0, 0.0)
 
@@ -403,7 +402,7 @@ def test_gdp_deflator_refuses_zero_real_gdp():
         (100.0, float("-inf")),
     ],
 )
-def test_gdp_deflator_refuses_non_finite_inputs(nominal, real):
+def test_gdp_deflator_refuses_non_finite_inputs(nominal: float, real: float) -> None:
     """F-NA-002. Before the fix: (nan, 100) -> value=nan; (100, inf) -> 0.0.
 
     The second is the dangerous one — 0.0 is a plausible-looking deflator
@@ -415,7 +414,7 @@ def test_gdp_deflator_refuses_non_finite_inputs(nominal, real):
     assert "non-finite" in str(exc.value)
 
 
-def test_gdp_deflator_error_names_the_offending_argument():
+def test_gdp_deflator_error_names_the_offending_argument() -> None:
     """The guard reuses FiniteInputs' formatter, so the message names the
     argument rather than merely reporting that something was wrong."""
     with pytest.raises(ValueError) as exc:
@@ -423,11 +422,11 @@ def test_gdp_deflator_error_names_the_offending_argument():
     assert "real_gdp" in str(exc.value)
 
 
-def test_gdp_deflator_confidence_is_the_unpenalised_base():
+def test_gdp_deflator_confidence_is_the_unpenalised_base() -> None:
     assert gdp_deflator(110.0, 100.0).confidence == 0.70
 
 
-def test_gdp_deflator_warns_it_is_not_comparable_to_cpi_as_a_level():
+def test_gdp_deflator_warns_it_is_not_comparable_to_cpi_as_a_level() -> None:
     r = gdp_deflator(110.0, 100.0)
     assert any("Not comparable to CPI" in w for w in r.warnings)
 
@@ -441,15 +440,17 @@ def test_gdp_deflator_warns_it_is_not_comparable_to_cpi_as_a_level():
     ("openings", "unemployed", "ratio", "band"),
     [
         (9000.0, 5000.0, 1.8, "VERY_TIGHT"),
-        (7500.0, 5000.0, 1.5, "TIGHT"),        # exactly the very-tight threshold
+        (7500.0, 5000.0, 1.5, "TIGHT"),  # exactly the very-tight threshold
         (6000.0, 5000.0, 1.2, "TIGHT"),
-        (5000.0, 5000.0, 1.0, "BALANCED"),     # exactly the tight threshold
+        (5000.0, 5000.0, 1.0, "BALANCED"),  # exactly the tight threshold
         (4000.0, 5000.0, 0.8, "BALANCED"),
-        (3500.0, 5000.0, 0.7, "SLACK"),        # exactly the balanced threshold
+        (3500.0, 5000.0, 0.7, "SLACK"),  # exactly the balanced threshold
         (3000.0, 5000.0, 0.6, "SLACK"),
     ],
 )
-def test_openings_ratio_bands_and_their_boundaries(openings, unemployed, ratio, band):
+def test_openings_ratio_bands_and_their_boundaries(
+    openings: float, unemployed: float, ratio: float, band: str
+) -> None:
     """The comparisons are strict `>`, so an exact threshold falls to the LOWER
     band. Without pinning that, a `<` -> `<=` change would be unobservable."""
     r = openings_to_unemployed_ratio(
@@ -461,7 +462,7 @@ def test_openings_ratio_bands_and_their_boundaries(openings, unemployed, ratio, 
     assert band in r.interpretation
 
 
-def test_openings_ratio_confidence_is_the_unpenalised_base():
+def test_openings_ratio_confidence_is_the_unpenalised_base() -> None:
     r = openings_to_unemployed_ratio(
         OpeningsToUnemployedInputs(
             job_openings_thousands=6000.0, unemployed_persons_thousands=5000.0
@@ -470,12 +471,10 @@ def test_openings_ratio_confidence_is_the_unpenalised_base():
     assert r.confidence == 0.70
 
 
-def test_openings_ratio_refuses_zero_unemployed():
+def test_openings_ratio_refuses_zero_unemployed() -> None:
     """The denominator is gt=0: zero unemployed persons is not observable."""
     with pytest.raises(ValueError):
-        OpeningsToUnemployedInputs(
-            job_openings_thousands=6000.0, unemployed_persons_thousands=0.0
-        )
+        OpeningsToUnemployedInputs(job_openings_thousands=6000.0, unemployed_persons_thousands=0.0)
 
 
 # --------------------------------------------------------------------------
@@ -486,13 +485,15 @@ def test_openings_ratio_refuses_zero_unemployed():
 @pytest.mark.parametrize(
     ("deficit", "rate", "quadrant", "mixed"),
     [
-        (6.0, 3.0, "MAX_STIMULUS", False),                            # loose & loose
-        (6.0, 6.0, "MIXED_FISCAL_LOOSE_MONETARY_TIGHT", True),        # loose & tight
-        (3.0, 3.0, "MIXED_FISCAL_TIGHT_MONETARY_LOOSE", True),        # tight & loose
-        (3.0, 6.0, "MAX_RESTRAINT", False),                           # tight & tight
+        (6.0, 3.0, "MAX_STIMULUS", False),  # loose & loose
+        (6.0, 6.0, "MIXED_FISCAL_LOOSE_MONETARY_TIGHT", True),  # loose & tight
+        (3.0, 3.0, "MIXED_FISCAL_TIGHT_MONETARY_LOOSE", True),  # tight & loose
+        (3.0, 6.0, "MAX_RESTRAINT", False),  # tight & tight
     ],
 )
-def test_policy_mix_quadrants_hand_computed(deficit, rate, quadrant, mixed):
+def test_policy_mix_quadrants_hand_computed(
+    deficit: float, rate: float, quadrant: str, mixed: bool
+) -> None:
     """avg deficit 4.5, so `fiscal_loose` is `deficit > 4.5`; `monetary_loose`
     is `policy_rate < taylor_implied_rate` (here 5.0)."""
     r = policy_mix_classifier(
@@ -503,11 +504,11 @@ def test_policy_mix_quadrants_hand_computed(deficit, rate, quadrant, mixed):
             taylor_implied_rate=5.0,
         )
     )
-    assert r.value["quadrant"] == quadrant
-    assert r.value["mixed"] is mixed
+    assert r.value_dict()["quadrant"] == quadrant
+    assert r.value_dict()["mixed"] is mixed
 
 
-def test_policy_mix_publishes_both_predicates_so_the_quadrant_is_recomputable():
+def test_policy_mix_publishes_both_predicates_so_the_quadrant_is_recomputable() -> None:
     """The D-009 cross-field identity: the verdict must be reproducible from the
     output, not trusted."""
     r = policy_mix_classifier(
@@ -518,14 +519,14 @@ def test_policy_mix_publishes_both_predicates_so_the_quadrant_is_recomputable():
             taylor_implied_rate=5.0,
         )
     )
-    v = r.value
+    v = r.value_dict()
     assert v["fiscal_loose"] is True
     assert v["monetary_loose"] is True
     assert v["quadrant"] == "MAX_STIMULUS"
     assert v["mixed"] is (v["fiscal_loose"] != v["monetary_loose"])
 
 
-def test_policy_mix_boundary_is_strict_so_equality_is_not_loose():
+def test_policy_mix_boundary_is_strict_so_equality_is_not_loose() -> None:
     """`deficit > average` and `rate < taylor`: equality is NOT loose on either."""
     r = policy_mix_classifier(
         PolicyMixInputs(
@@ -535,12 +536,12 @@ def test_policy_mix_boundary_is_strict_so_equality_is_not_loose():
             taylor_implied_rate=5.0,
         )
     )
-    assert r.value["fiscal_loose"] is False
-    assert r.value["monetary_loose"] is False
-    assert r.value["quadrant"] == "MAX_RESTRAINT"
+    assert r.value_dict()["fiscal_loose"] is False
+    assert r.value_dict()["monetary_loose"] is False
+    assert r.value_dict()["quadrant"] == "MAX_RESTRAINT"
 
 
-def test_policy_mix_confidence_hand_derived():
+def test_policy_mix_confidence_hand_derived() -> None:
     """heuristic (the deficit average is uncalibrated_illustrative) + unobservable
     (the Taylor rate rests on r* and potential GDP): 0.70 - 0.20 - 0.20 = 0.30."""
     r = policy_mix_classifier(
@@ -554,7 +555,7 @@ def test_policy_mix_confidence_hand_derived():
     assert r.confidence == 0.30
 
 
-def test_policy_mix_warns_on_a_negative_deficit_which_is_the_sign_trap():
+def test_policy_mix_warns_on_a_negative_deficit_which_is_the_sign_trap() -> None:
     """FRED FYFSGDA188S is negative for a deficit; supplying it raw inverts every
     comparison, so the model names it at the point of use."""
     r = policy_mix_classifier(
@@ -568,7 +569,7 @@ def test_policy_mix_warns_on_a_negative_deficit_which_is_the_sign_trap():
     assert any("POSITIVE for a deficit" in w for w in r.warnings)
 
 
-def test_policy_mix_warns_when_the_supplied_average_disagrees_with_config():
+def test_policy_mix_warns_when_the_supplied_average_disagrees_with_config() -> None:
     """Tolerance 0.5: 4.5 vs 3.0 differs by 1.5 -> warn."""
     r = policy_mix_classifier(
         PolicyMixInputs(
@@ -581,7 +582,7 @@ def test_policy_mix_warns_when_the_supplied_average_disagrees_with_config():
     assert any("differs from the configured expectation" in w for w in r.warnings)
 
 
-def test_policy_mix_no_average_mismatch_warning_within_tolerance():
+def test_policy_mix_no_average_mismatch_warning_within_tolerance() -> None:
     """4.5 vs 4.8 differs by 0.3 <= 0.5 -> no warning."""
     r = policy_mix_classifier(
         PolicyMixInputs(
@@ -594,7 +595,7 @@ def test_policy_mix_no_average_mismatch_warning_within_tolerance():
     assert not any("differs from the configured expectation" in w for w in r.warnings)
 
 
-def test_policy_mix_mixed_share_is_derived_from_config_not_hardcoded():
+def test_policy_mix_mixed_share_is_derived_from_config_not_hardcoded() -> None:
     """F-NA-003. The warning used to hardcode "50.9%".
 
     That figure is exactly the sum of the two MIXED quadrant rates
@@ -614,11 +615,13 @@ def test_policy_mix_mixed_share_is_derived_from_config_not_hardcoded():
             taylor_implied_rate=5.0,
         )
     )
-    assert r.value["quadrant"] == "MIXED_FISCAL_LOOSE_MONETARY_TIGHT"
+    assert r.value_dict()["quadrant"] == "MIXED_FISCAL_LOOSE_MONETARY_TIGHT"
     assert any(f"{expected:.1%}" in w for w in r.warnings)
 
 
-def test_policy_mix_mixed_share_follows_config_and_is_not_a_literal(monkeypatch):
+def test_policy_mix_mixed_share_follows_config_and_is_not_a_literal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """F-NA-003 proved by PATCHING the config.
 
     Asserting the warning contains "50.9%" would pass against the old hardcoded
@@ -629,7 +632,7 @@ def test_policy_mix_mixed_share_follows_config_and_is_not_a_literal(monkeypatch)
     real = _S.policy_mix
 
     class _Stub:
-        def __init__(self, rates):
+        def __init__(self, rates: dict[str, float]) -> None:
             self.quadrant_base_rates = rates
             self.base_rates = real.base_rates
             self.fiscal_deficit_avg = real.fiscal_deficit_avg
@@ -652,12 +655,12 @@ def test_policy_mix_mixed_share_follows_config_and_is_not_a_literal(monkeypatch)
         )
     )
     text = " ".join(r.warnings)
-    assert r.value["quadrant"] == "MIXED_FISCAL_LOOSE_MONETARY_TIGHT"
+    assert r.value_dict()["quadrant"] == "MIXED_FISCAL_LOOSE_MONETARY_TIGHT"
     assert "50.0%" in text, "the mixed share must be recomputed from config"
     assert "50.9%" not in text, "the old hardcoded literal must not survive"
 
 
-def test_policy_mix_every_warning_quotes_the_quadrant_base_rate():
+def test_policy_mix_every_warning_quotes_the_quadrant_base_rate() -> None:
     """D-029: a categorical verdict must publish its own measured frequency."""
     for deficit, rate in [(6.0, 3.0), (6.0, 6.0), (3.0, 3.0), (3.0, 6.0)]:
         r = policy_mix_classifier(
@@ -668,8 +671,8 @@ def test_policy_mix_every_warning_quotes_the_quadrant_base_rate():
                 taylor_implied_rate=5.0,
             )
         )
-        rate_here = _S.policy_mix.quadrant_base_rates[r.value["quadrant"]]
-        assert any(f"{rate_here:.1%}" in w for w in r.warnings), r.value["quadrant"]
+        rate_here = _S.policy_mix.quadrant_base_rates[r.value_dict()["quadrant"]]
+        assert any(f"{rate_here:.1%}" in w for w in r.warnings), r.value_dict()["quadrant"]
 
 
 # --------------------------------------------------------------------------
@@ -680,13 +683,15 @@ def test_policy_mix_every_warning_quotes_the_quadrant_base_rate():
 @pytest.mark.parametrize(
     ("standards", "risky", "total", "stage"),
     [
-        (-5.0, 10.0, 5.0, "PONZI_DRIFT_WARNING"),   # loosening AND outgrowing
-        (5.0, 10.0, 5.0, "SPECULATIVE_DRIFT"),      # outgrowing only
-        (-5.0, 4.0, 5.0, "SPECULATIVE_DRIFT"),      # loosening only
-        (5.0, 4.0, 5.0, "HEDGE_DOMINANT"),          # neither
+        (-5.0, 10.0, 5.0, "PONZI_DRIFT_WARNING"),  # loosening AND outgrowing
+        (5.0, 10.0, 5.0, "SPECULATIVE_DRIFT"),  # outgrowing only
+        (-5.0, 4.0, 5.0, "SPECULATIVE_DRIFT"),  # loosening only
+        (5.0, 4.0, 5.0, "HEDGE_DOMINANT"),  # neither
     ],
 )
-def test_minsky_stages_hand_computed(standards, risky, total, stage):
+def test_minsky_stages_hand_computed(
+    standards: float, risky: float, total: float, stage: str
+) -> None:
     """margin 0.2; gap = risky - total; threshold = 0.2 * |total|; flag is gap > threshold.
 
     (10-5)=5 > 0.2*5=1  -> outgrowing.   (4-5)=-1 > 1 is False -> not outgrowing.
@@ -698,10 +703,10 @@ def test_minsky_stages_hand_computed(standards, risky, total, stage):
             total_credit_growth_pct=total,
         )
     )
-    assert r.value["stage"] == stage
+    assert r.value_dict()["stage"] == stage
 
 
-def test_minsky_negative_total_growth_does_not_invert_the_flag():
+def test_minsky_negative_total_growth_does_not_invert_the_flag() -> None:
     """THE CORRECTION. The spec's `risky > total * 1.2` inverts when total < 0:
     risky -11% vs total -10% gives -11 > -12 -> a false "outgrowing" verdict on
     the fastest DE-RISKING. The margin is applied to the GAP instead.
@@ -716,13 +721,13 @@ def test_minsky_negative_total_growth_does_not_invert_the_flag():
             total_credit_growth_pct=-10.0,
         )
     )
-    assert r.value["risky_outgrowing"] is False
-    assert r.value["stage"] == "HEDGE_DOMINANT"
-    assert r.value["growth_gap_pct"] == -1.0
-    assert r.value["drift_threshold_pct"] == 2.0
+    assert r.value_dict()["risky_outgrowing"] is False
+    assert r.value_dict()["stage"] == "HEDGE_DOMINANT"
+    assert r.value_dict()["growth_gap_pct"] == -1.0
+    assert r.value_dict()["drift_threshold_pct"] == 2.0
 
 
-def test_minsky_margin_is_equivalent_to_the_specs_form_when_total_is_positive():
+def test_minsky_margin_is_equivalent_to_the_specs_form_when_total_is_positive() -> None:
     """The docstring's claim: `(risky - total) > margin*|total|` is identical to
     `risky > total * 1.2` whenever total > 0.
 
@@ -736,7 +741,7 @@ def test_minsky_margin_is_equivalent_to_the_specs_form_when_total_is_positive():
             total_credit_growth_pct=5.0,
         )
     )
-    assert boundary_below.value["risky_outgrowing"] is False, "6.0 is not > 6.0"
+    assert boundary_below.value_dict()["risky_outgrowing"] is False, "6.0 is not > 6.0"
 
     boundary_above = minsky_composition_drift(
         MinskyCompositionInputs(
@@ -745,10 +750,10 @@ def test_minsky_margin_is_equivalent_to_the_specs_form_when_total_is_positive():
             total_credit_growth_pct=5.0,
         )
     )
-    assert boundary_above.value["risky_outgrowing"] is True
+    assert boundary_above.value_dict()["risky_outgrowing"] is True
 
 
-def test_minsky_confidence_hand_derived():
+def test_minsky_confidence_hand_derived() -> None:
     """heuristic (uncalibrated margin) + data-quality flag (disclosed proxy):
     0.70 - 0.20 - 0.25 = 0.25."""
     r = minsky_composition_drift(
@@ -761,7 +766,7 @@ def test_minsky_confidence_hand_derived():
     assert r.confidence == 0.25
 
 
-def test_minsky_confidence_does_not_depend_on_the_stage():
+def test_minsky_confidence_does_not_depend_on_the_stage() -> None:
     """The spec hardcoded 0.6/0.45/0.5 BY STAGE, i.e. it was more confident when
     it said something was wrong. Confidence must reflect input quality only."""
     confidences = set()
@@ -781,7 +786,7 @@ def test_minsky_confidence_does_not_depend_on_the_stage():
     assert confidences == {0.25}
 
 
-def test_minsky_always_discloses_the_proxy_and_the_block():
+def test_minsky_always_discloses_the_proxy_and_the_block() -> None:
     """Two of the three inputs are BLOCKED by Section 21.1 / lifted by D-043 as a
     disclosed proxy. A consumer must be told on every call."""
     r = minsky_composition_drift(
@@ -791,12 +796,12 @@ def test_minsky_always_discloses_the_proxy_and_the_block():
             total_credit_growth_pct=5.0,
         )
     )
-    assert r.value["risky_credit_proxy"] == "hedge_fund_leveraged_loans"
+    assert r.value_dict()["risky_credit_proxy"] == "hedge_fund_leveraged_loans"
     w = " ".join(r.warnings)
     assert "DISCLOSED PROXY" in w
 
 
-def test_minsky_flat_standards_warn_they_count_as_not_loosening():
+def test_minsky_flat_standards_warn_they_count_as_not_loosening() -> None:
     """`< 0.0` is strict, so exactly zero is NOT loosening — and it happened in
     7 of 146 quarters, so the boundary is a convention worth naming."""
     r = minsky_composition_drift(
@@ -806,11 +811,11 @@ def test_minsky_flat_standards_warn_they_count_as_not_loosening():
             total_credit_growth_pct=5.0,
         )
     )
-    assert r.value["standards_loosening"] is False
+    assert r.value_dict()["standards_loosening"] is False
     assert any("exactly zero" in w for w in r.warnings)
 
 
-def test_minsky_ponzi_stage_names_defaults_as_a_lagging_confirmation():
+def test_minsky_ponzi_stage_names_defaults_as_a_lagging_confirmation() -> None:
     r = minsky_composition_drift(
         MinskyCompositionInputs(
             lending_standards_net_tightening_pct=-5.0,
@@ -821,7 +826,7 @@ def test_minsky_ponzi_stage_names_defaults_as_a_lagging_confirmation():
     assert any("LAGGING confirmation" in w for w in r.warnings)
 
 
-def test_minsky_publishes_the_predicates_so_the_stage_is_recomputable():
+def test_minsky_publishes_the_predicates_so_the_stage_is_recomputable() -> None:
     r = minsky_composition_drift(
         MinskyCompositionInputs(
             lending_standards_net_tightening_pct=-5.0,
@@ -829,7 +834,7 @@ def test_minsky_publishes_the_predicates_so_the_stage_is_recomputable():
             total_credit_growth_pct=5.0,
         )
     )
-    v = r.value
+    v = r.value_dict()
     assert v["standards_loosening"] is True
     assert v["risky_outgrowing"] is True
     assert v["stage"] == "PONZI_DRIFT_WARNING"

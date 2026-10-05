@@ -18,65 +18,80 @@ pass_through = "muted" if demand=="weak" or margin=="compressing" else "fuller"
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from macro_engine.models.ppi_pipeline import PPIPipelineInputs, ppi_pipeline_signal
 
 
-def _ppi(**kw) -> PPIPipelineInputs:
-    base = dict(
-        crude_stage_yoy_pct=13.06,
-        intermediate_stage_yoy_pct=11.53,
-        final_demand_yoy_pct=5.41,
-        corporate_margin_trend="expanding",
-        demand_condition="neutral",
-    )
+def _ppi(**kw: Any) -> PPIPipelineInputs:
+    base: dict[str, Any] = {
+        "crude_stage_yoy_pct": 13.06,
+        "intermediate_stage_yoy_pct": 11.53,
+        "final_demand_yoy_pct": 5.41,
+        "corporate_margin_trend": "expanding",
+        "demand_condition": "neutral",
+    }
     base.update(kw)
     return PPIPipelineInputs(**base)
 
 
-def test_building_upstream():
+def test_building_upstream() -> None:
     res = ppi_pipeline_signal(_ppi())
-    assert res.value["upstream_pressure_building"] is True
-    assert res.value["gradient_direction"] == "building_upstream"
-    assert res.value["stage_spread_pp"] == pytest.approx(7.65)  # 13.06 - 5.41
+    assert res.value_dict()["upstream_pressure_building"] is True
+    assert res.value_dict()["gradient_direction"] == "building_upstream"
+    assert res.value_dict()["stage_spread_pp"] == pytest.approx(7.65)  # 13.06 - 5.41
     # demand neutral + margin expanding -> not absorbing -> fuller
-    assert res.value["expected_pass_through"] == "fuller"
-    assert res.value["base_rate_strict_descending"] == pytest.approx(0.3)
-    assert res.value["base_rate_crude_above_final"] == pytest.approx(0.442)
+    assert res.value_dict()["expected_pass_through"] == "fuller"  # noqa: S105
+    assert res.value_dict()["base_rate_strict_descending"] == pytest.approx(0.3)
+    assert res.value_dict()["base_rate_crude_above_final"] == pytest.approx(0.442)
     assert res.confidence == 0.30
 
 
-def test_passing_through_downstream():
-    res = ppi_pipeline_signal(_ppi(crude_stage_yoy_pct=1.0, intermediate_stage_yoy_pct=2.0, final_demand_yoy_pct=3.0, demand_condition="weak"))
-    assert res.value["upstream_pressure_building"] is False
-    assert res.value["gradient_direction"] == "passing_through_downstream"
-    assert res.value["stage_spread_pp"] == pytest.approx(-2.0)
+def test_passing_through_downstream() -> None:
+    res = ppi_pipeline_signal(
+        _ppi(
+            crude_stage_yoy_pct=1.0,
+            intermediate_stage_yoy_pct=2.0,
+            final_demand_yoy_pct=3.0,
+            demand_condition="weak",
+        )
+    )
+    assert res.value_dict()["upstream_pressure_building"] is False
+    assert res.value_dict()["gradient_direction"] == "passing_through_downstream"
+    assert res.value_dict()["stage_spread_pp"] == pytest.approx(-2.0)
     # weak demand -> absorbing -> muted (pass-through ignores the gradient)
-    assert res.value["expected_pass_through"] == "muted"
+    assert res.value_dict()["expected_pass_through"] == "muted"  # noqa: S105
 
 
-def test_building_within_tolerance():
+def test_building_within_tolerance() -> None:
     # strictly ordered but tiny gaps -> within band
-    res = ppi_pipeline_signal(_ppi(crude_stage_yoy_pct=2.06, intermediate_stage_yoy_pct=2.05, final_demand_yoy_pct=2.04))
-    assert res.value["upstream_pressure_building"] is True
-    assert res.value["gradient_direction"] == "building_within_tolerance"
+    res = ppi_pipeline_signal(
+        _ppi(crude_stage_yoy_pct=2.06, intermediate_stage_yoy_pct=2.05, final_demand_yoy_pct=2.04)
+    )
+    assert res.value_dict()["upstream_pressure_building"] is True
+    assert res.value_dict()["gradient_direction"] == "building_within_tolerance"
 
 
-def test_flat_within_tolerance():
-    res = ppi_pipeline_signal(_ppi(crude_stage_yoy_pct=2.0, intermediate_stage_yoy_pct=2.0, final_demand_yoy_pct=2.0))
-    assert res.value["upstream_pressure_building"] is False
-    assert res.value["gradient_direction"] == "flat_within_tolerance"
+def test_flat_within_tolerance() -> None:
+    res = ppi_pipeline_signal(
+        _ppi(crude_stage_yoy_pct=2.0, intermediate_stage_yoy_pct=2.0, final_demand_yoy_pct=2.0)
+    )
+    assert res.value_dict()["upstream_pressure_building"] is False
+    assert res.value_dict()["gradient_direction"] == "flat_within_tolerance"
 
 
-def test_non_monotonic():
-    res = ppi_pipeline_signal(_ppi(crude_stage_yoy_pct=3.0, intermediate_stage_yoy_pct=1.0, final_demand_yoy_pct=2.0))
-    assert res.value["upstream_pressure_building"] is False
-    assert res.value["gradient_direction"] == "non_monotonic"
+def test_non_monotonic() -> None:
+    res = ppi_pipeline_signal(
+        _ppi(crude_stage_yoy_pct=3.0, intermediate_stage_yoy_pct=1.0, final_demand_yoy_pct=2.0)
+    )
+    assert res.value_dict()["upstream_pressure_building"] is False
+    assert res.value_dict()["gradient_direction"] == "non_monotonic"
 
 
-def test_pass_through_ignores_gradient_margin_compressing():
+def test_pass_through_ignores_gradient_margin_compressing() -> None:
     # building gradient but margin compressing -> muted (absorption overrides)
     res = ppi_pipeline_signal(_ppi(corporate_margin_trend="compressing", demand_condition="strong"))
-    assert res.value["upstream_pressure_building"] is True
-    assert res.value["expected_pass_through"] == "muted"
+    assert res.value_dict()["upstream_pressure_building"] is True
+    assert res.value_dict()["expected_pass_through"] == "muted"  # noqa: S105

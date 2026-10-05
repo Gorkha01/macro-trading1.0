@@ -49,7 +49,7 @@ def _truncate(text: str, lines: int = TAIL_LINES) -> str:
 def run_gate(name: str, argv: tuple[str, ...]) -> dict[str, Any]:
     """Run one gate, returning its real exit code and captured output."""
     started = datetime.now(UTC)
-    proc = subprocess.run(  # noqa: S603 - argv is a fixed literal from GATES
+    proc = subprocess.run(  # argv is a fixed literal from GATES
         list(argv),
         cwd=REPO_ROOT,
         capture_output=True,
@@ -117,7 +117,7 @@ def main(argv: list[str]) -> int:
     record = run_all(names)
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        out_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8", newline="")
         print(f"wrote {out_path}")
     return 0 if record["all_passed"] else 1
 

@@ -21,15 +21,13 @@ converged band, and the confidence wiring are verified against hand values.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 from pydantic import ValidationError
 
 from macro_engine.models.inflation_nowcast import ShelterLagInputs, project_shelter_cpi
 
 
-def _inputs(history, current):
+def _inputs(history: list[float], current: float) -> ShelterLagInputs:
     return ShelterLagInputs(
         market_rent_growth_yoy_pct=history,
         current_cpi_shelter_yoy_pct=current,
@@ -39,7 +37,7 @@ def _inputs(history, current):
 # ---------------------------------------------------------------------------
 # Direction mapping (gap = projected - current)
 # ---------------------------------------------------------------------------
-def test_cooling_when_projected_below_current():
+def test_cooling_when_projected_below_current() -> None:
     # 16 months of history; history[0] (15 months ago) = 3.2, current CPI = 4.8.
     history = [3.2] + [5.0] * 15
     res = project_shelter_cpi(_inputs(history, 4.8))
@@ -49,7 +47,7 @@ def test_cooling_when_projected_below_current():
     assert res.confidence == 0.50
 
 
-def test_reaccelerating_when_projected_above_current():
+def test_reaccelerating_when_projected_above_current() -> None:
     history = [5.5] + [5.0] * 15
     res = project_shelter_cpi(_inputs(history, 4.8))
     assert res.value == pytest.approx(5.5)
@@ -58,7 +56,7 @@ def test_reaccelerating_when_projected_above_current():
     assert res.confidence == 0.50
 
 
-def test_converged_when_gap_within_tolerance():
+def test_converged_when_gap_within_tolerance() -> None:
     # projected == current -> gap 0 -> converged.
     history = [4.8] + [5.0] * 15
     res = project_shelter_cpi(_inputs(history, 4.8))
@@ -72,7 +70,7 @@ def test_converged_when_gap_within_tolerance():
     assert res.confidence == 0.50
 
 
-def test_converged_tolerance_is_inclusive_boundary():
+def test_converged_tolerance_is_inclusive_boundary() -> None:
     # Inclusive boundary: gap just UNDER tolerance -> converged.
     # 5.0 - 4.9 = 0.09999999999999964 <= 0.1 (float-clean, never crosses).
     history = [5.0] + [5.0] * 15
@@ -90,7 +88,7 @@ def test_converged_tolerance_is_inclusive_boundary():
 # ---------------------------------------------------------------------------
 # Index math: "N months ago" == history[-(N+1)]
 # ---------------------------------------------------------------------------
-def test_index_selects_n_months_ago():
+def test_index_selects_n_months_ago() -> None:
     # L=20 list, oldest first; current is index 19. 15 months ago = index 4.
     history = [float(i) for i in range(20)]
     res = project_shelter_cpi(_inputs(history, 6.0))
@@ -99,7 +97,7 @@ def test_index_selects_n_months_ago():
     assert "cooling" in res.interpretation  # 4.0 < 6.0
 
 
-def test_extra_history_does_not_change_vintage_but_warns():
+def test_extra_history_does_not_change_vintage_but_warns() -> None:
     history = [float(i) for i in range(30)]
     res = project_shelter_cpi(_inputs(history, 6.0))
     # still the 15-months-ago point: index 29-15 = 14 -> value 14.0
@@ -110,7 +108,7 @@ def test_extra_history_does_not_change_vintage_but_warns():
 # ---------------------------------------------------------------------------
 # Insufficient-data branch: value is None (not 0.0), confidence is computed
 # ---------------------------------------------------------------------------
-def test_insufficient_history_returns_none_not_zero():
+def test_insufficient_history_returns_none_not_zero() -> None:
     # only 15 points; 16 required for a 15-month lag.
     history = [float(i) for i in range(15)]
     res = project_shelter_cpi(_inputs(history, 4.8))
@@ -123,7 +121,7 @@ def test_insufficient_history_returns_none_not_zero():
 # ---------------------------------------------------------------------------
 # Non-finite inputs must be refused, not silently projected
 # ---------------------------------------------------------------------------
-def test_non_finite_history_rejected():
+def test_non_finite_history_rejected() -> None:
     with pytest.raises((ValidationError, ValueError)):
         ShelterLagInputs(
             market_rent_growth_yoy_pct=[1.0, float("nan"), 2.0, 3.0, 4.0],
@@ -131,7 +129,7 @@ def test_non_finite_history_rejected():
         )
 
 
-def test_non_finite_current_rejected():
+def test_non_finite_current_rejected() -> None:
     with pytest.raises((ValidationError, ValueError)):
         ShelterLagInputs(
             market_rent_growth_yoy_pct=[float(i) for i in range(20)],

@@ -11,7 +11,7 @@ from __future__ import annotations
 from macro_engine.models.evidence_family import EvidenceSourceFamily
 
 
-def test_documented_members_and_values():
+def test_documented_members_and_values() -> None:
     assert EvidenceSourceFamily.BLS_CPI.value == "bls_cpi"
     assert EvidenceSourceFamily.BLS_PPI.value == "bls_ppi"
     assert EvidenceSourceFamily.BEA_PCE.value == "bea_pce"
@@ -20,17 +20,17 @@ def test_documented_members_and_values():
     assert EvidenceSourceFamily.MANUAL_ASSESSMENT.value == "manual_assessment"
 
 
-def test_cpi_and_ppi_are_distinct_families():
+def test_cpi_and_ppi_are_distinct_families() -> None:
     # The whole point of the enum: separate surveys => separate families.
-    assert EvidenceSourceFamily.BLS_CPI != EvidenceSourceFamily.BLS_PPI
+    assert EvidenceSourceFamily.BLS_CPI != EvidenceSourceFamily.BLS_PPI  # type: ignore[comparison-overlap]
 
 
-def test_all_values_unique():
+def test_all_values_unique() -> None:
     values = [m.value for m in EvidenceSourceFamily]
     assert len(values) == len(set(values))
 
 
-def test_names_and_values_are_unique_and_mechanically_consistent():
+def test_names_and_values_are_unique_and_mechanically_consistent() -> None:
     """Two independent invariants, checked separately.
 
     A duplicate NAME is impossible in a Python enum (it silently becomes an
@@ -54,7 +54,7 @@ def test_names_and_values_are_unique_and_mechanically_consistent():
     assert not mismatched, f"name/value convention violated by {mismatched}"
 
 
-def test_the_enum_is_a_str_enum_so_it_serialises_and_compares_as_a_string():
+def test_the_enum_is_a_str_enum_so_it_serialises_and_compares_as_a_string() -> None:
     """`class EvidenceSourceFamily(str, Enum)` is load-bearing.
 
     It appears in `ModelResult.source_family`, which is serialised to JSON and
@@ -65,13 +65,13 @@ def test_the_enum_is_a_str_enum_so_it_serialises_and_compares_as_a_string():
     import json
 
     assert isinstance(EvidenceSourceFamily.BLS_CPI, str)
-    assert EvidenceSourceFamily.BLS_CPI == "bls_cpi"
+    assert EvidenceSourceFamily.BLS_CPI == "bls_cpi"  # type: ignore[comparison-overlap]
     assert json.dumps(EvidenceSourceFamily.BLS_CPI) == '"bls_cpi"'
     # a bare Enum would fail both of the above
     assert EvidenceSourceFamily("bls_cpi") is EvidenceSourceFamily.BLS_CPI
 
 
-def test_headline_and_core_cpi_are_one_member_as_documented():
+def test_headline_and_core_cpi_are_one_member_as_documented() -> None:
     """The docstring's second worked example: same survey, same family.
 
     The module argues BLS_CPI and BLS_PPI are separate because they are separate
@@ -87,11 +87,11 @@ def test_headline_and_core_cpi_are_one_member_as_documented():
         "documented 'headline and core CPI are one family' rule"
     )
     # and the two that ARE separate are present and distinct
-    assert EvidenceSourceFamily.BLS_CPI is not EvidenceSourceFamily.BLS_PPI
-    assert EvidenceSourceFamily.BLS_CPI is not EvidenceSourceFamily.BEA_PCE
+    assert EvidenceSourceFamily.BLS_CPI is not EvidenceSourceFamily.BLS_PPI  # type: ignore[comparison-overlap]
+    assert EvidenceSourceFamily.BLS_CPI is not EvidenceSourceFamily.BEA_PCE  # type: ignore[comparison-overlap]
 
 
-def test_every_census_consumer_gets_a_member_it_can_actually_hold():
+def test_every_census_consumer_gets_a_member_it_can_actually_hold() -> None:
     """Round-trip the vocabulary against its own consumers.
 
     Every module that census-counts families must build them from THIS enum. A

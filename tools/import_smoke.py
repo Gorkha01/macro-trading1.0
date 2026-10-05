@@ -42,7 +42,7 @@ def main() -> int:
     for name in modules:
         try:
             importlib.import_module(name)
-        except Exception:  # noqa: BLE001 - the point is to report ANY failure
+        except Exception:
             failed.append((name, traceback.format_exc(limit=6)))
     print(f"modules: {len(modules)}, failed: {len(failed)}")
     for name, tb in failed:

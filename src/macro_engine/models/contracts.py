@@ -219,9 +219,7 @@ def require_finite_scalars(**named: object) -> None:
     for name, value in named.items():
         offenders.extend(FiniteInputs._non_finite_offenders(name, value))
     if offenders:
-        raise ValueError(
-            f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}"
-        )
+        raise ValueError(f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}")
 
 
 class ConfidenceInputs(BaseModel):
@@ -518,3 +516,46 @@ class ModelResult(BaseModel):
             "which is itself an assertion a reviewer can challenge."
         ),
     )
+
+    def value_dict(self) -> dict[str, Any]:
+        """Return ``value`` narrowed to a ``dict``, or raise if it is not one.
+
+        ``value`` is a broad union by contract (Section 22.9): a model may
+        publish a scalar, a list, a string or ``None``. A consumer that KNOWS
+        this result published a mapping — which is every model that returns a
+        report dict — otherwise has to narrow the union at every read, and that
+        is exactly where an unchecked ``isinstance`` typo would go unnoticed.
+        This is the ONE narrowing point: it returns the mapping, or raises with
+        the model's name so a mis-use is loud rather than a silent ``KeyError``
+        on a list index.
+
+        It is a method on the contract rather than a helper in the test suite
+        because the need is not test-specific — any consumer reading a dict
+        value has it — and a second copy in ``tests/`` would be a second source
+        of truth for the same narrowing.
+        """
+        value = self.value
+        if not isinstance(value, dict):
+            raise TypeError(
+                f"{self.model_name}: value is {type(value).__name__}, not a dict; "
+                f"read `.value` directly for a non-dict result."
+            )
+        return value
+
+    def value_float(self) -> float:
+        """Return ``value`` narrowed to a ``float``, or raise if it is not numeric.
+
+        The scalar counterpart of :meth:`value_dict`: it is the ONE place a
+        consumer that knows this result published a number narrows the union,
+        rather than a bare ``float(self.value)`` — which mypy rejects anyway,
+        because the union contains ``dict``/``list``/``str``. A ``bool`` is
+        refused even though it is an ``int`` subclass, so ``True`` cannot
+        silently become ``1.0`` in an arithmetic comparison.
+        """
+        value = self.value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(
+                f"{self.model_name}: value is {type(value).__name__}, not a number; "
+                f"read `.value` directly for a non-numeric result."
+            )
+        return float(value)

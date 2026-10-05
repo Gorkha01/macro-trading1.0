@@ -61,9 +61,7 @@ class ModuleIndex:
         self.all_modules.add(mod)
         names: set[str] = set()
         for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                names.add(node.name)
-            elif isinstance(node, ast.ClassDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 names.add(node.name)
         self.defs[mod] = names
 
@@ -227,7 +225,9 @@ def build() -> dict[str, Any]:
                 stack.append(nxt)
 
     called = {t for ts in edges.values() for t in ts}
-    counts: dict[str, int] = {k: 0 for k in ("WIRED", "REACHABLE-ONLY", "ORPHAN", "WIRED-BUT-DEAD")}
+    counts: dict[str, int] = dict.fromkeys(
+        ("WIRED", "REACHABLE-ONLY", "ORPHAN", "WIRED-BUT-DEAD"), 0
+    )
     for qual, info in funcs.items():
         if qual in reachable:
             if info["is_route"] and app_modules and info["module"] not in app_modules:
@@ -241,7 +241,7 @@ def build() -> dict[str, Any]:
         counts[info["classification"]] += 1
 
     public = [q for q, f in funcs.items() if f["is_public"]]
-    public_counts: dict[str, int] = {k: 0 for k in counts}
+    public_counts: dict[str, int] = dict.fromkeys(counts, 0)
     for q in public:
         public_counts[funcs[q]["classification"]] += 1
 
@@ -267,7 +267,7 @@ def main() -> int:
     graph = build()
     out = REPO_ROOT / ".review-evidence" / "callgraph.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(graph, indent=2) + "\n", encoding="utf-8", newline="")
     print(
         f"modules={graph['n_modules']} functions={graph['n_functions']} "
         f"public={graph['n_public_functions']} edges={graph['n_edges']} "

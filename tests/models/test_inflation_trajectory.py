@@ -35,7 +35,7 @@ from macro_engine.models.inflation_trajectory import (
 )
 
 
-def _mr(value, warnings=None):
+def _mr(value: float, warnings: list[str] | None = None) -> ModelResult:
     return ModelResult(
         model_name="fixture",
         country="us",
@@ -49,70 +49,81 @@ def _mr(value, warnings=None):
     )
 
 
-def _run(score, growth_value=1.0, inflation_value=3.5, fiscal=False, labor_warnings=None):
-    return project_inflation_trajectory(InflationTrajectoryInputs(
-        growth=_mr(growth_value),
-        labor=_mr(score, warnings=labor_warnings),
-        inflation=_mr(inflation_value),
-        fiscal_response_active=fiscal,
-    ))
+def _run(
+    score: float,
+    growth_value: float = 1.0,
+    inflation_value: float = 3.5,
+    fiscal: bool = False,
+    labor_warnings: list[str] | None = None,
+) -> ModelResult:
+    return project_inflation_trajectory(
+        InflationTrajectoryInputs(
+            growth=_mr(growth_value),
+            labor=_mr(score, warnings=labor_warnings),
+            inflation=_mr(inflation_value),
+            fiscal_response_active=fiscal,
+        )
+    )
 
 
 # --------------------------------------------------------------------------
 # arithmetic / sign
 # --------------------------------------------------------------------------
 
-def test_tight_labor_is_reaccelerating():
+
+def test_tight_labor_is_reaccelerating() -> None:
     # score +10 -> change = 0.006 * 10 = 0.06pp > 0.05 -> reaccelerating.
     res = _run(10.0)
-    assert res.value["projected_change_pp"] == pytest.approx(0.06, abs=1e-9)
-    assert res.value["direction"] == "reaccelerating"
-    assert res.value["labor_score"] == 10.0
+    assert res.value_dict()["projected_change_pp"] == pytest.approx(0.06, abs=1e-9)
+    assert res.value_dict()["direction"] == "reaccelerating"
+    assert res.value_dict()["labor_score"] == 10.0
 
 
-def test_loose_labor_is_decelerating():
+def test_loose_labor_is_decelerating() -> None:
     # score -10 -> change = -0.06pp < -0.05 -> decelerating (sign preserved).
     res = _run(-10.0)
-    assert res.value["projected_change_pp"] == pytest.approx(-0.06, abs=1e-9)
-    assert res.value["direction"] == "decelerating"
+    assert res.value_dict()["projected_change_pp"] == pytest.approx(-0.06, abs=1e-9)
+    assert res.value_dict()["direction"] == "decelerating"
 
 
-def test_mid_score_is_stable():
+def test_mid_score_is_stable() -> None:
     # score +5 -> change = 0.03pp -> inside dead band -> stable.
     res = _run(5.0)
-    assert res.value["direction"] == "stable"
+    assert res.value_dict()["direction"] == "stable"
 
 
 # --------------------------------------------------------------------------
 # strict boundary partitioning
 # --------------------------------------------------------------------------
 
-def test_boundary_strict_top():
+
+def test_boundary_strict_top() -> None:
     # change_pp = 0.006 * score; just above 0.05 -> reaccel; just below -> stable.
-    assert _run(8.34).value["direction"] == "reaccelerating"
-    assert _run(8.33).value["direction"] == "stable"
+    assert _run(8.34).value_dict()["direction"] == "reaccelerating"
+    assert _run(8.33).value_dict()["direction"] == "stable"
 
 
-def test_boundary_strict_bottom():
-    assert _run(-8.34).value["direction"] == "decelerating"
-    assert _run(-8.33).value["direction"] == "stable"
+def test_boundary_strict_bottom() -> None:
+    assert _run(-8.34).value_dict()["direction"] == "decelerating"
+    assert _run(-8.33).value_dict()["direction"] == "stable"
 
 
-def test_exact_boundary_falls_to_stable():
+def test_exact_boundary_falls_to_stable() -> None:
     # score that yields change_pp exactly ~0.05 -> stable (boundary belongs to stable).
     res = _run(0.05 / 0.006)
-    assert abs(res.value["projected_change_pp"] - 0.05) < 1e-9
-    assert res.value["direction"] == "stable"
+    assert abs(res.value_dict()["projected_change_pp"] - 0.05) < 1e-9
+    assert res.value_dict()["direction"] == "stable"
 
 
 # --------------------------------------------------------------------------
 # reachability across the declared score range
 # --------------------------------------------------------------------------
 
-def test_all_three_directions_reachable():
+
+def test_all_three_directions_reachable() -> None:
     seen = set()
     for s in range(-100, 101):
-        seen.add(_run(float(s)).value["direction"])
+        seen.add(_run(float(s)).value_dict()["direction"])
     assert seen == {"reaccelerating", "stable", "decelerating"}
 
 
@@ -120,61 +131,65 @@ def test_all_three_directions_reachable():
 # fiscal scaling: magnitude only, never sign
 # --------------------------------------------------------------------------
 
-def test_fiscal_scales_magnitude_not_sign():
+
+def test_fiscal_scales_magnitude_not_sign() -> None:
     # stable at score +6 (0.036pp); fiscal 1.5x -> 0.054pp -> crosses to reaccel.
     base = _run(6.0)
     scaled = _run(6.0, fiscal=True)
-    assert base.value["direction"] == "stable"
-    assert scaled.value["direction"] == "reaccelerating"
-    assert scaled.value["fiscal_scale_applied"] == 1.5
+    assert base.value_dict()["direction"] == "stable"
+    assert scaled.value_dict()["direction"] == "reaccelerating"
+    assert scaled.value_dict()["fiscal_scale_applied"] == 1.5
     # negative score keeps negative sign under fiscal:
     neg = _run(-6.0)
     neg_scaled = _run(-6.0, fiscal=True)
-    assert neg.value["direction"] == "stable"
-    assert neg_scaled.value["direction"] == "decelerating"
-    assert neg_scaled.value["projected_change_pp"] < 0
+    assert neg.value_dict()["direction"] == "stable"
+    assert neg_scaled.value_dict()["direction"] == "decelerating"
+    assert neg_scaled.value_dict()["projected_change_pp"] < 0
 
 
 # --------------------------------------------------------------------------
 # growth corroboration + independence-count confidence
 # --------------------------------------------------------------------------
 
-def test_agreement_yields_independence_credit():
+
+def test_agreement_yields_independence_credit() -> None:
     # tight labor (+10) + expanding growth (+1) -> "agrees_expansion" -> indep 1.
     res = _run(10.0, growth_value=1.0)
-    assert res.value["growth_corroboration"] == "agrees_expansion"
+    assert res.value_dict()["growth_corroboration"] == "agrees_expansion"
     # 0.70 - 0.20 - 0.20 + 0.05 = 0.35
     assert res.confidence == pytest.approx(0.350, abs=1e-9)
 
 
-def test_disagreement_also_yields_independence_credit():
+def test_disagreement_also_yields_independence_credit() -> None:
     # tight labor (+10) + contracting growth (-1) -> disagrees, but still indep 1
     # (F-INTRAJ-002 FIX: a disagreeing independent family counts).
     res = _run(10.0, growth_value=-1.0)
-    assert res.value["growth_corroboration"] == "disagrees_tight_labor_weak_growth"
+    assert res.value_dict()["growth_corroboration"] == "disagrees_tight_labor_weak_growth"
     assert res.confidence == pytest.approx(0.350, abs=1e-9)
 
 
-def test_unavailable_growth_no_independence_credit():
+def test_unavailable_growth_no_independence_credit() -> None:
     # growth value is not a number -> "unavailable" -> indep 0 -> 0.30.
-    res = project_inflation_trajectory(InflationTrajectoryInputs(
-        growth=_mr("not-a-number"),
-        labor=_mr(10.0),
-        inflation=_mr(3.5),
-    ))
-    assert res.value["growth_corroboration"] == "unavailable"
+    res = project_inflation_trajectory(
+        InflationTrajectoryInputs(
+            growth=_mr("not-a-number"),  # type: ignore[arg-type]
+            labor=_mr(10.0),
+            inflation=_mr(3.5),
+        )
+    )
+    assert res.value_dict()["growth_corroboration"] == "unavailable"
     assert res.confidence == pytest.approx(0.300, abs=1e-9)
 
 
-def test_flat_score_is_not_directional():
+def test_flat_score_is_not_directional() -> None:
     # score exactly 0 -> tight_labor None -> "not_directional" -> indep 0 -> 0.30.
     res = _run(0.0)
-    assert res.value["growth_corroboration"] == "not_directional"
+    assert res.value_dict()["growth_corroboration"] == "not_directional"
     assert res.confidence == pytest.approx(0.300, abs=1e-9)
-    assert res.value["direction"] == "stable"
+    assert res.value_dict()["direction"] == "stable"
 
 
-def test_labor_warnings_lower_confidence():
+def test_labor_warnings_lower_confidence() -> None:
     # agrees + labor carries a warning -> data_quality flag -0.25 -> 0.10.
     res = _run(10.0, growth_value=1.0, labor_warnings=["dq flag"])
     assert res.confidence == pytest.approx(0.100, abs=1e-9)
@@ -184,43 +199,51 @@ def test_labor_warnings_lower_confidence():
 # input validation & provenance
 # --------------------------------------------------------------------------
 
-def test_bool_score_rejected():
-    with pytest.raises(Exception):
+
+def test_bool_score_rejected() -> None:
+    # A bool is refused by the TYPE guard (isinstance(x, bool)), not the range
+    # check, so the rejection is a TypeError rather than a ValueError.
+    with pytest.raises(TypeError):
         _run(True)
 
 
-def test_out_of_range_score_rejected():
-    with pytest.raises(Exception):
+def test_out_of_range_score_rejected() -> None:
+    with pytest.raises(ValueError):
         _run(150.0)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         _run(-150.0)
 
 
-def test_non_finite_score_rejected():
+def test_non_finite_score_rejected() -> None:
     # nan/inf survive the isinstance(int,float) check but fail the range check.
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         _run(float("nan"))
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         _run(float("inf"))
 
 
-def test_non_numeric_inflation_level_reported_as_none():
-    res = project_inflation_trajectory(InflationTrajectoryInputs(
-        growth=_mr(1.0),
-        labor=_mr(10.0),
-        inflation=_mr("n/a"),
-    ))
-    assert res.value["inflation_level"] is None
+def test_non_numeric_inflation_level_reported_as_none() -> None:
+    res = project_inflation_trajectory(
+        InflationTrajectoryInputs(
+            growth=_mr(1.0),
+            labor=_mr(10.0),
+            inflation=_mr("n/a"),  # type: ignore[arg-type]
+        )
+    )
+    assert res.value_dict()["inflation_level"] is None
     assert any("not a number" in w for w in res.warnings)
 
 
-def test_inputs_used_lists_all_four():
+def test_inputs_used_lists_all_four() -> None:
     res = _run(10.0)
     assert set(res.inputs_used) == {
-        "growth.value", "labor.value", "inflation.value", "fiscal_response_active"
+        "growth.value",
+        "labor.value",
+        "inflation.value",
+        "fiscal_response_active",
     }
 
 
-def test_inflation_level_reported():
+def test_inflation_level_reported() -> None:
     res = _run(10.0, inflation_value=3.7)
-    assert res.value["inflation_level"] == pytest.approx(3.7, abs=1e-9)
+    assert res.value_dict()["inflation_level"] == pytest.approx(3.7, abs=1e-9)

@@ -45,10 +45,11 @@ paths are exercised by monkeypatching the client functions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from macro_engine.config import get_settings
-from macro_engine.data_layer import commodities_client as client
 from macro_engine.models.commodities import (
     GoldDriverInputs,
     MetalsComplexInputs,
@@ -63,7 +64,7 @@ from macro_engine.models.commodities import (
 _S = get_settings()
 
 
-def test_config_values_this_file_hand_computed_against():
+def test_config_values_this_file_hand_computed_against() -> None:
     """A failure here means this file is stale, not that the model is wrong."""
     assert _S.oil_balance.value_decimals == 2
     assert _S.oil_balance.reliability_value == 0.30
@@ -84,22 +85,22 @@ def test_config_values_this_file_hand_computed_against():
 @pytest.mark.parametrize(
     ("deviation", "tightness", "direction"),
     [
-        (-1000.0, 1000.0, "tightening"),   # a DRAW (stock below norm) tightens
-        (1000.0, -1000.0, "loosening"),    # a BUILD loosens
+        (-1000.0, 1000.0, "tightening"),  # a DRAW (stock below norm) tightens
+        (1000.0, -1000.0, "loosening"),  # a BUILD loosens
     ],
 )
-def test_oil_tightness_is_the_negated_deviation(deviation, tightness, direction):
+def test_oil_tightness_is_the_negated_deviation(
+    deviation: float, tightness: float, direction: str
+) -> None:
     """``tightness = -inventory_deviation`` (Section 6.8)."""
     r = oil_balance_signal(
-        OilBalanceInputs(
-            inventory_change_weekly=deviation, opec_spare_capacity_proxy=1.0
-        )
+        OilBalanceInputs(inventory_change_weekly=deviation, opec_spare_capacity_proxy=1.0)
     )
-    assert r.value["tightness"] == tightness
+    assert r.value_dict()["tightness"] == tightness
     assert r.direction == direction
 
 
-def test_oil_an_exactly_seasonal_market_is_neutral_not_loosening():
+def test_oil_an_exactly_seasonal_market_is_neutral_not_loosening() -> None:
     """F-COM-002. deviation == 0 means the market sits exactly on its five-year
     seasonal norm: neither tightening nor loosening.
 
@@ -115,8 +116,8 @@ def test_oil_an_exactly_seasonal_market_is_neutral_not_loosening():
     r = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=0.0, opec_spare_capacity_proxy=1.0)
     )
-    assert r.value["tightness"] == 0.0
-    assert repr(r.value["tightness"]) == "0.0", "must be +0.0, not IEEE-754 -0.0"
+    assert r.value_dict()["tightness"] == 0.0
+    assert repr(r.value_dict()["tightness"]) == "0.0", "must be +0.0, not IEEE-754 -0.0"
     assert r.direction == "neutral"
     assert "-0.00" not in r.interpretation
 
@@ -124,25 +125,23 @@ def test_oil_an_exactly_seasonal_market_is_neutral_not_loosening():
     sub = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=-0.001, opec_spare_capacity_proxy=1.0)
     )
-    assert sub.value["tightness"] == 0.0
+    assert sub.value_dict()["tightness"] == 0.0
     assert sub.direction == "neutral", "direction must not contradict the published value"
 
 
-def test_oil_all_three_published_numbers_share_one_precision():
+def test_oil_all_three_published_numbers_share_one_precision() -> None:
     """F-COM-003. The module's own rule is that every bare ``round(...)`` becomes
     a config-declared precision; spare capacity was the one number still raw."""
     r = oil_balance_signal(
-        OilBalanceInputs(
-            inventory_change_weekly=-1234.5678, opec_spare_capacity_proxy=2.3456789
-        )
+        OilBalanceInputs(inventory_change_weekly=-1234.5678, opec_spare_capacity_proxy=2.3456789)
     )
-    v = r.value
+    v = r.value_dict()
     assert v["tightness"] == 1234.57
     assert v["inventory_seasonal_deviation_thousand_barrels"] == -1234.57
     assert v["opec_spare_capacity_mbd"] == 2.35
 
 
-def test_oil_confidence_is_the_product_of_two_factors():
+def test_oil_confidence_is_the_product_of_two_factors() -> None:
     """Hand: computed 0.25 (dq + heuristic, 0 independence) x cap 0.30 = 0.075."""
     r = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=-1000.0, opec_spare_capacity_proxy=1.0)
@@ -150,7 +149,7 @@ def test_oil_confidence_is_the_product_of_two_factors():
     assert r.confidence == 0.075
 
 
-def test_oil_confidence_rises_with_a_fetched_leg(monkeypatch):
+def test_oil_confidence_rises_with_a_fetched_leg(monkeypatch: pytest.MonkeyPatch) -> None:
     """A fetched pair removes the data-quality flag and adds ONE provider.
 
     Hand with both legs fetched: dq False, independence 1 ->
@@ -168,7 +167,9 @@ def test_oil_confidence_rises_with_a_fetched_leg(monkeypatch):
     assert r.confidence == 0.165
 
 
-def test_oil_counts_providers_not_legs_matching_its_two_siblings(monkeypatch):
+def test_oil_counts_providers_not_legs_matching_its_two_siblings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """F-COM-004. Both oil legs are EIA series (WCESTUS1 and COPS_OPEC), so two
     fetches are ONE provider — the same rule the gold and metals functions apply
     with "legs are not sources".
@@ -199,15 +200,15 @@ def test_oil_counts_providers_not_legs_matching_its_two_siblings(monkeypatch):
     assert oil.confidence != 0.60 * 0.30, "two EIA legs must not count as 2 sources"
 
 
-def test_oil_warns_on_negative_spare_capacity_without_clamping():
+def test_oil_warns_on_negative_spare_capacity_without_clamping() -> None:
     r = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=-500.0, opec_spare_capacity_proxy=-1.5)
     )
-    assert r.value["opec_spare_capacity_mbd"] == -1.5, "reported, never clamped"
+    assert r.value_dict()["opec_spare_capacity_mbd"] == -1.5, "reported, never clamped"
     assert any("negative" in w for w in r.warnings)
 
 
-def test_oil_warns_when_spare_capacity_provides_buffer_against_a_tight_read():
+def test_oil_warns_when_spare_capacity_provides_buffer_against_a_tight_read() -> None:
     """The two inputs can disagree and the disagreement is information:
     a draw (tight) with spare >= 2.0 mb/d still has buffer."""
     r = oil_balance_signal(
@@ -217,14 +218,14 @@ def test_oil_warns_when_spare_capacity_provides_buffer_against_a_tight_read():
     assert any("buffer" in w for w in r.warnings)
 
 
-def test_oil_no_buffer_warning_below_the_threshold():
+def test_oil_no_buffer_warning_below_the_threshold() -> None:
     r = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=-500.0, opec_spare_capacity_proxy=1.0)
     )
     assert not any("buffer" in w for w in r.warnings)
 
 
-def test_oil_refuses_when_a_leg_cannot_be_resolved(monkeypatch):
+def test_oil_refuses_when_a_leg_cannot_be_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
     """A tightness from one leg is a different claim, not a weaker one."""
     monkeypatch.setattr(
         "macro_engine.models.commodities._fetch_inventory_deviation",
@@ -235,7 +236,7 @@ def test_oil_refuses_when_a_leg_cannot_be_resolved(monkeypatch):
     assert "inventory_change_weekly" in str(exc.value)
 
 
-def test_oil_always_carries_the_out_of_universe_warning():
+def test_oil_always_carries_the_out_of_universe_warning() -> None:
     """Section 6.8: informational only, never a trade signal."""
     r = oil_balance_signal(
         OilBalanceInputs(inventory_change_weekly=-500.0, opec_spare_capacity_proxy=1.0)
@@ -244,15 +245,11 @@ def test_oil_always_carries_the_out_of_universe_warning():
     assert r.inputs_used == ["inventory_change_weekly", "opec_spare_capacity_proxy"]
 
 
-def test_oil_rejects_non_finite_inputs():
+def test_oil_rejects_non_finite_inputs() -> None:
     with pytest.raises(ValueError):
-        OilBalanceInputs(
-            inventory_change_weekly=float("nan"), opec_spare_capacity_proxy=1.0
-        )
+        OilBalanceInputs(inventory_change_weekly=float("nan"), opec_spare_capacity_proxy=1.0)
     with pytest.raises(ValueError):
-        OilBalanceInputs(
-            inventory_change_weekly=1.0, opec_spare_capacity_proxy=float("inf")
-        )
+        OilBalanceInputs(inventory_change_weekly=1.0, opec_spare_capacity_proxy=float("inf"))
 
 
 # --------------------------------------------------------------------------
@@ -260,7 +257,7 @@ def test_oil_rejects_non_finite_inputs():
 # --------------------------------------------------------------------------
 
 
-def test_gold_direction_is_none_because_an_attribution_has_no_direction():
+def test_gold_direction_is_none_because_an_attribution_has_no_direction() -> None:
     """F-COM-001. ``direction`` used to carry the dominant LAYER name
     ("real_yield", "crisis_confidence", "none_identified") in a field the
     contract defines as 'which way the value moves the underlying economic
@@ -286,10 +283,10 @@ def test_gold_direction_is_none_because_an_attribution_has_no_direction():
         )
         assert r.direction is None, (ry, trend, crisis)
         # the layer is still published where it belongs
-        assert isinstance(r.value["dominant_layer"], str)
+        assert isinstance(r.value_dict()["dominant_layer"], str)
 
 
-def test_gold_dominant_layer_is_the_first_active_one_in_specification_order():
+def test_gold_dominant_layer_is_the_first_active_one_in_specification_order() -> None:
     """real_yield, then cb_diversification, then crisis_confidence — the spec's
     own append order, so the PRIMARY channel wins when several fire."""
     all_three = gold_driver_attribution(
@@ -299,12 +296,12 @@ def test_gold_dominant_layer_is_the_first_active_one_in_specification_order():
             crisis_indicator=True,
         )
     )
-    assert all_three.value["active_layers"] == [
+    assert all_three.value_dict()["active_layers"] == [
         "real_yield",
         "cb_diversification",
         "crisis_confidence",
     ]
-    assert all_three.value["dominant_layer"] == "real_yield"
+    assert all_three.value_dict()["dominant_layer"] == "real_yield"
 
     # drop the primary: the structural layer leads
     no_primary = gold_driver_attribution(
@@ -314,48 +311,52 @@ def test_gold_dominant_layer_is_the_first_active_one_in_specification_order():
             crisis_indicator=True,
         )
     )
-    assert no_primary.value["dominant_layer"] == "cb_diversification"
+    assert no_primary.value_dict()["dominant_layer"] == "cb_diversification"
 
 
-def test_gold_real_yield_layer_fires_on_a_move_in_EITHER_direction():
+def test_gold_real_yield_layer_fires_on_a_move_in_either_direction() -> None:
     """The predicate is ``abs(change_bp) > threshold``: a real-yield FALL of
     25bp moves gold through the same opportunity-cost channel as a rise."""
     for change in (25.0, -25.0):
         r = gold_driver_attribution(
             GoldDriverInputs(
-                real_yield_change_bp=change, central_bank_net_purchases_trend=None,
+                real_yield_change_bp=change,
+                central_bank_net_purchases_trend=None,
                 crisis_indicator=False,
             )
         )
-        assert r.value["dominant_layer"] == "real_yield"
+        assert r.value_dict()["dominant_layer"] == "real_yield"
     inside = gold_driver_attribution(
         GoldDriverInputs(
-            real_yield_change_bp=9.9, central_bank_net_purchases_trend=None,
+            real_yield_change_bp=9.9,
+            central_bank_net_purchases_trend=None,
             crisis_indicator=False,
         )
     )
-    assert inside.value["active_layers"] == []
+    assert inside.value_dict()["active_layers"] == []
 
 
-def test_gold_real_yield_threshold_boundary_is_strict():
+def test_gold_real_yield_threshold_boundary_is_strict() -> None:
     """``> 10.0``: exactly 10.0 does not fire."""
     at = gold_driver_attribution(
         GoldDriverInputs(
-            real_yield_change_bp=10.0, central_bank_net_purchases_trend=None,
+            real_yield_change_bp=10.0,
+            central_bank_net_purchases_trend=None,
             crisis_indicator=False,
         )
     )
-    assert at.value["active_layers"] == []
+    assert at.value_dict()["active_layers"] == []
     over = gold_driver_attribution(
         GoldDriverInputs(
-            real_yield_change_bp=10.1, central_bank_net_purchases_trend=None,
+            real_yield_change_bp=10.1,
+            central_bank_net_purchases_trend=None,
             crisis_indicator=False,
         )
     )
-    assert over.value["active_layers"] == ["real_yield"]
+    assert over.value_dict()["active_layers"] == ["real_yield"]
 
 
-def test_gold_no_layer_identified_is_a_reading_not_an_error():
+def test_gold_no_layer_identified_is_a_reading_not_an_error() -> None:
     r = gold_driver_attribution(
         GoldDriverInputs(
             real_yield_change_bp=0.0,
@@ -363,11 +364,11 @@ def test_gold_no_layer_identified_is_a_reading_not_an_error():
             crisis_indicator=False,
         )
     )
-    assert r.value["dominant_layer"] == "none_identified"
+    assert r.value_dict()["dominant_layer"] == "none_identified"
     assert any("NO layer was identified" in w for w in r.warnings)
 
 
-def test_gold_unresolvable_cb_trend_degrades_to_inactive_and_is_disclosed():
+def test_gold_unresolvable_cb_trend_degrades_to_inactive_and_is_disclosed() -> None:
     """The CB layer has no free live source (a MEASURED block), so its absence is
     disclosed as 'not evaluated', NOT as evidence that CB buying is flat."""
     r = gold_driver_attribution(
@@ -377,13 +378,12 @@ def test_gold_unresolvable_cb_trend_degrades_to_inactive_and_is_disclosed():
             crisis_indicator=False,
         )
     )
-    assert "cb_diversification" not in r.value["active_layers"]
+    assert "cb_diversification" not in r.value_dict()["active_layers"]
     assert any("NOT evaluated" in w for w in r.warnings)
-    assert any("central_bank_net_purchases_trend NOT RESOLVED" in p
-               for p in r.data_provenance)
+    assert any("central_bank_net_purchases_trend NOT RESOLVED" in p for p in r.data_provenance)
 
 
-def test_gold_confidence_is_the_product_of_two_factors():
+def test_gold_confidence_is_the_product_of_two_factors() -> None:
     """Hand: computed 0.25 x cap 0.35 = 0.0875."""
     r = gold_driver_attribution(
         GoldDriverInputs(
@@ -395,7 +395,7 @@ def test_gold_confidence_is_the_product_of_two_factors():
     assert r.confidence == 0.0875
 
 
-def test_gold_independence_counts_providers_not_legs(monkeypatch):
+def test_gold_independence_counts_providers_not_legs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Both live legs are FRED series: two fetches, ONE provider. Counting legs
     as sources would overstate the evidence — 'legs are not sources'."""
     monkeypatch.setattr(
@@ -411,7 +411,9 @@ def test_gold_independence_counts_providers_not_legs(monkeypatch):
     assert r.confidence == 0.55 * 0.35
 
 
-def test_gold_refuses_when_the_primary_layer_cannot_be_resolved(monkeypatch):
+def test_gold_refuses_when_the_primary_layer_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The real-yield channel is the primary driver; a reading without it would
     silently report whichever secondary layer happened to fire."""
     monkeypatch.setattr(
@@ -423,7 +425,9 @@ def test_gold_refuses_when_the_primary_layer_cannot_be_resolved(monkeypatch):
     assert "PRIMARY layer" in str(exc.value)
 
 
-def test_gold_refuses_when_the_crisis_layer_cannot_be_resolved(monkeypatch):
+def test_gold_refuses_when_the_crisis_layer_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         "macro_engine.models.commodities._resolve_crisis_indicator",
         lambda: (None, "NOT AVAILABLE"),
@@ -433,7 +437,7 @@ def test_gold_refuses_when_the_crisis_layer_cannot_be_resolved(monkeypatch):
     assert "CRISIS layer" in str(exc.value)
 
 
-def test_gold_trend_vocabulary_is_enforced_so_a_typo_is_visible():
+def test_gold_trend_vocabulary_is_enforced_so_a_typo_is_visible() -> None:
     """Appendix D matches the exact string, so "raise" would silently read as
     'this layer is inactive'."""
     for bad in ("raise", "RISING", "Rising", "", "rising "):
@@ -451,7 +455,7 @@ def test_gold_trend_vocabulary_is_enforced_so_a_typo_is_visible():
         )
 
 
-def test_gold_only_rising_activates_the_cb_layer():
+def test_gold_only_rising_activates_the_cb_layer() -> None:
     """'flat' and 'falling' are in the vocabulary but are NOT active."""
     for trend in ("flat", "falling"):
         r = gold_driver_attribution(
@@ -461,10 +465,10 @@ def test_gold_only_rising_activates_the_cb_layer():
                 crisis_indicator=False,
             )
         )
-        assert "cb_diversification" not in r.value["active_layers"]
+        assert "cb_diversification" not in r.value_dict()["active_layers"]
 
 
-def test_gold_warns_that_gold_is_not_a_simple_inflation_hedge():
+def test_gold_warns_that_gold_is_not_a_simple_inflation_hedge() -> None:
     """Appendix D's central correction, on every call."""
     r = gold_driver_attribution(
         GoldDriverInputs(
@@ -477,7 +481,7 @@ def test_gold_warns_that_gold_is_not_a_simple_inflation_hedge():
     assert any("INFORMATIONAL ONLY" in w for w in r.warnings)
 
 
-def test_gold_rejects_non_finite_real_yield():
+def test_gold_rejects_non_finite_real_yield() -> None:
     with pytest.raises(ValueError):
         GoldDriverInputs(real_yield_change_bp=float("nan"), crisis_indicator=False)
 
@@ -487,7 +491,7 @@ def test_gold_rejects_non_finite_real_yield():
 # --------------------------------------------------------------------------
 
 
-def test_metals_china_construction_specific_hand_computed():
+def test_metals_china_construction_specific_hand_computed() -> None:
     """iron ore falls HARDEST, copper also falls, aluminum FLAT (|al| < 2.0).
 
     copper -5.0, iron -8.0, aluminum 0.0 -> -8 < -5 < 0 and |0| < 2.0 -> CHINA.
@@ -497,22 +501,22 @@ def test_metals_china_construction_specific_hand_computed():
             copper_change_pct=-5.0, iron_ore_change_pct=-8.0, aluminum_change_pct=0.0
         )
     )
-    assert r.value["verdict"] == "CHINA_CONSTRUCTION_SPECIFIC"
+    assert r.value_dict()["verdict"] == "CHINA_CONSTRUCTION_SPECIFIC"
     assert any("STABILITY is the discriminating evidence" in w for w in r.warnings)
 
 
-def test_metals_broad_industrial_weakness_hand_computed():
+def test_metals_broad_industrial_weakness_hand_computed() -> None:
     """ALL THREE below -2.0."""
     r = metals_complex_divergence(
         MetalsComplexInputs(
             copper_change_pct=-5.0, iron_ore_change_pct=-8.0, aluminum_change_pct=-3.0
         )
     )
-    assert r.value["verdict"] == "BROAD_INDUSTRIAL_WEAKNESS"
+    assert r.value_dict()["verdict"] == "BROAD_INDUSTRIAL_WEAKNESS"
     assert any("NOT construction-specific" in w for w in r.warnings)
 
 
-def test_metals_mixed_when_neither_pattern_holds():
+def test_metals_mixed_when_neither_pattern_holds() -> None:
     """iron ore NOT falling hardest (-0.5 > -1.0), so the construction test's
     `iron_ore < copper` fails; nothing is near the broad threshold either.
     (An earlier draft of this test used iron -1.5, which DOES fall hardest and
@@ -523,49 +527,64 @@ def test_metals_mixed_when_neither_pattern_holds():
             copper_change_pct=-1.0, iron_ore_change_pct=-0.5, aluminum_change_pct=0.5
         )
     )
-    assert r.value["verdict"] == "MIXED_no_clear_pattern"
+    assert r.value_dict()["verdict"] == "MIXED_no_clear_pattern"
     assert any("NO clear pattern" in w for w in r.warnings)
 
 
-def test_metals_construction_test_requires_iron_ore_to_fall_hardest():
+def test_metals_construction_test_requires_iron_ore_to_fall_hardest() -> None:
     """`iron_ore < copper < 0`: equal falls, or copper falling harder, do not
     localise the shock to construction."""
     equal = _classify_metals(
-        copper=-5.0, iron_ore=-5.0, aluminum=0.0,
-        aluminum_band_pct=2.0, broad_weakness_threshold_pct=2.0,
+        copper=-5.0,
+        iron_ore=-5.0,
+        aluminum=0.0,
+        aluminum_band_pct=2.0,
+        broad_weakness_threshold_pct=2.0,
     )
     assert equal == "MIXED_no_clear_pattern", "-5 < -5 is False"
 
     copper_worse = _classify_metals(
-        copper=-8.0, iron_ore=-5.0, aluminum=0.0,
-        aluminum_band_pct=2.0, broad_weakness_threshold_pct=2.0,
+        copper=-8.0,
+        iron_ore=-5.0,
+        aluminum=0.0,
+        aluminum_band_pct=2.0,
+        broad_weakness_threshold_pct=2.0,
     )
     assert copper_worse == "MIXED_no_clear_pattern"
 
 
-def test_metals_threshold_boundaries_are_strict():
+def test_metals_threshold_boundaries_are_strict() -> None:
     """`all(v < -2.0)`: exactly -2.0 does not count as broad weakness."""
     at = _classify_metals(
-        copper=-2.0, iron_ore=-2.0, aluminum=-2.0,
-        aluminum_band_pct=2.0, broad_weakness_threshold_pct=2.0,
+        copper=-2.0,
+        iron_ore=-2.0,
+        aluminum=-2.0,
+        aluminum_band_pct=2.0,
+        broad_weakness_threshold_pct=2.0,
     )
     assert at != "BROAD_INDUSTRIAL_WEAKNESS"
 
     over = _classify_metals(
-        copper=-2.001, iron_ore=-2.001, aluminum=-2.001,
-        aluminum_band_pct=2.0, broad_weakness_threshold_pct=2.0,
+        copper=-2.001,
+        iron_ore=-2.001,
+        aluminum=-2.001,
+        aluminum_band_pct=2.0,
+        broad_weakness_threshold_pct=2.0,
     )
     assert over == "BROAD_INDUSTRIAL_WEAKNESS"
 
     # aluminum band: |aluminum| < 2.0, so exactly 2.0 is not "flat"
     at_band = _classify_metals(
-        copper=-5.0, iron_ore=-8.0, aluminum=2.0,
-        aluminum_band_pct=2.0, broad_weakness_threshold_pct=2.0,
+        copper=-5.0,
+        iron_ore=-8.0,
+        aluminum=2.0,
+        aluminum_band_pct=2.0,
+        broad_weakness_threshold_pct=2.0,
     )
     assert at_band != "CHINA_CONSTRUCTION_SPECIFIC"
 
 
-def test_metals_the_two_branches_are_mutually_exclusive_as_documented():
+def test_metals_the_two_branches_are_mutually_exclusive_as_documented() -> None:
     """The module claims the if/elif order DECIDES NOTHING because the two tests
     cannot both hold with positive bands. That claim is config-dependent, so it
     is asserted as a sweep rather than trusted: a future config that raised
@@ -588,7 +607,7 @@ def test_metals_the_two_branches_are_mutually_exclusive_as_documented():
     assert band <= thr
 
 
-def test_metals_band_ordering_is_refused_by_config_not_merely_observed():
+def test_metals_band_ordering_is_refused_by_config_not_merely_observed() -> None:
     """F-COM-005. The mutual-exclusivity of the two verdicts is a property of the
     CONFIG (``aluminum_band_pct <= broad_weakness_threshold_pct``), so it is
     enforced at load time — Section 21's "configuration errors are startup
@@ -601,10 +620,10 @@ def test_metals_band_ordering_is_refused_by_config_not_merely_observed():
     """
     from macro_engine.config import CalibratedValue, MetalsComplexSettings
 
-    def _leaf(value):
+    def _leaf(value: float) -> CalibratedValue:
         return CalibratedValue(value=value, calibration_status="uncalibrated_illustrative")
 
-    def build(band, threshold):
+    def build(band: float, threshold: float) -> MetalsComplexSettings:
         return MetalsComplexSettings(
             reliability_cap=_leaf(0.30),
             value_decimals_leaf=_leaf(1),
@@ -629,7 +648,7 @@ def test_metals_band_ordering_is_refused_by_config_not_merely_observed():
         build(2.5, 2.0)
 
 
-def test_metals_direction_comes_from_the_signs_not_the_verdict_label():
+def test_metals_direction_comes_from_the_signs_not_the_verdict_label() -> None:
     """D-131. The direction used to be `"expansionary" if verdict == MIXED else
     "restrictive"` — derived from the LABEL. Measured before the fix: an
     ALL-FALLING complex (copper -1.0, iron -0.5, aluminum -1.0) published
@@ -640,7 +659,7 @@ def test_metals_direction_comes_from_the_signs_not_the_verdict_label():
             copper_change_pct=-1.0, iron_ore_change_pct=-0.5, aluminum_change_pct=-1.0
         )
     )
-    assert all_falling.value["verdict"] == "MIXED_no_clear_pattern"
+    assert all_falling.value_dict()["verdict"] == "MIXED_no_clear_pattern"
     assert all_falling.direction == "restrictive", (
         "every metal is falling; the direction must say so"
     )
@@ -653,11 +672,9 @@ def test_metals_direction_comes_from_the_signs_not_the_verdict_label():
     assert second.direction == "restrictive"
 
 
-def test_metals_direction_all_rising_and_mixed():
+def test_metals_direction_all_rising_and_mixed() -> None:
     rising = metals_complex_divergence(
-        MetalsComplexInputs(
-            copper_change_pct=1.0, iron_ore_change_pct=2.0, aluminum_change_pct=0.5
-        )
+        MetalsComplexInputs(copper_change_pct=1.0, iron_ore_change_pct=2.0, aluminum_change_pct=0.5)
     )
     assert rising.direction == "expansionary"
 
@@ -669,7 +686,7 @@ def test_metals_direction_all_rising_and_mixed():
     assert mixed.direction == "neutral"
 
 
-def test_metals_direction_zero_is_treated_as_not_falling():
+def test_metals_direction_zero_is_treated_as_not_falling() -> None:
     """A flat metal makes the falling test fail: `>= 0` for rising, `< 0` for
     falling. Three flat metals read 'expansionary' — a flat complex is not
     contracting — and that is documented behaviour, not an accident."""
@@ -677,7 +694,7 @@ def test_metals_direction_zero_is_treated_as_not_falling():
     assert _direction_for(copper=-1.0, iron_ore=-1.0, aluminum=0.0) == "neutral"
 
 
-def test_metals_confidence_is_the_product_of_two_factors():
+def test_metals_confidence_is_the_product_of_two_factors() -> None:
     """Hand: computed 0.25 x cap 0.30 = 0.075."""
     r = metals_complex_divergence(
         MetalsComplexInputs(
@@ -687,12 +704,14 @@ def test_metals_confidence_is_the_product_of_two_factors():
     assert r.confidence == 0.075
 
 
-def test_metals_independence_counts_providers_not_legs(monkeypatch):
+def test_metals_independence_counts_providers_not_legs(monkeypatch: pytest.MonkeyPatch) -> None:
     """All three are IMF Primary Commodity Prices via FRED: three fetches, ONE
     provider family."""
-    def fake(sym, value):
-        def _f(as_of):
+
+    def fake(sym: str, value: float) -> Callable[[str], None]:
+        def _f(as_of: str) -> None:
             raise AssertionError("should not reach the client")
+
         return _f
 
     monkeypatch.setattr(
@@ -705,7 +724,7 @@ def test_metals_independence_counts_providers_not_legs(monkeypatch):
     assert r.confidence == 0.55 * 0.30
 
 
-def test_metals_refuses_when_a_leg_cannot_be_resolved(monkeypatch):
+def test_metals_refuses_when_a_leg_cannot_be_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing leg is a DIFFERENT pattern, not a weaker verdict."""
     monkeypatch.setattr(
         "macro_engine.models.commodities._resolve_metal_leg",
@@ -718,16 +737,16 @@ def test_metals_refuses_when_a_leg_cannot_be_resolved(monkeypatch):
         assert leg in msg
 
 
-def test_metals_all_three_changes_are_published_alongside_the_verdict():
+def test_metals_all_three_changes_are_published_alongside_the_verdict() -> None:
     """A bare label over unreported inputs is the D-037 shape."""
     r = metals_complex_divergence(
         MetalsComplexInputs(
             copper_change_pct=-5.0, iron_ore_change_pct=-8.0, aluminum_change_pct=0.0
         )
     )
-    assert r.value["copper_change_pct"] == -5.0
-    assert r.value["iron_ore_change_pct"] == -8.0
-    assert r.value["aluminum_change_pct"] == 0.0
+    assert r.value_dict()["copper_change_pct"] == -5.0
+    assert r.value_dict()["iron_ore_change_pct"] == -8.0
+    assert r.value_dict()["aluminum_change_pct"] == 0.0
     assert r.inputs_used == [
         "copper_change_pct",
         "iron_ore_change_pct",
@@ -735,7 +754,7 @@ def test_metals_all_three_changes_are_published_alongside_the_verdict():
     ]
 
 
-def test_metals_warns_that_copper_is_not_a_clean_global_growth_proxy():
+def test_metals_warns_that_copper_is_not_a_clean_global_growth_proxy() -> None:
     r = metals_complex_divergence(
         MetalsComplexInputs(
             copper_change_pct=-5.0, iron_ore_change_pct=-8.0, aluminum_change_pct=0.0
@@ -745,7 +764,7 @@ def test_metals_warns_that_copper_is_not_a_clean_global_growth_proxy():
     assert any("INFORMATIONAL ONLY" in w for w in r.warnings)
 
 
-def test_metals_rejects_non_finite_inputs():
+def test_metals_rejects_non_finite_inputs() -> None:
     with pytest.raises(ValueError):
         MetalsComplexInputs(
             copper_change_pct=float("nan"),

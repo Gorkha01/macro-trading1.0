@@ -9,7 +9,6 @@ here too. Every expected value is derived independently of the implementation.
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
 
 from macro_engine.models.contracts import ModelResult, utc_now
 from macro_engine.models.convergence import classify_convergence
@@ -25,7 +24,7 @@ FAM = [
 ]
 
 
-def _signal(direction: int, family: EvidenceSourceFamily) -> ModelResult:
+def _signal(direction: int, family: F) -> ModelResult:
     return ModelResult(
         model_name="sig",
         country="us",
@@ -40,10 +39,12 @@ def _signal(direction: int, family: EvidenceSourceFamily) -> ModelResult:
     )
 
 
-def _classify(directions: list[int], families: list[EvidenceSourceFamily]):
+def _classify(directions: list[int], families: list[F]) -> ModelResult:
     assert len(directions) == len(families)
     return classify_convergence(
-        __import__("macro_engine.models.convergence", fromlist=["ConvergenceInputs"]).ConvergenceInputs(
+        __import__(
+            "macro_engine.models.convergence", fromlist=["ConvergenceInputs"]
+        ).ConvergenceInputs(
             signals=[_signal(d, f) for d, f in zip(directions, families, strict=True)]
         )
     )
@@ -52,7 +53,7 @@ def _classify(directions: list[int], families: list[EvidenceSourceFamily]):
 # ---------------------------------------------------------------------------
 # Config bridging + CONFLICTED as a genuine standoff (narrow-fix).
 # ---------------------------------------------------------------------------
-def test_config_bridging_convergence_gates():
+def test_config_bridging_convergence_gates() -> None:
     from macro_engine.config import get_settings
 
     s = get_settings().convergence
@@ -62,52 +63,52 @@ def test_config_bridging_convergence_gates():
     assert s.medium_family_floor == 2
 
 
-def test_2v2_split_is_conflicted():
+def test_2v2_split_is_conflicted() -> None:
     res = _classify([1, 1, -1, -1], [FAM[0], FAM[1], FAM[2], FAM[3]])
-    assert res.value["classification"] == "CONFLICTED"
-    assert res.value["agreement_fraction"] == pytest.approx(0.5)
+    assert res.value_dict()["classification"] == "CONFLICTED"
+    assert res.value_dict()["agreement_fraction"] == pytest.approx(0.5)
 
 
-def test_3v1_split_is_medium_after_narrow_fix():
+def test_3v1_split_is_medium_after_narrow_fix() -> None:
     # 3 tighten (+1), 1 ease (-1), 3 distinct families. Under the OLD gate this
     # was CONFLICTED (any dissenter). After the narrow-fix it is MEDIUM: a clear
     # majority with a single dissenter, exactly what MEDIUM is reserved for.
     res = _classify([1, 1, -1, 1], [FAM[0], FAM[1], FAM[2], FAM[0]])
-    assert res.value["classification"] == "MEDIUM"
-    assert res.value["dissenting_signals"] == 1
-    assert res.value["independent_families"] == 3
+    assert res.value_dict()["classification"] == "MEDIUM"
+    assert res.value_dict()["dissenting_signals"] == 1
+    assert res.value_dict()["independent_families"] == 3
 
 
-def test_unanimous_high_with_three_families():
+def test_unanimous_high_with_three_families() -> None:
     res = _classify([1, 1, 1, 1], [FAM[0], FAM[1], FAM[2], FAM[0]])
-    assert res.value["classification"] == "HIGH"
-    assert res.value["dissenting_signals"] == 0
-    assert res.value["independent_families"] == 3
+    assert res.value_dict()["classification"] == "HIGH"
+    assert res.value_dict()["dissenting_signals"] == 0
+    assert res.value_dict()["independent_families"] == 3
 
 
-def test_one_directional_signal_is_low_not_conflicted():
+def test_one_directional_signal_is_low_not_conflicted() -> None:
     # n=1, a single +1. Not opposed (only one side), dissent 0, 1 family -> LOW.
     res = _classify([1], [FAM[0]])
-    assert res.value["classification"] == "LOW"
-    assert res.value["independent_families"] == 1
-    assert res.value["non_neutral_signals"] == 1
+    assert res.value_dict()["classification"] == "LOW"
+    assert res.value_dict()["independent_families"] == 1
+    assert res.value_dict()["non_neutral_signals"] == 1
 
 
-def test_all_neutral_is_no_signal():
+def test_all_neutral_is_no_signal() -> None:
     res = _classify([0, 0, 0, 0], [FAM[0], FAM[1], FAM[2], FAM[3]])
-    assert res.value["classification"] == "NO_SIGNAL"
-    assert res.value["non_neutral_signals"] == 0
+    assert res.value_dict()["classification"] == "NO_SIGNAL"
+    assert res.value_dict()["non_neutral_signals"] == 0
 
 
-def test_medium_requires_two_families_floor():
+def test_medium_requires_two_families_floor() -> None:
     # 3 agree +1, 1 dissenter -1, but all the same family -> not opposed, dissent 1,
     # families 1 < medium floor 2 -> LOW (same family-floor behavior as scorecard).
     res = _classify([1, 1, -1, 1], [FAM[0], FAM[0], FAM[0], FAM[0]])
-    assert res.value["classification"] == "LOW"
-    assert res.value["independent_families"] == 1
+    assert res.value_dict()["classification"] == "LOW"
+    assert res.value_dict()["independent_families"] == 1
 
 
-def test_confidence_tracks_measured_family_count():
+def test_confidence_tracks_measured_family_count() -> None:
     # compute_confidence: base 0.70 - 0.20 heuristic + min(nfam*0.05, 0.25).
     # 2-vs-2 CONFLICTED with 4 distinct families -> 0.70 - 0.20 + 0.20 = 0.70.
     res = _classify([1, 1, -1, -1], [FAM[0], FAM[1], FAM[2], FAM[3]])
@@ -120,20 +121,20 @@ def test_confidence_tracks_measured_family_count():
     assert low.confidence == pytest.approx(0.55)
 
 
-def test_order_independence():
+def test_order_independence() -> None:
     # Defect 2: the verdict must not depend on list order. A 3-vs-1 split in two
     # orders must give the same MEDIUM verdict.
     a = _classify([1, 1, -1, 1], [FAM[0], FAM[1], FAM[2], FAM[0]])
     b = _classify([1, -1, 1, 1], [FAM[2], FAM[0], FAM[0], FAM[1]])
-    assert a.value["classification"] == b.value["classification"] == "MEDIUM"
+    assert a.value_dict()["classification"] == b.value_dict()["classification"] == "MEDIUM"
 
 
-def test_census_counts_directional_only():
+def test_census_counts_directional_only() -> None:
     # 1 directional +1 and 3 NEUTRAL signals from 3 NEW families. The neutral
     # families must NOT pad the count (D-050/Defect 7). independent_families == 1.
     signals = [_signal(1, FAM[0])] + [_signal(0, f) for f in [FAM[1], FAM[2], FAM[3]]]
     from macro_engine.models.convergence import ConvergenceInputs
 
     res = classify_convergence(ConvergenceInputs(signals=signals))
-    assert res.value["independent_families"] == 1
-    assert res.value["non_neutral_signals"] == 1
+    assert res.value_dict()["independent_families"] == 1
+    assert res.value_dict()["non_neutral_signals"] == 1

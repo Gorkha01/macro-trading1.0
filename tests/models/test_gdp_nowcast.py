@@ -20,8 +20,6 @@ Locks in:
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from macro_engine.config import get_settings
@@ -35,21 +33,20 @@ from macro_engine.models.gdp_nowcast import (
     simple_gdp_nowcast,
 )
 
-
 # ---------------------------------------------------------------------------
 # output_gap (Tier 1)
 # ---------------------------------------------------------------------------
 
 
-def test_output_gap_known_value():
+def test_output_gap_known_value() -> None:
     res = output_gap(OutputGapInputs(actual_gdp=24200.0, potential_gdp=24000.0))
     # (24200 - 24000) / 24000 * 100 = 0.8333... -> 0.83
     assert res.value == pytest.approx(0.83, abs=1e-9)
-    assert res.direction.startswith("expansionary")
+    assert (res.direction or "").startswith("expansionary")
     assert "0.83%" in res.interpretation
 
 
-def test_output_gap_exact_zero_is_third_state():
+def test_output_gap_exact_zero_is_third_state() -> None:
     """F-GDP-002: a gap of exactly 0.0 reads 'at potential', not a direction."""
     res = output_gap(OutputGapInputs(actual_gdp=24200.0, potential_gdp=24200.0))
     assert res.value == 0.0
@@ -57,7 +54,7 @@ def test_output_gap_exact_zero_is_third_state():
     assert res.interpretation == "Output gap: 0.00% (at potential)"
 
 
-def test_output_gap_published_consistency_when_raw_rounds_to_zero():
+def test_output_gap_published_consistency_when_raw_rounds_to_zero() -> None:
     """F-GDP-002 regression: a tiny positive gap that rounds to 0.0 must NOT
     publish 'expansionary'. Before the fix, value=0.0 sat next to
     direction='expansionary: economy above sustainable capacity'."""
@@ -71,15 +68,15 @@ def test_output_gap_published_consistency_when_raw_rounds_to_zero():
     assert res.interpretation == "Output gap: 0.00% (at potential)"
 
 
-def test_output_gap_negative_gap_is_slack():
+def test_output_gap_negative_gap_is_slack() -> None:
     res = output_gap(OutputGapInputs(actual_gdp=23800.0, potential_gdp=24000.0))
     # (23800 - 24000) / 24000 * 100 = -0.8333... -> -0.83
     assert res.value == pytest.approx(-0.83, abs=1e-9)
-    assert res.direction.startswith("slack")
+    assert (res.direction or "").startswith("slack")
 
 
-def test_output_gap_rejects_nonpositive_potential():
-    with pytest.raises(Exception):
+def test_output_gap_rejects_nonpositive_potential() -> None:
+    with pytest.raises(ValueError):
         OutputGapInputs(actual_gdp=100.0, potential_gdp=0.0)
 
 
@@ -88,23 +85,23 @@ def test_output_gap_rejects_nonpositive_potential():
 # ---------------------------------------------------------------------------
 
 
-def test_gdi_exact_zero_is_third_state():
+def test_gdi_exact_zero_is_third_state() -> None:
     """F-GDP-002: GDP == GDI reads 'agree exactly', not a direction."""
     res = gdp_gdi_divergence(GdpGdiInputs(gdp_growth_pct=2.5, gdi_growth_pct=2.5))
-    assert res.value["divergence_pp"] == 0.0
-    assert res.direction.startswith("the two estimates agree exactly")
-    assert res.value["significant"] is False  # |0| > threshold is False
+    assert res.value_dict()["divergence_pp"] == 0.0
+    assert (res.direction or "").startswith("the two estimates agree exactly")
+    assert res.value_dict()["significant"] is False  # |0| > threshold is False
 
 
-def test_gdi_near_zero_also_reads_as_agreement():
+def test_gdi_near_zero_also_reads_as_agreement() -> None:
     """F-GDP-002: 2.5 vs 2.5000001 -> raw diff -1e-7, published rounds to -0.0,
     so direction is 'agree exactly', not 'GDI-side leads by -0.00pp'."""
     res = gdp_gdi_divergence(GdpGdiInputs(gdp_growth_pct=2.5, gdi_growth_pct=2.5000001))
-    assert res.value["divergence_pp"] == -0.0
-    assert res.direction.startswith("the two estimates agree exactly")
+    assert res.value_dict()["divergence_pp"] == -0.0
+    assert (res.direction or "").startswith("the two estimates agree exactly")
 
 
-def test_gdi_significant_uses_raw_diff_but_direction_uses_published():
+def test_gdi_significant_uses_raw_diff_but_direction_uses_published() -> None:
     """F-GDP-002 design: `significant` is computed on the RAW diff (so the
     recorded 21.7% base rate is preserved), but `divergence_pp` and `direction`
     are from the PUBLISHED (rounded) value. Lock both."""
@@ -113,14 +110,14 @@ def test_gdi_significant_uses_raw_diff_but_direction_uses_published():
     gdp, gdi = 3.7, 1.2  # raw diff = +2.5, clearly significant
     res = gdp_gdi_divergence(GdpGdiInputs(gdp_growth_pct=gdp, gdi_growth_pct=gdi))
     raw_diff = gdp - gdi
-    assert res.value["significant"] is (abs(raw_diff) > thr)
-    assert res.value["divergence_pp"] == round(raw_diff, 4)
+    assert res.value_dict()["significant"] is (abs(raw_diff) > thr)
+    assert res.value_dict()["divergence_pp"] == round(raw_diff, 4)
     # direction is derived from the published (rounded) diff, i.e. +2.5 -> GDP-side
-    assert res.direction.startswith("GDP-side")
+    assert (res.direction or "").startswith("GDP-side")
 
 
-def test_gdi_rejects_nonfinite():
-    with pytest.raises(Exception):
+def test_gdi_rejects_nonfinite() -> None:
+    with pytest.raises(ValueError):
         GdpGdiInputs(gdp_growth_pct=float("nan"), gdi_growth_pct=1.0)
 
 
@@ -129,7 +126,7 @@ def test_gdi_rejects_nonfinite():
 # ---------------------------------------------------------------------------
 
 
-def test_quarter_annualized_mom_scales_by_months_per_quarter_not_12():
+def test_quarter_annualized_mom_scales_by_months_per_quarter_not_12() -> None:
     """F-GDP-001: the function multiplies the averaged monthly change by
     `months_per_quarter` (config = 3), NOT by 12. A 0.5% monthly change yields
     1.5 (the quarter's summed monthly rate), not 6.0. The recorded accuracy
@@ -143,7 +140,7 @@ def test_quarter_annualized_mom_scales_by_months_per_quarter_not_12():
     assert out != pytest.approx(6.0, abs=1e-9)
 
 
-def test_quarter_annualized_mom_empty_raises():
+def test_quarter_annualized_mom_empty_raises() -> None:
     with pytest.raises(ValueError):
         _quarter_annualized_mom([], 3)
 
@@ -153,7 +150,7 @@ def test_quarter_annualized_mom_empty_raises():
 # ---------------------------------------------------------------------------
 
 
-def _valid_inputs(prior: float, trade_pct=0.0) -> SimpleGDPNowcastInputs:
+def _valid_inputs(prior: float, trade_pct: float = 0.0) -> SimpleGDPNowcastInputs:
     return SimpleGDPNowcastInputs(
         retail_sales_mom={"2026-Q2": [0.0, 0.0, 0.0]},
         durable_goods_mom={"2026-Q2": [0.0, 0.0, 0.0]},
@@ -162,7 +159,7 @@ def _valid_inputs(prior: float, trade_pct=0.0) -> SimpleGDPNowcastInputs:
     )
 
 
-def test_simple_nowcast_refuses_nonfinite_prior():
+def test_simple_nowcast_refuses_nonfinite_prior() -> None:
     with pytest.raises(ValueError):
         SimpleGDPNowcastInputs(
             retail_sales_mom={"2026-Q2": [0.0, 0.0, 0.0]},
@@ -172,7 +169,7 @@ def test_simple_nowcast_refuses_nonfinite_prior():
         )
 
 
-def test_simple_nowcast_refuses_incomplete_quarter():
+def test_simple_nowcast_refuses_incomplete_quarter() -> None:
     with pytest.raises(ValueError, match="complete set"):
         simple_gdp_nowcast(
             SimpleGDPNowcastInputs(
@@ -184,14 +181,14 @@ def test_simple_nowcast_refuses_incomplete_quarter():
         )
 
 
-def test_simple_nowcast_publishes_recorded_accuracy_record():
+def test_simple_nowcast_publishes_recorded_accuracy_record() -> None:
     """F-GDP-001 lock: the model must keep publishing the MEASURED record, not a
     recomputed one. If a future edit alters the annualization factor or the
     weights, this test fails loudly instead of silently changing the published
     accuracy. Values are read from config (the single source of the record)."""
     acc = get_settings().gdp_nowcast.accuracy
     res = simple_gdp_nowcast(_valid_inputs(prior=2.0))
-    v = res.value
+    v = res.value_dict()
     assert v["mean_abs_error_pp"] == acc.mean_abs_error
     assert v["persistence_mean_abs_error_pp"] == acc.persistence_mean_abs_error
     assert v["correlation_with_realised"] == acc.correlation
@@ -202,18 +199,18 @@ def test_simple_nowcast_publishes_recorded_accuracy_record():
     assert v["beats_persistence"] is False
 
 
-def test_simple_nowcast_net_exports_sign_correction():
+def test_simple_nowcast_net_exports_sign_correction() -> None:
     """D-034 correction: a widening trade deficit (positive pct change of the
     all-negative BOPGSTB balance) must LOWER the nowcast. The negative
     net-exports weight makes the contribution negative even though the input
     percent change is positive."""
     res = simple_gdp_nowcast(_valid_inputs(prior=2.0, trade_pct=1.0))
-    v = res.value
+    v = res.value_dict()
     assert v["net_exports_contribution"] < 0.0
     assert v["nowcast_annualized"] < 2.0  # nowcast fell below the prior print
 
 
-def test_simple_nowcast_published_gdpnow_cross_check():
+def test_simple_nowcast_published_gdpnow_cross_check() -> None:
     res = simple_gdp_nowcast(
         SimpleGDPNowcastInputs(
             retail_sales_mom={"2026-Q2": [0.0, 0.0, 0.0]},
@@ -223,17 +220,15 @@ def test_simple_nowcast_published_gdpnow_cross_check():
             published_gdpnow=1.5,
         )
     )
-    v = res.value
+    v = res.value_dict()
     assert "gdpnow_cross_check_pp" in v
-    assert v["gdpnow_cross_check_pp"] == pytest.approx(
-        v["nowcast_annualized"] - 1.5, abs=1e-9
-    )
+    assert v["gdpnow_cross_check_pp"] == pytest.approx(v["nowcast_annualized"] - 1.5, abs=1e-9)
 
 
-def test_simple_nowcast_persistence_benchmark_is_reported():
+def test_simple_nowcast_persistence_benchmark_is_reported() -> None:
     """The nowcast with zero monthly movement equals the prior quarter (delta 0),
     confirming the delta is additive on top of `prior_quarter_annualized`."""
     res = simple_gdp_nowcast(_valid_inputs(prior=2.0))
-    v = res.value
+    v = res.value_dict()
     assert v["delta"] == pytest.approx(0.0, abs=1e-9)
     assert v["nowcast_annualized"] == pytest.approx(2.0, abs=1e-9)

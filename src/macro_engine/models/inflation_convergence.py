@@ -565,9 +565,7 @@ def inflation_convergence_classifier(
     # ceiling at all. A reader is told a HIGH claim was nearly earned in the one
     # month the measures openly disagree. The ceiling logic is a statement about
     # how much evidence backs a *band* claim, so it is applied to bands only.
-    if classification == "CONFLICTED":
-        pass
-    elif classification in bands:
+    if classification == "CONFLICTED" or classification in bands:
         pass
     elif bands:
         warnings.append(

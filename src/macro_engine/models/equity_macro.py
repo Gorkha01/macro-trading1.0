@@ -770,10 +770,9 @@ assert set(SECTOR_ROTATION_PRIOR) == set(REGIME_STATES), (
 )
 # The specification/extension split must also cover the vocabulary exactly, so a
 # reader's map of which rows are Section 6.9's cannot silently drift.
-assert (
-    set(SPECIFICATION_REGIMES) | set(SECTOR_PRIOR_EXTENSION_REGIMES) == set(REGIME_STATES)
-    and not set(SPECIFICATION_REGIMES) & set(SECTOR_PRIOR_EXTENSION_REGIMES)
-), (
+assert set(SPECIFICATION_REGIMES) | set(SECTOR_PRIOR_EXTENSION_REGIMES) == set(
+    REGIME_STATES
+) and not set(SPECIFICATION_REGIMES) & set(SECTOR_PRIOR_EXTENSION_REGIMES), (
     "SPECIFICATION_REGIMES and SECTOR_PRIOR_EXTENSION_REGIMES must partition "
     "REGIME_STATES: every regime is either Section 6.9's row or a declared "
     "extension row, never both and never neither."

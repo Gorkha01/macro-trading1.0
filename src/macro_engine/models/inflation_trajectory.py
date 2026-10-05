@@ -428,9 +428,7 @@ def project_inflation_trajectory(inputs: InflationTrajectoryInputs) -> ModelResu
                     # which is exactly what source independence measures; only
                     # "unavailable" (growth was not a number) or "not_directional"
                     # (flat score, nothing to corroborate) deny the credit.
-                    1
-                    if corroboration not in ("unavailable", "not_directional")
-                    else 0
+                    1 if corroboration not in ("unavailable", "not_directional") else 0
                 ),
             )
         ),

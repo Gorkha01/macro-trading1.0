@@ -102,7 +102,7 @@ class Check:
 
 def _run(argv: list[str], timeout: int = 1800) -> tuple[int, str]:
     """Run a command, returning its real exit code and combined output tail."""
-    proc = subprocess.run(  # noqa: S603 - argv values are literals in this module
+    proc = subprocess.run(  # argv values are literals in this module
         argv,
         cwd=REPO_ROOT,
         capture_output=True,
@@ -117,11 +117,19 @@ def _run(argv: list[str], timeout: int = 1800) -> tuple[int, str]:
 def check_gates() -> Check:
     """1. Re-run every gate; all must exit 0."""
     check = Check("gates")
-    proc = subprocess.run(  # noqa: S603
-        [sys.executable, "tools/gates.py", "--only",
-         "ruff_check,ruff_format,mypy_bare,import_smoke,pytest_default"],
-        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=1800,
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "tools/gates.py",
+            "--only",
+            "ruff_check,ruff_format,mypy_bare,import_smoke,pytest_default",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=1800,
     )
     if proc.returncode != 0:
         check.fail(f"tools/gates.py exited {proc.returncode}; at least one gate is red")
@@ -134,7 +142,7 @@ def check_gates() -> Check:
 def check_callgraph() -> Check:
     """2. Re-measure the AST call graph."""
     check = Check("callgraph")
-    code, out = _run([sys.executable, "tools/callgraph.py"])
+    code, _ = _run([sys.executable, "tools/callgraph.py"])
     if code != 0:
         check.fail(f"tools/callgraph.py exited {code}")
         return check
@@ -279,8 +287,7 @@ def check_numbers() -> Check:
             continue
         if match.group(1) != expected[key]:
             check.fail(
-                f"headline number '{key}' says {match.group(1)} but evidence says "
-                f"{expected[key]}"
+                f"headline number '{key}' says {match.group(1)} but evidence says {expected[key]}"
             )
     # The orphan count must agree with the freshly measured graph.
     orphan_match = re.search(r"\*\*ORPHAN\*\*:\s*(\d+)", text)
@@ -315,9 +322,7 @@ def check_no_open_findings() -> Check:
         return check
     text = REPORT.read_text(encoding="utf-8")
     open_rows = [
-        line.strip()
-        for line in text.splitlines()
-        if line.startswith("|") and "| OPEN |" in line
+        line.strip() for line in text.splitlines() if line.startswith("|") and "| OPEN |" in line
     ]
     if open_rows:
         check.fail(f"{len(open_rows)} finding(s) still open -- section 1C fails the review")
@@ -378,7 +383,7 @@ def main() -> int:
     }
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     (EVIDENCE / "selfaudit.json").write_text(
-        json.dumps(record, indent=2) + "\n", encoding="utf-8"
+        json.dumps(record, indent=2) + "\n", encoding="utf-8", newline=""
     )
 
     print("=" * 68)
