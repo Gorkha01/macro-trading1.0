@@ -135,6 +135,23 @@ def _tightness_direction_sentence(score: float) -> str:
     return "neutral: at the balanced level"
 
 
+def _tightness_word(score: float) -> str:
+    """The one-word direction used in the interpretation string.
+
+    Derived from the SAME published value as ``_tightness_direction_sentence`` so
+    the two can never disagree (F-LAB-001). The interpretation previously used a
+    bare ``score > 0`` test while ``direction`` used the three-state sentence; on
+    the boundary (notably a ``-0.0`` score) the two took different branches,
+    publishing ``direction='neutral'`` next to an interpretation saying
+    'loosening'. Centring both on the published value removes the split.
+    """
+    if score > 0:
+        return "tightening"
+    if score < 0:
+        return "loosening"
+    return "neutral"
+
+
 def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
     """Composite labor tightness, ``-100`` (very loose) to ``+100`` (very tight).
 
@@ -198,6 +215,11 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
     )
     score = max(_SCORE_FLOOR, min(_SCORE_CEILING, raw_score))
     clamped = score != raw_score
+    # The value a reader sees, the interpretation, and the direction must all agree.
+    # Derive all three from ONE published number (F-LAB-001): round, then
+    # normalise away any negative zero so "-0.0" can never be published beside a
+    # 'neutral' direction and a 'loosening' interpretation.
+    published = round(score, 1) + 0.0
 
     warnings = [
         "NFP is weighted low deliberately (0.2): it is coincident with the "
@@ -215,11 +237,11 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
         model_name="labor_tightness_score",
         country="us",
         as_of=utc_now(),
-        value=round(score, 1),
+        value=published,
         confidence=compute_confidence(ConfidenceInputs(is_heuristic_not_calibrated=True)),
         interpretation=(
-            f"Labor market tightness score: {score:+.1f} "
-            f"({'tightening' if score > 0 else 'loosening'} vs a balanced market)"
+            f"Labor market tightness score: {published:+.1f} "
+            f"({_tightness_word(published)} vs a balanced market)"
         ),
         context=(
             f"Positive = tightening, negative = loosening. Weights: claims "
@@ -236,7 +258,7 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
         warnings=warnings,
         # --- Section 3/4: the reasoning object, populated -------------------
         unit="index points, bounded to [-100, +100], zero = balanced market",
-        direction=_tightness_direction_sentence(score),
+        direction=_tightness_direction_sentence(published),
         assumptions=[
             "The three components are combinable in ONE score with fixed weights "
             "(claims 0.4, JOLTS 0.4, NFP 0.2). That is a modelling choice, not a "
@@ -531,7 +553,7 @@ def claims_trend_signal(inputs: ClaimsTrendInputs) -> ModelResult:
         as_of=utc_now(),
         value={
             "consecutive_weeks_rising": consecutive_rising,
-            "pct_above_trailing": round(pct_above_trailing, 3),
+            "pct_above_trailing": round(pct_above_trailing, 3) + 0.0,
             "latest_4wk_avg": round(latest_ma4, 1),
             "trailing_4wk_avg": round(trailing_ma4, 1),
             "window_weeks": len(window),
@@ -684,7 +706,7 @@ class TwoSurveyInputs(FiniteInputs):
 def two_survey_divergence(inputs: TwoSurveyInputs) -> ModelResult:
     """Which survey is telling the story, and whether the gap is benign.
 
-    ``value`` is a ``str`` verdict in one of four states.
+    ``value`` is a ``str`` verdict in one of FIVE states.
 
     The insight this encodes, and the reason reading NFP alone is a known error:
 
@@ -698,7 +720,7 @@ def two_survey_divergence(inputs: TwoSurveyInputs) -> ModelResult:
       the same underlying reality and are disagreeing about it, which is an
       invitation to investigate rather than a verdict.
 
-    Hand calculation for the three main paths::
+    Hand calculation for the four main paths::
 
         nfp +200, u_rate +0.1, participation +0.2
             -> PARTICIPATION_DRIVEN (payrolls up, u up, but supply explains it)
@@ -710,6 +732,11 @@ def two_survey_divergence(inputs: TwoSurveyInputs) -> ModelResult:
             -> BROAD_WEAKENING (both decline; no supply-side cover)
 
         nfp +200, u_rate -0.1, participation +0.1
+            -> CONSISTENT_STRENGTH (jobs up, unemployment down)
+
+        nfp -100, u_rate -0.2, participation -0.2
+            -> CONSISTENT_WEAKNESS (jobs down, unemployment down; both surveys
+               agree the market is weakening, so no divergence, but NOT strength)
             -> CONSISTENT_STRENGTH (jobs up, unemployment down)
 
     Two limits are carried in the output rather than left implied. First, the
@@ -768,11 +795,23 @@ def two_survey_divergence(inputs: TwoSurveyInputs) -> ModelResult:
             "same way, and no supply-side expansion offsets it."
         )
         warnings = []
-    else:
+    elif payrolls_up and not unemployment_up:
         verdict = "CONSISTENT_STRENGTH"
         interpretation = (
             "Payrolls rose and unemployment did not, so the surveys are "
             "consistent — no divergence to explain."
+        )
+        warnings = []
+    else:  # not payrolls_up and not unemployment_up
+        # F-LAB-002: the previous flat `else` also caught a FALLING payrolls /
+        # FALLING unemployment reading and labelled it CONSISTENT_STRENGTH with the
+        # false statement "Payrolls rose and unemployment did not". Both surveys
+        # point to a weakening market here, so it is consistent but NOT strength.
+        verdict = "CONSISTENT_WEAKNESS"
+        interpretation = (
+            "Payrolls fell and unemployment also fell — both surveys point the "
+            "same way to a weakening market, so there is no divergence to "
+            "explain, but this is not strength."
         )
         warnings = []
 
@@ -1424,7 +1463,7 @@ def inflation_breadth_score(measures: InflationSubMeasures) -> ModelResult:
         model_name="inflation_breadth_score",
         country="us",
         as_of=utc_now(),
-        value=round(average, 4),
+        value=round(average, 4) + 0.0,
         confidence=confidence,
         interpretation=interpretation,
         context=(

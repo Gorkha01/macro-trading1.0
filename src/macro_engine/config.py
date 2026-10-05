@@ -2450,9 +2450,10 @@ class GdpNowcastSettings(BaseModel):
     the percent change into a contribution.
 
     **3. Cadence.** The three inputs are month-over-month percentages; the base
-    is a quarterly annualized rate. One month's change has no quarter-equivalent
-    without annualizing (x12) and averaging the quarter's three months, which
-    `_quarter_annualized_mom` does.
+    is a quarterly annualized rate. `_quarter_annualized_mom` averages a
+    quarter's three monthly changes and multiplies by `months_per_quarter`
+    (x3), yielding the quarter's *summed* monthly rate (NOT an annualized rate —
+    see F-GDP-001), which is then added to `prior_quarter_annualized`.
 
     **4. Basis.** Retail sales and durable-goods orders are nominal; the base is
     real. Two anonymous floats cannot express that, so the input contract states
@@ -2499,7 +2500,9 @@ class GdpNowcastSettings(BaseModel):
 
     @property
     def months_per_quarter(self) -> int:
-        """Months in a quarter, for annualizing a monthly change."""
+        """Months in a quarter, the multiplier `_quarter_annualized_mom` applies to
+        the averaged monthly change. It is a quarterly scaling (x3), NOT an
+        annualization (x12) — see F-GDP-001."""
         return int(self.months_per_quarter_value.value)
 
     @property

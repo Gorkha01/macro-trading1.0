@@ -208,7 +208,18 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
     """
     gap_pct = (inputs.actual_gdp - inputs.potential_gdp) / inputs.potential_gdp * 100
 
-    relation = "above" if gap_pct > 0 else "below"
+    # The PUBLISHED value, and every statement derived from it, uses this one
+    # number (F-GDP-002). Previously `relation`, `interpretation` and `direction`
+    # were each computed from the RAW `gap_pct` while `value` was rounded to 2dp,
+    # so a gap of 0.001% published `value=0.0` beside `direction='expansionary:
+    # economy above sustainable capacity'` and an interpretation reading
+    # "+0.00% (above potential)". Three fields disagreed in one result, and the
+    # disagreement is not cosmetic: `direction` is the field a consumer reads to
+    # decide whether policy is restrictive. Deriving all three from the rounded
+    # value makes the output internally consistent by construction.
+    published = round(gap_pct, 2)
+
+    relation = "above" if published > 0 else "below"
 
     warnings = [
         "Potential GDP is a Cobb-Douglas production-function ESTIMATE, not observed "
@@ -220,7 +231,7 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
         model_name="output_gap",
         country="us",
         as_of=utc_now(),
-        value=round(gap_pct, 2),
+        value=published,
         confidence=compute_confidence(
             ConfidenceInputs(
                 # Potential GDP is unobservable by nature (Section 21.4 item 13).
@@ -232,8 +243,8 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
             )
         ),
         interpretation=(
-            f"Output gap: {gap_pct:+.2f}% ({relation} potential)"
-            if gap_pct != 0
+            f"Output gap: {published:+.2f}% ({relation} potential)"
+            if published != 0
             else "Output gap: 0.00% (at potential)"
         ),
         context=(
@@ -245,7 +256,9 @@ def output_gap(inputs: OutputGapInputs) -> ModelResult:
         warnings=warnings,
         # --- Section 3/4: the reasoning object, populated -------------------
         unit="percent of potential",
-        direction=_gap_direction_sentence(gap_pct),
+        # Derived from the PUBLISHED value, not the raw one — see `published`
+        # above. A gap that rounds to 0.00 is 'at potential', not 'expansionary'.
+        direction=_gap_direction_sentence(published),
         assumptions=[
             "Potential GDP is a Cobb-Douglas production-function ESTIMATE, not an "
             "observation. The gap inherits whatever error that estimate carries, "
@@ -803,7 +816,12 @@ def gdp_gdi_divergence(inputs: GdpGdiInputs) -> ModelResult:
 
     diff = inputs.gdp_growth_pct - inputs.gdi_growth_pct
     average = (inputs.gdp_growth_pct + inputs.gdi_growth_pct) / 2
+    # `significant` deliberately stays on the RAW diff: the 21.7% base rate in
+    # config was measured against this exact comparison, and moving it to the
+    # rounded value would invalidate that measurement — the same trap that
+    # blocks F-GDP-001. Only the *reported* fields are derived from `published`.
     significant = abs(diff) > threshold
+    published = round(diff, 4)
 
     warnings = [
         "GDP and GDI estimate the same aggregate from opposite sides, so their "
@@ -843,7 +861,7 @@ def gdp_gdi_divergence(inputs: GdpGdiInputs) -> ModelResult:
         value={
             "gdp_growth_pct": round(inputs.gdp_growth_pct, 4),
             "gdi_growth_pct": round(inputs.gdi_growth_pct, 4),
-            "divergence_pp": round(diff, 4),
+            "divergence_pp": published,
             "average_growth_pct": round(average, 4),
             "significant": significant,
             "divergence_base_rate": base_rate,
@@ -871,7 +889,10 @@ def gdp_gdi_divergence(inputs: GdpGdiInputs) -> ModelResult:
             "percentage points (the divergence between two year-over-year GROWTH "
             "RATES, not the level wedge)"
         ),
-        direction=_divergence_direction_sentence(diff, gdp_led_rate),
+        # From the PUBLISHED divergence, so a value that rounds to 0.00pp reads
+        # "the two estimates agree exactly" rather than "GDI-side leads by 0.00pp"
+        # (F-GDP-002's class, applied here too).
+        direction=_divergence_direction_sentence(published, gdp_led_rate),
         assumptions=[
             "Both inputs are YEAR-OVER-YEAR GROWTH RATES in percent, not levels. "
             "This is enforced by the input contract and stated here because the "
@@ -977,17 +998,33 @@ def _quarter_annualized_mom(monthly_pct_changes: list[float], months_per_quarter
     1. **Average** the quarter's month-over-month changes, so one arbitrary
        month cannot dominate the estimate. The specification has no way to say
        which month it received.
-    2. **Annualize** (``x 12``) so the result is a rate on the same basis as
-       ``prior_quarter_annualized``. A 0.5% monthly change is not a 0.5%
-       quarterly rate; it is about a 6% annualized one.
+    2. **Scale by ``months_per_quarter``** (``x 3`` in this build) so the three
+       monthly contributions sum to the quarter's rate. The result is the
+       quarter's *summed* monthly rate, **not an annualized rate** — see
+       F-GDP-001. A 0.5% monthly change therefore becomes about a 1.5% quarter
+       contribution, which is what is added to ``prior_quarter_annualized``.
 
-    The order matters: averaging first then annualizing is
-    ``mean(m) * 12``, which is the annualized mean monthly change. Annualizing
-    each month first and then averaging would give the same number (the
+    The order matters: averaging first then scaling is
+    ``mean(m) * months_per_quarter``, which is the quarter's summed monthly
+    rate. Scaling each month first and then averaging would give the same number (the
     operation is linear), so the two are interchangeable here — noted because
-    a reader may reasonably wonder, and because a *geometric* annualization
+    a reader may reasonably wonder, and because a *geometric* scaling
     would NOT be interchangeable and is deliberately not used: these are
     contributions being added, and the specification's model is additive.
+
+    **F-GDP-001 — the factor is ``months_per_quarter`` (x3), not x12.** An
+    earlier docstring claimed "Annualizing (x12)" and a 0.5% monthly change
+    becoming "about a 6% annualized". Re-measurement on 137 quarters of live
+    FRED data (RSAFS, DGORDER, BOPGSTB, A191RL1Q225SBEA), using this module's
+    own ``simple_gdp_nowcast``, reproduced the recorded accuracy record
+    (mean_abs_error 3.0261, correlation -0.0922, delta_overweighting_ratio
+    0.5052) **only** under x3; under x12 the error more than doubles (6.25pp)
+    and the correlation flips sign (+0.058). The recorded stats were therefore
+    measured against the x3 form, so the code and the docs are aligned to x3
+    rather than changing the code to x12 (which would silently invalidate the
+    D-034/D-035 record). A genuinely annualized (x12) nowcast, if ever wanted,
+    is a separate change requiring a full re-measurement of the ``accuracy``
+    block — do not "correct" the factor in isolation.
 
     Parameters
     ----------
@@ -997,14 +1034,15 @@ def _quarter_annualized_mom(monthly_pct_changes: list[float], months_per_quarter
         partial quarter cannot be annualized to a quarterly rate without
         asserting what the missing months did.
     months_per_quarter:
-        From config, never a literal ``12``: the annualization factor is
-        ``months_per_quarter * 100 / 100`` in percent terms, and externalizing
-        the divisor keeps it reviewable alongside the base it must match.
+        From config, never a literal ``12``: the scaling factor is
+        ``months_per_quarter`` (x3 in this build), and externalizing it keeps
+        the factor reviewable alongside the base it must match (see F-GDP-001 —
+        it is a quarterly scaling, not an annualization).
 
     Returns
     -------
     float
-        The quarter's mean monthly change, annualized, in percent.
+        The quarter's mean monthly change, scaled by months_per_quarter (x3), in percent.
     """
     if not monthly_pct_changes:
         raise ValueError("a quarter with no monthly changes cannot be annualized to a rate")
@@ -1141,10 +1179,11 @@ def simple_gdp_nowcast(inputs: SimpleGDPNowcastInputs) -> ModelResult:
     right direction.
 
     *Corrected — the cadence.* The three inputs are month-over-month
-    percentages added to a quarterly annualized rate. ``_quarter_annualized_mom``
-    averages the quarter and annualizes, so both sides of the addition are
-    quarterly annualized. A quarter with an incomplete month set is **dropped
-    and disclosed**, never annualized short.
+    percentages; ``_quarter_annualized_mom`` averages the quarter's monthly
+    changes and scales by ``months_per_quarter`` (x3), producing the quarter's
+    *summed* monthly rate (NOT an annualized rate — see F-GDP-001), which is
+    added to ``prior_quarter_annualized``. A quarter with an incomplete month
+    set is **dropped and disclosed**, never annualized short.
 
     *Corrected — the weights.* The specification's 0.6/0.3/0.1 sum to 1.0 as
     though the three inputs were the whole of GDP; actual BEA shares are

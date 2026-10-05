@@ -873,11 +873,16 @@ gdp_nowcast:
     value: 3
     calibration_status: fitted_assumption
     note: >
-      Months in a quarter. The three inputs are MONTH-over-month percentages
-      while the base is a QUARTERLY annualized rate; Section 6.5 added one raw
-      month's change to a full-quarter rate. Annualizing (x12) and averaging
-      the quarter's three months makes both sides of the addition the same kind
-      of quantity. This value is the annualization factor's denominator.
+      Months in a quarter — the multiplier `_quarter_annualized_mom` applies to
+      the averaged monthly change. The three inputs are MONTH-over-month
+      percentages; the function averages a quarter's three monthly changes and
+      multiplies by this value (x3), yielding the quarter's SUMMED monthly rate
+      (NOT an annualized rate). That rate is added to `prior_quarter_annualized`.
+      F-GDP-001: an earlier docstring claimed "Annualizing (x12)"; re-measurement
+      on 137 quarters of live FRED data reproduced the recorded accuracy record
+      (mean_abs_error 3.0261, correlation -0.0922, delta_overweighting_ratio
+      0.5052) ONLY under x3, so the code and docs are aligned to x3 and the
+      recorded D-034/D-035 stats are NOT to be re-derived against x12.
   persistence_improvement_threshold_pp:
     value: 0.5
     calibration_status: uncalibrated_illustrative
