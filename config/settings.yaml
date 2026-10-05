@@ -3960,6 +3960,20 @@ econometrics:
       error rate is 1 - 0.95^10 = 0.4013, i.e. a 40% chance of at least one
       spurious 'cointegrated' pair when NO pair is truly cointegrated. Override
       it with the real count before using the corrected size.
+  cointegration_half_life_sample_fraction:
+    value: 0.25
+    calibration_status: uncalibrated_illustrative
+    note: >
+      A RETURNED half-life above this fraction of the sample triggers the
+      "weakly identified" disclosure: the implied convergence horizon is a
+      substantial share of the window, so the estimate rests on very few
+      independent deviations being observed to completion. Section 15.18's rule
+      is that a number the data cannot span is not a time the data can observe,
+      so the disclosure is placed HERE, below 1.0 (the point of outright
+      refusal, which `_estimate_half_life` owns). A quarter is a judgement about
+      where "large" begins rather than a calibrated quantity, so it is a
+      placeholder and it costs confidence (it is one of the leaves
+      `_cointegration_thresholds_calibrated` reads).
   pca_min_observations:
     value: 60
     calibration_status: conventional
@@ -3987,6 +4001,43 @@ econometrics:
       The rank check refuses the fully degenerate case -- a negative eigenvalue
       is incoherent and cannot be published -- so this threshold governs the
       merely-tiny case that the rank check cannot see.
+  pca_level_suspicion_pc1_share:
+    value: 0.95
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Above this PC1 share on a panel of DAILY CHANGES, the result warns that the
+      input may hold LEVELS rather than changes: an un-differenced level panel is
+      dominated by its time trend, and its PC1 is that trend rather than a factor,
+      routinely clearing 95%. The inspection is the caller's -- this function
+      cannot distinguish the two cases -- so the value governs only WHEN the
+      warning fires, never a computed number. It was a bare `0.95` inside
+      `_pca_warnings`; it is a judgement rather than a calibrated quantity, so it
+      is a placeholder and it costs confidence.
+  pca_scale_dispersion_ratio:
+    value: 10.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      On the COVARIANCE route only, if the series' standard deviations span more
+      than this factor the result warns that PC1 is substantially "which series
+      is noisiest" rather than a common factor, because the covariance route
+      weights each series by its own variance. It is the scale-dispersion
+      analogue of the textbook VIF>10 convention, but it is a judgement about
+      when the dispersion is material rather than a textbook constant, so it is a
+      placeholder and it costs confidence. It was a bare `10.0 *` inside
+      `_pca_warnings`.
+  pca_level_suspicion_autocorr_coefficient:
+    value: 2.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      The coefficient c in the LENGTH-AWARE levels-suspicion boundary
+      `lag1 > 1 - c/sqrt(n)`. PLACED by measurement: over 2000 simulated walks at
+      each length the boundary separates levels from changes with a 0.00%
+      false-positive rate on changes at every length and a 0.00-1.25% false-
+      negative rate on levels (worst case n=60). A fixed threshold was tried
+      first and failed exactly where a caller is most likely to have grabbed
+      levels by mistake (88.6% miss rate at n=60). A placement is not a
+      calibration, so it is a placeholder and it costs confidence. It was a bare
+      `2.5` inside `_pca_panel_suspicion`.
   kalman_min_observations:
     value: 60
     calibration_status: conventional

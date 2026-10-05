@@ -5365,8 +5365,12 @@ class EconometricsSettings(BaseModel):
     cointegration_min_observations: CalibratedValue
     regime_stability_split_fraction: CalibratedValue
     assumed_test_family_size: CalibratedValue
+    cointegration_half_life_sample_fraction: CalibratedValue
     pca_min_observations: CalibratedValue
     pca_near_zero_tolerance: CalibratedValue
+    pca_level_suspicion_pc1_share: CalibratedValue
+    pca_scale_dispersion_ratio: CalibratedValue
+    pca_level_suspicion_autocorr_coefficient: CalibratedValue
     kalman_min_observations: CalibratedValue
     kalman_band_coverage: CalibratedValue
     kalman_diffuse_scale: CalibratedValue
@@ -5418,8 +5422,12 @@ class EconometricsSettings(BaseModel):
             "cointegration_min_observations",
             "regime_stability_split_fraction",
             "assumed_test_family_size",
+            "cointegration_half_life_sample_fraction",
             "pca_min_observations",
             "pca_near_zero_tolerance",
+            "pca_level_suspicion_pc1_share",
+            "pca_scale_dispersion_ratio",
+            "pca_level_suspicion_autocorr_coefficient",
             "kalman_min_observations",
             "kalman_band_coverage",
             "kalman_diffuse_scale",
@@ -5444,6 +5452,28 @@ class EconometricsSettings(BaseModel):
                 f"got {self.significance_level.value!r}. A size of 0 rejects every "
                 f"null and a size of 1 rejects none, so either makes the test "
                 f"unfalsifiable in one direction."
+            )
+
+        # Two more open-interval shares, each for the same reason a threshold
+        # that reaches an endpoint stops discriminating: a PC1 share of 0 fires
+        # the levels-suspicion warning on every panel and 1 on none, and a
+        # half-life sample fraction of 0 fires the "weakly identified" disclosure
+        # on every returned half-life and 1 on none. Both are ratios of one
+        # quantity to another, so both are in (0, 1).
+        if not 0.0 < float(self.pca_level_suspicion_pc1_share.value) < 1.0:
+            raise ValueError(
+                f"econometrics.pca_level_suspicion_pc1_share must lie strictly "
+                f"inside (0, 1), got {self.pca_level_suspicion_pc1_share.value!r}. "
+                f"It is a variance share: 0 fires the levels-suspicion warning on "
+                f"every panel and 1 fires it on none."
+            )
+        if not 0.0 < float(self.cointegration_half_life_sample_fraction.value) < 1.0:
+            raise ValueError(
+                f"econometrics.cointegration_half_life_sample_fraction must lie "
+                f"strictly inside (0, 1), got "
+                f"{self.cointegration_half_life_sample_fraction.value!r}. It is a "
+                f"fraction of the sample: 0 fires the weakly-identified disclosure "
+                f"on every returned half-life and 1 fires it on none."
             )
 
         # The band's coverage has the same open-interval domain for a different

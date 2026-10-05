@@ -743,6 +743,7 @@ def test_cointegration(
         multiple_testing=multiple_testing,
         alpha=alpha,
         n_obs=len(y_series),
+        half_life_sample_fraction=float(econometrics.cointegration_half_life_sample_fraction.value),
         discarded_imaginary=discarded_imaginary,
     )
 
@@ -1094,8 +1095,13 @@ def compute_pca(daily_changes: pd.DataFrame, n_components: int = 3) -> ModelResu
         panel=panel,
         standardisation=standardisation,
         near_zero_threshold=float(econometrics.pca_near_zero_tolerance.value),
+        level_suspicion_pc1_share=float(econometrics.pca_level_suspicion_pc1_share.value),
+        scale_dispersion_ratio=float(econometrics.pca_scale_dispersion_ratio.value),
     )
-    suspicion = _pca_panel_suspicion(panel)
+    suspicion = _pca_panel_suspicion(
+        panel,
+        autocorr_coefficient=float(econometrics.pca_level_suspicion_autocorr_coefficient.value),
+    )
     if suspicion is not None:
         warnings_.append(suspicion)
 
@@ -1360,10 +1366,20 @@ def _refuse_constant_series(panel: np.ndarray, column_names: list[str]) -> None:
     """
     scale = np.abs(panel).max(axis=0)
     deviations = panel.std(axis=0, ddof=1)
-    # `np.maximum(scale, 1.0)` keeps the comparison defined for an all-zero
-    # column, whose scale is 0: it has deviations of exactly 0.0 and is caught
-    # by the same test rather than needing a special case.
-    tolerance = np.finfo(float).eps * np.maximum(scale, 1.0) * 100.0
+    # F-EC-005: the tolerance is FULLY relative to each series' own scale. The
+    # previous `np.maximum(scale, 1.0)` made it effectively ABSOLUTE at
+    # `eps*100 = 2.22e-14` for every series below scale 1, so a tiny-scale series
+    # that GENUINELY moves was refused: measured 2026-10-05, a series at scale
+    # `1e-9` varying by `1e-6` of that scale has a standard deviation of
+    # `9.6e-16` — orders of magnitude above the floating-point noise for its own
+    # scale — yet the floored form rejected it. The sibling
+    # `_refuse_constant_kalman_series` is already fully relative and documents the
+    # difference; this makes the two agree. A constant column is still caught at
+    # every scale from `0` to `1e12` (its residue is at or below `eps*scale*100`
+    # in each case, and an all-zero column has scale 0 and deviations exactly 0,
+    # so it is caught without a special case), so the change loosens nothing that
+    # mattered.
+    tolerance = np.finfo(float).eps * scale * 100.0
     # `<= tolerance` is NOT redundant with `deviations == 0.0`, and that is the
     # whole point of this function: a bare `std == 0` test does not fire on a
     # constant column (measured 8.9e-16 for 4.2 repeated 200 times).
@@ -1520,6 +1536,8 @@ def _pca_warnings(
     panel: np.ndarray,
     standardisation: str,
     near_zero_threshold: float,
+    level_suspicion_pc1_share: float,
+    scale_dispersion_ratio: float,
 ) -> list[str]:
     """Conditions of THIS run, as distinct from the standing limitations.
 
@@ -1587,24 +1605,26 @@ def _pca_warnings(
     # The levels-instead-of-changes hazard, made visible. See
     # `_pca_panel_suspicion`, which decides the condition; the wording lives here
     # with the other warnings so every message a caller can receive is in one
-    # place.
-    if float(ratios[0]) > 0.95:
+    # place. The share threshold is configured (it was a bare `0.95`).
+    if float(ratios[0]) > level_suspicion_pc1_share:
         warnings_.append(
-            f"PC1 explains {float(ratios[0]):.1%} of the variance. On a panel of "
-            f"daily changes that is high enough to be worth checking the input is "
-            f"changes and not LEVELS: an un-differenced level panel is dominated by "
-            f"its time trend, and its PC1 is that trend rather than a factor, "
-            f"routinely clearing 95%. The inspection is the caller's; this function "
-            f"cannot distinguish the two cases."
+            f"PC1 explains {float(ratios[0]):.1%} of the variance, above the "
+            f"configured {level_suspicion_pc1_share:.1%} levels-suspicion share. On a "
+            f"panel of daily changes that is high enough to be worth checking the "
+            f"input is changes and not LEVELS: an un-differenced level panel is "
+            f"dominated by its time trend, and its PC1 is that trend rather than a "
+            f"factor. The inspection is the caller's; this function cannot "
+            f"distinguish the two cases."
         )
 
     if standardisation == "covariance" and n_variables > 1:
         scales = panel.std(axis=0, ddof=1)
-        if float(scales.max()) > 10.0 * float(scales.min()):
+        if float(scales.max()) > scale_dispersion_ratio * float(scales.min()):
             warnings_.append(
                 f"The series' standard deviations span a factor of "
                 f"{float(scales.max() / scales.min()):.1f} (max {float(scales.max()):.4g}, "
-                f"min {float(scales.min()):.4g}) and the covariance route weights each "
+                f"min {float(scales.min()):.4g}), above the configured "
+                f"{scale_dispersion_ratio:g}x, and the covariance route weights each "
                 f"series by its own variance. On a panel with this much scale "
                 f"dispersion, PC1 is substantially 'which series is noisiest' rather "
                 f"than a common factor. Use the correlation route if equal weighting "
@@ -1614,7 +1634,7 @@ def _pca_warnings(
     return warnings_
 
 
-def _pca_panel_suspicion(panel: np.ndarray) -> str | None:
+def _pca_panel_suspicion(panel: np.ndarray, *, autocorr_coefficient: float) -> str | None:
     """A warning when the panel's own shape suggests it is levels, not changes.
 
     Section 15.20-F's instruction — *daily changes, never raw levels* — is the
@@ -1646,8 +1666,9 @@ def _pca_panel_suspicion(panel: np.ndarray) -> str | None:
         return None
     # The measured boundary. `n_obs` is at least the configured
     # `pca_min_observations` (60) by this point, so the square root is safe and
-    # the threshold is comfortably inside (0, 1).
-    cutoff = 1.0 - 2.5 / math.sqrt(n_obs)
+    # the threshold is comfortably inside (0, 1). The coefficient is configured
+    # (it was a bare `2.5`); see `econometrics.pca_level_suspicion_autocorr_coefficient`.
+    cutoff = 1.0 - autocorr_coefficient / math.sqrt(n_obs)
     for position in range(panel.shape[1]):
         column = panel[:, position]
         centred = column - column.mean()
@@ -1802,10 +1823,13 @@ def _pca_choices_calibrated() -> bool:
     because the name is load-bearing: a reader who added a second illustrative
     PCA threshold would otherwise assume this helper already covered it.
 
-    The two candidates are not equally priceable, and the distinction matters.
-    ``pca_near_zero_tolerance`` is a genuine placeholder — a variance ratio is
-    "numerically zero" only relative to a threshold nobody has calibrated — so it
-    is a ``CalibratedValue`` and it costs confidence. ``pca_standardisation`` is
+    The priceable leaves are the FOUR illustrative thresholds that shape a
+    DISCLOSURE. ``pca_near_zero_tolerance`` is a genuine placeholder — a variance
+    ratio is "numerically zero" only relative to a threshold nobody has
+    calibrated — and ``pca_level_suspicion_pc1_share``,
+    ``pca_level_suspicion_autocorr_coefficient`` and
+    ``pca_scale_dispersion_ratio`` are judgements about WHEN a disclosure fires;
+    all four cost confidence. ``pca_standardisation`` is
     a **choice between two well-defined quantities**, not a quantity with a
     truth value, so wrapping it in the envelope would pose a question the
     envelope cannot answer ("is 'correlation' a fact, a convention, or a
@@ -1813,10 +1837,19 @@ def _pca_choices_calibrated() -> bool:
     would have gone in a ``note`` lives in ``settings.yaml`` beside it — the same
     split the module's sibling leaves already use.
 
-    The threshold is ``uncalibrated_illustrative`` today, so this returns
-    ``False`` and the caller applies the penalty.
+    Every leaf here is ``uncalibrated_illustrative`` today, so this returns
+    ``False`` and the caller applies the penalty. Reading ALL FOUR (rather than
+    only the first) is the D-139 §4 discipline: a helper must read exactly the
+    leaves its function's published behaviour depends on, so a future
+    calibration of any one of them is reflected rather than silently ignored.
     """
-    return get_settings().is_calibrated("econometrics.pca_near_zero_tolerance")
+    settings = get_settings()
+    return (
+        settings.is_calibrated("econometrics.pca_near_zero_tolerance")
+        and settings.is_calibrated("econometrics.pca_level_suspicion_pc1_share")
+        and settings.is_calibrated("econometrics.pca_scale_dispersion_ratio")
+        and settings.is_calibrated("econometrics.pca_level_suspicion_autocorr_coefficient")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3478,7 +3511,7 @@ def _stationarity_thresholds_calibrated() -> bool:
 
 
 def _cointegration_thresholds_calibrated() -> bool:
-    """Whether the two thresholds shaping ``test_cointegration``'s DERIVATIONS are calibrated.
+    """Whether the thresholds shaping ``test_cointegration``'s DERIVATIONS are calibrated.
 
     Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
     caller).
@@ -3486,19 +3519,23 @@ def _cointegration_thresholds_calibrated() -> bool:
     Distinct from :func:`_r_squared_floor_is_calibrated` even though the two
     currently read the same underlying answer, because they answer different
     questions about different leaves: that one prices the R-squared JUDGEMENT,
-    this one prices the **split fraction** and the **assumed family size** —
-    the two numbers that decide when the regime-stability check fires and how
-    large a correction the multiple-testing warning prints. Conflating them
-    would mean a future recalibration of the R-squared floor silently changed
-    the cointegration confidence, which is a coupling nobody asked for.
+    this one prices the **split fraction**, the **assumed family size** and the
+    **half-life sample fraction** — the numbers that decide when the
+    regime-stability check fires, how large a correction the multiple-testing
+    warning prints, and when a returned half-life is disclosed as weakly
+    identified. Conflating them would mean a future recalibration of the
+    R-squared floor silently changed the cointegration confidence, which is a
+    coupling nobody asked for.
 
     The cointegration thresholds are ``uncalibrated_illustrative`` today, so
     this returns ``False`` and the caller applies the penalty.
     """
     settings = get_settings()
-    return settings.is_calibrated(
-        "econometrics.regime_stability_split_fraction"
-    ) and settings.is_calibrated("econometrics.assumed_test_family_size")
+    return (
+        settings.is_calibrated("econometrics.regime_stability_split_fraction")
+        and settings.is_calibrated("econometrics.assumed_test_family_size")
+        and settings.is_calibrated("econometrics.cointegration_half_life_sample_fraction")
+    )
 
 
 def _validate_cointegration_method(method: str) -> str:
@@ -3945,7 +3982,9 @@ def _estimate_half_life(spread: pd.Series | None) -> _HalfLife:
     }
 
 
-def _half_life_disclosure(half_life: _HalfLife, n_obs: int) -> str | None:
+def _half_life_disclosure(
+    half_life: _HalfLife, n_obs: int, *, sample_fraction: float
+) -> str | None:
     """Whether a RETURNED half-life is longer than the sample it was estimated from.
 
     The mirror image of the ``phi <= -1`` refusal, and it exists for the same
@@ -3977,14 +4016,14 @@ def _half_life_disclosure(half_life: _HalfLife, n_obs: int) -> str | None:
             f"convergence trade can be sized on a horizon the sample could not "
             f"observe. The fitted phi is {half_life['phi']!r}, i.e. near a unit root."
         )
-    if float(periods) > float(n_obs) / 4.0:
+    if float(periods) > float(n_obs) * sample_fraction:
         return (
-            f"THE REPORTED HALF-LIFE ({float(periods):.1f} periods) EXCEEDS A QUARTER "
-            f"OF THE SAMPLE ({n_obs} observations). It is estimable but large: the "
-            f"implied convergence horizon is a substantial fraction of the window, so "
-            f"the estimate rests on very few independent deviations being observed to "
-            f"completion. Treat the horizon as weakly identified rather than as a "
-            f"measured time."
+            f"THE REPORTED HALF-LIFE ({float(periods):.1f} periods) EXCEEDS "
+            f"{sample_fraction:.0%} OF THE SAMPLE ({n_obs} observations). It is "
+            f"estimable but large: the implied convergence horizon is a substantial "
+            f"fraction of the window, so the estimate rests on very few independent "
+            f"deviations being observed to completion. Treat the horizon as weakly "
+            f"identified rather than as a measured time."
         )
     return None
 
@@ -4296,6 +4335,7 @@ def _cointegration_warnings(
     multiple_testing: _MultipleTesting,
     alpha: float,
     n_obs: int,
+    half_life_sample_fraction: float,
     discarded_imaginary: int,
 ) -> list[str]:
     """The conditions of *this* run — PLUS the two warnings that fire on every run.
@@ -4404,7 +4444,9 @@ def _cointegration_warnings(
             f"quantity the horizon of any such trade is set against."
         )
     else:
-        disclosure = _half_life_disclosure(half_life, int(n_obs))
+        disclosure = _half_life_disclosure(
+            half_life, int(n_obs), sample_fraction=half_life_sample_fraction
+        )
         if disclosure is not None:
             found.append(disclosure)
 

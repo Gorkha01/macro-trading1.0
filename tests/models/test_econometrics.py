@@ -26,8 +26,13 @@ from scipy.stats import norm
 
 from macro_engine.config import get_settings
 from macro_engine.models.econometrics import (
+    _cointegration_thresholds_calibrated,
     _estimate_half_life,
+    _half_life_disclosure,
     _multiple_testing_summary,
+    _pca_choices_calibrated,
+    _pca_panel_suspicion,
+    _pca_warnings,
     _stationarity_thresholds_calibrated,
     compute_pca,
     kalman_latent_state,
@@ -828,3 +833,125 @@ def test_kalman_refuses_bool_state_dim():
 def test_kalman_refuses_non_int_state_dim():
     with pytest.raises(TypeError, match="must be an int"):
         kalman_latent_state(_level_frame(), state_dim=1.5)  # type: ignore[arg-type]
+
+
+# ===========================================================================
+# F-EC-005 + the config-leaf conversions. The four bare thresholds
+# (`> 0.95`, `> 10.0 *`, `/ 4.0`, the `2.5`) now come from config, and the PCA
+# constant-guard is FULLY relative. Each helper takes its threshold as a
+# PARAMETER, so "behaviour follows the configured value" is directly testable.
+# ===========================================================================
+def test_pca_constant_guard_accepts_a_tiny_scale_moving_series():
+    # F-EC-005: a series at scale 1e-9 varying by 1e-6 of that scale has a std of
+    # ~1e-15, which the OLD `eps*maximum(scale, 1.0)*100` form (effectively
+    # absolute at 2.22e-14 below scale 1) wrongly refused. The fully-relative form
+    # accepts it, matching `_refuse_constant_kalman_series`.
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame(
+        {
+            "a": rng.normal(0, 1, 200),
+            "b": 1e-9 * (1.0 + 1e-6 * rng.normal(0, 1, 200)),
+        }
+    )
+    res = compute_pca(df, n_components=2)  # must NOT raise
+    assert res.value["n_variables"] == 2
+
+
+def test_pca_constant_guard_still_refuses_a_constant_column_at_every_scale():
+    rng = np.random.default_rng(4)
+    for const in (0.0, 1e-9, 0.5, 4.2, 1e6):
+        df = pd.DataFrame({"a": rng.normal(0, 1, 200), "b": np.full(200, const)})
+        with pytest.raises(ValueError, match="constant"):
+            compute_pca(df, n_components=2)
+
+
+def test_pca_level_suspicion_warning_follows_the_configured_share():
+    rng = np.random.default_rng(5)
+    common = {
+        "eigenvalues": np.array([60.0, 25.0, 15.0]),
+        "ratios": np.array([0.60, 0.25, 0.15]),
+        "n_obs": 200,
+        "panel": rng.normal(0, 1, (200, 3)),
+        "standardisation": "correlation",
+        "near_zero_threshold": 1e-8,
+        "scale_dispersion_ratio": 10.0,
+    }
+    # PC1 = 0.60: trips at a 0.50 configured share, silent at the shipped 0.95.
+    low = _pca_warnings(level_suspicion_pc1_share=0.50, **common)
+    high = _pca_warnings(level_suspicion_pc1_share=0.95, **common)
+    assert any("levels-suspicion" in w for w in low)
+    assert not any("levels-suspicion" in w for w in high)
+
+
+def test_pca_scale_dispersion_warning_follows_the_configured_ratio():
+    rng = np.random.default_rng(6)
+    common = {
+        "eigenvalues": np.array([70.0, 30.0]),
+        "ratios": np.array([0.70, 0.30]),
+        "n_obs": 200,
+        "panel": np.column_stack([rng.normal(0, 1, 200), rng.normal(0, 5, 200)]),
+        "standardisation": "covariance",
+        "near_zero_threshold": 1e-8,
+        "level_suspicion_pc1_share": 0.95,
+    }
+    # std spread is ~5x: fires at a 2x configured ratio, not at the shipped 10x.
+    low = _pca_warnings(scale_dispersion_ratio=2.0, **common)
+    high = _pca_warnings(scale_dispersion_ratio=10.0, **common)
+    assert any("noisiest" in w for w in low)
+    assert not any("noisiest" in w for w in high)
+
+
+def test_pca_panel_suspicion_follows_the_configured_coefficient():
+    rng = np.random.default_rng(7)
+    levels = np.cumsum(rng.normal(0, 1, (200, 2)), axis=0)  # near-unit-root columns
+    # A levels panel's lag-1 is ~0.999. The shipped coefficient (2.5) gives a
+    # boundary 1 - 2.5/sqrt(200) = 0.823 -> fires; a tiny coefficient makes the
+    # boundary ~1.0 -> silent.
+    assert _pca_panel_suspicion(levels, autocorr_coefficient=2.5) is not None
+    assert _pca_panel_suspicion(levels, autocorr_coefficient=0.01) is None
+
+
+def test_half_life_disclosure_follows_the_configured_fraction():
+    hl = {"periods": 30.0, "phi": -0.02, "note": "x"}
+    # 30 periods is above a quarter of 100 (25) but below half (50).
+    fired = _half_life_disclosure(hl, 100, sample_fraction=0.25)
+    assert fired is not None and "25%" in fired
+    assert _half_life_disclosure(hl, 100, sample_fraction=0.50) is None
+
+
+def test_pca_calibration_helper_reads_all_four_pca_leaves():
+    settings = get_settings()
+    expected = all(
+        settings.is_calibrated(f"econometrics.{leaf}")
+        for leaf in (
+            "pca_near_zero_tolerance",
+            "pca_level_suspicion_pc1_share",
+            "pca_scale_dispersion_ratio",
+            "pca_level_suspicion_autocorr_coefficient",
+        )
+    )
+    assert bool(_pca_choices_calibrated()) is expected
+    assert expected is False  # all four are uncalibrated_illustrative today
+
+
+def test_cointegration_calibration_helper_reads_all_three_leaves():
+    settings = get_settings()
+    expected = all(
+        settings.is_calibrated(f"econometrics.{leaf}")
+        for leaf in (
+            "regime_stability_split_fraction",
+            "assumed_test_family_size",
+            "cointegration_half_life_sample_fraction",
+        )
+    )
+    assert bool(_cointegration_thresholds_calibrated()) is expected
+    assert expected is False
+
+
+def test_new_threshold_leaves_are_read_from_config():
+    # LAW-1 "provable live": the shipped values are the ones the module reads.
+    ec = get_settings().econometrics
+    assert float(ec.pca_level_suspicion_pc1_share.value) == pytest.approx(0.95)
+    assert float(ec.pca_scale_dispersion_ratio.value) == pytest.approx(10.0)
+    assert float(ec.pca_level_suspicion_autocorr_coefficient.value) == pytest.approx(2.5)
+    assert float(ec.cointegration_half_life_sample_fraction.value) == pytest.approx(0.25)
