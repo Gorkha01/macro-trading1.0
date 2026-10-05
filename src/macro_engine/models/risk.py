@@ -334,15 +334,22 @@ def historical_var(inputs: ReturnsInputs) -> ModelResult:
         )
     )
 
+    # F-RISK-001: a tail quantile return of exactly 0.0 makes ``var_loss``
+    # ``-0.0``. Left as-is, ``value`` publishes ``-0.0`` and the interpretation
+    # reads "-0.0000% loss", which contradicts the "positive = loss" convention
+    # stated on every function. ``+ 0.0`` normalises negative zero to ``0.0``
+    # (the same repair pattern as F-LAB-003). The loss magnitude is genuinely
+    # zero here, so the display must be a non-negative zero.
+    var_loss_pct = round(var_loss * 100, 4) + 0.0
     return ModelResult(
         model_name="historical_var",
         country="us",
         as_of=utc_now(),
-        value=round(var_loss * 100, 4),
+        value=var_loss_pct,
         confidence=confidence,
         interpretation=(
             f"Historical VaR ({inputs.confidence:.1%}, {observations} obs): "
-            f"{var_loss * 100:.4f}% loss"
+            f"{var_loss_pct:.4f}% loss"
         ),
         context=(
             f"Empirical {1 - inputs.confidence:.1%} quantile of the return distribution, "
@@ -391,19 +398,26 @@ def expected_shortfall(inputs: ReturnsInputs) -> ModelResult:
             f"understates the loss actually expected past the quantile."
         )
 
+    # F-RISK-002: when the tail quantile return and every tail observation are
+    # exactly 0.0, ``es_loss`` and ``var_loss`` are ``-0.0``. Left untouched,
+    # ``value`` and the displayed VaR threshold publish ``-0.0`` ("-0.0000%"),
+    # contradicting the "positive = loss" convention. ``+ 0.0`` normalises the
+    # negative zeros to ``0.0`` (same repair pattern as F-LAB-003 / F-RISK-001).
+    es_loss_pct = round(es_loss * 100, 4) + 0.0
+    var_loss_pct = round(var_loss * 100, 4) + 0.0
     return ModelResult(
         model_name="expected_shortfall",
         country="us",
         as_of=utc_now(),
-        value=round(es_loss * 100, 4),
+        value=es_loss_pct,
         confidence=compute_confidence(ConfidenceInputs(source_independence_count=0)),
         interpretation=(
-            f"Expected shortfall ({inputs.confidence:.1%}): {es_loss * 100:.4f}% mean loss "
+            f"Expected shortfall ({inputs.confidence:.1%}): {es_loss_pct:.4f}% mean loss "
             f"across the worst {len(tail_returns)} observations"
         ),
         context=(
             f"Conditional mean beyond the {1 - inputs.confidence:.1%} quantile. "
-            f"VaR threshold was {var_loss * 100:.4f}%. Sign convention: positive = loss."
+            f"VaR threshold was {var_loss_pct:.4f}%. Sign convention: positive = loss."
         ),
         inputs_used=["returns"],
         warnings=[
