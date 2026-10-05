@@ -13,9 +13,12 @@ its own metadata — the instant the source last wrote that series. No event map
 no join, no scheduled-date inference: the provider states the publication time
 on the record itself.
 
-**Measured live 2026-09-20: 42 of 42 registry symbols returned a
+**Measured live 2026-09-20: 42 of 42 then-resolvable registry symbols returned a
 ``last_updated``, 0 transport errors.** That is the coverage claim, and it is a
-count, not an impression.
+count, not an impression. The denominator is dated on purpose and it has since
+moved: re-measured 2026-10-05, the registry declares **59** series of which
+**50** resolve through this route, so 42/42 describes the 2026-09-20 registry
+rather than today's. The ROUTE is unchanged — the registry grew.
 
 What ``last_updated`` is, and is not
 ------------------------------------
@@ -108,23 +111,33 @@ def _resolve_series_symbols() -> dict[str, str]:
       FRED ``economy.fred_search`` endpoint, which only knows FRED series. World
       Bank and EIA symbols (``PA.NUS.PPP``, ``WCESTUS1``) are not FRED series,
       and the lookup against them returns a non-JSON body that cannot be parsed —
-      measured 2026-09-29: 7 of 57 registry symbols (all non-fred, all
+      measured 2026-09-29: 7 of the then-57 registry symbols (all non-fred, all
       ``not_a_snapshot_field``) produced 21 failing calls per build, every one a
       guaranteed ``JSONDecodeError``, purely to learn that no FRED ``last_updated``
       exists for them. Skipping them at the source removes the wasted calls and
       the misleading warnings; their release timing correctly stays UNKNOWN,
-      because no FRED publication stamp exists for them anyway.
+      because no FRED publication stamp exists for them anyway. (The 7 is
+      unchanged as of 2026-10-05; only the denominator moved, 57 -> 59.)
 
-    ``status`` is **deliberately not consulted here** (measured 2026-09-29). An
-    earlier version of this docstring claimed ``blocked``/``unverified`` entries
-    were "skipped too"; they are not, and they do not need to be. Measured: the
-    registry declares **59** series and **every one is ``status: verified``**
-    (``grep -c "status: verified" config/series_registry.yaml`` → 59; the same
-    grep for ``unverified``/``blocked`` → 0), and ``blocked`` entries are not
-    carried in ``.series`` at all, so they are absent by construction rather
-    than by this filter. The sentence described an outcome that is true today
-    for a reason other than the code it named — the classic way a reader is
-    reassured about a guard that is not there. Should a route ever be re-pointed
+    ``status`` is **deliberately not consulted here**. An earlier version of this
+    docstring claimed ``blocked``/``unverified`` entries were "skipped too"; they
+    are not, and they do not need to be. Measured (re-measured 2026-10-05): the
+    registry declares **59** series and **every carried entry is
+    ``status: verified``** —
+    ``grep -oE "status: [a-z_]+" config/series_registry.yaml`` returns exactly one
+    value, 59 times.
+
+    Note the SHAPE of that grep, because the earlier revision got it wrong: a
+    bare ``grep -c "unverified"`` returns **3** and ``grep -c "blocked"`` returns
+    **13**, since both words also appear in the registry's own status legend
+    (lines 12-14) and in the separate top-level ``blocked:`` key — never as
+    ``status:`` fields. The old text claimed those greps return 0, which was
+    itself the reassuring-but-unchecked kind of claim this paragraph exists to
+    warn about: a grep has to be shaped to the field it is meant to measure, and
+    a number nobody re-ran is not evidence.
+
+    ``blocked`` entries are not carried in ``.series`` at all, so they are absent
+    by construction rather than by this filter. Should a route ever be re-pointed
     to ``unverified``, **this function would still return its symbol** and the
     fetch would raise at the boundary that owns that rule (Section 21.0 rule 5),
     which is the correct place for the refusal.

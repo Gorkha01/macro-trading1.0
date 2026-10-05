@@ -22,7 +22,9 @@ crowding that made ``UNRATE`` unreadable at a low limit.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -443,3 +445,56 @@ def test_resolve_series_symbols_only_keeps_fred_provider_entries() -> None:
         entry = registry.series[name]
         assert entry.provider == "fred"
         assert not entry.tenors
+
+
+# ---------------------------------------------------------------------------
+# F-PUB-001 / F-PUB-002 — the module docstring's MEASURED claims
+# ---------------------------------------------------------------------------
+def test_the_status_grep_is_shaped_to_the_field_not_the_word() -> None:
+    """F-PUB-001: the docstring cited a grep that does not return what it claimed.
+
+    It asserted the registry's ``unverified``/``blocked`` greps return 0. They
+    return 3 and 13 — the words also appear in the registry's own status legend
+    and in the separate top-level ``blocked:`` key, never as ``status:`` fields.
+    The claim's SUBSTANCE was right; the EVIDENCE for it was not, and an
+    unchecked number is exactly what that paragraph warns about.
+    """
+    text = Path("config/series_registry.yaml").read_text(encoding="utf-8")
+    # the field-shaped grep: exactly one status value, once per carried series
+    assert set(re.findall(r"status: ([a-z_]+)", text)) == {"verified"}
+    assert len(re.findall(r"status: verified", text)) == len(get_registry().series)
+    # ...while the bare word-greps are non-zero, which is why they must not be cited
+    assert text.count("unverified") > 0
+    assert text.count("blocked") > 0
+
+    # ...and the DOCSTRING must cite the field-shaped grep, not the word-shaped one.
+    # (Pinning the facts alone cannot catch a docstring revert — measured.)
+    # The claim lives on `_resolve_series_symbols`, not on the module.
+    import macro_engine.data_layer.publication_dates as mod
+
+    doc = mod._resolve_series_symbols.__doc__ or ""
+    assert 'grep -oE "status: [a-z_]+" config/series_registry.yaml' in doc
+    assert "grep for ``unverified``/``blocked`` → 0" not in doc
+
+
+def test_the_docstring_counts_match_the_registry() -> None:
+    """F-PUB-002: the counts are claims, so they are pinned to the registry.
+
+    A registry addition now fails this and forces a re-measure, instead of
+    letting a stale denominator sit there looking measured. The historical
+    ``42 of 42`` is kept but marked as dated.
+    """
+    import macro_engine.data_layer.publication_dates as mod
+
+    doc = mod.__doc__ or ""
+    declared = len(get_registry().series)
+    resolvable = len(_resolve_series_symbols())
+    assert f"**{declared}** series" in doc
+    assert f"**{resolvable}** resolve through this route" in doc
+    assert "42 of 42 then-resolvable" in doc
+    assert "42 of 42 registry symbols returned" not in doc
+
+
+def test_every_carried_registry_entry_is_status_verified() -> None:
+    """The substance of the F-PUB-001 claim, asserted on the OBJECT not a grep."""
+    assert {entry.status for entry in get_registry().series.values()} == {"verified"}
