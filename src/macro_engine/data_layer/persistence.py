@@ -310,16 +310,32 @@ def load_latest_snapshot_frame(country: str = "us") -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def snapshot_from_long_frame(frame: pd.DataFrame) -> MacroDataSnapshot:
+def snapshot_from_long_frame(
+    frame: pd.DataFrame,
+    *,
+    empty_country: str | None = None,
+    empty_as_of: datetime | None = None,
+) -> MacroDataSnapshot:
     """Rehydrate a ``MacroDataSnapshot`` from a long-format frame.
 
     Used by the offline test path and by any future backfill job. Note that
     ``data_quality_flags`` is *not* round-tripped: flags are a property of a
     validation run, not of the raw data, so they are re-derived on load rather
     than restored stale.
+
+    ``empty_country`` / ``empty_as_of`` are consulted **only when the frame is
+    empty**, because an empty frame carries no row to read them from. They exist
+    because the write path deliberately persists an empty snapshot ("we fetched
+    and got nothing" is an audit fact) and returning a bare
+    ``MacroDataSnapshot()`` would replace the recorded ``as_of`` with NOW — a
+    fabricated value, which is the one direction this project never accepts.
+    :func:`load_snapshot` supplies them, decoding ``as_of`` from the filename
+    token, since the filename is the only place the fact survives.
     """
     if frame.empty:
-        return MacroDataSnapshot()
+        if empty_as_of is None:
+            return MacroDataSnapshot(country=empty_country or "us")
+        return MacroDataSnapshot(country=empty_country or "us", as_of=empty_as_of)
 
     country = str(frame["country"].iloc[0])
     as_of = pd.Timestamp(frame["snapshot_as_of"].iloc[0]).to_pydatetime()
@@ -412,13 +428,27 @@ def load_snapshot(country: str = "us", *, strict: bool = False) -> MacroDataSnap
     would otherwise misreport its own downstream failure as a defect in the data
     layer. The API test fixtures are the canonical case.
     """
-    if strict and not has_persisted_snapshot(country):
-        raise SnapshotStoreEmptyError(
-            f"no persisted snapshot for {country!r} under "
-            f"{_raw_root(country)}; run a live snapshot build to populate the "
-            f"audit trail (see scripts/live_api_check.py)"
-        )
-    return snapshot_from_long_frame(load_latest_snapshot_frame(country))
+    path = _latest_parquet(country)
+    if path is None:
+        if strict:
+            raise SnapshotStoreEmptyError(
+                f"no persisted snapshot for {country!r} under "
+                f"{_raw_root(country)}; run a live snapshot build to populate the "
+                f"audit trail (see scripts/live_api_check.py)"
+            )
+        return MacroDataSnapshot(country=country)
+
+    # An empty FILE is a legitimate audit fact (see `long_frame_from_snapshot`),
+    # and its `as_of` survives only in the FILENAME — the long frame has no row
+    # to carry it. Decoding the token here is what `parse_compact_timestamp`
+    # exists for, and it is the difference between "this snapshot was taken at
+    # 09:30 and found nothing" and "this snapshot was taken now": a fabricated
+    # value rather than a missing one.
+    return snapshot_from_long_frame(
+        pd.read_parquet(path),
+        empty_country=country,
+        empty_as_of=parse_compact_timestamp(path.stem),
+    )
 
 
 def parse_compact_timestamp(token: str) -> datetime:
@@ -428,14 +458,15 @@ def parse_compact_timestamp(token: str) -> datetime:
     checkable: the ``YYYYMMDDTHHMMSSZ`` compaction is exactly what makes the
     lexicographic order of the filenames match chronological order.
 
-    **It has no production caller, and the docstring used to claim otherwise**
-    ("Used by tools" — measured 2026-09-29: no module in ``src/``, ``scripts/``
-    or ``tools/`` references it). Nothing needs to reverse the token today
-    because ``load_latest_snapshot_frame`` takes the LAST name from a
-    glob-and-sort, which is the whole point of the compaction. It is kept as
-    the single place the token format is decoded, so a change to that format
-    has one definition to argue with instead of a re-derived ``strptime`` at
-    each future reader.
+    **It now has exactly one production caller.** It had none when the D-134
+    audit measured it (2026-09-29), and its docstring then falsely claimed "Used
+    by tools". :func:`load_snapshot` calls it to recover ``as_of`` for an EMPTY
+    snapshot file, whose long frame has no row to carry the timestamp — the
+    filename is the only place that fact survives.
+    ``load_latest_snapshot_frame`` still takes the LAST name from a glob-and-sort
+    rather than parsing, which is the whole point of the compaction. This
+    function exists so the token format has one decoding definition to argue
+    with instead of a re-derived ``strptime`` at each reader.
 
     Raises :class:`ValueError` on a token that is not in the format. It
     refuses rather than returning ``None``: an unparsed timestamp read as a

@@ -2139,10 +2139,13 @@ def test_the_compact_timestamp_round_trips_through_the_real_writer(
 ) -> None:
     """D-134 — `parse_compact_timestamp` really IS `parquet_path_for`'s inverse.
 
-    `parse_compact_timestamp` has **no production caller** (measured 2026-09-29:
-    referenced by no module in `src/`, `scripts/` or `tools/`) while its
-    docstring claimed "Used by tools". Nothing else in the tree would therefore
-    notice if the two halves of the token format drifted apart.
+    When this test was written, `parse_compact_timestamp` had **no production
+    caller** (measured 2026-09-29) while its docstring claimed "Used by tools".
+    It has since gained one: `load_snapshot` decodes the token to recover
+    `as_of` for an EMPTY snapshot file (see the F-PER-001 test in
+    test_phase1_data_layer), which is the only place that fact survives.
+    Nothing else in the tree would therefore notice if the two halves of the
+    token format drifted apart.
 
     This pins the round trip through the REAL writer rather than re-typing the
     format string — a test that re-typed `"%Y%m%dT%H%M%SZ"` would pass under any
@@ -2172,3 +2175,101 @@ def test_the_compact_timestamp_round_trips_through_the_real_writer(
     assert earlier < later, (
         "the compaction no longer sorts chronologically, so glob-and-sort is wrong"
     )
+
+
+# ---------------------------------------------------------------------------
+# F-PER-001 — an empty snapshot must keep its recorded `as_of`
+# ---------------------------------------------------------------------------
+def test_an_empty_snapshot_round_trips_with_its_recorded_as_of(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """F-PER-001: `as_of` used to be replaced by NOW on the way back.
+
+    The write path deliberately persists an empty snapshot — "we fetched and got
+    nothing" is an audit fact — but ``snapshot_from_long_frame`` returned a bare
+    ``MacroDataSnapshot()`` for an empty frame, so the RECORDED instant became
+    the LOAD instant. The filename was the only surviving copy of the truth,
+    which is what ``parse_compact_timestamp`` now decodes.
+    """
+    from macro_engine.data_layer.persistence import (
+        load_snapshot,
+        write_snapshot,
+    )
+
+    monkeypatch.setattr("macro_engine.data_layer.persistence._raw_root", lambda _c: tmp_path)
+    stamp = datetime(2026, 10, 5, 9, 30, tzinfo=UTC)
+
+    assert write_snapshot(MacroDataSnapshot(country="us", as_of=stamp)) is not None
+
+    restored = load_snapshot("us")
+    assert restored.as_of == stamp, "the recorded instant was replaced by the load instant"
+    assert restored.country == "us"
+    assert restored.cpi_headline == []
+
+
+def test_an_empty_file_is_distinguishable_from_an_absent_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Both read as "nothing", but only one has a recorded instant."""
+    from macro_engine.data_layer.persistence import (
+        has_persisted_snapshot,
+        load_snapshot,
+        write_snapshot,
+    )
+
+    monkeypatch.setattr("macro_engine.data_layer.persistence._raw_root", lambda _c: tmp_path)
+    stamp = datetime(2026, 10, 5, 9, 30, tzinfo=UTC)
+
+    assert has_persisted_snapshot("us") is False
+    assert load_snapshot("us").as_of != stamp  # absent store: nothing recorded
+
+    write_snapshot(MacroDataSnapshot(country="us", as_of=stamp))
+    assert has_persisted_snapshot("us") is True
+    assert load_snapshot("us").as_of == stamp
+
+
+def test_a_missing_store_echoes_the_requested_country(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A side-effect of the F-PER-001 restructure, pinned rather than left implicit.
+
+    The old path went through ``snapshot_from_long_frame(empty_frame)``, which
+    returned a bare ``MacroDataSnapshot()`` — so ``load_snapshot("de")`` on a
+    missing store reported ``country="us"``. The restructured path returns
+    ``MacroDataSnapshot(country=country)``, echoing what the caller asked for.
+    That is the more consistent answer, and it is a behaviour change, so it gets
+    a test instead of a mention.
+    """
+    from macro_engine.data_layer.persistence import load_snapshot
+
+    monkeypatch.setattr("macro_engine.data_layer.persistence._raw_root", lambda _c: tmp_path)
+    assert load_snapshot("de").country == "de"
+
+
+def test_the_empty_frame_fallbacks_never_override_a_populated_frame() -> None:
+    """The new parameters are consulted ONLY when there is no row to read."""
+    from macro_engine.data_layer.persistence import (
+        long_frame_from_snapshot,
+        snapshot_from_long_frame,
+    )
+
+    stamp = datetime(2026, 10, 5, 9, 30, tzinfo=UTC)
+    frame = long_frame_from_snapshot(
+        MacroDataSnapshot(
+            country="us",
+            as_of=stamp,
+            cpi_headline=[
+                ObservationPoint(
+                    observation_date=date(2026, 9, 1),
+                    value=300.0,
+                    series_id="cpi_headline",
+                    retrieved_at=stamp,
+                )
+            ],
+        )
+    )
+    restored = snapshot_from_long_frame(
+        frame, empty_country="de", empty_as_of=datetime(1999, 1, 1, tzinfo=UTC)
+    )
+    assert restored.country == "us"  # the frame wins
+    assert restored.as_of == stamp
