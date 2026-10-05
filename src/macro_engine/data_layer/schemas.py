@@ -160,9 +160,11 @@ class YieldCurveSnapshot(BaseModel):
             "`inf` by default, and `validate_yield_curve`'s checks are all "
             "comparisons (`yld <= 0.0`, `yld > max`), every one of which is "
             "False for `nan` — so a poisoned tenor would report the curve CLEAN. "
-            "`allow_inf_nan=False` is expressed on the ANNOTATED ITEM type "
-            "because the constraint belongs to the dict's values, not to the "
-            "mapping (D-074.1's mechanism, applied to the curve)."
+            "The guard is the `_reject_unknown_tenors` validator below, which "
+            "runs `isfinite` over every VALUE. `Field(allow_inf_nan=False)` "
+            "cannot express this: the constraint belongs to the dict's values "
+            "and a field-level constraint applies to the mapping, not to its "
+            "items (D-074.1's mechanism, applied to the curve)."
         ),
     )
     retrieved_at: datetime = Field(default_factory=utc_now)
@@ -347,15 +349,20 @@ class MacroDataSnapshot(BaseModel):
             "Section 5.4, 'flag, don't fix'. Every anomaly found by "
             "data_layer/validation.py is appended here. Never silently dropped, "
             "never silently corrected.\n\n"
-            "IMPORTANT (measured 2026-09-29): this list is NOT what "
+            "IMPORTANT (re-measured 2026-10-05): this list is NOT what "
             "compute_confidence() reads. That function takes a per-model BOOLEAN "
-            "(ConfidenceInputs.data_quality_flags_present) which each model sets "
-            "from its OWN inputs, and no model populates it from this snapshot-"
-            "level list — so a flagged snapshot does not automatically lower any "
-            "model's confidence. A consumer that must degrade confidence on a "
-            "flagged snapshot has to do so explicitly. (A prior version of this "
-            "description said 'Fed into compute_confidence()', which was false — "
-            "audit finding X-L2.)"
+            "(ConfidenceInputs.data_quality_flags_present) which MOST models set "
+            "from their OWN inputs. ONE model is the exception: "
+            "``gdp_nowcast.output_gap_from_snapshot`` reads THIS list and "
+            "re-prices its result's confidence with "
+            "``data_quality_flags_present=True`` whenever any flag is present, so "
+            "a flagged snapshot DOES lower that model's confidence. For every "
+            "other model it does not, and a consumer that must degrade "
+            "confidence on a flagged snapshot has to do so explicitly. (A prior "
+            "version of this description said 'Fed into compute_confidence()', "
+            "which was false — audit finding X-L2. Its replacement then said no "
+            "model reads this list at all, which was ALSO false, for "
+            "gdp_nowcast — F-SCH-002.)"
         ),
     )
     field_sources: dict[str, str] = Field(
