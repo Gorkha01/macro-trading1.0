@@ -511,7 +511,16 @@ def test_stationarity(series: pd.Series) -> ModelResult:
         },
         confidence=compute_confidence(
             ConfidenceInputs(
-                is_heuristic_not_calibrated=not _r_squared_floor_is_calibrated(),
+                # F-EC-003: the heuristic flag must be computed from the leaves
+                # THIS function reads. It previously called
+                # `_r_squared_floor_is_calibrated()`, which reads
+                # `econometrics.low_r_squared_threshold` — a leaf
+                # `test_stationarity` never consumes — so a placeholder elsewhere
+                # in the module priced this verdict's confidence. The dedicated
+                # helper reads `significance_level` and
+                # `stationarity_min_observations` (both `conventional` today), so
+                # no penalty is applied and the confidence is 0.70, not 0.50.
+                is_heuristic_not_calibrated=not _stationarity_thresholds_calibrated(),
                 source_independence_count=0,
                 depends_on_unobservable=False,
             )
@@ -3438,6 +3447,36 @@ def _r_squared_floor_is_calibrated() -> bool:
     return settings.is_calibrated("econometrics.low_r_squared_threshold")
 
 
+def _stationarity_thresholds_calibrated() -> bool:
+    """Whether the thresholds ``test_stationarity`` leans on are calibrated.
+
+    Consumed as ``ConfidenceInputs.is_heuristic_not_calibrated`` (negated by the
+    caller).
+
+    ``test_stationarity`` reads exactly two configurable thresholds: the size at
+    which BOTH tests are judged (``significance_level``) and the observation
+    floor below which it refuses (``stationarity_min_observations``). Both are
+    ``conventional`` today, so this returns ``True`` and the caller applies NO
+    heuristic penalty — the function leans on no illustrative placeholder.
+
+    A dedicated helper rather than reusing ``_r_squared_floor_is_calibrated``,
+    which reads ``econometrics.low_r_squared_threshold`` — a leaf this function
+    never consumes. Wiring the flag to that helper would make a future
+    recalibration of the R-squared floor silently move the stationarity
+    confidence (and leave it untouched if a stationarity leaf were made
+    illustrative), which is the "coupling nobody asked for" the sibling
+    helper's docstring names. It is also the mirror image of D-139's
+    ``_cip_bands_are_calibrated`` finding, where a helper read the WRONG leaves
+    for its function: here the flag must be computed from the leaves THIS
+    function reads, and from no others (AGENTS.md §22.8: confidence is computed
+    from stated factors).
+    """
+    settings = get_settings()
+    return settings.is_calibrated("econometrics.significance_level") and settings.is_calibrated(
+        "econometrics.stationarity_min_observations"
+    )
+
+
 def _cointegration_thresholds_calibrated() -> bool:
     """Whether the two thresholds shaping ``test_cointegration``'s DERIVATIONS are calibrated.
 
@@ -3727,11 +3766,22 @@ def _spread_stationarity(spread: pd.Series) -> _SpreadReading:
     """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = adfuller(spread.to_numpy(), regression="n", autolag=_coint_autolag())
+        # F-EC-004: `result_object=True` for the SAME reason `_run_adf` passes it.
+        # statsmodels has announced the plain tuple's length/layout changes in 0.16
+        # (or after July 2027), so indexing `result[0]`/`result[1]` keeps working
+        # today and would break on an upgrade with no test failing. The result
+        # object is the explicitly stable surface. Behaviour is IDENTICAL on the
+        # pinned statsmodels (0.15) — this is a hardening, not a value change.
+        result = adfuller(
+            spread.to_numpy(),
+            regression="n",
+            autolag=_coint_autolag(),
+            result_object=True,
+        )
 
     ill_conditioned = any(issubclass(entry.category, SingularMatrixWarning) for entry in caught)
-    statistic = float(result[0])
-    p_value = float(result[1])
+    statistic = float(result.statistic)
+    p_value = float(result.pvalue)
     return {
         "statistic": round(statistic, 6),
         "p_value": round(p_value, 6),
