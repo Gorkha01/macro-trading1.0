@@ -175,6 +175,12 @@ def oil_balance_signal(inputs: OilBalanceInputs) -> ModelResult:
     is stated on the output's ``direction`` too, so a consumer can act on it
     without re-deriving it from the number's sign.
 
+    ``direction`` has **three** states, not two, and the third is load-bearing:
+    a market sitting exactly on its five-year seasonal norm is ``neutral``, which
+    the specification's ``tightness > 0 else`` shape would have reported as
+    ``loosening``. The direction is also read from the *published* (rounded)
+    tightness, so it can never contradict the ``value`` beside it.
+
     ``value`` is a dict rather than a bare float, so the reading, the
     week-over-week change it came from, and the spare-capacity figure all travel
     together — a consumer reasoning about the inflation channel wants to see
@@ -243,7 +249,30 @@ def oil_balance_signal(inputs: OilBalanceInputs) -> ModelResult:
 
     tightness = -deviation  # draw = tightening (Section 6.8)
     decimals = oil.value_decimals
-    rounded_tightness = round(tightness, decimals)
+    # `+ 0.0` normalises IEEE-754 NEGATIVE ZERO (F-COM-002). A market sitting
+    # exactly on its seasonal norm gives deviation == 0.0, and `-0.0` is what
+    # `-deviation` then produces -- so the published tightness was `-0.0`, which
+    # prints as "-0.0" and formats as "-0.00" in the interpretation. The same
+    # negative-zero shape was a defect in equity_macro (F-EM-002); it is pinned
+    # here too rather than left to be rediscovered.
+    rounded_tightness = round(tightness, decimals) + 0.0
+
+    # The direction is taken from the PUBLISHED value, not the raw one. Rounding
+    # is a claim about the data's resolution, so a tightness below that
+    # resolution must not be published as `0.0` while the direction claims
+    # "tightening" -- the two would contradict each other in the same result.
+    #
+    # And an EXACTLY-NEUTRAL market is neither: `tightness > 0 else "loosening"`
+    # (the shape the specification ships) reports a market sitting precisely on
+    # its five-year norm as loosening. That is the D-040 / `> 0 else` class --
+    # a boundary that reports a non-event as a move -- and `neutral` is the
+    # contract's own word for it.
+    if rounded_tightness > 0:
+        oil_direction = "tightening"
+    elif rounded_tightness < 0:
+        oil_direction = "loosening"
+    else:
+        oil_direction = "neutral"
 
     # --- confidence: two producers, both load-bearing (D-118/D-119 rule) ------
     # ⚠️ MULTIPLICATIVE, NOT `min()`. The computed half is above the cap on every
@@ -254,11 +283,26 @@ def oil_balance_signal(inputs: OilBalanceInputs) -> ModelResult:
     # EIA inputs), and the computed value states what THIS run's inputs are worth
     # relative to a perfect one, so a fetched pair beats a caller-typed pair in
     # the published number instead of the distinction being discarded.
+    #
+    # ⚠️ THE INDEPENDENCE COUNT IS 1 WHEN ANY LEG IS FETCHED, NOT `fetched_legs`
+    #    (F-COM-004). This function originally passed `fetched_legs` straight
+    #    through, which counted the two EIA series — WCESTUS1 weekly crude stocks
+    #    and COPS_OPEC spare capacity — as TWO independent sources. They are one
+    #    provider. That is exactly the error the gold and metals functions below
+    #    document at length and avoid ("legs are not sources ... the same class
+    #    of error as counting a signal twice"): three fetches through one
+    #    provider is one source family, and so is two. Measured, the old form
+    #    published 0.60 x 0.30 = 0.18 for a fully-fetched pair where the same
+    #    module's metals function publishes 0.55 x 0.30 for three fetched legs —
+    #    i.e. oil claimed MORE corroboration from two EIA series than metals
+    #    claims from three IMF-via-FRED ones. The count is 1 for any fetched set
+    #    and 0 when nothing was fetched, matching its two siblings.
+    independent_providers = 1 if fetched_legs > 0 else 0
     computed = compute_confidence(
         ConfidenceInputs(
             data_quality_flags_present=fetched_legs < 2,
             is_heuristic_not_calibrated=not oil.reliability_cap_is_calibrated,
-            source_independence_count=fetched_legs,
+            source_independence_count=independent_providers,
             depends_on_unobservable=False,
         )
     )
@@ -303,20 +347,26 @@ def oil_balance_signal(inputs: OilBalanceInputs) -> ModelResult:
         value={
             "tightness": rounded_tightness,
             "inventory_seasonal_deviation_thousand_barrels": round(deviation, decimals),
-            "opec_spare_capacity_mbd": spare,
+            # Rounded to the same declared precision as the other two (F-COM-003).
+            # The module's own second correction is that every bare `round(...)`
+            # becomes a config-declared precision, and this was the one published
+            # number still emitted raw -- so a 2.3456789 mb/d reading sat beside
+            # two values rounded to `value_decimals`. The threshold comparisons
+            # below deliberately still use the unrounded `spare`.
+            "opec_spare_capacity_mbd": round(spare, decimals),
         },
         confidence=confidence,
         unit="thousand_barrels_seasonal_deviation",
-        direction="tightening" if tightness > 0 else "loosening",
+        direction=oil_direction,
         source_family=(
             EvidenceSourceFamily.MARKET_COMMODITY
             if fetched_legs > 0
             else EvidenceSourceFamily.MANUAL_ASSESSMENT
         ),
         interpretation=(
-            f"Oil market {'tightening' if tightness > 0 else 'loosening'} "
-            f"(informational): crude stocks {deviation:+,.0f} thousand barrels vs "
-            f"the 5-year seasonal average; OPEC spare capacity {spare} mb/d"
+            f"Oil market {oil_direction} (informational): crude stocks "
+            f"{deviation:+,.0f} thousand barrels vs the 5-year seasonal average; "
+            f"OPEC spare capacity {round(spare, decimals)} mb/d"
         ),
         context=(
             "Feeds inflation/growth transmission only — this system does not "
@@ -702,7 +752,18 @@ def gold_driver_attribution(inputs: GoldDriverInputs) -> ModelResult:
         },
         confidence=confidence,
         unit="layer_attribution",
-        direction=dominant,
+        # ⚠️ `direction` is NONE, deliberately (F-COM-001). It previously carried
+        # `dominant` -- i.e. a LAYER NAME ("real_yield", "crisis_confidence",
+        # "none_identified") -- in a field the contract defines as "which way the
+        # value moves the underlying economic quantity (e.g. 'expansionary',
+        # 'restrictive', 'neutral')". Two things were wrong: a layer name is not a
+        # direction, and the value was already published verbatim as
+        # `value["dominant_layer"]`, so the field was a duplicate carrying a
+        # misleading label. An ATTRIBUTION does not move anything -- this model
+        # has no gold-price input and derives no price direction -- so the
+        # contract's own answer applies: None, meaning "no direction", not
+        # "unknown". Setting it to None here is honest rather than a loss.
+        direction=None,
         source_family=(
             EvidenceSourceFamily.MARKET_COMMODITY
             if fetched_legs > 0

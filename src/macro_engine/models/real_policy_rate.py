@@ -53,6 +53,15 @@ def real_policy_rate(inputs: RealPolicyRateInputs) -> ModelResult:
     Confidence is ``compute_confidence``'s to produce, and both inputs are
     measurements here — the arithmetic is exact and neither term is a model
     estimate — so no unobservable is declared and no heuristic flag is set.
+    Both flags are stated rather than defaulted, because the number alone cannot
+    distinguish "no penalty" from "the heuristic penalty" (they are both 0.20).
+
+    Two caveats are published, and the second is the one a reader is most likely
+    to get wrong: this function takes **any** year-over-year inflation measure,
+    but the FOMC's objective it is naturally compared against is defined on PCE
+    specifically. A CPI-based input and a PCE-based input give two different
+    "real policy rates" from the same nominal rate, so the measure has to be
+    recorded alongside the result.
     """
     value = inputs.nominal_policy_rate - inputs.inflation_rate
 
@@ -74,8 +83,18 @@ def real_policy_rate(inputs: RealPolicyRateInputs) -> ModelResult:
         warnings=[
             "Ex-post, not ex-ante: this subtracts REALISED inflation, whereas the "
             "policy stance that matters for decisions depends on EXPECTED inflation. "
-            "The two diverge exactly when it matters most. Section 21's standing note "
-            f"on {get_settings().policy.pi_target_value:.1f}% as the target is a "
-            "target, not a forecast.",
+            "The two diverge exactly when it matters most — a real rate that looks "
+            "restrictive on realised data can be accommodative on the expectations "
+            "the central bank is actually reacting to.",
+            "The inflation measure is the caller's, and it changes the answer "
+            "materially. This function accepts any year-over-year rate: CPI, core "
+            "CPI, PCE and core PCE are separate upstream surveys that disagree by "
+            "tenths of a point, and the same nominal policy rate against a CPI-based "
+            "and a PCE-based rate yields two different 'real policy rates'. The FOMC's "
+            f"{get_settings().policy.pi_target_value:.1f}% objective is defined on PCE "
+            "specifically, so it is NOT a reference point for a CPI-based input — and "
+            "it is a TARGET, not a forecast of inflation, so it cannot stand in for "
+            "the expected-inflation term this function omits. Record which measure was "
+            "passed; the number alone does not say.",
         ],
     )

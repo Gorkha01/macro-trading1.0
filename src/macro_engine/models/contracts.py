@@ -38,6 +38,7 @@ __all__ = [
     "ModelResult",
     "ModelValue",
     "compute_confidence",
+    "require_finite_scalars",
     "utc_now",
 ]
 
@@ -182,6 +183,45 @@ class FiniteInputs(BaseModel):
                 f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}"
             )
         return self
+
+
+def require_finite_scalars(**named: object) -> None:
+    """The ``FiniteInputs`` guard for functions that take POSITIONAL floats.
+
+    ``FiniteInputs`` closes the non-finite class at construction, which covers
+    the ~70 model functions that accept an ``Inputs`` model. It cannot cover the
+    handful of reference-arithmetic functions whose signatures are bare floats
+    by design — ``bond_math.modified_duration`` and
+    ``price_change_with_convexity``, ``national_accounts.gdp_deflator`` and
+    ``production_function.growth_accounting_decomposition``. Those keep their
+    signatures (``growth_accounting_decomposition``'s docstring gives the
+    reason: both terms are growth rates, the whole input surface, with no config
+    parameter to shadow), so the guard has to be called explicitly.
+
+    It was not, and the class was therefore OPEN for exactly those four.
+    MEASURED 2026-10-05 before this helper existed::
+
+        modified_duration(nan, 100.0)                    -> value = nan
+        price_change_with_convexity(nan, 1.0, 1.0)       -> value = nan
+        gdp_deflator(nan, 100.0)                         -> value = nan
+        growth_accounting_decomposition(nan, 1.0)        -> {'potential_growth': nan,
+                                                            'productivity_share': nan, ...}
+
+    The last one is the worst shape: three of its four published fields go
+    ``nan`` while the fourth stays a real number, so a consumer that sums or
+    compares them gets ``nan`` with no signal about which term was bad.
+
+    Reuses ``FiniteInputs._non_finite_offenders`` so the error message is
+    byte-identical to the one a model input would raise, naming the offending
+    argument: ``non-finite input(s): mac_dur=nan. <remedy>``.
+    """
+    offenders: list[str] = []
+    for name, value in named.items():
+        offenders.extend(FiniteInputs._non_finite_offenders(name, value))
+    if offenders:
+        raise ValueError(
+            f"non-finite input(s): {', '.join(offenders)}. {NON_FINITE_INPUT_REMEDY}"
+        )
 
 
 class ConfidenceInputs(BaseModel):

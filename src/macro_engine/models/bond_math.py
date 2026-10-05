@@ -47,6 +47,7 @@ from macro_engine.models.contracts import (
     FiniteInputs,
     ModelResult,
     compute_confidence,
+    require_finite_scalars,
     utc_now,
 )
 
@@ -277,7 +278,13 @@ def modified_duration(mac_dur: float, yield_rate: float) -> ModelResult:
     Takes ``mac_dur`` as a plain float rather than recomputing it, matching
     Section 20.2's signature. A caller who already has the Macaulay duration
     should not have to reconstruct the whole bond to convert it.
+
+    Because the signature is bare floats, the ``FiniteInputs`` guard never sees
+    them, so the non-finite check is called explicitly: ``modified_duration(nan,
+    y)`` used to publish ``value=nan``, which every downstream comparison then
+    treats as "not greater than" and "not less than" alike.
     """
+    require_finite_scalars(mac_dur=mac_dur, yield_rate=yield_rate)
     mod_duration = mac_dur / (1 + yield_rate)
 
     return ModelResult(
@@ -341,7 +348,12 @@ def price_change_with_convexity(mod_dur: float, conv: float, delta_y: float) -> 
     worth more than a less convex one at identical duration: Section 20.2 states
     it, and ``test_price_change_with_convexity_asymmetry`` (Section 11.1) asserts
     it as an inequality rather than a shape.
+
+    Bare-float signature, so the non-finite guard is called explicitly: a ``nan``
+    ``delta_y`` previously published ``value=nan``, and the quadratic term would
+    have propagated it even where the linear term cancelled.
     """
+    require_finite_scalars(mod_dur=mod_dur, conv=conv, delta_y=delta_y)
     linear = -mod_dur * delta_y
     convexity_adjustment = 0.5 * conv * (delta_y**2)
     total = linear + convexity_adjustment

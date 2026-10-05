@@ -45,6 +45,7 @@ from macro_engine.models.contracts import (
     FiniteInputs,
     ModelResult,
     compute_confidence,
+    require_finite_scalars,
     utc_now,
 )
 
@@ -254,6 +255,51 @@ def _validate_basket(
         )
 
 
+def _validate_baskets_align(
+    base_prices: dict[str, float], current_prices: dict[str, float]
+) -> None:
+    """Refuse a pair of periods whose item sets differ.
+
+    ``_validate_basket`` above compares prices against quantities **within one
+    period**. That leaves the cross-period comparison unchecked, and the
+    cross-period comparison is the one the index-number arithmetic silently
+    gets wrong: both ``laspeyres_index`` and ``paasche_index`` iterate ONE
+    period's price keys and index into the other period's price dict, so
+
+    * an item present in the base basket but absent from the current prices is a
+      bare ``KeyError`` naming a dict key rather than the basket problem, and
+    * an item present in the current prices but absent from the base basket is
+      **silently dropped** — the extra item never enters the sum, and the index
+      is published as if the two baskets matched.
+
+    MEASURED 2026-10-05 before this guard existed::
+
+        base  prices {A:1, B:2} / current {A:3}          -> KeyError: 'B'
+        base  prices {A:1, B:2} / current {A:3, B:4, C:9} -> 250.0, C ignored
+
+    The second is the defect the helper's own docstring says must not happen
+    ("it produces a number either way"). Comparing the two price-key sets makes
+    both cases a named error at the point of use.
+    """
+    base_items = set(base_prices)
+    current_items = set(current_prices)
+    if base_items != current_items:
+        only_base = sorted(base_items - current_items)
+        only_current = sorted(current_items - base_items)
+        detail = []
+        if only_base:
+            detail.append(f"only in base: {only_base}")
+        if only_current:
+            detail.append(f"only in current: {only_current}")
+        raise ValueError(
+            "base and current baskets price different item sets ("
+            + "; ".join(detail)
+            + "). An index number is a comparison of ONE basket at two dates; "
+            "items present in only one period would either raise a bare KeyError "
+            "or be silently dropped from the sum."
+        )
+
+
 def laspeyres_index(inputs: IndexNumberInputs) -> ModelResult:
     """Base-quantity-weighted price index.
 
@@ -266,6 +312,7 @@ def laspeyres_index(inputs: IndexNumberInputs) -> ModelResult:
     """
     _validate_basket("base", inputs.base_prices, inputs.base_quantities)
     _validate_basket("current", inputs.current_prices, inputs.current_quantities)
+    _validate_baskets_align(inputs.base_prices, inputs.current_prices)
 
     base_cost = sum(
         inputs.base_prices[item] * inputs.base_quantities[item] for item in inputs.base_prices
@@ -307,6 +354,7 @@ def paasche_index(inputs: IndexNumberInputs) -> ModelResult:
     """
     _validate_basket("current", inputs.current_prices, inputs.current_quantities)
     _validate_basket("base", inputs.base_prices, inputs.base_quantities)
+    _validate_baskets_align(inputs.base_prices, inputs.current_prices)
 
     current_cost = sum(
         inputs.current_prices[item] * inputs.current_quantities[item]
@@ -381,6 +429,13 @@ def gdp_deflator(nominal_gdp: float, real_gdp: float) -> ModelResult:
     """
     if real_gdp == 0:
         raise ValueError("real_gdp is zero; the deflator is undefined.")
+
+    # The FiniteInputs base cannot see these: this function takes positional
+    # floats by design (Section 20.3's signature), so the non-finite guard has
+    # to be called explicitly. Measured before it was: gdp_deflator(nan, 100.0)
+    # published value=nan, and gdp_deflator(100.0, inf) published 0.0 -- a
+    # plausible-looking deflator derived from an infinite real GDP.
+    require_finite_scalars(nominal_gdp=nominal_gdp, real_gdp=real_gdp)
 
     deflator = nominal_gdp / real_gdp * 100
 
@@ -545,11 +600,20 @@ def policy_mix_classifier(inputs: PolicyMixInputs) -> ModelResult:
     ]
 
     if mixed:
+        # Derived, not hardcoded. The literal "50.9%" was the sum of the two
+        # MIXED quadrant rates and would have gone stale on any recalibration
+        # while still reading as a measured figure (the D-029 base-rate rule:
+        # a rate quoted to justify a verdict must be the rate the model used).
+        mixed_share = (
+            settings.quadrant_base_rates["MIXED_FISCAL_LOOSE_MONETARY_TIGHT"]
+            + settings.quadrant_base_rates["MIXED_FISCAL_TIGHT_MONETARY_LOOSE"]
+        )
         warnings.append(
             "MIXED quadrants mean Fed-only analysis is incomplete — fiscal is "
             "working against monetary (Module 3.2). This is the case the module "
-            "exists for: the two MIXED quadrants together are 50.9% of the "
-            "measured history, so a mixed stance is ordinary, not exceptional."
+            f"exists for: the two MIXED quadrants together are {mixed_share:.1%} "
+            "of the measured history, so a mixed stance is ordinary, not "
+            "exceptional."
         )
 
     if (

@@ -6556,6 +6556,12 @@ class MetalsComplexSettings(BaseModel):
         ``broad_weakness_threshold_pct`` makes ``change < -threshold`` true for
         every non-negative change, so the broad-weakness verdict would fire on a
         RISING complex — the same dead branch with an inverted meaning.
+
+        **The band must not EXCEED the threshold.** The two tests are
+        ``abs(aluminum) < band`` and ``aluminum < -threshold``; they are mutually
+        exclusive only while ``band <= threshold``. Above it they overlap and the
+        model's ``if/elif`` order — documented as deciding nothing — becomes the
+        thing that decides the verdict (F-COM-005).
         """
         if not 0.0 <= self.reliability_value <= 1.0:
             raise ValueError(
@@ -6584,6 +6590,32 @@ class MetalsComplexSettings(BaseModel):
                 f"makes `change < -threshold` true for every non-negative change, "
                 f"so the broad-weakness verdict fires on a RISING complex — an "
                 f"inverted branch."
+            )
+        # ⚠️ THE ORDERING IS LOAD-BEARING, so it is refused rather than merely
+        #    observed (F-COM-005). The two verdicts are tested as
+        #        construction:  abs(aluminum) <  aluminum_band_pct
+        #        broad:        aluminum      < -broad_weakness_threshold_pct
+        #    With `aluminum_band_pct <= broad_weakness_threshold_pct` those two
+        #    CANNOT both hold (a value inside the band cannot also be below its
+        #    own negative), which is why the model's if/elif order "decides
+        #    nothing" and is documented that way. Raise the band ABOVE the
+        #    threshold and the overlap reappears: for any aluminum in
+        #    (-band, -threshold) both predicates fire, so the elif silently
+        #    demotes BROAD_INDUSTRIAL_WEAKNESS to CHINA_CONSTRUCTION_SPECIFIC on
+        #    nothing but the order of two lines — a verdict change with no
+        #    economic meaning, and one a test of the current config would not
+        #    catch because today the two leaves happen to be equal.
+        if self.aluminum_band_pct > self.broad_weakness_threshold_pct:
+            raise ValueError(
+                f"metals_complex.aluminum_stability_band_pct "
+                f"({self.aluminum_band_pct}) must not exceed "
+                f"broad_weakness_threshold_pct "
+                f"({self.broad_weakness_threshold_pct}). The construction test is "
+                f"`abs(aluminum) < band` and the broad test is "
+                f"`aluminum < -threshold`; with band > threshold a change in "
+                f"(-{self.aluminum_band_pct}, -{self.broad_weakness_threshold_pct}) "
+                f"satisfies BOTH, so the two verdicts overlap and the if/elif "
+                f"order — documented as deciding nothing — silently decides them."
             )
         return self
 

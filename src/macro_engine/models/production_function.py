@@ -84,6 +84,7 @@ from macro_engine.models.contracts import (
     FiniteInputs,
     ModelResult,
     compute_confidence,
+    require_finite_scalars,
     utc_now,
 )
 
@@ -328,6 +329,16 @@ def growth_accounting_decomposition(
     """
     settings = get_settings()
     productivity_dominance = settings.production_function.productivity_dominance
+
+    # Bare-float signature by design (see the docstring above), so the
+    # FiniteInputs guard never sees these and the check is explicit. Measured
+    # before it was: growth_accounting_decomposition(nan, 1.0) published a dict
+    # with THREE nan fields and one real one, so a consumer summing the
+    # contributions got nan with no signal about which term was bad.
+    require_finite_scalars(
+        labor_force_growth_pct=labor_force_growth_pct,
+        productivity_growth_pct=productivity_growth_pct,
+    )
 
     total = labor_force_growth_pct + productivity_growth_pct
 

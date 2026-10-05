@@ -20,6 +20,7 @@ from macro_engine.models.contracts import (
     ModelResult,
     ModelValue,
     compute_confidence,
+    require_finite_scalars,
     utc_now,
 )
 from macro_engine.models.evidence_family import EvidenceSourceFamily
@@ -280,3 +281,60 @@ def test_utc_now_is_timezone_aware_utc():
     assert now.utcoffset() == datetime.now(tz=UTC).utcoffset()
     # naive datetime.utcnow() would have tzinfo is None; we assert the fix.
     assert now.tzinfo == UTC
+
+
+# --------------------------------------------------------------------------
+# require_finite_scalars — the FiniteInputs guard for POSITIONAL-float functions
+# --------------------------------------------------------------------------
+
+
+def test_require_finite_scalars_accepts_finite_values():
+    """It must be a no-op for legitimate input, including zero and negatives."""
+    require_finite_scalars(a=0.0, b=-1.5, c=1e300, d=0)
+    require_finite_scalars()  # no arguments at all
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_require_finite_scalars_rejects_every_non_finite_form(bad):
+    with pytest.raises(ValueError) as exc:
+        require_finite_scalars(x=bad)
+    assert "non-finite" in str(exc.value)
+
+
+def test_require_finite_scalars_names_the_offending_argument():
+    """The message must name the argument, not merely report that something was
+    wrong — that is the whole advantage the FiniteInputs guard has over a bare
+    `assert isfinite(...)`."""
+    with pytest.raises(ValueError) as exc:
+        require_finite_scalars(good=1.0, bad=float("nan"))
+    msg = str(exc.value)
+    assert "bad=nan" in msg
+    assert "good" not in msg
+
+
+def test_require_finite_scalars_reuses_the_shared_remedy_text():
+    """Same wording as a FiniteInputs rejection, so the explanation is identical
+    wherever the guard fires (D-078)."""
+    from macro_engine.models.contracts import NON_FINITE_INPUT_REMEDY
+
+    with pytest.raises(ValueError) as exc:
+        require_finite_scalars(x=float("nan"))
+    assert NON_FINITE_INPUT_REMEDY in str(exc.value)
+
+
+def test_require_finite_scalars_covers_container_shapes_too():
+    """It delegates to FiniteInputs._non_finite_offenders, so a list element or a
+    dict value is located exactly rather than merely flagged."""
+    with pytest.raises(ValueError) as exc:
+        require_finite_scalars(series=[1.0, float("nan")])
+    assert "series[1]" in str(exc.value)
+
+    with pytest.raises(ValueError) as exc:
+        require_finite_scalars(rates={"10y": float("inf")})
+    assert "10y" in str(exc.value)
+
+
+def test_require_finite_scalars_ignores_non_numeric_values():
+    """Non-numeric arguments are not this guard's business — FiniteInputs makes
+    the same choice, and a bool must not be mistaken for a float."""
+    require_finite_scalars(label="ok", flag=True, missing=None)
