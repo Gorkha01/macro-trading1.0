@@ -35,7 +35,7 @@ import pytest
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
-from macro_engine.data_layer.snapshot_builder import _apply_validation
+from macro_engine.data_layer.snapshot_builder import SnapshotBuildReport, _apply_validation
 from macro_engine.data_layer.validation import registry_bounds, validate_snapshot
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
@@ -137,19 +137,46 @@ def test_both_paths_use_the_one_derivation() -> None:
     assert "future_date_tolerance_days=" in derived
 
 
-def test_required_is_an_explicit_parameter_not_a_hidden_difference() -> None:
-    """The one deliberate build-vs-revalidate difference, stated at the call site.
+def test_emptiness_is_owned_by_the_build_report_only() -> None:
+    """F-SB-006, resolved: ONE producer, and it is the layer that can know.
 
-    The build path knows the series was REQUESTED, so an empty fetch is a
-    finding there; re-validation cannot tell "requested and empty" from "not in
-    this snapshot" and defers to the build report's own EMPTY_SERIES flag.
+    ``SnapshotBuildReport`` holds ``requested``, so it can tell "asked and got
+    nothing" from "not part of this snapshot". ``validate_snapshot`` cannot —
+    every snapshot field defaults to ``[]`` — which is why it skips empty
+    series. Emitting the finding from both produced two flags for one condition.
     """
     import inspect
 
     import macro_engine.data_layer.snapshot_builder as builder
     import macro_engine.data_layer.validation as validation
 
-    assert "required=True" in inspect.getsource(builder._apply_validation)
-    assert "required=True" not in inspect.getsource(validation.validate_snapshot)
+    # The shared derivation no longer carries emptiness at all.
     sig = inspect.signature(validation.validate_registry_series)
-    assert sig.parameters["required"].default is False
+    assert "required" not in sig.parameters
+    assert "required=" not in inspect.getsource(builder._apply_validation)
+
+    # ...and the report's flag carries the sentence the validation one used to.
+    report = builder.SnapshotBuildReport()
+    report.requested = ["cpi_headline"]
+    report.succeeded = ["cpi_headline"]
+    report.observation_counts = {"cpi_headline": 0}
+    flags = [f for f in report.as_flags() if f.startswith("EMPTY_SERIES")]
+    assert len(flags) == 1
+    assert "not as zero" in flags[0]
+
+
+def test_one_empty_series_produces_exactly_one_flag() -> None:
+    """The duplicate, measured end-to-end: it used to be 2 flags for 1 condition."""
+    snapshot = MacroDataSnapshot(country="us", as_of=NOW)
+    snapshot.cpi_headline = []
+    snapshot = _apply_validation(snapshot, {"cpi_headline": []})
+
+    report = SnapshotBuildReport()
+    report.requested = ["cpi_headline"]
+    report.succeeded = ["cpi_headline"]
+    report.observation_counts = {"cpi_headline": 0}
+    snapshot.data_quality_flags = [*snapshot.data_quality_flags, *report.as_flags()]
+
+    empty = [f for f in snapshot.data_quality_flags if "EMPTY_SERIES" in f]
+    assert len(empty) == 1, empty
+    assert empty[0].startswith("EMPTY_SERIES:cpi_headline:")

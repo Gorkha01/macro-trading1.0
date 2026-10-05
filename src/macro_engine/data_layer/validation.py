@@ -604,7 +604,6 @@ def validate_registry_series(
     entry: RegistrySeries | None,
     *,
     series_id: str,
-    required: bool = False,
 ) -> ValidationReport:
     """Validate one series with EVERY per-series rule derived in one place.
 
@@ -619,16 +618,17 @@ def validate_registry_series(
       (F-SB-002);
     * ``future_date_tolerance_days`` was cast with ``int()`` in one copy and
       passed raw in the other — harmless today (every registry value is an
-      ``int``: 57x0, 1x1, 1x3) and wrong the moment one is not.
+      ``int``: 57x0, 1x1, 1x3) and wrong the moment one is not (F-SB-005).
 
-    ``required`` is an explicit parameter rather than a hidden difference, so
-    the one place the two callers legitimately disagree is stated at the call
-    site instead of being an accident of two copies. The build path passes
-    ``True`` (it KNOWS the series was requested) and the re-validation path
-    leaves it ``False`` (it cannot tell "requested and empty" from "not part of
-    this snapshot", so it defers to the build report's own ``EMPTY_SERIES``
-    flag). Whether the validation layer should carry emptiness at all is an open
-    question recorded in the review evidence.
+    **``required`` is deliberately not a parameter here.** Emptiness is owned by
+    ``SnapshotBuildReport.as_flags``, which is the only layer that can
+    distinguish "requested and empty" from "not part of this snapshot": a
+    snapshot's fields all default to ``[]``, so :func:`validate_snapshot` cannot
+    tell them apart and skips empty series. Passing ``required=True`` on the
+    build path as well emitted two flags for one condition (F-SB-006); the
+    explanatory sentence now travels on the report's flag.
+    ``validate_observations(required=True)`` remains reachable through
+    :func:`validate_unemployment_rate` / :func:`validate_positive_index_level`.
     """
     min_value, max_value = registry_bounds(entry, series_id=series_id)
     return validate_observations(
@@ -636,7 +636,6 @@ def validate_registry_series(
         series_id=series_id,
         min_value=min_value,
         max_value=max_value,
-        required=required,
         forward_looking=bool(entry.forward_looking) if entry is not None else False,
         future_date_tolerance_days=(
             int(entry.future_date_tolerance_days) if entry is not None else 0

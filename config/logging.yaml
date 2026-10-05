@@ -6,6 +6,19 @@
 
 version: 1
 
+# `logging.config.dictConfig` DEFAULTS this to true, and true means "disable
+# every logger that already existed and is not a child of one named below".
+# Measured: a `urllib3.connectionpool` logger created before
+# `configure_logging()` runs comes out `disabled=True` afterwards, so its
+# records vanish with no error and no flag. That contradicts this project's own
+# rule about logging (logging_json.py: "a service that logs unstructured
+# JSON-less output when its config is absent is a service whose logs cannot be
+# trusted during the incident that removed the config") — a silently disabled
+# logger is worse than an unstructured one, because there is nothing to read at
+# all. `false` leaves pre-existing loggers enabled; they propagate to the root
+# handler below and are therefore still emitted as JSON.
+disable_existing_loggers: false
+
 formatters:
   json:
     format: "%(message)s"

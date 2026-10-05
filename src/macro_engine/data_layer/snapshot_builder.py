@@ -140,7 +140,18 @@ class SnapshotBuildReport:
             flags.append(f"UNVERIFIED_SERIES_SKIPPED:{field}")
         for field in sorted(self.succeeded):
             if self.observation_counts.get(field, 0) == 0:
-                flags.append(f"EMPTY_SERIES:{field}")
+                # The detail sentence is carried HERE rather than left to
+                # ``validate_observations(required=True)``, because this report is
+                # the only layer that can own emptiness: it holds ``requested``,
+                # so it can tell "asked and got nothing" from "not part of this
+                # snapshot". Re-validation cannot (every field defaults to an
+                # empty list), which is why it skips empty series instead of
+                # flagging them. Emitting it from both produced two flags for one
+                # condition on every build (F-SB-006).
+                flags.append(
+                    f"EMPTY_SERIES:{field}:requested but returned no observations — "
+                    "downstream models must treat it as unavailable, not as zero"
+                )
         # Section 6: make the release-timing gap visible in the flags rather
         # than only in the object. The three states are deliberately distinct:
         #   True  -> the calendar answered; release timing is known where matched.
@@ -659,24 +670,21 @@ def _apply_validation(
     A third, latent drift went with them — this copy passed
     ``future_date_tolerance_days`` raw where the other cast it with ``int()``.
 
-    The one remaining difference is ``required=True`` below, and it is stated
-    rather than hidden.
+    Emptiness is deliberately NOT validated here. ``SnapshotBuildReport.as_flags``
+    owns it, being the only layer that can tell "requested and empty" from "not
+    part of this snapshot"; emitting it from both produced two flags for one
+    condition on every build (F-SB-006).
     """
     registry = get_registry()
     aggregate = ValidationReport()
 
     for field_name, points in raw_by_field.items():
         entry = registry.series.get(field_name)
-        # ONE derivation for every per-series rule, shared with the
-        # re-validation path (`validation.validate_registry_series`).
-        # `required=True` is this path's half of the ONE deliberate difference
-        # between the two: the build KNOWS the series was requested, so an empty
-        # fetch is a finding here, whereas re-validation cannot tell "requested
-        # and empty" from "not part of this snapshot" and defers to the build
-        # report's own EMPTY_SERIES flag.
-        aggregate.extend(
-            validate_registry_series(points, entry, series_id=field_name, required=True)
-        )
+        # `required` is deliberately NOT passed: emptiness is owned by
+        # `SnapshotBuildReport.as_flags`, the only layer that can distinguish
+        # "requested and empty" from "not in this snapshot". Passing it here too
+        # produced two flags for one condition (F-SB-006).
+        aggregate.extend(validate_registry_series(points, entry, series_id=field_name))
 
     for curve_field in CURVE_FIELDS:
         curve = getattr(snapshot, curve_field, None)

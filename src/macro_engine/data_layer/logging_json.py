@@ -65,9 +65,12 @@ __all__ = ["JsonFormatter", "configure_logging", "get_logger"]
 # ``session`` is deliberately absent despite being credential-shaped in some
 # frameworks: as a plain substring it also matches ``session_count``,
 # ``session_id``, and ``session_duration``, which are ordinary operational
-# counters. ``session_token`` and ``session_key`` are already covered by the
-# ``token`` and ``private_key`` fragments, so the narrow set loses nothing real
-# while keeping diagnostic fields readable.
+# counters. ``session_token`` IS covered by the ``token`` fragment, but
+# ``session_key`` is NOT covered by ``private_key`` — neither string is a
+# substring of the other (measured) — so both are listed explicitly below.
+# Removing either because it "looks redundant" is the mistake this note exists
+# to prevent; the narrow set keeps diagnostic fields readable without losing a
+# credential-shaped key.
 _REDACT_KEY_FRAGMENTS: frozenset[str] = frozenset(
     {
         "api_key",
@@ -136,6 +139,17 @@ def _redact(value: Any, *, depth: int = 0) -> Any:
     Depth-limited: a self-referential structure would otherwise recurse until
     the interpreter's stack limit, turning a logging call into a crash. Eight
     levels is far beyond any legitimate log payload.
+
+    Every container is walked so a credential-shaped KEY is caught wherever it
+    sits: dicts by key, and lists/tuples/sets by element (recursing into any
+    dict inside). A ``set`` can never hold a dict — dicts are unhashable — so no
+    key redaction is lost by walking one. It is included for FIDELITY: a set is
+    not JSON-serialisable, so before it was handled here it reached
+    ``json.dumps``'s ``default=str`` and shipped as its repr (``"{'a', 'b'}"``)
+    instead of a real JSON array. Note that redaction is KEY-based by design: a
+    bare credential VALUE (a string in a list, say) has no key to test and is
+    not redacted anywhere, which is why secrets belong in ``extra={...}`` under
+    a credential-shaped key rather than interpolated into the message.
     """
     if depth > 8:
         return "<max-depth-exceeded>"
@@ -144,7 +158,7 @@ def _redact(value: Any, *, depth: int = 0) -> Any:
             key: (_REDACTED if _is_credential_shaped(key) else _redact(item, depth=depth + 1))
             for key, item in value.items()
         }
-    if isinstance(value, list | tuple):
+    if isinstance(value, list | tuple | set | frozenset):
         return [_redact(item, depth=depth + 1) for item in value]
     if isinstance(value, str) and len(value) > 2000:
         # A multi-kilobyte string in a log line is usually a whole document
