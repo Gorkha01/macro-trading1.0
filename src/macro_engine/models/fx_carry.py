@@ -7,6 +7,8 @@ supplies a fourth, :func:`uip_expected_move` (D-112), whose reference
 implementation is the one-line ``i_domestic - i_foreign`` and which is
 deliberately NOT a deviation of the CIP identity — see its own docstring for
 why the two are different functions even though they read the same two rates.
+A fifth, :func:`ppp_valuation` (D-117), is Module 9.2's price-level anchor; it
+is the ONLY function here that fetches (see below).
 Section 6.7 also supplies a **reference implementation** for each — so these
 are stubs to UPGRADE, not functions to invent — and the reference
 implementation of :func:`cip_check` is the simplest possible form::
@@ -88,9 +90,14 @@ quote is **inverted before the identity is applied** — the published deviation
 is always in domestic-per-foreign space, so it is comparable across callers
 rather than silently reversed.
 
-Deliberately absent: any data fetching. Models consume aligned inputs
-(Section 6) and the caller owns provenance; this module never reaches for a
-provider.
+**Four of the five functions fetch nothing; the fifth is the exception, and it
+is named.** :func:`cip_check`, :func:`carry_score`, :func:`dollar_smile_regime`
+and :func:`uip_expected_move` consume aligned inputs (Section 6) and never reach
+for a provider — the caller owns their provenance. :func:`ppp_valuation` is the
+one that does: a PPP-implied rate is not observable in a market, so its leg is
+FETCHED from the World Bank REST API (indicator ``PA.NUS.PPP``) unless the
+caller supplies it, with the fetched vintage disclosed on every call. See that
+function's docstring for why the fetch is the only live path.
 """
 
 from __future__ import annotations
@@ -122,6 +129,7 @@ __all__ = [
     "PPPStatus",
     "QuoteConvention",
     "StressSeverity",
+    "UIPDirection",
     "UIPInputs",
     "carry_score",
     "cip_check",
@@ -203,6 +211,22 @@ _DOLLAR_SMILE_BASE_RATES: dict[str, float] = {
     "right": 204 / 3025,
     "middle": 1071 / 3025,
 }
+
+
+def _positive_zero(value: float) -> float:
+    """Normalise a rounded negative zero to positive zero.
+
+    F-FX-002: ``round(-1e-10, 6)`` is ``-0.0``, and a published ``-0.0``
+    renders as ``-0.0000`` in a ``:+.4f`` string — a sign on a quantity that is
+    numerically zero. Every function in this module can produce one: a forward a
+    hair below the parity-implied level (``cip_check``), a rate differential that
+    is a trillionth below zero (``carry_score``, ``uip_expected_move``), or a
+    spot rate within 0.005% of the PPP level (``ppp_valuation``). ``+ 0.0`` maps
+    ``-0.0`` to ``0.0`` and leaves every other value unchanged, so it is applied
+    AFTER the rounding — the same repair F-LAB-003 and F-RISK-001 use. The
+    quantity really is zero, so the display must be a non-negative zero.
+    """
+    return value + 0.0
 
 
 class CIPInputs(FiniteInputs):
@@ -601,6 +625,13 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
 
     severity, side = _stress_labels(deviation_pct, notable_pct=notable_pct, extreme_pct=extreme_pct)
 
+    # F-FX-002: the published zeros are normalised AFTER rounding, so a
+    # hair-negative deviation (or the basis, which is a tiny negative even at
+    # EXACT parity) publishes 0.0 rather than -0.0. The raw values still drive
+    # `_stress_labels`, where the sign is what matters.
+    deviation_pct_published = _positive_zero(round(deviation_pct, 6))
+    basis_bp_published = _positive_zero(round(basis_bp_annualized, 4))
+
     if side == "domestic":
         side_phrase = "domestic-currency funding is the expensive side"
     elif side == "foreign":
@@ -613,7 +644,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
         country="us",
         as_of=utc_now(),
         value={
-            "deviation_pct": round(deviation_pct, 6),
+            "deviation_pct": deviation_pct_published,
             "implied_forward": round(implied_forward, 8),
             "observed_forward": round(forward, 8),
             "spot": round(spot, 8),
@@ -622,7 +653,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
             "i_domestic_period": round(i_domestic_period, 8),
             "i_foreign_period": round(i_foreign_period, 8),
             "synthetic_domestic_funding_rate_period": round(synthetic_domestic_period, 8),
-            "domestic_funding_basis_bp_annualized": round(basis_bp_annualized, 4),
+            "domestic_funding_basis_bp_annualized": basis_bp_published,
             "tenor_days": inputs.tenor_days,
             "day_count_basis": inputs.day_count_basis,
             "day_count_basis_days": basis_days,
@@ -641,7 +672,9 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
                 depends_on_unobservable=False,
             )
         ),
-        interpretation=(f"CIP deviation {deviation_pct:+.4f}% ({severity}); {side_phrase}."),
+        interpretation=(
+            f"CIP deviation {deviation_pct_published:+.4f}% ({severity}); {side_phrase}."
+        ),
         context=(
             f"Spot {spot:.6f} and forward {forward:.6f} (domestic per foreign"
             + (
@@ -686,6 +719,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
             "The forward is a deliverable outright for the same value dates as "
             "the spot leg plus the stated tenor.",
         ],
+        source_family=EvidenceSourceFamily.MARKET_FX,
         warnings=_cip_warnings(
             severity=severity,
             side=side,
@@ -946,6 +980,10 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
     denominator = volatility_floor if floor_binds else realized_vol
     score = differential / denominator
     outcome = _carry_outcome(differential)
+    # F-FX-002: normalise the published score's zero after rounding (a differential
+    # a hair below zero would otherwise publish -0.0 while the outcome reads
+    # 'long_foreign').
+    score_published = _positive_zero(round(score, 6))
 
     if outcome == "long_domestic":
         outcome_phrase = "lend domestic, borrow foreign"
@@ -967,7 +1005,7 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
         country="us",
         as_of=utc_now(),
         value={
-            "score": round(score, 6),
+            "score": score_published,
             "rate_differential_annualized": round(differential, 8),
             "realized_vol_annualized": round(realized_vol, 8),
             "effective_denominator": round(denominator, 8),
@@ -985,7 +1023,8 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
         unit="dimensionless (annualised carry per unit of annualised volatility)",
         direction=outcome,
         interpretation=(
-            f"Carry-to-vol score {score:+.4f} ({outcome}: {outcome_phrase}); {denominator_phrase}."
+            f"Carry-to-vol score {score_published:+.4f} ({outcome}: {outcome_phrase}); "
+            f"{denominator_phrase}."
         ),
         context=(
             f"Rate differential {differential:+.6f} annualised (domestic minus "
@@ -1022,7 +1061,7 @@ def carry_score(inputs: CarryScoreInputs) -> ModelResult:
             floor_binds=floor_binds,
             realized_vol_annualized=realized_vol,
             volatility_floor=volatility_floor,
-            score=score,
+            score=score_published,
         ),
         limitations=_carry_limitations(),
         decision_relevance=(
@@ -1740,7 +1779,6 @@ def _uip_warnings(
     *,
     direction: UIPDirection,
     differential_annualized: float,
-    expected_move_pct: float,
     tenor_days: int,
 ) -> list[str]:
     """The conditions of THIS run.
@@ -1852,6 +1890,10 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
     expected_move_fraction = exact_ratio - 1.0
     expected_move_pct = expected_move_fraction * 100.0
     expected_move_simple_pct = differential_period * 100.0
+    # F-FX-002: normalise the published zeros after rounding (a differential a
+    # hair below zero would otherwise publish -0.0 for both forms).
+    expected_move_pct_published = _positive_zero(round(expected_move_pct, 6))
+    expected_simple_pct_published = _positive_zero(round(expected_move_simple_pct, 6))
 
     direction = _uip_direction(expected_move_pct)
 
@@ -1867,8 +1909,8 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
         country="us",
         as_of=utc_now(),
         value={
-            "expected_move_pct": round(expected_move_pct, 6),
-            "expected_move_simple_pct": round(expected_move_simple_pct, 6),
+            "expected_move_pct": expected_move_pct_published,
+            "expected_move_simple_pct": expected_simple_pct_published,
             "i_domestic_annualized": inputs.i_domestic_annualized,
             "i_foreign_annualized": inputs.i_foreign_annualized,
             "i_domestic_period": round(i_domestic_period, 8),
@@ -1884,7 +1926,7 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
         unit="percent (expected spot change over the stated tenor)",
         direction=direction,
         interpretation=(
-            f"UIP benchmark: {expected_move_pct:+.4f}% expected spot move over "
+            f"UIP benchmark: {expected_move_pct_published:+.4f}% expected spot move over "
             f"{inputs.tenor_days} days — {direction_phrase}. This is the "
             f"BENCHMARK A CARRY TRADE BETS AGAINST, not a forecast; UIP fails "
             f"empirically (the forward-premium puzzle) and that failure is the "
@@ -1897,10 +1939,10 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
             f"{inputs.day_count_basis}: domestic "
             f"{i_domestic_period * 100:+.6f}%, foreign "
             f"{i_foreign_period * 100:+.6f}% over the period. The exact parity "
-            f"ratio (1+i_d t)/(1+i_f t) gives {expected_move_pct:+.6f}%; Section "
+            f"ratio (1+i_d t)/(1+i_f t) gives {expected_move_pct_published:+.6f}%; Section "
             f"6.7's first-order form (i_d - i_f)*t gives "
-            f"{expected_move_simple_pct:+.6f}%, a difference of "
-            f"{expected_move_simple_pct - expected_move_pct:+.6f}pp — "
+            f"{expected_simple_pct_published:+.6f}%, a difference of "
+            f"{expected_simple_pct_published - expected_move_pct_published:+.6f}pp — "
             f"second-order in the differential. Confidence is a model-specific "
             f"cap ({reliability}), not a computed penalty: this model's inputs "
             f"are observable and its arithmetic is exact, and what is unreliable "
@@ -1929,7 +1971,6 @@ def uip_expected_move(inputs: UIPInputs) -> ModelResult:
         warnings=_uip_warnings(
             direction=direction,
             differential_annualized=differential_annualized,
-            expected_move_pct=expected_move_pct,
             tenor_days=inputs.tenor_days,
         ),
         limitations=_uip_limitations(),
@@ -2345,6 +2386,10 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
     deviation_pct = (inputs.spot_rate - ppp_implied_rate) / ppp_implied_rate * 100.0
     ratio = inputs.spot_rate / ppp_implied_rate
     status = _ppp_status(deviation_pct)
+    # F-FX-002: normalise the published deviation's zero after rounding (a spot
+    # within 0.005% of the PPP level would otherwise publish -0.0 while the
+    # status reads 'undervalued').
+    deviation_pct_published = _positive_zero(round(deviation_pct, 2))
 
     if status == "overvalued":
         status_phrase = (
@@ -2359,12 +2404,28 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
     else:
         status_phrase = "the spot rate equals the PPP-implied rate, so the currency is AT PARITY"
 
+    # F-FX-005: on the FETCH path the ISO pair IS an input (the fetch is keyed on
+    # it), so it must be named. On the override path the caller supplied the
+    # level and there is no pair to name.
+    ppp_input_names = (
+        ["spot_rate", "ppp_implied_rate", "horizon_years", "quote"]
+        if ppp_vintage is None
+        else [
+            "spot_rate",
+            "ppp_implied_rate(fetched)",
+            f"domestic_iso3:{inputs.domestic_iso3}",
+            f"foreign_iso3:{inputs.foreign_iso3}",
+            "horizon_years",
+            "quote",
+        ]
+    )
+
     return ModelResult(
         model_name="ppp_valuation",
         country="global",
         as_of=utc_now(),
         value={
-            "deviation_pct": round(deviation_pct, 2),
+            "deviation_pct": deviation_pct_published,
             "ratio": round(ratio, 6),
             "status": status,
             "spot_rate": inputs.spot_rate,
@@ -2383,7 +2444,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
         context=(
             f"Spot {inputs.spot_rate} against a PPP-implied "
             f"{ppp_implied_rate} ({inputs.quote}), quoted as a "
-            f"{ratio:.6f} ratio and a {deviation_pct:+.2f}% deviation, over a "
+            f"{ratio:.6f} ratio and a {deviation_pct_published:+.2f}% deviation, over a "
             f"{inputs.horizon_years}-year thesis against a "
             f"{tactical_horizon_years}-year tactical minimum. "
             f"{_PPP_PROVENANCE_SUPPLIED if ppp_vintage is None else ppp_vintage} "
@@ -2394,7 +2455,7 @@ def ppp_valuation(inputs: PPPInputs) -> ModelResult:
             f"strongly rejected empirically, and no input-reliability factor "
             f"captures that."
         ),
-        inputs_used=["spot_rate", "ppp_implied_rate", "horizon_years", "quote"],
+        inputs_used=ppp_input_names,
         assumptions=[
             "Both rates share ONE quote convention, carried in `quote`; the "
             "deviation's sign and the status label are read under it.",
