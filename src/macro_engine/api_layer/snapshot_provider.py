@@ -136,12 +136,14 @@ class SnapshotProvenance(BaseModel):
         if self.data_quality_flag_count:
             messages.append(
                 f"SNAPSHOT FLAGGED: {self.data_quality_flag_count} data-quality "
-                f"flag(s) on the snapshot. NOTE: these flags are NOT applied as a "
-                f"confidence penalty automatically — compute_confidence() reads each "
-                f"model's OWN data_quality_flags_present input, which no model "
-                f"populates from this snapshot-level list (Section 5.4 / 22.8). A "
-                f"consumer that must degrade confidence on a flagged snapshot has to "
-                f"do so explicitly."
+                f"flag(s) on the snapshot. NOTE: for MOST models these flags are NOT "
+                f"applied as a confidence penalty — compute_confidence() reads each "
+                f"model's OWN data_quality_flags_present input. ONE model is the "
+                f"exception: gdp_nowcast.output_gap_from_snapshot reads this list and "
+                f"re-prices its own confidence, so a flagged snapshot DOES lower THAT "
+                f"model's confidence and no other's. A consumer that must degrade "
+                f"confidence has to do so explicitly for the rest "
+                f"(Section 5.4 / 22.8)."
             )
         if self.from_cache:
             messages.append(

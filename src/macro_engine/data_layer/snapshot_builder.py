@@ -61,7 +61,7 @@ from macro_engine.data_layer.schemas import ObservationPoint, YieldCurveSnapshot
 from macro_engine.data_layer.validation import (
     ValidationReport,
     attach_flags,
-    validate_observations,
+    validate_registry_series,
     validate_yield_curve,
 )
 from macro_engine.models.contracts import utc_now
@@ -643,36 +643,39 @@ def _apply_validation(
 ) -> MacroDataSnapshot:
     """Run per-series validation and return a snapshot carrying the findings.
 
-    Bounds come from the registry's ``plausible_range`` where declared, so a
-    new series is validated the moment it is registered rather than when
-    someone remembers to add a rule here.
+    Every per-series rule — bounds, ``forward_looking``, the same-day tolerance —
+    comes from :func:`validate_registry_series`, the SAME call the re-validation
+    path (``validate_snapshot``) makes, so a new series is validated the moment
+    it is registered rather than when someone remembers to add a rule here, and
+    the two paths cannot disagree.
+
+    They did disagree, twice, until this was unified (F-SB-001 / F-SB-002):
+    this function applied the registry's LEVEL lower bound to ``signed_series``
+    entries (reporting a legitimate negative spread change as
+    ``VALUE_BELOW_MIN``), and it used ``unemployment_rate``'s narrower registry
+    range ``(0.0, 25.0)`` instead of the configured ``(0.0, 100.0)``. Both were
+    already correct in ``validate_snapshot``, which is why the suite was green:
+    the tests exercised the re-validation path, and this is the path that runs.
+    A third, latent drift went with them — this copy passed
+    ``future_date_tolerance_days`` raw where the other cast it with ``int()``.
+
+    The one remaining difference is ``required=True`` below, and it is stated
+    rather than hidden.
     """
     registry = get_registry()
     aggregate = ValidationReport()
 
     for field_name, points in raw_by_field.items():
         entry = registry.series.get(field_name)
-        bounds = entry.plausible_range if entry is not None else None
-        low, high = (float(bounds[0]), float(bounds[1])) if bounds else (None, None)
+        # ONE derivation for every per-series rule, shared with the
+        # re-validation path (`validation.validate_registry_series`).
+        # `required=True` is this path's half of the ONE deliberate difference
+        # between the two: the build KNOWS the series was requested, so an empty
+        # fetch is a finding here, whereas re-validation cannot tell "requested
+        # and empty" from "not part of this snapshot" and defers to the build
+        # report's own EMPTY_SERIES flag.
         aggregate.extend(
-            validate_observations(
-                points,
-                series_id=field_name,
-                min_value=low,
-                max_value=high,
-                required=True,
-                # A projection series (CBO GDPPOT) legitimately extends beyond
-                # today; marking it keeps ~41 valid points from being flagged
-                # as ERROR and drowning the real diagnostics.
-                forward_looking=bool(entry.forward_looking) if entry is not None else False,
-                # A daily series the provider has already published for the
-                # current calendar day while the clock is on the previous UTC
-                # date (FRED IORB). A per-series property rather than a code
-                # exception, so a series that should NOT lead still errors.
-                future_date_tolerance_days=(
-                    entry.future_date_tolerance_days if entry is not None else 0
-                ),
-            )
+            validate_registry_series(points, entry, series_id=field_name, required=True)
         )
 
     for curve_field in CURVE_FIELDS:
@@ -903,7 +906,13 @@ def build_snapshot(
                     client, field_name, entry, start=start, release_index=release_index
                 )
                 setattr(snapshot, target, points)
-                raw_by_field[target] = points
+                # Keyed by the REGISTRY field name, not the snapshot attribute:
+                # `_apply_validation` looks the bounds up with
+                # `registry.series.get(...)`, and the two differ for any entry
+                # declaring `snapshot_field` (treasury_curve -> yield_curve).
+                # Keying by the attribute would silently find no entry and skip
+                # that series' bounds.
+                raw_by_field[field_name] = points
                 report.observation_counts[field_name] = len(points)
                 snapshot.field_sources[field_name] = f"{entry.provider}:{entry.symbol}"
             report.succeeded.append(field_name)

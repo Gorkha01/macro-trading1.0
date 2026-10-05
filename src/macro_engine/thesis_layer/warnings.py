@@ -67,8 +67,9 @@ registry: **5 known blocked members, 0 routes into the aggregate as specified.**
 
 **6. Section 5.4's disclosure class does not reach it either.** Measured on a
 live snapshot: **5 of 5** ``data_quality_flags`` fail to appear in the aggregate.
-The flag currently only *lowers confidence* (D-033 / §22.8); it is never
-surfaced as text. The fact survives in ``MacroThesis.snapshot_quality_flags``,
+The flag lowers confidence only in ``gdp_nowcast`` (which reads the snapshot
+list directly); every other model ignores it, and it is never surfaced as text
+(§22.8). The fact survives in ``MacroThesis.snapshot_quality_flags``,
 so it is not lost — but §21.4 says *warnings*, and warnings does not get it.
 
 **7. Defects 1 and 6 are COUPLED, and the coupling is the point.** The natural

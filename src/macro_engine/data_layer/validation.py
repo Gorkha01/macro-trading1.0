@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
 from math import isfinite
+from typing import TYPE_CHECKING
 
 from macro_engine.config import get_registry, get_settings
 from macro_engine.data_layer.schemas import (
@@ -50,14 +51,19 @@ from macro_engine.data_layer.schemas import (
     YieldCurveSnapshot,
 )
 
+if TYPE_CHECKING:
+    from macro_engine.config import RegistrySeries
+
 __all__ = [
     "Severity",
     "ValidationFinding",
     "ValidationReport",
     "attach_flags",
+    "registry_bounds",
     "validate_equity_index",
     "validate_observations",
     "validate_positive_index_level",
+    "validate_registry_series",
     "validate_snapshot",
     "validate_unemployment_rate",
     "validate_yield_curve",
@@ -558,6 +564,86 @@ def validate_equity_index(
 # ---------------------------------------------------------------------------
 
 
+def registry_bounds(
+    entry: RegistrySeries | None, *, series_id: str
+) -> tuple[float | None, float | None]:
+    """The ``(min, max)`` bounds that apply to one series, derived in ONE place.
+
+    Both callers use this — the BUILD path (``snapshot_builder._apply_validation``)
+    and the RE-VALIDATION path (:func:`validate_snapshot`) — because two
+    hand-copied derivations had already drifted, twice, in opposite directions:
+
+    * ``unemployment_rate``'s configured bounds took precedence in
+      ``validate_snapshot`` only, so the build path used the registry's narrower
+      ``(0.0, 25.0)`` against a configured ``(0.0, 100.0)``. A reading of 30 was
+      an ERROR when built and clean when re-validated.
+    * the LEVEL lower bound was suppressed for ``signed_series`` in
+      ``validate_snapshot`` only, so the build path reported a legitimate
+      negative spread CHANGE as ``VALUE_BELOW_MIN`` — the AUDIT-001 defect
+      surviving on the path that actually runs (F-SB-001/F-SB-002).
+
+    A duplicate rule is a rule that can drift; the existing test suite could not
+    catch either drift because it exercised ``validate_snapshot`` alone.
+    """
+    if series_id == "unemployment_rate":
+        low, high = get_settings().validation.unemployment_bounds
+        return float(low), float(high)
+    if entry is None or entry.plausible_range is None:
+        return None, None
+    low, high = entry.plausible_range
+    # A signed field (spread, change, net balance) may legitimately go below the
+    # LEVEL range's lower bound. `credit_spread_hy`'s OAS LEVEL has never been
+    # negative, so [0.1, 40.0] is the right LEVEL bound — but the same field
+    # carries spread CHANGES, and -0.2 is a valid narrowing. The UPPER bound
+    # still applies (a spread cannot exceed 40pp); only the lower is suppressed.
+    return (None if entry.signed_series else float(low)), float(high)
+
+
+def validate_registry_series(
+    points: list[ObservationPoint],
+    entry: RegistrySeries | None,
+    *,
+    series_id: str,
+    required: bool = False,
+) -> ValidationReport:
+    """Validate one series with EVERY per-series rule derived in one place.
+
+    The single call site for both paths — the build path
+    (``snapshot_builder._apply_validation``) and the re-validation path
+    (:func:`validate_snapshot`) — because two hand-copied derivations had
+    already drifted, and the drift is invisible until it changes a verdict:
+
+    * the LEVEL lower bound was suppressed for ``signed_series`` in one copy
+      only (F-SB-001);
+    * ``unemployment_rate``'s configured bounds took precedence in one copy only
+      (F-SB-002);
+    * ``future_date_tolerance_days`` was cast with ``int()`` in one copy and
+      passed raw in the other — harmless today (every registry value is an
+      ``int``: 57x0, 1x1, 1x3) and wrong the moment one is not.
+
+    ``required`` is an explicit parameter rather than a hidden difference, so
+    the one place the two callers legitimately disagree is stated at the call
+    site instead of being an accident of two copies. The build path passes
+    ``True`` (it KNOWS the series was requested) and the re-validation path
+    leaves it ``False`` (it cannot tell "requested and empty" from "not part of
+    this snapshot", so it defers to the build report's own ``EMPTY_SERIES``
+    flag). Whether the validation layer should carry emptiness at all is an open
+    question recorded in the review evidence.
+    """
+    min_value, max_value = registry_bounds(entry, series_id=series_id)
+    return validate_observations(
+        points,
+        series_id=series_id,
+        min_value=min_value,
+        max_value=max_value,
+        required=required,
+        forward_looking=bool(entry.forward_looking) if entry is not None else False,
+        future_date_tolerance_days=(
+            int(entry.future_date_tolerance_days) if entry is not None else 0
+        ),
+    )
+
+
 def _validated_scalar_series(
     snapshot: MacroDataSnapshot,
 ) -> list[tuple[str, list[ObservationPoint]]]:
@@ -611,11 +697,18 @@ def validate_snapshot(snapshot: MacroDataSnapshot) -> ValidationReport:
     bound is always flagged.
 
     **Every bound and every declared property comes from the registry entry**,
-    not from a literal in this module. ``plausible_range`` supplies the
-    ``[min, max]`` pair, ``unemployment_rate``'s configured bounds take
-    precedence for that one series, ``forward_looking`` selects the INFO
-    horizon branch over the ERROR future-dating branch, and
-    ``future_date_tolerance_days`` supplies the same-day-publication tolerance.
+    not from a literal in this module. :func:`registry_bounds` supplies the
+    ``[min, max]`` pair — including ``unemployment_rate``'s configured-bounds
+    precedence and the ``signed_series`` lower-bound suppression —
+    ``forward_looking`` selects the INFO horizon branch over the ERROR
+    future-dating branch, and ``future_date_tolerance_days`` supplies the
+    same-day-publication tolerance.
+
+    ``registry_bounds`` is SHARED with the build path
+    (``snapshot_builder._apply_validation``) rather than re-derived here, because
+    two hand-copied derivations drifted twice — each time in this function's
+    favour, so the suite stayed green while the path that actually runs was
+    wrong (F-SB-001 / F-SB-002).
 
     This makes ``validate_snapshot`` agree with the build path by construction.
     They disagreed before (AUDIT-001): ``build_snapshot`` read the registry and
@@ -628,42 +721,9 @@ def validate_snapshot(snapshot: MacroDataSnapshot) -> ValidationReport:
 
     for name, points in _validated_scalar_series(snapshot):
         entry = get_registry().series.get(name)
-
-        # `unemployment_rate` has dedicated configured bounds and a dedicated
-        # validator; use them rather than the registry's generic plausible_range
-        # so the configured bound is the single source of truth for that series.
-        if name == "unemployment_rate":
-            report.extend(validate_unemployment_rate(points))
-            continue
-
-        min_value: float | None = None
-        max_value: float | None = None
-        if entry is not None and entry.plausible_range is not None:
-            low, high = entry.plausible_range
-            # A signed field (spread, change, net balance) may legitimately go
-            # below the LEVEL range's lower bound. `credit_spread_hy`'s OAS LEVEL
-            # has never been negative, so [0.1, 40.0] is the right LEVEL bound —
-            # but the same field carries spread CHANGES, and -0.2 is a valid
-            # narrowing. Applying the lower bound here would report real data as
-            # corrupt, so the UPPER bound still applies (a spread cannot exceed
-            # 40pp) while the lower bound is suppressed for declared-signed
-            # series. See RegistrySeries.signed_series.
-            max_value = float(high)
-            if not (entry.signed_series):
-                min_value = float(low)
-
-        report.extend(
-            validate_observations(
-                points,
-                series_id=name,
-                min_value=min_value,
-                max_value=max_value,
-                forward_looking=bool(entry.forward_looking) if entry is not None else False,
-                future_date_tolerance_days=(
-                    int(entry.future_date_tolerance_days) if entry is not None else 0
-                ),
-            )
-        )
+        # ONE derivation for every per-series rule, shared with the build path
+        # (see `validate_registry_series`), so the two cannot disagree again.
+        report.extend(validate_registry_series(points, entry, series_id=name))
 
     if snapshot.yield_curve is not None:
         report.extend(validate_yield_curve(snapshot.yield_curve, series_id="yield_curve"))

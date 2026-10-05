@@ -9984,7 +9984,7 @@ Three are about what the function **cannot carry at all**:
 | # | defect | measurement |
 |---|---|---|
 | 5 | §21.4's mandatory class has **no route in** | a BLOCKED input is one no model could run on, so it is **not a `ModelResult`** and the signature cannot express it. Live registry: **5 blocked members, 0 routes** |
-| 6 | §5.4's disclosure class **does not reach it either** | live snapshot: **5 of 5** `data_quality_flags` absent from the aggregate. The flag only *lowers confidence* (D-033 / §22.8); it is never surfaced as text |
+| 6 | §5.4's disclosure class **does not reach it either** | live snapshot: **5 of 5** `data_quality_flags` absent from the aggregate. The flag lowers confidence only in `gdp_nowcast` (§22.8); it is never surfaced as text |
 | 7 | **defects 1 and 6 are COUPLED, and that is the point** | the natural fix for 6 — route the snapshot flag into every model's own `warnings` — makes **every** model carry the **same string**, which is exactly the collision defect 1 collapses away |
 
 Defect 7 is the finding that shaped the repair. A repair treating 1 and 6
@@ -21634,7 +21634,7 @@ command** (census stays 6). **NO config leaf added** (one config *list* gained t
 | # | File | Class | Fix |
 |---|---|---|---|
 | X-L1 / D-1 | `api_layer/app.py` | F | `configure_logging()` had **zero callers**; added a `@asynccontextmanager` `_lifespan` wired via `lifespan=_lifespan`, so `config/logging.yaml` is applied when the app is SERVED |
-| X-L2 | `api_layer/snapshot_provider.py`, `data_layer/schemas.py`, `data_layer/validation.py` | G | three false "flags reduce confidence" disclosures corrected to state the per-model boolean that `compute_confidence` actually reads |
+| X-L2 | `api_layer/snapshot_provider.py`, `data_layer/schemas.py`, `data_layer/validation.py` | G | three false "flags reduce confidence" disclosures corrected to state the per-model boolean that `compute_confidence` actually reads. **RE-OPENED 2026-10-05:** this correction had itself introduced a NEW false claim in all three files — "no model populates it from this snapshot-level list" — false because `gdp_nowcast.output_gap_from_snapshot` DOES read the list and re-prices its confidence. The audit's fix became the defect, and nothing pinned the `gdp_nowcast` read, so no test could catch it. Corrected again and pinned: F-VAL-001, F-SCH-002, F-SNAP-001 |
 | D-2 | `data_layer/publication_dates.py` | H | docstring's filter claim corrected (two real conditions; `status` deliberately not consulted) |
 | D-3 | `data_layer/validation.py` | E + G | dead `out_of_range` counter removed; module docstring's confidence claim corrected |
 | D-4 | `data_layer/reserves_client.py` | H + E | module docstring corrected (the model converts, not this module); dead `OUTPUT_UNIT` removed (its VALUE neighbour `MILLIONS_PER_BILLION` left untouched — swept live by `R6a`) |
