@@ -151,6 +151,32 @@ _REQUEST_HEADERS = {
 #: Option-A ruling is that this is OpenBB's key and not a second one.
 _OPENBB_CREDENTIAL_NAME = "fred_api_key"
 
+#: What the credential is replaced with before any text leaves this module.
+_REDACTED = "***REDACTED***"
+
+
+def _redact(text: str, secret: str) -> str:
+    """Remove the credential from a string that may embed it.
+
+    **This is load-bearing, not tidiness.** FRED's endpoint requires ``api_key``
+    as a QUERY PARAMETER, and ``httpx.HTTPStatusError`` embeds the **full request
+    URL** in its text — measured: both ``str(exc)`` and ``repr(exc)`` carry
+    ``...&api_key=<the key>&...``. So logging or re-raising that exception
+    verbatim writes the live credential to the log and into any exception message
+    a caller surfaces.
+
+    Nothing downstream strips it: this project's redaction layer
+    (``logging_json._redact``) works on ``extra={}`` **keys**, not on message
+    text, and the formatter deliberately leaves ``message`` untouched. Measured
+    end-to-end before this fix: a single non-2xx response put the 32-character
+    FRED key into the log line, and the credential resolves on this machine — so
+    the leak was live, not theoretical.
+
+    Redaction is by VALUE rather than by parameter name, so it survives any
+    re-encoding of the query string.
+    """
+    return text.replace(secret, _REDACTED) if secret else text
+
 
 class AlfredVintageError(Exception):
     """Base for every failure this module raises.
@@ -427,7 +453,9 @@ def fetch_vintage_observations(
                     as_of.isoformat(),
                     attempt,
                     max_attempts,
-                    exc,
+                    # Redacted: an httpx error's text carries the full request URL,
+                    # and `api_key` travels as a query parameter (F-PER-002).
+                    _redact(str(exc), key),
                 )
                 if attempt < max_attempts:
                     time.sleep(backoff_seconds * attempt)
@@ -437,7 +465,7 @@ def fetch_vintage_observations(
 
     raise VintageReadError(
         f"ALFRED vintage read for {series_id} as-of {as_of.isoformat()} failed "
-        f"after {max_attempts} attempts: {last_error}"
+        f"after {max_attempts} attempts: {_redact(str(last_error), key)}"
     )
 
 

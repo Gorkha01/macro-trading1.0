@@ -131,6 +131,31 @@ def _sent_params(client: MagicMock) -> dict[str, str]:
     return dict(kwargs["params"])
 
 
+#: A fixed key for the fetch tests.
+_TEST_KEY = "test-key-not-a-real-credential"
+
+
+@pytest.fixture(autouse=True)
+def _stub_live_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the fetch tests off this machine's LIVE OpenBB credential.
+
+    ``resolve_fred_api_key`` reads OpenBB's real settings file, so without this
+    every ``fetch_vintage_observations`` call site fails with
+    ``VintageUnavailableError`` on any machine that has not configured FRED for
+    OpenBB — a fresh clone or CI. Measured: patching the resolver to raise makes
+    the fetch tests fail. This is the same fresh-clone class the
+    ``SnapshotStoreEmptyError`` docstring records for ``tests/api_layer``
+    (F-ALF-002).
+
+    It patches the MODULE attribute, which is what ``fetch_vintage_observations``
+    resolves. The two tests that exercise the credential path itself import
+    ``resolve_fred_api_key`` directly, so their own reference is untouched and
+    they keep testing the real function; the credential-absence test patches the
+    module attribute again, which overrides this.
+    """
+    monkeypatch.setattr(alfred_client, "resolve_fred_api_key", lambda: _TEST_KEY)
+
+
 # ---------------------------------------------------------------------------
 # (a) The ALFRED path never routes through OpenBB
 # ---------------------------------------------------------------------------
@@ -302,6 +327,72 @@ def test_a_key_is_unwrapped_from_secret_str(monkeypatch: pytest.MonkeyPatch) -> 
         MagicMock(UserService=fake_service),
     )
     assert resolve_fred_api_key() == "a" * 32
+
+
+# ---------------------------------------------------------------------------
+# F-ALF-001 / F-ALF-002 — the credential must not leak, and the tests must not
+# depend on a live one
+# ---------------------------------------------------------------------------
+def test_the_fetch_path_uses_the_stubbed_credential() -> None:
+    """F-ALF-002: the autouse fixture really is in effect for the fetch path.
+
+    If it were not, this would send the machine's real 32-character key.
+    """
+    client = _client_returning({"observations": []})
+    fetch_vintage_observations("CPIAUCSL", date(2024, 6, 1), client=client)
+    assert _sent_params(client)["api_key"] == _TEST_KEY
+
+
+def _client_raising_a_real_status_error() -> MagicMock:
+    """A client whose failure text is built by httpx ITSELF.
+
+    ``_client_returning`` fabricates ``httpx.HTTPStatusError("HTTP 400", ...)``,
+    whose message carries no URL — so it cannot reproduce the leak. Real httpx
+    puts the FULL REQUEST URL, ``api_key`` included, into the text.
+    """
+    client = MagicMock(spec=httpx.Client)
+
+    def _get(url: str, *, params: dict[str, str] | None = None) -> httpx.Response:
+        request = httpx.Request("GET", url, params=params or {})
+        response = httpx.Response(400, request=request)
+        response.raise_for_status()  # raises with the URL (and the key) in the text
+        raise AssertionError("unreachable")
+
+    client.get.side_effect = _get
+    return client
+
+
+def test_a_failed_read_never_logs_or_raises_the_credential(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F-ALF-001: httpx embeds the full URL, and ``api_key`` is a query parameter.
+
+    Measured before the fix: a single non-2xx response wrote the live 32-character
+    FRED key into the log line and into the raised exception's message. Nothing
+    downstream strips it — the redaction layer works on ``extra={}`` KEYS, not on
+    message text.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING), pytest.raises(VintageReadError) as exc:
+        fetch_vintage_observations(
+            "CPIAUCSL",
+            date(2024, 1, 15),
+            max_attempts=2,
+            backoff_seconds=0.0,
+            client=_client_raising_a_real_status_error(),
+        )
+
+    assert _TEST_KEY not in caplog.text, "the credential reached the log"
+    assert _TEST_KEY not in str(exc.value), "the credential reached the exception"
+    assert "***REDACTED***" in caplog.text
+    assert "***REDACTED***" in str(exc.value)
+
+
+def test_the_redaction_replaces_by_value_not_by_parameter_name() -> None:
+    assert alfred_client._redact("x api_key=SECRET y", "SECRET") == "x api_key=***REDACTED*** y"
+    assert alfred_client._redact("no secret here", "SECRET") == "no secret here"
+    assert alfred_client._redact("anything", "") == "anything"
 
 
 # ---------------------------------------------------------------------------
