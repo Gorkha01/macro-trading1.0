@@ -1299,7 +1299,19 @@ def apply_fractional_kelly(inputs: KellyInputs) -> ModelResult:
     # 1. The full, undivided Kelly optimum -- Section 22.6's real function.
     full_kelly = generalized_kelly_fraction(inputs.scenarios)
     full_kelly_value = full_kelly.value
-    assert isinstance(full_kelly_value, dict)
+    # A TYPED raise, not a bare `assert`, for the reason every other narrowing in
+    # this module raises one (`_ccd_step`, `risk_contributions`,
+    # `sample_covariance`, `_solve_risk_parity`, `_as_translation_outcome` all
+    # raise with a message). `assert` is stripped under `python -O`, so the guard
+    # would vanish and the NEXT line would report an unhelpful TypeError instead
+    # of naming the shape change. MEASURED 2026-10-06: this and its sibling in
+    # `translate_thesis_to_position` were the module's ONLY bare asserts.
+    if not isinstance(full_kelly_value, dict):
+        raise TypeError(
+            f"generalized_kelly_fraction returned a "
+            f"{type(full_kelly_value).__name__} for value; the documented shape is a "
+            f"dict carrying 'full_kelly_fraction' and 'at_search_edge'."
+        )
     full_fraction = float(full_kelly_value["full_kelly_fraction"])
     at_search_edge = bool(full_kelly_value["at_search_edge"])
 
@@ -2804,7 +2816,15 @@ def translate_thesis_to_position(inputs: ThesisPositionInputs) -> ModelResult:
         )
     )
     kelly_value = kelly.value
-    assert isinstance(kelly_value, dict)
+    # The sibling of the guard in `apply_fractional_kelly` — same reason: a bare
+    # `assert` is stripped under `-O`, and the four reads below would then fail
+    # with an unhelpful error instead of naming the shape change.
+    if not isinstance(kelly_value, dict):
+        raise TypeError(
+            f"apply_fractional_kelly returned a {type(kelly_value).__name__} for "
+            f"value; the documented shape is a dict carrying "
+            f"'fraction_of_capital', 'requested_fraction_of_capital' and 'outcome'."
+        )
     fraction = float(kelly_value["fraction_of_capital"])
     requested = float(kelly_value["requested_fraction_of_capital"])
     kelly_outcome = str(kelly_value["outcome"])
