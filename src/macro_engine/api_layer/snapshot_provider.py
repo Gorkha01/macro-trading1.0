@@ -60,6 +60,14 @@ class SnapshotUnavailableError(RuntimeError):
     provider. ``OrchestrationError`` means the source answered but the data was
     unusable, and the action is to inspect the series.
 
+    ⚠️ **The build path raises this for ANY exception, so "the source did not
+    answer" is the usual meaning rather than the only one.** ``_build`` catches
+    broadly on purpose — this module deliberately does not import the data
+    layer's error vocabulary (see ``_provenance_from_report``) — so a
+    non-transport exception lands here too, and *that* one is a bug in the
+    builder whose remedy is to read the exception rather than to retry the
+    provider. The message names the exception type so the two can be told apart.
+
     Both are 502 rather than 500 because neither is a bug here — and neither is
     ever mapped onto a ``WATCH`` thesis, which Section 16.3 forbids: a stand-down
     says "the models agree there is no edge", not "we could not read the inputs".
@@ -348,16 +356,38 @@ def _build(
     except Exception as exc:
         raise SnapshotUnavailableError(
             f"the snapshot build for country '{country}' failed: {type(exc).__name__}: "
-            f"{exc}. This is a data-source failure, not a thesis outcome — "
-            f"Section 16.3 forbids reporting it as a no-trade."
+            f"{exc}. Reported as a SOURCE failure rather than as a thesis outcome, "
+            f"because Section 16.3 forbids reading an unreadable input as a "
+            f"no-trade. NOTE: this catch is broad by design — this module does not "
+            f"import the data layer's error vocabulary — so a "
+            f"{type(exc).__name__} that is not a transport or provider error is a "
+            f"bug in the builder, and the remedy is to read it rather than to retry "
+            f"the provider."
         ) from exc
 
     elapsed = (utc_now() - started).total_seconds()
 
     # A build that produced nothing at all is unavailable. A build that
     # produced *some* fields is partial, and the provenance says so.
-    requested = list(getattr(report, "requested", []) or [])
-    succeeded = list(getattr(report, "succeeded", []) or [])
+    #
+    # `_build` ALWAYS has a report (unlike `_provenance_from_report`, which may
+    # have none), so the report's shape is a REQUIREMENT here rather than
+    # something to duck-type around. Reading it with `[]` defaults would silently
+    # SKIP the guard below — and a skipped guard returns a wholly-empty snapshot
+    # as an available one, with a clean provenance (no `failed_fields`, so no
+    # PARTIAL disclosure), which is exactly the "partial served as complete"
+    # failure this module exists to prevent.
+    requested = getattr(report, "requested", None)
+    succeeded = getattr(report, "succeeded", None)
+    if requested is None or succeeded is None:
+        raise SnapshotUnavailableError(
+            f"the build report for country '{country}' ({type(report).__name__}) "
+            f"carries no `requested`/`succeeded`, so the 'did anything actually "
+            f"fetch?' guard cannot run. Returning the snapshot anyway would publish "
+            f"an unreadable build as an available one."
+        )
+    requested = list(requested)
+    succeeded = list(succeeded)
     if requested and not succeeded:
         failed = dict(getattr(report, "failed", {}) or {})
         raise SnapshotUnavailableError(
