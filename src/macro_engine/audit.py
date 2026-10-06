@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -351,8 +351,6 @@ class AuditLedger:
         investigation. Returns rows only for computations that recorded a
         duration, so an older deployment's rows do not appear as zeros.
         """
-        from sqlalchemy import func
-
         with Session(self._engine) as session:
             rows = session.execute(
                 select(

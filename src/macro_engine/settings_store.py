@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -67,21 +68,46 @@ class Base(DeclarativeBase):
     """Declarative base for the settings and audit tables."""
 
 
-class SettingValueType(str):
-    """Marker type names accepted for ``SettingRecord.value_type``."""
+class SettingValueType(StrEnum):
+    """The accepted ``SettingRecord.value_type`` vocabulary, and its single definition.
+
+    MEASURED 2026-10-06: this was a bare ``class SettingValueType(str):`` — an
+    empty marker with no members, exported in ``__all__`` but used nowhere, while
+    the real vocabulary lived in a separate ``_VALID_VALUE_TYPES: frozenset`` that
+    ``set()`` validated against. Two declarations of one vocabulary, one of them
+    dead. It is now the single definition: ``_VALID_VALUE_TYPES`` is derived from
+    its members (D-045a — the declared vocabulary and the producible one are the
+    same object, so a test can assert ``declared == producible`` without a mirror
+    to keep in step).
+    """
+
+    FLOAT = "float"
+    INT = "int"
+    STR = "str"
+    BOOL = "bool"
+    JSON = "json"
 
 
-_VALID_VALUE_TYPES: frozenset[str] = frozenset({"float", "int", "str", "bool", "json"})
+_VALID_VALUE_TYPES: frozenset[str] = frozenset(member.value for member in SettingValueType)
 
 
 class SettingRecord(Base):
     """One revision of one setting.
 
-    Rows are never updated in place and never deleted. A "current" setting is
-    simply the row with ``superseded_at IS NULL``. This costs a little storage
-    and buys the ability to reconstruct the exact configuration in force at any
-    past instant — which is the difference between an auditable system and one
-    that merely logs.
+    A revision is **never deleted**, and its **value columns are never
+    rewritten** — ``value_json``/``value_type``/``created_at``/``created_by`` are
+    fixed at the instant the row is inserted. What *does* change on the row is
+    the three supersession columns: when ``set()`` writes the next revision it
+    stamps the prior row's ``is_active = False``, ``superseded_at`` and
+    ``superseded_by`` (see ``SettingsStore.set``). MEASURED 2026-10-06: an earlier
+    version of this docstring over-claimed that the whole row is immutable, and
+    that broader claim is false — it is exactly the sentence a reader relies on
+    when reasoning about whether a concurrent writer can rewrite a past *value*,
+    and the guarantee holds for the value columns and not for the whole row. A
+    "current" setting is the row with ``is_active`` true. This costs a little
+    storage and buys the ability to reconstruct the exact configuration in force
+    at any past instant — which is the difference between an auditable system and
+    one that merely logs.
     """
 
     __tablename__ = "settings"
@@ -108,13 +134,13 @@ class SettingRecord(Base):
 
     def decoded_value(self) -> Any:
         """Return the stored value as its declared Python type."""
-        if self.value_type == "json":
+        if self.value_type == SettingValueType.JSON:
             return json.loads(self.value_json)
-        if self.value_type == "float":
+        if self.value_type == SettingValueType.FLOAT:
             return float(self.value_json)
-        if self.value_type == "int":
+        if self.value_type == SettingValueType.INT:
             return int(self.value_json)
-        if self.value_type == "bool":
+        if self.value_type == SettingValueType.BOOL:
             return self.value_json == "true"
         return self.value_json
 
@@ -388,7 +414,9 @@ class SettingsStore:
             )
 
         encoded = (
-            json.dumps(value) if value_type == "json" else self._encode_scalar(value, value_type)
+            json.dumps(value)
+            if value_type == SettingValueType.JSON
+            else self._encode_scalar(value, value_type)
         )
         # One timestamp per write, advancing monotonically. ``utc_now()`` has
         # microsecond resolution, and two writes inside the same microsecond
@@ -538,11 +566,11 @@ class SettingsStore:
 
     @staticmethod
     def _encode_scalar(value: Any, value_type: str) -> str:
-        if value_type == "bool":
+        if value_type == SettingValueType.BOOL:
             return "true" if value else "false"
-        if value_type == "float":
+        if value_type == SettingValueType.FLOAT:
             return repr(float(value))
-        if value_type == "int":
+        if value_type == SettingValueType.INT:
             return str(int(value))
         return str(value)
 

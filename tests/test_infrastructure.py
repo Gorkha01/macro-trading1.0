@@ -395,3 +395,247 @@ def test_the_fractional_kelly_floor_is_itself_bounded() -> None:
 
     # The legitimately-bounded pair still loads, and respects both clauses.
     assert _with(2.0, 3.0).kelly_fraction_multiplier == pytest.approx(1.0 / 3.0)
+
+
+# ---------------------------------------------------------------------------
+# (F-DEP-001) every DeploymentConfig field is backed by a declared variable
+# ---------------------------------------------------------------------------
+
+
+def test_every_deployment_field_is_backed_by_a_declared_variable() -> None:
+    """(F-DEP-001) The field -> variable pairing is a receipt, not a prose claim.
+
+    ``DeploymentConfig``'s docstring used to say *"the validator enforces that,
+    so adding a field without declaring its variable fails at construction"* —
+    and there was NO validator (MEASURED 2026-10-06: neither the class nor the
+    module declared one). ``extra="forbid"`` rejects an unknown FIELD, not an
+    undeclared VARIABLE, so a 15th field with no ``_VARIABLES`` entry constructed
+    cleanly and defaulted to ``None`` at use.
+
+    This test is the enforcement the docstring claimed: every field must resolve
+    to a declared variable through ``_field_to_variable``, and no two fields may
+    map to the same one. It fails the day a field is added without a declaration.
+    """
+    import macro_engine.deployment as dep
+
+    fields = list(dep.DeploymentConfig.model_fields)
+    unresolved = [f for f in fields if dep._field_to_variable(f) is None]
+    assert not unresolved, (
+        f"DeploymentConfig field(s) {unresolved} have no backing entry in _VARIABLES; "
+        f"add the variable or an exception in _NON_CONVENTIONAL_VARIABLE"
+    )
+
+    resolved = [dep._field_to_variable(f) for f in fields]
+    assert len(resolved) == len(set(resolved)), "two fields resolve to the same variable"
+    # every mapped variable must actually be declared
+    assert set(resolved) <= set(dep._VARIABLES)
+
+
+# ---------------------------------------------------------------------------
+# (F-DEP-002) the production-required set is derived, not hand-maintained
+# ---------------------------------------------------------------------------
+
+
+def test_production_required_list_is_derived_from_required_when() -> None:
+    """(F-DEP-002) ``REQUIRED_IN_PRODUCTION`` cannot drift from ``required_when``.
+
+    MEASURED 2026-10-06: the tuple was hand-typed and had ALREADY drifted — it
+    omitted ``MACRO_API_KEY_HASH``, which ``required_when`` marks required in
+    production, so ``_check_production_requirements`` (whose docstring promised
+    the full set at once) reported three of the four production-required
+    variables. It is now the projection of ``required_when`` onto PRODUCTION, so
+    the two are incapable of disagreeing.
+
+    This test computes the truth from the declarations and asserts equality, and
+    asserts the preflight enumerates exactly that set.
+    """
+    import macro_engine.deployment as dep
+
+    derived = {
+        name
+        for name, variable in dep._VARIABLES.items()
+        if dep.AppEnvironment.PRODUCTION in variable.required_when
+    }
+    assert set(dep.REQUIRED_IN_PRODUCTION) == derived
+    assert "MACRO_API_KEY_HASH" in derived, (
+        "MACRO_API_KEY_HASH declares required_when=PRODUCTION; the derived set must include it"
+    )
+
+    # The preflight enumerates the same set when nothing is set.
+    import os
+
+    saved = dict(os.environ)
+    try:
+        for name in dep._VARIABLES:
+            os.environ.pop(name, None)
+        missing = set(dep._check_production_requirements(dep.AppEnvironment.PRODUCTION))
+        # the ones that declare PRODUCTION and are unset == the derived set
+        assert missing == derived
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+# ---------------------------------------------------------------------------
+# (F-DEP-003) the is_secret flag has a consumer, and it redacts
+# ---------------------------------------------------------------------------
+
+
+def test_secret_deployment_variables_are_never_rendered() -> None:
+    """(F-DEP-003) ``is_secret`` is read: a redacted render masks those values.
+
+    MEASURED 2026-10-06: ``is_secret`` was declared with the description *"never
+    log the value; presence/absence is logged instead"* and read by NOTHING — no
+    logging or redaction path consulted it. ``DeploymentConfig.redacted()`` is
+    its consumer; this test asserts a secret's value cannot survive a render,
+    while its presence still does.
+    """
+    import macro_engine.deployment as dep
+
+    secrets = {n for n, v in dep._VARIABLES.items() if v.is_secret}
+    assert secrets, "no variable declares is_secret; the flag would be untested"
+
+    cfg = dep.DeploymentConfig(
+        environment=dep.AppEnvironment.DEVELOPMENT,
+        api_host="127.0.0.1",
+        api_port=8000,
+        api_root_path="",
+        api_docs_enabled=False,
+        api_cors_origins=["http://x"],
+        api_key_required=False,
+        api_key_hash=None,
+        database_url="postgresql+psycopg://user:sup3rsecret@host/db",
+        database_echo_sql=False,
+        openbb_api_url="http://127.0.0.1:6900",
+        data_store_path="data/raw",
+        log_level="INFO",
+        audit_enabled=True,
+    )
+    rendered = cfg.redacted()
+    assert "sup3rsecret" not in str(rendered), "a secret value survived redaction"
+    assert rendered["database_url"] == "<set>"
+    assert rendered["api_key_hash"] == "<unset>"
+    # non-secret fields still render their value
+    assert rendered["api_host"] == "127.0.0.1"
+
+
+# ---------------------------------------------------------------------------
+# (F-DEP-004) the OpenBB default URL is pinned to settings.yaml
+# ---------------------------------------------------------------------------
+
+
+def test_the_openbb_fallback_url_matches_settings_yaml() -> None:
+    """(F-DEP-004) The named default is pinned to the committed leaf.
+
+    ``deployment._OPENBB_DEFAULT_BASE_URL``'s own comment claims
+    *"``tests/test_infrastructure.py`` pins the two to each other so a future
+    edit to one without the other fails a test instead of an outage."* MEASURED
+    2026-10-06: no test referenced ``_OPENBB_DEFAULT_BASE_URL``, ``deployment``,
+    or ``6900`` — the pin was a claim, not a receipt (F-SIG-003 / F-INV-002 /
+    F-NT-003 class). This is that pin.
+    """
+    import macro_engine.deployment as dep
+
+    committed = get_settings().openbb.local_api_base_url.value
+    assert committed == dep._OPENBB_DEFAULT_BASE_URL, (
+        f"deployment fallback {dep._OPENBB_DEFAULT_BASE_URL!r} != "
+        f"settings.yaml openbb.local_api_base_url {committed!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (F-STORE-001) the SettingRecord docstring matches the write it describes
+# ---------------------------------------------------------------------------
+
+
+def test_setting_record_docstring_matches_the_supersession_write() -> None:
+    """(F-STORE-001) The docstring no longer claims "never updated in place".
+
+    MEASURED 2026-10-06: ``SettingRecord``'s docstring said *"rows are never
+    updated in place"*, but ``set()`` mutates three columns of the prior row
+    (``is_active``/``superseded_at``/``superseded_by``). The narrower, true
+    invariant — value columns immutable, supersession columns stamped — is what
+    the docstring must state. A text guard, because the defect is the prose.
+    """
+    from macro_engine import settings_store as store
+
+    source = pathlib.Path(inspect.getfile(store)).read_text(encoding="utf-8")
+    lowered = source.lower()
+    assert "rows are never updated in place" not in lowered, (
+        "the false 'rows are never updated in place' claim is back in settings_store.py"
+    )
+    assert "value columns are never" in source, (
+        "the corrected invariant ('the value columns are never rewritten') is missing"
+    )
+
+
+# ---------------------------------------------------------------------------
+# (F-STORE-002) the value-type vocabulary is a single definition
+# ---------------------------------------------------------------------------
+
+
+def test_the_value_type_vocabulary_is_single_definition() -> None:
+    """(F-STORE-002) ``SettingValueType`` is the one vocabulary ``set()`` enforces.
+
+    MEASURED 2026-10-06: ``SettingValueType`` was a bare ``str`` subclass with no
+    members, exported but used nowhere, while the real vocabulary lived in a
+    separate ``_VALID_VALUE_TYPES`` frozenset. Two declarations, one dead. It is
+    now the single definition and ``_VALID_VALUE_TYPES`` is derived from it.
+    """
+    from macro_engine import settings_store as store
+
+    declared = {member.value for member in store.SettingValueType}
+    assert declared == store._VALID_VALUE_TYPES
+    assert declared == {"float", "int", "str", "bool", "json"}
+    # a value_type the enum declares is accepted; one it does not is refused
+    s = store.SettingsStore.from_url("sqlite:///:memory:")
+    s.create_schema()
+    for member in store.SettingValueType:
+        s.set("ns", member.value, 0, value_type=member.value, actor="a", reason="r")
+    with pytest.raises(ValueError):
+        s.set("ns", "bad", 0, value_type="decimal", actor="a", reason="r")
+
+
+# ---------------------------------------------------------------------------
+# (F-AUD-002) no redundant local import of an already-imported module
+# ---------------------------------------------------------------------------
+
+
+def test_no_redundant_local_third_party_imports() -> None:
+    """(F-AUD-002) A module-scope import is not re-imported inside a function.
+
+    MEASURED 2026-10-06: ``audit.model_latency_summary`` did ``from sqlalchemy
+    import func`` inside its body while ``sqlalchemy`` was already imported at
+    module scope. Harmless, but dead ceremony implying a constraint that does not
+    exist. This sweeps the three modules touched by this review for a local
+    import of a name already bound at module scope.
+    """
+    import macro_engine.audit as audit
+    import macro_engine.deployment as dep
+    import macro_engine.settings_store as store
+
+    for module in (audit, dep, store):
+        tree = ast.parse(pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8"))
+        module_scope: set[str] = set()
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                module_scope.update(a.asname or a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                module_scope.update(a.asname or a.name for a in node.names)
+        for walked in ast.walk(tree):
+            if isinstance(walked, ast.FunctionDef | ast.AsyncFunctionDef):
+                for inner in ast.walk(walked):
+                    if isinstance(inner, ast.Import):
+                        for a in inner.names:
+                            bound = a.asname or a.name.split(".")[0]
+                            assert bound not in module_scope, (
+                                f"{module.__name__}:{walked.name} re-imports {bound!r}, "
+                                f"already bound at module scope"
+                            )
+                    elif isinstance(inner, ast.ImportFrom):
+                        for a in inner.names:
+                            bound = a.asname or a.name
+                            assert bound not in module_scope, (
+                                f"{module.__name__}:{walked.name} re-imports {bound!r}, "
+                                f"already bound at module scope"
+                            )

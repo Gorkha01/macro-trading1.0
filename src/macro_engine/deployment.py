@@ -76,15 +76,16 @@ class AppEnvironment(StrEnum):
         return self is AppEnvironment.DEVELOPMENT
 
 
-# Variables that MUST be supplied in production. This is a deliberate allow-list
-# rather than a denylist: a new required setting added later is caught by this
-# check the moment it is listed here, whereas a denylist of "safe defaults"
-# would silently permit it.
-REQUIRED_IN_PRODUCTION: tuple[str, ...] = (
-    "MACRO_DATABASE_URL",
-    "MACRO_API_HOST",
-    "MACRO_API_PORT",
-)
+# Variables that MUST be supplied in production. **Derived, not hand-maintained**
+# (LAW 2 — one canonical implementation per quantity). The truth is each
+# ``EnvironmentVariable.required_when``; this name is the projection of that
+# truth onto ``AppEnvironment.PRODUCTION`` and is computed from ``_VARIABLES``
+# immediately below the table. MEASURED 2026-10-06: it used to be a hand-typed
+# 3-tuple that had ALREADY drifted from the declarations — it omitted
+# ``MACRO_API_KEY_HASH``, which ``required_when`` marks required in production —
+# so the preflight that exists to "report the full set at once" reported three of
+# four. Deriving it makes that drift impossible rather than merely detected.
+# The definition itself sits after ``_VARIABLES`` (it is read from it).
 
 
 class EnvironmentVariable(BaseModel):
@@ -178,9 +179,16 @@ class MissingConfigurationError(RuntimeError):
 class DeploymentConfig(BaseModel):
     """Resolved deployment settings for the current process.
 
-    Every field here has a corresponding entry in ``_VARIABLES`` below; the
-    validator enforces that, so adding a field without declaring its variable
-    fails at construction rather than defaulting to ``None`` at use.
+    Every field here is backed by an entry in ``_VARIABLES`` below, reached
+    through ``_field_to_variable`` (the ``MACRO_<FIELD_UPPER>`` convention plus
+    the documented exceptions in ``_NON_CONVENTIONAL_VARIABLE``). That pairing is
+    **not** enforced by a Pydantic validator — ``extra="forbid"`` rejects an
+    unknown *field*, not an undeclared *variable* (MEASURED 2026-10-06: a
+    docstring here previously claimed "the validator enforces that", but the
+    class and module declared no validator at all). It is pinned by
+    ``tests/test_infrastructure.py::test_every_deployment_field_is_backed_by_a_declared_variable``,
+    so a field added without a matching declaration fails a test rather than
+    defaulting to ``None`` at use.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -211,6 +219,35 @@ class DeploymentConfig(BaseModel):
     @property
     def is_production(self) -> bool:
         return self.environment.is_production
+
+    def redacted(self) -> dict[str, str]:
+        """This config as strings, with every ``is_secret`` variable's value masked.
+
+        The consumer ``EnvironmentVariable.is_secret`` exists for: a deployment
+        diagnostic (a startup log line, a ``/health`` payload, a runbook command)
+        that wants to show which values are in force without leaking a database
+        credential or an API-key hash into a log sink. Without this, ``is_secret``
+        was declared, set on two variables, and read by nothing — a paid-for
+        safety promise the code did not keep (MEASURED 2026-10-06).
+
+        A secret's *presence* is still reported (as ``"<set>"``/``"<unset>"``),
+        because that is the operationally useful fact and, unlike the value, it
+        is safe to log. Non-secret fields render their value as-is.
+        """
+        out: dict[str, str] = {}
+        for field_name in type(self).model_fields:
+            value = getattr(self, field_name)
+            variable_name = _field_to_variable(field_name)
+            variable = _VARIABLES.get(variable_name) if variable_name else None
+            if variable is not None and variable.is_secret:
+                out[field_name] = "<set>" if value not in (None, "") else "<unset>"
+            else:
+                out[field_name] = str(value)
+        return out
+
+    def secret_variables(self) -> tuple[str, ...]:
+        """The declared variable names marked ``is_secret``, for audit/redaction callers."""
+        return tuple(name for name, variable in _VARIABLES.items() if variable.is_secret)
 
 
 #: The fallback OpenBB base URL for a clean checkout. **Kept in step with
@@ -347,6 +384,44 @@ _VARIABLES: dict[str, EnvironmentVariable] = {
     )
 }
 
+#: The derivation of the production-required set from ``required_when``. Defined
+#: after ``_VARIABLES`` because it is read from it — that ordering is what makes
+#: the two incapable of disagreeing. Kept as a tuple (the public ``__all__``
+#: name) and sorted for a stable equality check in tests.
+REQUIRED_IN_PRODUCTION: tuple[str, ...] = tuple(
+    sorted(
+        name
+        for name, variable in _VARIABLES.items()
+        if AppEnvironment.PRODUCTION in variable.required_when
+    )
+)
+
+#: Field name → environment-variable name for the handful of fields that do NOT
+#: follow the ``MACRO_<FIELD_UPPER>`` convention. MEASURED 2026-10-06: of the 14
+#: ``DeploymentConfig`` fields, 13 resolve as ``"MACRO_" + field.upper()`` and one
+#: does not — ``openbb_api_url`` is ``OPENBB_API_URL`` (no ``MACRO_`` prefix),
+#: because the OpenBB base URL predates this layer's naming convention and is
+#: consumed by the data layer under that name. This exists so the field↔variable
+#: pairing is a real mapping the tests can check, rather than a convention the
+#: docstring used to *claim* a validator enforced when none did (F-DEP-001).
+_NON_CONVENTIONAL_VARIABLE: dict[str, str] = {
+    "openbb_api_url": "OPENBB_API_URL",
+}
+
+
+def _field_to_variable(field_name: str) -> str | None:
+    """The environment variable backing a ``DeploymentConfig`` field, or ``None``.
+
+    The convention is ``MACRO_<FIELD_UPPER>``; ``_NON_CONVENTIONAL_VARIABLE``
+    carries the documented exceptions. Returns ``None`` when neither applies —
+    which is the signal a new field was added without a variable to back it.
+    """
+    if field_name in _NON_CONVENTIONAL_VARIABLE:
+        return _NON_CONVENTIONAL_VARIABLE[field_name]
+    candidate = f"MACRO_{field_name.upper()}"
+    return candidate if candidate in _VARIABLES else None
+
+
 _VALID_LOG_LEVELS: frozenset[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 _TRUE_VALUES: frozenset[str] = frozenset({"1", "true", "yes", "on"})
@@ -407,20 +482,25 @@ def _environment() -> AppEnvironment:
 
 
 def _check_production_requirements(environment: AppEnvironment) -> list[str]:
-    """Return the names of production-required variables that are unset.
+    """Return the names of variables ``required_when`` this environment, that are unset.
 
-    Called before field resolution so that a production start with three
-    missing variables reports all three at once. Failing on the first one
-    would turn a single misconfiguration into three deploy cycles.
+    Called before field resolution so that a production start with several
+    missing variables reports them all at once. Failing on the first one would
+    turn a single misconfiguration into one deploy cycle per variable.
+
+    The set is read from the DECLARATIONS (``EnvironmentVariable.required_when``)
+    for the given environment rather than from a hand-maintained list, so a
+    variable marked required is enumerated here the moment it is declared —
+    nothing to keep in step. ``REQUIRED_IN_PRODUCTION`` is the PRODUCTION
+    projection of the same truth and is exposed for callers that want the set
+    without an environment in hand.
     """
     if environment not in {AppEnvironment.PRODUCTION, AppEnvironment.STAGING}:
         return []
     return [
         name
-        for name in REQUIRED_IN_PRODUCTION
-        if name in _VARIABLES
-        and environment in _VARIABLES[name].required_when
-        and not os.environ.get(name)
+        for name, variable in _VARIABLES.items()
+        if environment in variable.required_when and not os.environ.get(name)
     ]
 
 
