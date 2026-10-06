@@ -291,6 +291,21 @@ def _fetch_fred_release(
     url = _FRED_CALENDAR_URL.format(start=start.isoformat(), end=end.isoformat(), rid=release_id)
     payload = json.loads(_http_get(url, timeout=timeout))
 
+    # Guard the body SHAPE before touching it. The per-release handler in
+    # `next_catalyst_calendar` catches `(httpx.HTTPError, TimeoutError,
+    # ValueError)`, so anything else escaping here aborts the WHOLE calendar
+    # instead of failing this one release. MEASURED 2026-10-06: a JSON list body
+    # raised `AttributeError: 'list' object has no attribute 'get'`, which that
+    # handler does not catch. The FOMC reader already guards the same shape
+    # (`if isinstance(payload, dict) else None`), so this is the missing half of
+    # one rule rather than a new one.
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"FRED releases calendar for rid={release_id} returned "
+            f"{type(payload).__name__}, not the documented object carrying a "
+            f"'pager' member"
+        )
+
     events: list[tuple[date, str]] = []
     current: date | None = None
     # The "pager" member is the HTML table. Split on row openers and carry the
@@ -298,7 +313,17 @@ def _fetch_fred_release(
     for row in re.split(r"<tr[^>]*>", payload.get("pager", "")):
         header = _FRED_DATE_RE.search(row)
         if header and "colspan" in row:
-            current = date(int(header.group(4)), _MONTHS[header.group(2)], int(header.group(3)))
+            month = _MONTHS.get(header.group(2))
+            if month is None:
+                # An unrecognised month is a PARSE failure of this source, so it
+                # is raised as a ValueError for the caller's per-release handler
+                # rather than escaping as a `KeyError` (F-CAT-001, measured:
+                # `KeyError: 'Fooary'`).
+                raise ValueError(
+                    f"unrecognised month {header.group(2)!r} in a FRED date header "
+                    f"({header.group(1)!r})"
+                )
+            current = date(int(header.group(4)), month, int(header.group(3)))
             continue
         event = _FRED_EVENT_RE.search(row)
         if event and current is not None:
