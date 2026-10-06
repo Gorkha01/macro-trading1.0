@@ -104,6 +104,9 @@ The return type is a ``NoTradeDecision``, and the builder renders it into a
 - ``reason`` — the human sentence §16.4 asks for, unchanged in role.
 - ``evidence`` — the object the trigger already held, kept as a **typed
   union** so the caller hands over what it has rather than flattening it.
+  **Required for every trigger but ``caller``**, enforced on the decision
+  itself, so the discarding this module exists to stop cannot be reintroduced
+  by simply omitting the argument.
 - ``elapsed`` — how far the trigger was from *not* firing, when the trigger has
   a magnitude (Q6 only). An absolute gap tells a reader nothing about whether it
   was 1bp short of meaningful or 200bp short.
@@ -142,7 +145,7 @@ from __future__ import annotations
 
 from typing import Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
 from macro_engine.models.policy_rules import MarketPricingGap
@@ -229,17 +232,24 @@ class NoTradeDecision(BaseModel):
         )
     )
     reason: str = Field(
+        min_length=1,
         description=(
-            "The human sentence Section 16.4 calls `reason`. Must be non-empty: an "
-            "empty reason is refused rather than accepted, because an unexplained "
-            "stand-down and an explained one would otherwise be the same object."
-        )
+            "The human sentence Section 16.4 calls `reason`. Must be non-empty, and "
+            "that is enforced HERE by `min_length=1` — not only by the factory — so "
+            "a directly-constructed decision cannot carry a blank explanation "
+            "either. `no_trade_thesis` additionally strips and refuses a "
+            "whitespace-only reason, which a length check cannot see."
+        ),
     )
     evidence: NoTradeEvidence = Field(
         default=None,
         description=(
             "The object the firing gate already held — the gap, the signal "
-            "assessment, or the invalidation assessment. None only for `caller`."
+            "assessment, or the invalidation assessment. **Required for every "
+            "trigger except `caller`**, which is the only stand-down with no gate "
+            "object behind it; the validator below enforces that, so the "
+            "discarding D-068's defect 3 names cannot be reintroduced by simply "
+            "not passing it."
         ),
     )
     elapsed: float | None = Field(
@@ -259,6 +269,30 @@ class NoTradeDecision(BaseModel):
             "one place to change."
         ),
     )
+
+    @model_validator(mode="after")
+    def _evidence_matches_the_trigger(self) -> NoTradeDecision:
+        """Every trigger but ``caller`` must carry the object its gate held.
+
+        Enforced on the SCHEMA rather than in ``no_trade_thesis``, for the reason
+        ``MacroThesis._enforce_invalidation_gate`` states: a schema violation
+        cannot be skipped by a future caller, whereas a factory check can be
+        bypassed by constructing the object directly. MEASURED 2026-10-06: before
+        this validator, ``no_trade_thesis(reason, trigger="conflicted_signals")``
+        and ``trigger="no_falsifier"`` were both ACCEPTED with ``evidence=None``,
+        so D-068's defect 3 — the gate's rich object being discarded — could be
+        reintroduced by simply not passing it, while the field description
+        asserted "None only for ``caller``".
+        """
+        if self.trigger != "caller" and self.evidence is None:
+            raise ValueError(
+                f"trigger={self.trigger!r} must carry the evidence its gate held; "
+                f"`evidence=None` is only for trigger='caller', which stands down "
+                f"with no gate object behind it (D-068 defect 3: the magnitudes and "
+                f"the per-model table are the only record of which of three "
+                f"different things happened)."
+            )
+        return self
 
     def warning_line(self) -> str:
         """The labelled line the renderer writes into ``MacroThesis.warnings``.
@@ -282,15 +316,18 @@ class NoTradeDecision(BaseModel):
         invent a near-miss.
 
         The comparison is in **basis points**, converted explicitly from the
-        percentage points ``elapsed`` carries. This is not cosmetic: the previous
-        implementation compared the pp shortfall against the literal ``1e-9``,
-        which is ``1e-11`` bp — unreachable, because ``raw_gap`` is rounded to 4
+        percentage points ``elapsed`` carries — ``* 100``, the same direction the
+        ensemble's own bands use (1 pp = 100 bp). This is not cosmetic: the
+        previous implementation compared the pp shortfall against the literal
+        ``1e-9``, i.e. a **1e-7 bp** bar. (The earlier note here stated that bar
+        as a smaller number of bp — it divided by 100 where the conversion above
+        multiplies, a unit-direction slip in the very conversion this paragraph
+        is about.) That bar was unreachable, because ``raw_gap`` is rounded to 4
         decimals upstream and a shortfall that small cannot occur. Every real
         stand-down therefore reported ``is_marginal=False`` and the near-miss
         distinction this field exists to draw could never fire. The tolerance now
         lives in config (``policy.ensemble.near_miss_tolerance_bp``) so it is a
-        reviewable judgement rather than a buried constant, and the ``* 100`` is
-        the same unit conversion the ensemble's own bands use.
+        reviewable judgement rather than a buried constant.
         """
         if self.elapsed is None:
             return False
@@ -359,6 +396,11 @@ def no_trade_thesis(
         and forgot to say why"* are the same object. Refusing an empty reason is
         the only place that can be caught, because by the time a ``MacroThesis``
         exists the emptiness is indistinguishable from a short answer.
+    ValueError
+        (as pydantic's ``ValidationError``, which subclasses ``ValueError``) if
+        ``evidence`` is omitted for a trigger other than ``caller``. That is the
+        repair for defect 3 and is enforced on ``NoTradeDecision`` itself, so a
+        caller cannot bypass it by constructing the decision directly.
     """
     stripped = reason.strip()
     if not stripped:
