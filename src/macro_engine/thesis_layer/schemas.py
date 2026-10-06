@@ -66,6 +66,7 @@ __all__ = [
     "SignalDirection",
     "ThesisStatus",
     "TradeIdea",
+    "is_no_production_instrument",
 ]
 
 
@@ -73,6 +74,21 @@ __all__ = [
 # production expression must say so explicitly rather than naming an
 # instrument the desk cannot actually put on.
 NO_PRODUCTION_INSTRUMENT = "NONE"
+
+
+def is_no_production_instrument(instrument: str) -> bool:
+    """Whether ``instrument`` names the no-production sentinel, case-insensitively.
+
+    **One definition, consulted by every site that asks the question.** The
+    sentinel was compared case-SENSITIVELY by ``TradeIdea`` while
+    ``ProductionUniverse`` compared it case-insensitively, so the same string
+    meant "no trade" in one class and "a live trade that must state a direction
+    and a falsifier" in the other — the one-character split D-058 probe P17 fixed
+    inside ``permits``, re-created one class away. ``portfolio/risk_budget`` reads
+    it too, so a re-typed literal there cannot disagree either.
+    """
+    return instrument.strip().upper() == NO_PRODUCTION_INSTRUMENT
+
 
 #: G10 currency codes, used only to recognise a concatenated spot pair.
 #:
@@ -162,7 +178,16 @@ class ConfirmationSignal(BaseModel):
     detail: str
     source_family: EvidenceSourceFamily | None = Field(
         default=None,
-        description="Module 13 family. Used by count_independent_families() — None if unmapped.",
+        description=(
+            "Module 13 family, carried through from the source ModelResult by "
+            "`signals.py`; None if the result was unmapped. NOTE this is NOT what "
+            "`count_independent_families()` reads — that function takes a "
+            "`list[ModelResult]` and reads each result's OWN `source_family`, so "
+            "it never sees a ConfirmationSignal (measured 2026-10-06: nothing in "
+            "`src/` reads this field; it is published on the thesis so a reader "
+            "can group confirmations by provenance, while the family COUNT comes "
+            "from the builder's reads)."
+        ),
     )
 
     @model_validator(mode="after")
@@ -300,11 +325,6 @@ class ProductionUniverse(BaseModel):
         "rty": "equity",
         "ym": "equity",
     }
-    # G10 currency codes, used ONLY to recognise a concatenated spot pair
-    # ("EURUSD", "USDJPY"). The set itself lives at module scope so that
-    # `_keyword_match` can consult it; see the note there for why a bare
-    # three-letter prefix test is not enough.
-    _G10_CURRENCIES: frozenset[str] = _G10_CURRENCY_CODES
     # Categories that are explicitly NOT in the production universe. Listed so
     # the rejection can name why, rather than reporting a generic miss.
     _EXCLUDED_KEYWORDS: tuple[str, ...] = (
@@ -344,7 +364,7 @@ class ProductionUniverse(BaseModel):
         deciding whether the system reported "no trade" or "out of universe"
         (D-058 probe P17).
         """
-        if instrument.strip().upper() == NO_PRODUCTION_INSTRUMENT:
+        if is_no_production_instrument(instrument):
             return True
         needle = instrument.lower().strip()
         if not needle:
@@ -358,12 +378,20 @@ class ProductionUniverse(BaseModel):
         thesis explain *why* something is out of universe — "credit indices are
         not in the production universe" is actionable; "not permitted" is not.
 
-        Excluded categories are checked **first**. That ordering matters: "US
-        HY credit index" contains "index", which would otherwise match the
-        equity category, and a false permit here means proposing a trade the
-        desk cannot execute.
+        Excluded categories are checked **first**. That ordering matters, and the
+        reason is measured rather than assumed: a string can carry an excluded
+        word *and* a genuine keyword at once. Measured,
+        ``category_for("US HY credit index futures")`` is ``None`` while
+        ``category_for("index futures")`` is ``"equity"`` — the first carries the
+        equity keyword ``"index futures"`` **and** the excluded ``"credit"``, so
+        without the exclusion it would be admitted as equity, and a false permit
+        here means proposing a trade the desk cannot execute. (The earlier note
+        gave ``"US HY credit index"`` as the example, but that string carries no
+        keyword at all — bare ``"index"`` is not one; measured
+        ``category_for("some index") is None`` — so it was never the case being
+        guarded.)
         """
-        if instrument.strip().upper() == NO_PRODUCTION_INSTRUMENT:
+        if is_no_production_instrument(instrument):
             return "none"
         needle = instrument.lower().strip()
         if any(_keyword_match(keyword, needle) for keyword in self._EXCLUDED_KEYWORDS):
@@ -451,9 +479,25 @@ class InstrumentExpression(BaseModel):
     """How (or whether) a view can actually be expressed (Section 22.12).
 
     Distinguishing "analytically interesting" from "executable" is the whole
-    point: credit, EM bond and commodity views are valuable inputs to the
-    macro read but return ``ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`` here,
-    because the desk cannot put them on.
+    point: credit, EM bond and commodity views are valuable inputs to the macro
+    read but cannot be put on, so the thesis must say so rather than naming them
+    as trades.
+
+    **The sentinel this class carries is** ``NO_PRODUCTION_INSTRUMENT``
+    (``"NONE"``), the same one ``TradeIdea.instrument`` uses — see the field
+    description below. It is **not**
+    ``ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT``: that is a *models*-layer value
+    (``models/instrument_selection.py``) which reaches a thesis through
+    ``TradeIdea.instrument`` by the pass-through path **O-53** records, never
+    through this class. The earlier note said those views "return
+    ``ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`` here", naming a sentinel this
+    field's own description contradicts and a value nothing puts here.
+
+    Measured 2026-10-06: nothing in ``src/`` or ``tests/`` constructs this class,
+    so ``TradeIdea.expression`` is always ``None`` and this is a forward-declared
+    record rather than a live producer. ``direction``/``executable`` therefore
+    carry no validation: a guard on a class nothing builds could never fire (the
+    D-045/D-046 class). Recorded rather than repaired.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -515,7 +559,7 @@ class TradeIdea(BaseModel):
            ``TradeIdea`` can be constructed standalone, and the gate must not
            be bypassable by skipping the parent object.
         """
-        if self.instrument == NO_PRODUCTION_INSTRUMENT:
+        if is_no_production_instrument(self.instrument):
             if self.direction not in {"n/a", "none", ""}:
                 raise ValueError(
                     f'A no-trade idea (instrument="{NO_PRODUCTION_INSTRUMENT}") must not '
@@ -538,7 +582,16 @@ class TradeIdea(BaseModel):
 
     @property
     def is_trade(self) -> bool:
-        return self.instrument != NO_PRODUCTION_INSTRUMENT
+        """Whether this idea names a live position rather than the no-trade sentinel.
+
+        The sentinel test is case-insensitive via
+        :func:`is_no_production_instrument`, so ``"none"`` and ``"NONE"`` agree.
+        It was an exact comparison, which made this property answer ``True`` for
+        ``"none"`` while ``ProductionUniverse.permits("none")`` answered ``True``
+        for "no trade" — the same one-character split, in the two directions
+        (F-TSC-002).
+        """
+        return not is_no_production_instrument(self.instrument)
 
 
 class MacroThesis(BaseModel):
@@ -660,7 +713,16 @@ class MacroThesis(BaseModel):
         if not self.scenario_distribution:
             return self
         total = sum(s.probability for s in self.scenario_distribution)
-        tolerance = get_settings().validation.prob_tolerance
+        # The SAME leaf the consumer reads. `expected_value`
+        # (models/probability.py) and `risk_budget` both gate on
+        # `probability.probability_sum_tolerance`; this validator used
+        # `validation.prob_tolerance`, a SECOND leaf with the same meaning but a
+        # different `calibration_status` ('conventional' vs
+        # 'uncalibrated_illustrative'). Both read 0.01 today, so nothing is
+        # broken — but recalibrating either one alone would split the gate from
+        # the function it gates, letting a distribution pass here and be refused
+        # there (or the reverse). One leaf, one boundary (F-TSC-004).
+        tolerance = get_settings().probability.probability_sum_tolerance
         if abs(total - 1.0) > tolerance:
             raise ValueError(
                 f"scenario_distribution probabilities sum to {total:.4f}, must sum to 1.0 "

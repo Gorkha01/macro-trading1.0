@@ -651,3 +651,170 @@ def test_every_world_bank_registry_entry_is_bound_here() -> None:
         "no registry series declares `provider: world_bank` — the binding table is now "
         "vacuous, which means the killer above tests nothing."
     )
+
+
+# ===========================================================================
+# The 2026-10-05 review — measured claims, and one wrong series label
+# ===========================================================================
+# Four defects, each a claim that had been RECORDED and never re-measured
+# against the live API (the D-043 "FALSE BLOCK" discipline, applied to prose and
+# to a series label rather than to a route):
+#
+# (F-WBC-001) `_parse_iso3`'s docstring asserted "a lowercase or padded code
+#     returns an empty payload" — while ALSO asserting the API is
+#     "case-insensitive". MEASURED: `usa` returns the full 66-row USA series, so
+#     the premise was false and self-contradictory.
+# (F-WBC-002) `_parse_payload` did not recognise the API's own error shape
+#     (`[{"message": [...]}]`, returned for an unknown indicator OR country), so
+#     it failed on the missing `lastupdated` and reported THAT — naming the wrong
+#     defect.
+# (F-WBC-004) `DT.DOD.DSTC.CD` was labelled a residual-maturity series. The World
+#     Bank's own `sourceNote` defines it as ORIGINAL maturity, and no
+#     residual-maturity series exists. The mislabel hid a real over-optimism in
+#     the coverage ratio.
+# (F-WBC-006) `PPP_CONVERSION_FACTOR_INDICATOR` was absent from `__all__` while
+#     its three D-119 siblings were present.
+
+
+def test_the_iso3_docstring_does_not_claim_lowercase_returns_empty() -> None:
+    """(F-WBC-001) The false premise must not come back.
+
+    The docstring asserted that a lowercase code *"returns an empty payload
+    rather than an error"* — MEASURED false (`usa` returns the full 66-row USA
+    series) and contradicted by its own "case-insensitive" clause. This guard
+    fails if the claim is re-introduced, the same shape
+    ``test_the_module_never_references_the_local_openbb_host`` uses for the OpenBB
+    route.
+    """
+    source = Path(inspect.getfile(world_bank_client)).read_text(encoding="utf-8")
+    assert "empty payload rather than an error" not in source, (
+        "world_bank_client again claims a lowercase/unresolvable code returns an "
+        "empty payload; MEASURED, the API is case-insensitive and returns the "
+        "full series (F-WBC-001)."
+    )
+
+
+def test_a_lowercase_code_is_normalised_not_refused() -> None:
+    """(F-WBC-001) The API is case-INSENSITIVE — a lowercase code is normalised.
+
+    MEASURED 2026-10-05: `usa` returns the full 66-row USA series. The docstring
+    this replaces claimed the opposite ("a lowercase code returns an empty
+    payload"), which would have justified a check for a behaviour the API does
+    not have. The contract here is still ISO3, so the code is upper-cased rather
+    than passed through.
+    """
+    assert world_bank_client._parse_iso3("deu") == "DEU"
+    assert world_bank_client._parse_iso3("  jpn ") == "JPN"
+    assert world_bank_client._parse_iso3("uSa") == "USA"
+
+
+def test_the_api_error_shape_is_named_not_misreported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(F-WBC-002) The API's own refusal must be surfaced, not a missing date.
+
+    MEASURED 2026-10-05: an unknown indicator (`FOO.BAR.BAZ`) and an unresolvable
+    country (`ZZZ`) BOTH return
+    `[{"message": [{"id": "120", "key": "Invalid value", "value": "..."}]}]` — a
+    one-element list carrying no `lastupdated`. Before the fix the read failed on
+    that missing date and reported *it* as the reason, sending a reader to look
+    for a metadata problem that does not exist. The API's reason must be the one
+    the caller sees.
+    """
+    error_payload = [
+        {
+            "message": [
+                {
+                    "id": "120",
+                    "key": "Invalid value",
+                    "value": "The provided parameter value is not valid",
+                }
+            ]
+        }
+    ]
+    _patch_client(monkeypatch, error_payload)
+    with pytest.raises(WorldBankUnavailableError) as excinfo:
+        fetch_ppp_conversion_factor("USA")
+    message = str(excinfo.value)
+    assert "The provided parameter value is not valid" in message, (
+        f"the World Bank's own error reason must reach the caller, got: {message!r}"
+    )
+    assert "lastupdated" not in message, (
+        f"the failure must not be blamed on a missing 'lastupdated' — the API "
+        f"refused the request and said why: {message!r}"
+    )
+
+
+def test_the_st_debt_series_is_not_mislabelled_residual_maturity() -> None:
+    """(F-WBC-004) `DT.DOD.DSTC.CD` is ORIGINAL-maturity, not residual.
+
+    The World Bank's own `sourceNote` for `DT.DOD.DSTC.CD` reads *"debt that has
+    an original maturity of one year or less"* (measured 2026-10-05), and the
+    full ~20 000-entry indicator catalogue contains NO residual-maturity series.
+    The module must therefore state the measured basis and must not describe this
+    leg as a residual-maturity measure — the conventional Guidotti-Greenspan
+    denominator is the residual stock, which is LARGER, so the mislabel
+    understated a real over-optimism in the coverage check.
+    """
+    source = Path(inspect.getfile(world_bank_client)).read_text(encoding="utf-8")
+    assert "residual maturity basis" not in source, (
+        "world_bank_client describes DT.DOD.DSTC.CD as a residual-maturity "
+        "series; the World Bank defines it as ORIGINAL maturity and publishes no "
+        "residual-maturity series (F-WBC-004)."
+    )
+    assert "original maturity" in source, (
+        "the module must state the measured basis (original maturity) so the next "
+        "reader cannot re-introduce the residual-maturity claim (F-WBC-004)."
+    )
+
+
+def test_the_coverage_disclosure_names_the_maturity_basis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(F-WBC-004) The ratio says which maturity basis it divides by.
+
+    A caller comparing the ratio against the conventional 1.0 threshold is
+    comparing a more forgiving number than the Guidotti-Greenspan check produces.
+    Naming the basis on the disclosure is what keeps that visible on the VALUE
+    rather than only in a source comment.
+    """
+    rows_a = [_indicator_row("2024", 2.0e11, indicator="FI.RES.TOTL.CD")]
+    rows_b = [_indicator_row("2024", 1.0e11, indicator="DT.DOD.DSTC.CD")]
+
+    def _fake(iso3: str, indicator: str, *, timeout: float = 30.0) -> Any:
+        rows = rows_a if indicator == "FI.RES.TOTL.CD" else rows_b
+        return world_bank_client._parse_rows_to_reading(iso3, indicator, rows, date(2026, 7, 13))
+
+    monkeypatch.setattr(world_bank_client, "fetch_indicator_reading", _fake)
+    _, disclosure = world_bank_client.reserves_to_short_term_debt("TUR")
+    lowered = disclosure.lower()
+    assert "original-maturity" in lowered, (
+        f"the disclosure must name the ORIGINAL-maturity basis it uses, got: {disclosure!r}"
+    )
+    assert "residual-maturity" in lowered, (
+        f"the disclosure must say the residual-maturity convention is NOT what it "
+        f"divides by, got: {disclosure!r}"
+    )
+    assert "guidotti" in lowered, (
+        f"the disclosure should name the convention it departs from, got: {disclosure!r}"
+    )
+
+
+def test_every_public_indicator_constant_is_exported() -> None:
+    """(F-WBC-006) `__all__` must not omit the PPP constant its siblings include.
+
+    The three D-119 indicator constants were exported while the original D-117
+    `PPP_CONVERSION_FACTOR_INDICATOR` — the default of
+    `fetch_ppp_conversion_factor` — was not, so `from ... import *` silently
+    dropped it. The asymmetry had no rationale.
+    """
+    for name in (
+        "PPP_CONVERSION_FACTOR_INDICATOR",
+        "CURRENT_ACCOUNT_PCT_GDP_INDICATOR",
+        "RESERVES_TOTAL_USD_INDICATOR",
+        "SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR",
+    ):
+        assert name in world_bank_client.__all__, (
+            f"{name} is a public indicator constant but is missing from __all__ "
+            f"(F-WBC-006); its siblings are exported."
+        )

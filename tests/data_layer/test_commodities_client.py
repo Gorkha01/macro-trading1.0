@@ -924,18 +924,24 @@ def test_a_single_point_metal_series_has_no_prior_and_no_change() -> None:
     assert reading.change_pct is None
 
 
-def test_a_zero_prior_metal_price_refuses_rather_than_dividing() -> None:
-    """A ``0.0`` prior makes the percent undefined; an infinity would poison the model.
+def test_a_zero_prior_metal_price_yields_an_unknown_change_not_an_infinity() -> None:
+    """F-COM-002: a ``0.0`` prior makes the percent undefined — but not the level.
 
     Returning ``inf`` would make every one of the classifier's comparisons false
     and the model would report MIXED — a claim about the PATTERN that is really a
-    claim about a broken leg. Refusing is the honest outcome.
+    claim about a broken leg. So the change is UNKNOWN (``None``), the LEVEL is
+    still published, and the CAUSE is named on the reading so a consumer's
+    disclosure can state it rather than assume "too few observations".
     """
     from macro_engine.data_layer.commodities_client import fetch_copper_change
 
     stub = _SeriesStubClient(_metals_frame([(date(2026, 5, 1), 0.0), (date(2026, 6, 1), 8400.0)]))
-    with pytest.raises(CommodityReadError, match="undefined"):
-        fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+    reading = fetch_copper_change(as_of=date(2026, 6, 30), client=stub)  # type: ignore[arg-type]
+
+    assert reading.change_pct is None
+    assert reading.level == 8400.0  # the LEVEL survives the unknown change
+    assert reading.prior_level == 0.0
+    assert "exactly 0.0" in (reading.change_unavailable_reason or "")
 
 
 def test_the_metal_reading_reports_the_observation_count() -> None:
@@ -1057,13 +1063,17 @@ def test_a_metal_series_stub_is_not_closed_when_caller_owns_it() -> None:
     assert stub.closed is False
 
 
-def test_percent_change_is_public_and_refuses_a_zero_prior() -> None:
-    """The helper is unit-testable directly, so its refusal is asserted ON it."""
+def test_percent_change_is_public_and_returns_none_for_a_zero_prior() -> None:
+    """F-COM-002: the helper is unit-testable directly, so its contract is asserted ON it.
+
+    A zero prior yields ``None`` — the shape this module already uses for an
+    unknown change — rather than raising, so the LEVEL survives and the two
+    clients agree on what a zero prior means.
+    """
     from macro_engine.data_layer.commodities_client import _percent_change
 
-    assert _percent_change(110.0, 100.0, symbol="X", label="copper") == pytest.approx(10.0)
-    with pytest.raises(CommodityReadError, match="undefined"):
-        _percent_change(110.0, 0.0, symbol="X", label="copper")
+    assert _percent_change(110.0, 100.0) == pytest.approx(10.0)
+    assert _percent_change(110.0, 0.0) is None
 
 
 def test_the_registry_carries_the_three_metal_series_as_fred() -> None:
@@ -1191,3 +1201,66 @@ def test_a_timestamp_dated_row_does_not_crash_the_inventory_as_of_clip() -> None
     reading = fetch_crude_inventories(as_of=date(2026, 9, 22), client=client)  # type: ignore[arg-type]
     assert reading.observation_date == "2026-09-18"
     assert reading.level_thousand_barrels == 426_398.0
+
+
+# ---------------------------------------------------------------------------
+# F-COM-001 — the `.date()` branch must not be mis-described
+# ---------------------------------------------------------------------------
+def test_the_datetime64_carrier_is_not_a_dot_date_carrier() -> None:
+    """F-COM-001: a comment named ``np.datetime64`` as a ``.date()`` example.
+
+    Measured: ``np.datetime64`` exposes **no** ``.date`` attribute, so it reaches
+    the STRING parse instead. The function's OUTCOME is right either way — which
+    is why the existing test asserts the outcome rather than the branch — but the
+    stated mechanism would have sent a reader looking for a branch that never
+    runs for the carrier it named.
+    """
+    from pathlib import Path
+
+    import numpy as np
+
+    assert not hasattr(np.datetime64("2026-09-18"), "date"), "the premise changed"
+
+    src = Path(commodities_client.__file__).read_text(encoding="utf-8")
+    assert "np.datetime64 and friends) exposes" not in src, "the false claim is back"
+    assert "is NOT one of them" in src
+
+
+# ---------------------------------------------------------------------------
+# F-COM-002 — the two READ-not-tested behaviours, now pinned
+# ---------------------------------------------------------------------------
+def test_a_duplicate_row_in_one_iso_week_is_counted_once() -> None:
+    """The seasonal baseline takes ONE point per ISO year, not one per row.
+
+    The match is on the ISO WEEK NUMBER and ISO year — **not** the weekday — so a
+    year carrying two rows in the same week contributes the LATER value and one
+    year of baseline. Note the two 2025 rows below are ISO weekdays 2 and 5: if
+    the match required the same weekday, neither would qualify.
+    """
+    from macro_engine.data_layer.commodities_client import _seasonal_deviation
+
+    latest = date(2026, 9, 18)  # ISO 2026-W38
+    assert latest.isocalendar().week == 38
+    parsed = [
+        (date(2025, 9, 16), 100.0),  # 2025-W38, weekday 2
+        (date(2025, 9, 19), 200.0),  # 2025-W38, weekday 5  <- the later one wins
+        (date(2026, 9, 18), 300.0),  # the latest itself, excluded from its own baseline
+    ]
+    deviation, years_used = _seasonal_deviation(parsed, latest, 300.0, years=5)
+
+    assert years_used == 1, "one ISO year contributed, not two"
+    assert deviation == pytest.approx(300.0 - 200.0), "the LATER same-week row did not win"
+
+
+def test_observed_pairs_returns_empty_when_every_row_is_clipped() -> None:
+    """The helper returns ``[]``; judging that is the CALLER's job.
+
+    Every caller raises on an empty list (two call sites assert it), because only
+    the caller knows whether an all-clipped series is fatal. Pinning the helper's
+    own contract here keeps that split explicit rather than implied.
+    """
+    from macro_engine.data_layer.commodities_client import _observed_pairs
+
+    frame = _metals_frame([(date(2026, 5, 1), 8400.0), (date(2026, 6, 1), 8500.0)])
+    pairs = _observed_pairs(frame, symbol="PCOPPUSDM", as_of=date(2026, 1, 1), label="copper price")
+    assert pairs == []

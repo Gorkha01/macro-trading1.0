@@ -27,6 +27,7 @@ Fixes applied relative to the specification's sample code:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date, datetime
 from math import isfinite
@@ -46,6 +47,30 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+#: Matches a credential carried in a URL query string.
+#:
+#: **Why this module needs a pattern rather than a value.** OpenBB's own FRED
+#: provider builds request URLs with the key INLINE — measured in
+#: ``openbb_fred/utils/fred_base.py:27`` (``f"{url}&api_key={self.api_key}..."``)
+#: and ``openbb_fred/utils/series.py:135`` — and ``openbb_core``'s
+#: ``helpers.make_request`` performs **no** redaction: it passes that URL
+#: straight to ``requests``. Its rate limiter does redact, but only for its own
+#: log line. So an exception from the package path can carry the live key in its
+#: text, and both public fetch methods log and re-raise provider exceptions
+#: verbatim.
+#:
+#: ``alfred_client`` redacts BY VALUE because it holds the key. This module
+#: cannot — the key belongs to OpenBB and is never read here — so a pattern is
+#: the only guard available. It is applied to every exception string this module
+#: emits.
+_API_KEY_IN_URL = re.compile(r"(api_key=)[^&\s'\"]+")
+
+
+def _redact_credentials(text: str) -> str:
+    """Strip a URL-embedded credential from text about to be logged or raised."""
+    return _API_KEY_IN_URL.sub(r"\1***REDACTED***", text)
+
 
 # OpenBB's normalized frame contract. Anything else is a parse failure and
 # must surface as OpenBBFetchError rather than a downstream KeyError.
@@ -231,7 +256,7 @@ class OpenBBClient:
                     attempt,
                     self.config.max_retries,
                     series_label,
-                    exc,
+                    _redact_credentials(str(exc)),
                 )
                 if attempt < self.config.max_retries:
                     time.sleep(self.config.backoff_seconds * attempt)
@@ -245,11 +270,13 @@ class OpenBBClient:
                     except Exception as fallback_exc:
                         last_exc = fallback_exc
                         logger.warning(
-                            "cross-path fallback also failed for %s: %s", series_label, fallback_exc
+                            "cross-path fallback also failed for %s: %s",
+                            series_label,
+                            _redact_credentials(str(fallback_exc)),
                         )
         raise OpenBBFetchError(
             f"Failed to fetch {series_label} via both local API and package "
-            f"after {self.config.max_retries} attempts: {last_exc}"
+            f"after {self.config.max_retries} attempts: {_redact_credentials(str(last_exc))}"
         )
 
     def fetch_records(
@@ -318,7 +345,7 @@ class OpenBBClient:
                     attempt,
                     self.config.max_retries,
                     series_label,
-                    exc,
+                    _redact_credentials(str(exc)),
                 )
                 if attempt < self.config.max_retries:
                     time.sleep(self.config.backoff_seconds * attempt)
@@ -334,11 +361,12 @@ class OpenBBClient:
                         logger.warning(
                             "fetch_records cross-path fallback also failed for %s: %s",
                             series_label,
-                            fallback_exc,
+                            _redact_credentials(str(fallback_exc)),
                         )
         raise OpenBBFetchError(
             f"Failed to fetch records for {series_label} via both local API and "
-            f"package after {self.config.max_retries} attempts: {last_exc}"
+            f"package after {self.config.max_retries} attempts: "
+            f"{_redact_credentials(str(last_exc))}"
         )
 
     def _fetch_records_via_local_api(

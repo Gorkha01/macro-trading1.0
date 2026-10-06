@@ -465,16 +465,24 @@ def _parse_date(raw: object, *, context: str) -> date:
     # what let the defect through.
     #
     # Order: collapse a bare ``datetime`` (and ``pd.Timestamp``, which IS one),
-    # then any other date-LIKE value that exposes ``.date()`` (``np.datetime64``,
-    # a legal frame cell after a pandas round-trip), then the plain ``date``,
-    # then a string. Nothing here imports pandas/numpy: this module deliberately
-    # owns no transport and no frame library, so the check is by capability.
+    # then any other date-LIKE value that exposes ``.date()``, then the plain
+    # ``date``, then a string. Nothing here imports pandas/numpy: this module
+    # deliberately owns no transport and no frame library, so the check is by
+    # capability rather than by type.
+    #
+    # ``np.datetime64`` — the measured carrier from a pandas round-trip — is NOT
+    # an example of the ``.date()`` branch. Measured: it exposes no ``.date``
+    # attribute at all, so it falls through to the STRING parse below, where
+    # ``str()`` renders the bare date. An earlier version of this comment named
+    # it as the ``.date()`` example, which would have sent a reader looking for a
+    # branch that never runs for it. The string fallback is what makes it work,
+    # which is why the test asserts the OUTCOME rather than the branch.
     if isinstance(raw, datetime):
         return raw.date()
     if not isinstance(raw, date):
-        # A date-like carrier (numpy.datetime64 and friends) exposes ``date()``
-        # or ``item()``; prefer ``.date()`` and fall back to a string parse
-        # below if neither is usable.
+        # A date-like carrier that exposes ``.date()``. NOTE: ``np.datetime64``
+        # is NOT one of them — measured, it has no ``.date`` attribute — so it
+        # reaches the string parse below instead; see the block comment above.
         collapse = getattr(raw, "date", None)
         if callable(collapse):
             collapsed = collapse()
@@ -899,6 +907,11 @@ class MetalChangeReading:
     when the series carries fewer than two observations, because a fabricated
     zero prior would make a CHANGE read as a LEVEL (the D-078 class), and a
     ``0.0`` prior would then divide-by-zero or produce an infinite percent.
+
+    ``change_unavailable_reason`` explains WHY ``change_pct`` is ``None``, so a
+    consumer's disclosure can state the actual cause instead of guessing one.
+    There are two distinct causes and they were previously indistinguishable to
+    a caller: too few observations, and a prior observation of exactly zero.
     """
 
     symbol: str
@@ -909,6 +922,7 @@ class MetalChangeReading:
     change_pct: float | None
     source_unit: str = METALS_SOURCE_UNIT
     observation_count: int = 0
+    change_unavailable_reason: str | None = None
 
 
 def fetch_metal_change(
@@ -955,17 +969,28 @@ def fetch_metal_change(
         )
 
     latest_date, latest_value = observed[-1]
+    reason: str | None = None
     if len(observed) >= 2:
         prior_date, prior_value = observed[-2]
         prior_iso: str | None = prior_date.isoformat()
         prior_val: float | None = prior_value
-        change_pct: float | None = _percent_change(
-            latest_value, prior_value, symbol=symbol, label=label
-        )
+        change_pct = _percent_change(latest_value, prior_value)
+        if change_pct is None:
+            # The change is undefined, but the LEVEL above is still a valid
+            # measurement — so the reading is returned with the reason attached
+            # rather than the whole leg being thrown away.
+            reason = (
+                f"{symbol} has a prior observation of exactly 0.0 "
+                f"({prior_date.isoformat()}), so the percent change is undefined."
+            )
     else:
         prior_iso = None
         prior_val = None
         change_pct = None
+        reason = (
+            f"{symbol} returned {len(observed)} observation(s) at or before "
+            f"{as_of.isoformat()}, fewer than the two needed to form a change."
+        )
 
     return MetalChangeReading(
         symbol=symbol,
@@ -975,31 +1000,29 @@ def fetch_metal_change(
         prior_level=prior_val,
         change_pct=change_pct,
         observation_count=len(observed),
+        change_unavailable_reason=reason,
     )
 
 
-def _percent_change(
-    latest: float,
-    prior: float,
-    *,
-    symbol: str,
-    label: str,
-) -> float:
-    """The percent change from ``prior`` to ``latest``.
+def _percent_change(latest: float, prior: float) -> float | None:
+    """The percent change from ``prior`` to ``latest``, or ``None`` if undefined.
 
-    A ``prior`` of exactly zero is refused with an error rather than returning
-    ``inf``/``nan``: the percent change is undefined, and a silent infinity would
-    flow into the model's comparisons and make every branch false — the model
-    would report MIXED for a metal whose move is UNKNOWN, which is a different
-    claim from MIXED (the D-078 class). No real benchmark price is zero, so this
-    is a guard, not a routine path.
+    A ``prior`` of exactly zero returns ``None`` rather than ``inf``/``nan``.
+    ``None`` is the shape this module ALREADY uses for an unknown change —
+    ``MetalChangeReading.change_pct`` is ``float | None``, and a series with
+    fewer than two observations yields ``None`` — and it is what
+    ``reserves_client`` reports for the same condition, so the two clients now
+    agree. ``_resolve_metal_leg`` in the model already renders a ``None`` change
+    as NOT AVAILABLE with a disclosure.
+
+    It previously RAISED. That was defensible on its own terms — the docstring
+    argued a silent ``inf`` would make every model branch false — but it was
+    inconsistent in two directions: with this same reading's other unknown case,
+    and with the sibling client. Raising also discarded the LEVEL, which is
+    still a valid measurement: the change is unknown, the price is not.
     """
     if prior == 0.0:
-        raise CommodityReadError(
-            f"{label} price series {symbol} has a prior observation of exactly "
-            f"0.0, so the percent change is undefined. Refusing rather than "
-            f"publishing an infinite or missing change."
-        )
+        return None
     return (latest - prior) / prior * 100.0
 
 

@@ -1286,12 +1286,16 @@ def _resolve_metal_leg(
         return None, f"NOT AVAILABLE — the {metal} fetch failed: {exc}", False
 
     if reading.change_pct is None:
+        # The CAUSE travels on the reading, so the disclosure states the actual
+        # one. It previously asserted "fewer than the two needed" unconditionally,
+        # but a prior observation of exactly 0.0 also yields no change — naming the
+        # wrong cause is the false-disclosure class, so the reason is read rather
+        # than assumed.
         return (
             None,
             (
-                f"NOT AVAILABLE — {reading.symbol} ({metal}) returned "
-                f"{reading.observation_count} observation(s) at or before the as-of "
-                f"date, which is fewer than the two needed to form a CHANGE."
+                f"NOT AVAILABLE — {reading.symbol} ({metal}): "
+                f"{reading.change_unavailable_reason or 'no percent change could be formed.'}"
             ),
             False,
         )

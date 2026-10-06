@@ -289,6 +289,37 @@ def test_a_zero_prior_is_reported_as_none_not_an_infinite_percentage() -> None:
     assert reading.change_12m_pct is None
 
 
+def test_a_gap_in_the_window_reports_the_change_as_unknown() -> None:
+    """F-RES-001: the lag is a COUNT of observations; the span is now MEASURED.
+
+    Thirteen observations are not necessarily twelve MONTHS. The series is
+    monthly only from ~1956 — measured: TRESEGJPM052N carries 843 observations
+    with SIX non-monthly steps at its 1950-55 head — so a missing recent month
+    (FRED's ``"."``, dropped by the ``dropna`` upstream) would silently publish a
+    14-month change as ``change_12m_pct``. Before the fix this returned +10%.
+    """
+    # 13 points whose 13th-back is 14 months before the last (Jul/Aug 2025 absent).
+    months = [(2025, 6), *[(2025, m) for m in range(9, 13)], *[(2026, m) for m in range(1, 9)]]
+    assert len(months) == 13
+    rows = [(date(y, m, 1), 1000.0) for (y, m) in months[:-1]]
+    rows.append((date(2026, 8, 1), 1100.0))
+    stub = _StubClient(_frame(rows))
+    reading = fetch_reserves("jp", client=stub)  # type: ignore[arg-type]
+    assert reading is not None
+    assert reading.change_12m_pct is None, "a 14-month span was published as a 12-month change"
+    # The LEVEL is unaffected and still valid — only the change is unknown.
+    assert reading.reserves_usd_mn == pytest.approx(1100.0)
+    assert reading.observation_count == 13
+
+
+def test_the_month_ordinal_measures_months_not_days() -> None:
+    from macro_engine.data_layer.reserves_client import _month_ordinal
+
+    assert _month_ordinal("2025-08-01") - _month_ordinal("2025-08-31") == 0
+    assert _month_ordinal("2026-08-01") - _month_ordinal("2025-08-01") == 12
+    assert _month_ordinal("2026-01-01") - _month_ordinal("2025-12-01") == 1
+
+
 # ---------------------------------------------------------------------------
 # The country map.
 # ---------------------------------------------------------------------------

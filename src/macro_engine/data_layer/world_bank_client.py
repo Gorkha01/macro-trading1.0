@@ -62,9 +62,10 @@ future non-USD base does not silently change the estimand.
 
 The euro-container decision
 ---------------------------
-The World Bank's **EMU aggregate returns 0 points** (measured). A "USD per EUR at
-PPP" leg therefore has **no single official value**, and the substitute is a
-**decision, not a constant** (``PLAN_ppp_source.md`` §4 step 1). The operator
+The World Bank's **EMU aggregate returns rows whose values are all null** —
+measured: 66 rows, **0 populated points** — so it yields no usable factor. A "USD
+per EUR at PPP" leg therefore has **no single official value**, and the substitute
+is a **decision, not a constant** (``PLAN_ppp_source.md`` §4 step 1). The operator
 directed **DEU** — the euro area's largest economy, and the leg D-114's declared
 ``0.72`` already matched (World Bank DEU 2025 = ``0.709983``, within **1.4 %**).
 It is recorded in the registry as ``ppp_conversion_factor_eur`` with its
@@ -94,6 +95,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CURRENT_ACCOUNT_PCT_GDP_INDICATOR",
+    "PPP_CONVERSION_FACTOR_INDICATOR",
     "RESERVES_TOTAL_USD_INDICATOR",
     "SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR",
     "IndicatorReading",
@@ -143,10 +145,20 @@ CURRENT_ACCOUNT_PCT_GDP_INDICATOR = "BN.CAB.XOKA.GD.ZS"
 #: another (D-116's lesson: a unit is not a label).
 RESERVES_TOTAL_USD_INDICATOR = "FI.RES.TOTL.CD"
 
-#: "Short-term external debt on residual maturity basis (current US$)". The
-#: DENOMINATOR of ``reserves_to_short_term_external_debt``. Both legs are
-#: current USD, so the ratio is a pure number — no unit conversion is needed and
-#: none is performed.
+#: "External debt stocks, short-term (DOD, current US$)". The DENOMINATOR of
+#: ``reserves_to_short_term_external_debt``. Both legs are current USD, so the
+#: ratio is a pure number — no unit conversion is needed and none is performed.
+#:
+#: ⚠️ This is the **ORIGINAL-maturity** measure, and the earlier label calling it
+#: a residual-maturity series was **wrong**. The World Bank's own ``sourceNote``
+#: for ``DT.DOD.DSTC.CD`` defines it as *"debt that has an original maturity of
+#: one year or less"* (measured 2026-10-05), and the full ~20 000-entry indicator
+#: catalogue contains **no residual-maturity** series — its only ``residual``
+#: match is ``DT.DOD.RSDL.CD``, a stock-flow reconciliation. The conventional
+#: Guidotti-Greenspan denominator is the *residual*-maturity stock, which is
+#: **larger**, so this ratio is more forgiving than that convention. The basis is
+#: named on the disclosure :func:`reserves_to_short_term_debt` returns rather
+#: than hidden, and **no substitute series is invented** to close the gap.
 SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR = "DT.DOD.DSTC.CD"
 
 #: Measured-good UA (D-087.25). Identical to `alfred_client._REQUEST_HEADERS`
@@ -258,30 +270,65 @@ class IndicatorReading:
 def _parse_iso3(iso3: str) -> str:
     """Normalise and validate an ISO3 country code.
 
-    The World Bank's API is case-insensitive but path-segment sensitive: a
-    lowercase or padded code returns an empty payload rather than an error
-    (measured), which would look like "no data" instead of "bad input". So the
-    code is upper-cased, stripped, and length-checked here — refusing a
-    malformed argument loudly beats returning an empty series quietly.
+    The World Bank's API is **case-INSENSITIVE** — measured: ``usa`` returns the
+    full 66-row USA series, so the "a lowercase code returns an empty payload"
+    premise this check once carried was false (and contradicted its own
+    "case-insensitive" clause). What the API does *not* do is signal a bad code as
+    an error: ``usaa`` returns a one-element ``[{"message": ...}]`` list (also
+    measured), which is a *bad input* wearing a *no data* shape. The contract
+    here is a 3-letter ISO3 code, so the argument is upper-cased, stripped and
+    length-checked, and the API's own error list is detected in
+    :func:`_parse_payload` — keeping "bad input" distinct from "no data" without
+    inventing a case rule the API does not have.
     """
     code = iso3.strip().upper()
     if len(code) != 3 or not code.isalpha():
         raise WorldBankUnavailableError(
             f"iso3 must be a 3-letter country code, got {iso3!r}. The World Bank "
-            f"API answers a malformed code with an empty payload rather than an "
-            f"error, so this is validated here to keep 'bad input' distinct from "
-            f"'no data'."
+            f"API answers an unresolvable code with a one-element error list "
+            f"rather than an HTTP error, so this is validated here to keep 'bad "
+            f"input' distinct from 'no data'."
         )
     return code
+
+
+def _describe_api_message(message: Any) -> str:
+    """Render the World Bank's own error object as a one-line reason.
+
+    The API's refusal shape is ``[{"message": [{"id", "key", "value"}]}]``
+    (measured for both an unknown indicator and an unresolvable country code).
+    The ``value`` field is the human-readable reason and ``id``/``key`` its
+    machine code. Rendering it here is what lets :func:`_parse_payload` report
+    *why* the API refused, instead of blaming whichever field happens to be
+    missing next.
+    """
+    if isinstance(message, list):
+        reasons: list[str] = []
+        for item in message:
+            if isinstance(item, dict):
+                reason = item.get("value") or item.get("key") or item.get("id")
+                if reason is not None:
+                    reasons.append(str(reason))
+            elif item is not None:
+                reasons.append(str(item))
+        if reasons:
+            return "; ".join(reasons)
+    return str(message)
 
 
 def _parse_payload(body: Any, *, iso3: str, indicator: str) -> tuple[list[Any], date]:
     """Extract the rows and the ``lastupdated`` date from a World Bank response.
 
-    The response is a **two-element list**: ``[metadata, rows]``. Both a missing
-    second element and a non-list body are shape failures — the World Bank
-    returns a one-element list for an unknown indicator and an HTML error page
-    for a malformed URL, and neither must be silently treated as "no data".
+    A successful response is a **two-element list**: ``[metadata, rows]``, where
+    ``rows`` may be ``null`` for a valid request that matched nothing. Two
+    non-success shapes are detected explicitly rather than left to fall through:
+
+    * a **one-element list** whose element carries ``message`` — the API's own
+      refusal for an unknown indicator or an unresolvable country code
+      (measured), surfaced as the API's reason rather than reported as a missing
+      date; and
+    * a body that is **not a list at all** — an HTML error page for a malformed
+      URL, which must not be silently treated as "no data".
     """
     if not isinstance(body, list) or len(body) < 1:
         raise WorldBankUnavailableError(
@@ -294,6 +341,22 @@ def _parse_payload(body: Any, *, iso3: str, indicator: str) -> tuple[list[Any], 
         raise WorldBankUnavailableError(
             f"World Bank metadata for {iso3}/{indicator} is not an object "
             f"(got {type(meta).__name__})"
+        )
+    # An unknown indicator or an unresolvable country code is answered with a
+    # ONE-element list whose single element is an error object —
+    #   [{"message": [{"id": "120", "key": "Invalid value", "value": "..."}]}]
+    # (measured 2026-10-05). It carries no `lastupdated`, so without this check
+    # the read would fail on the missing date below and report THAT as the
+    # reason — a diagnosis that names the wrong defect. Surface the API's own
+    # message instead.
+    api_message = meta.get("message")
+    if api_message is not None:
+        raise WorldBankUnavailableError(
+            f"World Bank refused {iso3}/{indicator}: "
+            f"{_describe_api_message(api_message)}. The API answers a bad "
+            f"indicator or country with this one-element error list rather than "
+            f"an HTTP error status, so it is detected here to keep 'bad request' "
+            f"distinct from 'no data'."
         )
     raw_updated = meta.get("lastupdated") or meta.get("lastUpdated")
     if not isinstance(raw_updated, str):
@@ -354,9 +417,9 @@ def _parse_rows_to_reading(
     if not populated:
         raise WorldBankUnavailableError(
             f"World Bank returned no populated {indicator} points for {iso3}. "
-            f"This is a genuine empty series (the EMU aggregate measures 0 "
-            f"points), not a transport failure — a caller must not read it as a "
-            f"value."
+            f"This is a genuine empty series (measured: the EMU aggregate's rows "
+            f"are all null — 66 rows, 0 populated points), not a transport "
+            f"failure — a caller must not read it as a value."
         )
 
     year, value = max(populated, key=lambda pair: pair[0])
@@ -552,6 +615,15 @@ def reserves_to_short_term_debt(iso3: str, *, timeout: float = 30.0) -> tuple[fl
     independently-refreshed series and a single date cannot describe it — the
     same reasoning as :func:`fetch_ppp_implied_rate`.
 
+    **The denominator is the World Bank's ORIGINAL-maturity short-term debt, and
+    the disclosure says so.** The conventional Guidotti-Greenspan coverage check
+    divides by the *residual*-maturity stock, which is larger (it includes
+    long-term debt falling due within the year); the World Bank publishes no
+    residual-maturity series, so this ratio is **more forgiving** than that
+    convention. Naming the basis on the value is what keeps a caller from reading
+    a favourable ratio as the conventional one — the alternative, silently
+    substituting a series that does not exist, is not available.
+
     A **zero denominator raises** rather than returning infinity: a short-term
     external debt of zero makes the ratio undefined, and an infinite ratio would
     read as "perfectly covered" to any caller that compared it against 1.0.
@@ -575,6 +647,10 @@ def reserves_to_short_term_debt(iso3: str, *, timeout: float = 30.0) -> tuple[fl
         f"({short_term.year}, {SHORT_TERM_EXTERNAL_DEBT_USD_INDICATOR}); "
         f"published {reserves.last_updated.isoformat()} and "
         f"{short_term.last_updated.isoformat()} respectively. Both legs are "
-        f"current USD, so no unit conversion is performed."
+        f"current USD, so no unit conversion is performed. The ST-debt leg is the "
+        f"World Bank's ORIGINAL-maturity measure, NOT the residual-maturity stock "
+        f"the conventional Guidotti-Greenspan check divides by (which the World "
+        f"Bank does not publish), so this ratio is more forgiving than that "
+        f"convention."
     )
     return ratio, disclosure

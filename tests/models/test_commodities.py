@@ -771,3 +771,43 @@ def test_metals_rejects_non_finite_inputs() -> None:
             iron_ore_change_pct=1.0,
             aluminum_change_pct=1.0,
         )
+
+
+def test_the_metal_disclosure_names_the_readings_own_reason() -> None:
+    """F-COM-002: the CAUSE travels on the reading, so the text states the real one.
+
+    The disclosure previously asserted "fewer than the two needed" unconditionally.
+    A prior observation of exactly 0.0 also yields no change, so that text would
+    have named the WRONG cause for it — the false-disclosure class. This calls the
+    REAL ``_resolve_metal_leg`` (the other tests stub it), so the wording is
+    exercised rather than assumed.
+    """
+
+    import macro_engine.models.commodities as mod
+    from macro_engine.data_layer.commodities_client import MetalChangeReading
+
+    reading = MetalChangeReading(
+        symbol="PCOPPUSDM",
+        observation_date="2026-06-01",
+        level=8400.0,
+        prior_observation_date="2026-05-01",
+        prior_level=0.0,
+        change_pct=None,
+        observation_count=139,
+        change_unavailable_reason=(
+            "PCOPPUSDM has a prior observation of exactly 0.0 (2026-05-01), so the "
+            "percent change is undefined."
+        ),
+    )
+
+    change, disclosure, fetched = mod._resolve_metal_leg(
+        supplied=None,
+        fetcher=lambda **_: reading,
+        name="copper_change_pct",
+        metal="copper",
+    )
+
+    assert change is None
+    assert fetched is False
+    assert "exactly 0.0" in disclosure
+    assert "fewer than the two" not in disclosure, "the disclosure guessed the cause"

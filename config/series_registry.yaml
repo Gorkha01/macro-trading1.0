@@ -1325,11 +1325,19 @@ series:
     symbol: DT.DOD.DSTC.CD
     not_a_snapshot_field: true
     description: >
-      Short-term external debt on a residual-maturity basis, CURRENT US$,
-      annual, World Bank. The DENOMINATOR of `em_vulnerability_checklist`'s
+      Short-term external debt, CURRENT US$, annual, World Bank
+      (`DT.DOD.DSTC.CD`). The DENOMINATOR of `em_vulnerability_checklist`'s
       DERIVED coverage ratio. Section 21.1 calls that input "IMF reserves /
       World Bank ST external debt" and marks it DERIVED — meaning the division
       is PERFORMED by the client, never assumed (D-109).
+
+      ⚠️ ORIGINAL maturity, NOT residual. The World Bank's own `sourceNote`
+      defines `DT.DOD.DSTC.CD` as "debt that has an original maturity of one
+      year or less", and no residual-maturity series exists in its catalogue
+      (measured 2026-10-05). The conventional Guidotti-Greenspan coverage check
+      divides by the RESIDUAL-maturity stock, which is larger, so this ratio is
+      more forgiving than that convention. The basis is named on the ratio's own
+      disclosure string rather than hidden; no substitute series is invented.
 
       Both legs are current USD, so the ratio is a pure number and NO unit
       conversion happens. That is a property of these two specific indicators,

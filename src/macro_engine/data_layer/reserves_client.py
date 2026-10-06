@@ -113,8 +113,11 @@ SOURCE_UNIT = "millions of USD"
 MILLIONS_PER_BILLION = 1000.0
 
 #: How many monthly observations the twelve-month change is measured over. The
-#: series is monthly (measured), so twelve steps back is one year. Named rather
-#: than inlined so the lag and its justification travel together.
+#: series is monthly **from ~1956** (measured: TRESEGJPM052N has 843 observations
+#: with six non-monthly steps at its 1950-55 head), so twelve steps back is one
+#: year for any recent window — and the span is now MEASURED at the call site
+#: rather than assumed. Named rather than inlined so the lag and its
+#: justification travel together.
 _CHANGE_LAG_MONTHS = 12
 
 
@@ -238,7 +241,30 @@ def fetch_reserves(
     change_12m_pct: float | None = None
     if len(values) > _CHANGE_LAG_MONTHS:
         prior = float(values[-(_CHANGE_LAG_MONTHS + 1)])
-        if prior != 0.0:
+        # The lag is a COUNT of observations, and it equals twelve months only
+        # while the series is contiguous monthly. Measured on TRESEGJPM052N:
+        # 843 observations with SIX non-monthly steps at the 1950-55 head, so
+        # the series is monthly only from ~1956 — "the series is monthly" is
+        # true of today's window, not of the series. Nothing checked that, and a
+        # missing RECENT month (FRED's ".", dropped by the `dropna` above) would
+        # silently make this a 13-month change published as `change_12m_pct`.
+        # The span is therefore measured, and a non-12-month span reports the
+        # change as UNKNOWN — the same stance the too-few-observations case
+        # takes, and for the same reason: a zero or a mislabelled window is an
+        # assertion the data does not make.
+        span = _month_ordinal(dates[-1]) - _month_ordinal(dates[-(_CHANGE_LAG_MONTHS + 1)])
+        if span != _CHANGE_LAG_MONTHS:
+            logger.info(
+                "fetch_reserves: %s spans %s month(s) between the last value and "
+                "the %s-th back, not %s; the change is reported as unknown rather "
+                "than as a %s-month figure.",
+                symbol,
+                span,
+                _CHANGE_LAG_MONTHS,
+                _CHANGE_LAG_MONTHS,
+                _CHANGE_LAG_MONTHS,
+            )
+        elif prior != 0.0:
             change_12m_pct = (last_value - prior) / prior * 100.0
         else:
             # A zero prior is not a basis for a percentage change. Disclosed as
@@ -259,6 +285,18 @@ def fetch_reserves(
         source_unit=SOURCE_UNIT,
         observation_count=int(values.size),
     )
+
+
+def _month_ordinal(iso_date: str) -> int:
+    """A ``YYYY-MM-DD`` string as a month ordinal (``year * 12 + month``).
+
+    Exists so the twelve-month change can MEASURE its own span rather than trust
+    that twelve observations are twelve months. Reuses ``_as_iso_date``'s output,
+    so every date carrier is already collapsed to a bare date by the time this
+    runs.
+    """
+    year, month = iso_date.split("-", 2)[:2]
+    return int(year) * 12 + int(month)
 
 
 def _as_iso_date(index_value: object) -> str:

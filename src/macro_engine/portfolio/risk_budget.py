@@ -109,9 +109,9 @@ from macro_engine.models.instrument_selection import (
 from macro_engine.models.probability import ScenarioOutcome
 from macro_engine.models.risk import _quadratic_form
 from macro_engine.thesis_layer.schemas import (
-    NO_PRODUCTION_INSTRUMENT,
     MacroThesis,
     ProductionUniverse,
+    is_no_production_instrument,
 )
 
 __all__ = [
@@ -2695,10 +2695,13 @@ def translate_thesis_to_position(inputs: ThesisPositionInputs) -> ModelResult:
     #
     # Both sentinels are compared against their CONSTANTS. `"NONE"` is a legal
     # `TradeIdea.instrument` value (O-53), so a re-typed literal here would be
-    # the one place the false-executability risk O-53 names becomes real.
+    # the one place the false-executability risk O-53 names becomes real. The
+    # no-trade sentinel goes through `is_no_production_instrument` rather than an
+    # exact compare, so a lowercase `"none"` is classified as the NO-TRADE it is
+    # instead of being reported as an out-of-universe instrument (F-TSC-002).
     universe = ProductionUniverse()
     if not idea.is_trade or idea.instrument == ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT:
-        if idea.instrument == NO_PRODUCTION_INSTRUMENT:
+        if is_no_production_instrument(idea.instrument):
             reason = (
                 "The thesis is a NO-TRADE (instrument is the no-trade sentinel): "
                 "Q6, Q7 or Q8 stood the sentence down, and Section 16.3 makes "
