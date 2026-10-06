@@ -543,8 +543,10 @@ def inflation_convergence_classifier(
     # The bar comes from config, not a literal: it is a claim about when a
     # number becomes uninformative, and it is compared against a leaf
     # (`measured_base_rates`) that a re-measurement will move. The model's
-    # validator keeps it strictly below the highest base rate, so the disclosure
-    # cannot become dead on arrival.
+    # validator keeps it strictly below the SMALLEST base rate the classifier
+    # can index (this rate is `three_measure_high` at total<=3 and
+    # `six_measure_high` otherwise), so the disclosure cannot become dead on
+    # arrival on either path.
     if classification == "HIGH" and current_rate > settings.base_state_warning_threshold:
         warnings.append(
             f"HIGH IS THE BASE STATE, NOT A FINDING. A {total}-measure sign test "

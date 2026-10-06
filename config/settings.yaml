@@ -491,11 +491,14 @@ inflation:
         The HIGH base rate above which a HIGH reading is disclosed as the base
         state rather than a finding. A plausibility bar, not a measured one: it
         answers "is this reading so common that it carries little information?"
-        Kept STRICTLY BELOW max(three_measure_high, six_measure_high) — the
-        shipped base rates are 0.866 / 0.895, so today the disclosure fires; if a
-        future re-measurement drops a base rate to or below this bar the warning
-        would be dead on arrival, and the model's validator REFUSES that pairing
-        rather than letting the disclosure silently stop firing.
+        Kept STRICTLY BELOW min(three_measure_high, six_measure_high) — the
+        classifier indexes the 3-measure rate at total<=3 and the 6-measure rate
+        otherwise, so the binding bound is the SMALLER of the two. The shipped
+        base rates are 0.866 / 0.895, so today the disclosure fires on both
+        paths; if a future re-measurement drops a base rate to or below this bar
+        the warning would be dead on arrival there, and the model's validator
+        REFUSES that pairing rather than letting the disclosure silently stop
+        firing.
     measured_base_rates:
       three_measure:
         high:

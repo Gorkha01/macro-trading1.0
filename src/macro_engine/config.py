@@ -65,6 +65,27 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+#: The **exactness floor** for a set of shares summing to 1.0 — used wherever a
+#: partition of a whole is checked, as distinct from a *fit* tolerance (which is
+#: a policy judgement and belongs in ``settings.yaml``).
+#:
+#: A partition is an exactness statement: the shares must sum to 1, and this
+#: constant admits only the float-summation error in doing so. It is NOT the
+#: looser ``risk.rebalancing_contribution_sum_tolerance`` (a *judgement* about
+#: how far off a stated invariant an input may drift before a disclosure fires).
+#:
+#: MEASURED 2026-10-06: this concept already existed as
+#: ``portfolio/risk_budget.py``'s ``_RISK_BUDGET_SUM_TOLERANCE``, and
+#: ``config.py``'s own prose REFERRED to it by name (lines 791/883) — while
+#: ``config.py`` and two other modules retyped the same ``1e-9`` as a bare
+#: literal at four sites. That is the D-031 shape the file documents elsewhere:
+#: a value named in one place and retyped in another is indistinguishable from
+#: it without a *mover*. It is defined here because ``config.py`` is the lowest
+#: layer — every consumer imports from it, and it imports nothing from
+#: ``macro_engine`` — so this is the one home all four sites can reach.
+_EXACTNESS_SUM_TOLERANCE = 1e-9
+
+
 # ---------------------------------------------------------------------------
 # Calibration status — the honesty mechanism for every CONFIG parameter.
 # ---------------------------------------------------------------------------
@@ -105,6 +126,23 @@ class BeveridgeCurvePoint(BaseModel):
 # a serious loss.
 _MIN_DRAWDOWN_TIER_PCT = 1.0
 _MIN_RISK_REDUCTION_PCT = 1.0
+
+#: The SMALLEST fractional-Kelly divisor Section 22.6 / Finding #6 permits.
+#:
+#: The floor is not a tunable policy preference — it is the theorem's own
+#: boundary. ``k`` is ``1 / fraction-of-full-Kelly``, so ``k >= 2`` means "at
+#: most half Kelly", and ``k < 2`` means the sizing model is running closer to
+#: full Kelly than the rule allows. Full Kelly assumes exact probabilities, which
+#: never hold, which is why 22.6 makes the division mandatory.
+#:
+#: Declared as a constant because ``min_fractional_divisor`` is a CONFIG leaf
+#: and the validator below must bound THAT leaf against this fixed minimum — a
+#: floor is only a floor if something refuses a floor of zero. Without this,
+#: ``floor=1.0, divisor=1.0`` was accepted (full Kelly, the prohibited case) and
+#: ``floor=0.0, divisor=0.0`` was accepted, making ``kelly_fraction_multiplier``
+#: (``1/divisor``) raise ZeroDivisionError inside the sizer rather than failing
+#: at load. MEASURED 2026-10-06.
+_MIN_FRACTIONAL_KELLY_DIVISOR = 2.0
 
 
 class DrawdownTier(BaseModel):
@@ -206,6 +244,20 @@ class KellySettings(BaseModel):
         Full Kelly requires the probability estimates to be exact, which they
         never are. A divisor below the configured floor means the sizing model
         is effectively running full-Kelly — reject it at load time.
+
+        **The floor is itself bounded**, and that half is load-bearing. The
+        first clause (``divisor >= floor``) only says the divisor respects
+        whatever floor config declares; it says nothing about the floor. With
+        an unbounded floor, MEASURED 2026-10-06: ``min_fractional_divisor: 1.0``
+        with ``fractional_divisor: 1.0`` loaded cleanly and produced
+        ``kelly_fraction_multiplier == 1.0`` — i.e. FULL Kelly, the exact thing
+        this validator's message claims is prohibited — while
+        ``min_fractional_divisor: 0.0`` with ``fractional_divisor: 0.0`` loaded
+        and made ``kelly_fraction_multiplier`` (``1/divisor``) raise
+        ``ZeroDivisionError`` inside ``apply_fractional_kelly`` rather than at
+        load, turning a config error into a runtime failure of a model. So the
+        floor must be at least ``_MIN_FRACTIONAL_KELLY_DIVISOR`` (2.0), which is
+        Section 22.6's own boundary and the value the shipped config declares.
         """
         # Locals are `_`-prefixed and never repeat a member name — the rule
         # `_ceiling_must_be_reachable_and_binding` documents at length, and the
@@ -219,6 +271,15 @@ class KellySettings(BaseModel):
         # names) did not exist.
         _divisor = float(self.fractional_divisor.value)
         _floor = float(self.min_fractional_divisor.value)
+        if _floor < _MIN_FRACTIONAL_KELLY_DIVISOR:
+            raise ValueError(
+                f"kelly.min_fractional_divisor ({_floor}) is below the mandated "
+                f"minimum ({_MIN_FRACTIONAL_KELLY_DIVISOR}). A floor below 2.0 "
+                f"permits full Kelly (a multiplier of 1.0) or even a divisor of "
+                f"zero, which makes `kelly_fraction_multiplier` (1/divisor) raise "
+                f"at sizing time. Full-Kelly sizing is prohibited — see AGENTS.md "
+                f"Section 22.6 / Finding #6."
+            )
         if _divisor < _floor:
             raise ValueError(
                 f"kelly.fractional_divisor ({_divisor}) is below the mandated floor "
@@ -441,8 +502,7 @@ class ScenarioDistributionSettings(BaseModel):
         at the probabilities, none of which is the leaf that moved.
         """
         total = sum(self.remaining_shares.values())
-        tolerance = 1e-9
-        if abs(total - 1.0) > tolerance:
+        if abs(total - 1.0) > _EXACTNESS_SUM_TOLERANCE:
             raise ValueError(
                 f"scenario_distribution.remaining_share_* sum to {total!r}, not 1. "
                 f"They are the split of (1 - base_probability) across the three "
@@ -788,9 +848,11 @@ class RiskSettings(BaseModel):
     # therefore a policy number Section 21 keeps out of the function body. Its
     # sibling `risk.rebalancing_drift` six lines up is the same class of number.
     #
-    # It is NOT the `1e-9` exactness floor the `_RISK_BUDGET_SUM_TOLERANCE`
-    # module constant is: that one only admits float summation, whereas this
-    # one decides whether a *disclosure* fires, so it is deliberately loose.
+    # It is NOT the `1e-9` exactness floor this file defines as
+    # `_EXACTNESS_SUM_TOLERANCE` (which `risk_budget.py` reaches through its
+    # `_RISK_BUDGET_SUM_TOLERANCE` alias): that one only admits float summation,
+    # whereas this one decides whether a *disclosure* fires, so it is
+    # deliberately loose.
     # A value outside `(0, 1]` is refused by the validator below (D-128's
     # dead-threshold class: `<= 0` warns on everything, `> 1` never fires).
     #
@@ -880,8 +942,9 @@ class RiskSettings(BaseModel):
         **shares** of total portfolio risk, so they must sum to 1; this is how
         far off 1.0 a set may be before the function warns that the basis is
         wrong (partial book, or dollar figures read as shares). It is looser
-        than the ``1e-9`` exactness floor the solver's ``_RISK_BUDGET_SUM_TOLERANCE``
-        uses because it drives a *warning*, not a numerical check.
+        than the ``1e-9`` exactness floor ``config._EXACTNESS_SUM_TOLERANCE``
+        defines (which the solver reaches as ``_RISK_BUDGET_SUM_TOLERANCE``)
+        because it drives a *warning*, not a numerical check.
 
         **This was a bare ``0.01`` in the function body until D-132.** The
         sweep could not see it: ``mutation_rebalancing.py``'s M9.3 deletes the
@@ -2820,15 +2883,27 @@ class InflationConvergenceSettings(BaseModel):
         """The base-state disclosure must be able to fire, or it is dead config.
 
         The comparison is ``current_rate > threshold`` on the base rate the
-        classifier publishes (``measured_base_rates``). If the threshold sat at
-        or above ``max(three_measure_high, six_measure_high)`` the warning would
-        never appear for any reading the model can produce — a disclosure that
-        silently cannot fire is the O-29 class (a gate row that is a claim, not a
-        receipt). The validator REFUSES that pairing rather than letting a config
-        edit quietly remove the disclosure, which is exactly what the audit
-        flagged: the comparison decides whether a published sentence appears on a
-        published output, and the leaf it is compared against is the one that
-        moves. Range-checked to ``[0, 1]`` because it is a share.
+        classifier publishes (``measured_base_rates``). The rate it reads is
+        **not one fixed leaf**: ``inflation_convergence.py`` sets
+        ``current_measure_count_high`` to ``three_measure_high`` when
+        ``total <= 3`` and to ``six_measure_high`` otherwise, so the disclosure
+        runs on whichever of the two the caller's measure count selects.
+
+        That makes the binding bound the **minimum** of the two, not the
+        maximum, and the difference is the whole point of this validator.
+        ``max`` admits a threshold sitting between the two rates — e.g. the
+        shipped 0.866 / 0.895 with a threshold of 0.88 — and on the 3-measure
+        path ``0.866 > 0.88`` is False, so the disclosure silently stops firing
+        for every 3-measure reading while still firing for 6-measure ones. A
+        disclosure that cannot fire on a reachable path is the O-29 class (a
+        gate row that is a claim, not a receipt), and it is exactly what this
+        validator exists to refuse — so it must refuse the *smallest* rate the
+        classifier can index, which is also what its own message always said.
+        The validator REFUSES that pairing rather than letting a config edit
+        quietly remove the disclosure: the comparison decides whether a
+        published sentence appears on a published output, and the leaves it is
+        compared against are the ones that move. Range-checked to ``[0, 1]``
+        because it is a share.
         """
         threshold = float(self.base_state_warning_threshold_value.value)
         if not 0.0 <= threshold <= 1.0:
@@ -2836,17 +2911,18 @@ class InflationConvergenceSettings(BaseModel):
                 "inflation.convergence.base_state_warning_threshold must be a "
                 f"share in [0, 1]; got {threshold}."
             )
-        highest_base_rate = max(
+        lowest_base_rate = min(
             self.measured_base_rates.three_measure_high,
             self.measured_base_rates.six_measure_high,
         )
-        if threshold >= highest_base_rate:
+        if threshold >= lowest_base_rate:
             raise ValueError(
                 "inflation.convergence.base_state_warning_threshold "
-                f"({threshold}) is at or above the highest measured HIGH base "
-                f"rate ({highest_base_rate}), so the base-state disclosure could "
-                "never fire. Set the threshold strictly below the smallest base "
-                "rate the classifier can publish."
+                f"({threshold}) is at or above the smallest measured HIGH base "
+                f"rate ({lowest_base_rate}) the classifier can index, so the "
+                "base-state disclosure would be dead on the path that selects "
+                "it. Set the threshold strictly below the smallest base rate the "
+                "classifier can publish."
             )
         return self
 
@@ -4764,7 +4840,7 @@ class FCISettings(BaseModel):
         # (removing it changed nothing observable), and inert code is removed
         # rather than kept for a marginally better message (D-031).
         total = sum(weights.values())
-        if abs(total - 1.0) > 1e-9:
+        if abs(total - 1.0) > _EXACTNESS_SUM_TOLERANCE:
             raise ValueError(
                 f"fci.weights.components sums to {total!r}, not 1.0. A composite whose "
                 f"weights do not sum to one is silently rescaled, which moves the meaning "

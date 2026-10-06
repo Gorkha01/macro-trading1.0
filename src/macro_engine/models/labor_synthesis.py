@@ -29,6 +29,7 @@ from __future__ import annotations
 from pydantic import ConfigDict, Field
 
 from macro_engine.config import (
+    _EXACTNESS_SUM_TOLERANCE,
     AHEDistortionThresholds,
     RevisionThresholds,
     get_settings,
@@ -193,7 +194,7 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
     # the same inputs would produce a score that depends on how the weights were
     # written down. Checked rather than assumed, because the weights live in a
     # file anyone can edit.
-    if abs(weights.total - 1.0) > 1e-9:
+    if abs(weights.total - 1.0) > _EXACTNESS_SUM_TOLERANCE:
         raise ValueError(
             f"labor.tightness_weights sum to {weights.total!r}, not 1.0. The "
             f"score is defined on the -100..+100 scale, so un-normalised weights "

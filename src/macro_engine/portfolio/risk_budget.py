@@ -96,7 +96,7 @@ from typing import Literal, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from macro_engine.config import get_settings
+from macro_engine.config import _EXACTNESS_SUM_TOLERANCE, get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     ModelResult,
@@ -1577,7 +1577,14 @@ class RiskBudgetInputs(BaseModel):
 #: Tolerance on the risk-budget shares summing to 1.0. A budget is a partition
 #: of total risk, so this is an exactness check rather than a fit; the tolerance
 #: exists only for float summation, not to admit an approximate budget.
-_RISK_BUDGET_SUM_TOLERANCE = 1e-9
+#:
+#: Bound to ``config._EXACTNESS_SUM_TOLERANCE`` rather than retyping ``1e-9``.
+#: The same concept was written as a bare literal at four sites in the tree
+#: (``config.py`` twice, ``models/labor_synthesis.py``, ``models/risk.py``) while
+#: this module named it — and ``config.py``'s own prose referred to *this*
+#: constant by name. Naming it at the lower layer is what lets every site read
+#: one value (D-031's shape: a named value retyped elsewhere is invisible).
+_RISK_BUDGET_SUM_TOLERANCE = _EXACTNESS_SUM_TOLERANCE
 
 #: A named mirror of the shipped ``risk.risk_parity_tolerance`` value (``1e-10``),
 #: kept as the human-readable reference for that leaf (`settings.yaml:1519`).

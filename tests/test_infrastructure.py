@@ -37,6 +37,7 @@ import inspect
 import pathlib
 import typing
 
+import pytest
 from pydantic import BaseModel
 
 from macro_engine.config import CalibratedValue, Settings, get_settings
@@ -243,3 +244,154 @@ def test_the_docstring_does_not_over_claim_the_envelope_invariant() -> None:
     source = _config_source()
     assert "requires every envelope to be readable as a" not in source
     assert "requires every **numeric** envelope" in source
+
+
+# ---------------------------------------------------------------------------
+# (F-CFG-004) the exactness floor is defined ONCE
+# ---------------------------------------------------------------------------
+
+
+def test_the_exactness_floor_is_defined_once() -> None:
+    """(F-CFG-004) The "shares sum to 1.0" floor is one value, not four literals.
+
+    MEASURED 2026-10-06: ``1e-9`` was written as a bare literal at four sites —
+    ``config.py`` twice (``_remaining_shares_must_sum_to_one``,
+    ``_weights_must_sum_to_one``), ``models/labor_synthesis.py`` (tightness
+    weights) and ``models/risk.py`` (correlation diagonal) — while
+    ``portfolio/risk_budget.py`` NAMED the same floor
+    (``_RISK_BUDGET_SUM_TOLERANCE``) and ``config.py``'s own prose REFERRED to
+    that name (lines 791/883). A value named in one place and retyped in another
+    is indistinguishable from it without a *mover* (D-031), which is the exact
+    defect the file documents for other leaves.
+
+    The floor now lives at the lowest layer (``config``, which imports nothing
+    from ``macro_engine``) so every consumer can reach it. This test asserts:
+
+    * the definition is a single module constant on ``config``;
+    * ``risk_budget``'s named constant aliases it (equal value, and it is the
+      value ``config`` exposes rather than a private re-``1e-9``);
+    * no bare ``1e-9`` sum-to-one comparison survives in the four modules.
+    """
+    import macro_engine.config as cfg
+    from macro_engine.portfolio import risk_budget as rb
+
+    assert cfg._EXACTNESS_SUM_TOLERANCE == 1e-9
+    # the alias chain: one value, reached by name
+    assert rb._RISK_BUDGET_SUM_TOLERANCE == cfg._EXACTNESS_SUM_TOLERANCE
+
+    # no retyped literal among the modules that own a sum-to-one guard
+    import importlib
+
+    owners = (cfg, "macro_engine.models.risk", "macro_engine.models.labor_synthesis")
+    for owner in owners:
+        module = importlib.import_module(owner) if isinstance(owner, str) else owner
+        source = pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8")
+        assert "> 1e-9:" not in source, f"a bare 1e-9 sum comparison survives in {module.__name__}"
+        assert "tolerance = 1e-9" not in source, (
+            f"a bare 1e-9 tolerance survives in {module.__name__}"
+        )
+
+    # (F-CFG-004 residual, prose half) The two sites that CONTRAST the loose
+    # rebalancing tolerance with the exactness floor named the floor as
+    # `_RISK_BUDGET_SUM_TOLERANCE` "the module constant" — but after the fix the
+    # floor is DEFINED here as `_EXACTNESS_SUM_TOLERANCE`, and
+    # `risk_budget._RISK_BUDGET_SUM_TOLERANCE` only ALIASES it. The old prose
+    # pointed the reader out of the file for a value that sits a few hundred
+    # lines above them.
+    cfg_source = pathlib.Path(inspect.getfile(cfg)).read_text(encoding="utf-8")
+    assert "the `_RISK_BUDGET_SUM_TOLERANCE`" not in cfg_source, (
+        "config.py still calls _RISK_BUDGET_SUM_TOLERANCE 'the ... module constant'; "
+        "the floor is defined HERE as _EXACTNESS_SUM_TOLERANCE"
+    )
+    assert "_EXACTNESS_SUM_TOLERANCE" in cfg_source, (
+        "config.py prose no longer names its own exactness-floor constant"
+    )
+
+
+def test_the_base_state_disclosure_bar_binds_the_smallest_rate_it_indexes() -> None:
+    """(F-CFG-005) The disclosure validator must bound the rate the consumer reads.
+
+    ``inflation_convergence_classifier`` sets ``current_measure_count_high`` to
+    ``three_measure_high`` when ``total <= 3`` and ``six_measure_high`` otherwise,
+    and discloses when ``current_rate > base_state_warning_threshold``. So the
+    reachability bound the validator must enforce is the **minimum** of the two
+    rates — a threshold above the smaller one leaves that path's disclosure
+    permanently dead, the O-29/D-037 unreachable-disclosure class.
+
+    MEASURED 2026-10-06: the validator bounded against ``max(...)``, so it
+    ACCEPTED a threshold of 0.88 against the shipped 0.866 / 0.895 — at which
+    ``0.866 > 0.88`` is False and the 3-measure disclosure is dead — while the
+    validator's own error message already said "strictly below the smallest base
+    rate". Code and message disagreed; the message was right.
+
+    This test pins both halves: the correct bound REJECTS any threshold at or
+    above the minimum, and the shipped value stays below it.
+    """
+    from macro_engine.config import InflationConvergenceSettings, get_settings
+
+    convergence = get_settings().inflation.convergence
+    three = convergence.measured_base_rates.three_measure_high
+    six = convergence.measured_base_rates.six_measure_high
+    smallest = min(three, six)
+
+    # The shipped value must itself keep the disclosure reachable on both paths.
+    assert convergence.base_state_warning_threshold < smallest
+
+    def _with_threshold(value: float) -> InflationConvergenceSettings:
+        raw = convergence.model_dump()
+        raw["base_state_warning_threshold_value"]["value"] = value
+        return InflationConvergenceSettings.model_validate(raw)
+
+    # At or above the SMALLEST indexed rate -> dead on that path -> refused.
+    for dead in (smallest, max(three, six), (three + six) / 2 + 1e-9, 1.0):
+        with pytest.raises(ValueError, match="smallest measured HIGH base rate"):
+            _with_threshold(dead)
+
+    # Strictly below the smallest -> reachable on both paths -> accepted.
+    assert _with_threshold(smallest - 1e-6).base_state_warning_threshold < smallest
+
+
+def test_the_fractional_kelly_floor_is_itself_bounded() -> None:
+    """(F-CFG-006) The floor must be >= 2 so full Kelly cannot be configured.
+
+    ``KellySettings._enforce_fractional_kelly_floor`` originally checked only
+    ``divisor >= floor`` — which says nothing about the floor. MEASURED
+    2026-10-06, with an unbounded floor:
+
+    * ``min_fractional_divisor=1.0, fractional_divisor=1.0`` loaded, and
+      ``kelly_fraction_multiplier`` (``1/divisor``) returned ``1.0`` — FULL
+      Kelly, the exact case Section 22.6 / Finding #6 prohibits, while the
+      validator's own message claimed it was prohibited.
+    * ``min_fractional_divisor=0.0, fractional_divisor=0.0`` loaded, and
+      ``kelly_fraction_multiplier`` raised ``ZeroDivisionError`` inside
+      ``apply_fractional_kelly`` — a runtime failure of a model instead of a
+      config error.
+
+    ``_MIN_FRACTIONAL_KELLY_DIVISOR`` names the boundary and the validator now
+    refuses a floor below it. This test pins: the constant is 2.0, the shipped
+    floor is at least it, NO floor below it loads, and the shipped multiplier is
+    at most half Kelly.
+    """
+    import macro_engine.config as cfg
+    from macro_engine.config import KellySettings, get_settings
+
+    assert cfg._MIN_FRACTIONAL_KELLY_DIVISOR == 2.0
+
+    kelly = get_settings().kelly
+    assert float(kelly.min_fractional_divisor.value) >= cfg._MIN_FRACTIONAL_KELLY_DIVISOR
+    # Full Kelly is a multiplier of 1.0; the mandatory division caps it at 0.5.
+    assert kelly.kelly_fraction_multiplier <= 0.5
+
+    def _with(floor: float, divisor: float) -> KellySettings:
+        raw = kelly.model_dump()
+        raw["min_fractional_divisor"]["value"] = floor
+        raw["fractional_divisor"]["value"] = divisor
+        return KellySettings.model_validate(raw)
+
+    # A floor below 2.0 — full Kelly (1.0) or a zero divisor — must be refused.
+    for floor, divisor in ((1.0, 1.0), (0.0, 0.0), (0.5, 0.5), (1.0, 2.0)):
+        with pytest.raises(ValueError):
+            _with(floor, divisor)
+
+    # The legitimately-bounded pair still loads, and respects both clauses.
+    assert _with(2.0, 3.0).kelly_fraction_multiplier == pytest.approx(1.0 / 3.0)

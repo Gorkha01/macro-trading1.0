@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import ConfigDict, Field, model_validator
 
-from macro_engine.config import get_settings
+from macro_engine.config import _EXACTNESS_SUM_TOLERANCE, get_settings
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     FiniteInputs,
@@ -1043,7 +1043,7 @@ class MonteCarloVaRInputs(FiniteInputs):
                 )
         for i in range(n):
             diagonal = self.normal_correlations[i][i]
-            if abs(diagonal - 1.0) > 1e-9:
+            if abs(diagonal - 1.0) > _EXACTNESS_SUM_TOLERANCE:
                 raise ValueError(
                     f"normal_correlations[{i}][{i}] is {diagonal}. The diagonal "
                     f"of a CORRELATION matrix is 1.0 by definition; a small "
