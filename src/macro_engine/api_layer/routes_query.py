@@ -98,8 +98,12 @@ class QueryResponse(BaseModel):
 #: rule without following a call.
 #:
 #: Words are matched as whole tokens after lowercasing and stripping punctuation,
-#: never as substrings: "recession" contains "session", and a substring match
-#: would route an unrelated question about a trading session to the regime model.
+#: never as substrings. MEASURED 2026-10-06: the illustration this note used to
+#: carry — *"recession" contains "session"* — is **false**; "session" is not a
+#: substring of "recession" (the real substring there is "cession"). The rule
+#: stands on its own examples: a substring match would let the keyword "rate"
+#: hit "moderate" and "cut" hit "executive", routing unrelated questions to
+#: ``policy_rules``.
 _TOPIC_KEYWORDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "policy_rules": (
         ("fed", "fomc", "rate", "rates", "cut", "hike", "policy", "taylor", "funds"),
@@ -275,8 +279,16 @@ async def query(
         f"topics correspond to; this endpoint retrieves, it does not interpret."
     )
     if unmatched:
+        # The token list is data; the conclusion drawn from it is not. A natural
+        # question always leaves its function words unmatched ("the", "will"), so
+        # "the retrieval is partial" was asserted on every such question whether
+        # or not any SUBJECT had failed to match (measured 2026-10-06) — a
+        # disclosure that fires unconditionally says nothing. The note now reports
+        # the tokens and says what an unmatched token may be.
         note += (
-            f" {len(unmatched)} token(s) matched no topic ({unmatched}) — the retrieval is partial."
+            f" {len(unmatched)} token(s) matched no topic ({unmatched}); an "
+            f"unmatched token is a function word or a subject this table does not "
+            f"cover, and either way it was not routed."
         )
 
     # The same union ``/thesis`` publishes: the provenance warnings AND the
