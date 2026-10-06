@@ -200,11 +200,13 @@ def _signed_scalar(value: object) -> float | None:
 
     This function and ``thesis_layer/signals.py``'s ``_signed_scalar`` are
     deliberately identical twins, and its docstring states the rule: the two
-    "sit in one layer and must not drift". The ``isfinite`` guard was added to
-    the signals twin when D-078 was fixed and was **not** mirrored here, which is
-    precisely the drift the note predicts. Any change to either guard belongs in
-    both, and ``tests/thesis_layer/test_signed_scalar_parity.py`` now fails if
-    they disagree.
+    "sit in one layer and must not drift". The rule exists because the drift
+    happened — the ``isfinite`` guard reached this file later than the signals
+    twin. MEASURED 2026-10-06: **both copies now carry it.** (An earlier note
+    here read "was **not** mirrored here", which described the state *before*
+    that repair and would send a reader looking for a guard that is already
+    present.) Any change to either guard belongs in both, and
+    ``tests/thesis_layer/test_signed_scalar_parity.py`` fails if they disagree.
     """
     if isinstance(value, bool):
         return None
@@ -238,11 +240,13 @@ def _condition_for_scalar(
     balance point has no direction to reverse from, and inventing one would be
     reporting absence of evidence as evidence.
 
-    ``value`` is required to be finite by construction — ``_signed_scalar`` is the
-    only caller and it now refuses ``nan``/``inf``. The guard is stated because
-    the two outcomes are not equivalent: a finite value equal to ``crossing`` is a
-    *measurement* at the balance point, whereas a non-finite value is a missing
-    measurement that must never reach this function and be rendered as one.
+    ``value`` is required to be finite. That is an **assumption, not a check**:
+    ``_signed_scalar`` is the only caller and it refuses ``nan``/``inf``, so the
+    assumption holds by construction — but this function has no guard of its own.
+    The distinction it relies on is not cosmetic: a finite value equal to
+    ``crossing`` is a *measurement* at the balance point, whereas a non-finite
+    value is a missing measurement that must never reach here and be rendered as
+    one.
     """
     if value > crossing:
         trigger: InvalidationTrigger = "crosses_back_negative"
