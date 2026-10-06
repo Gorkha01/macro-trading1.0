@@ -54,9 +54,12 @@ class HealthResponse(BaseModel):
     version: str
     ready: bool = Field(
         description=(
-            "Whether a snapshot is available to build a thesis from. False does NOT "
-            "mean the service is broken — it means no snapshot is cached yet, which "
-            "is the normal state after a restart."
+            "Whether a snapshot is available to build a thesis from RIGHT NOW — the "
+            "question the module docstring's table names. False has two causes and "
+            "`ready_reason` says which: no snapshot is cached yet (the normal state "
+            "after a restart, and the only cause the cheap check can report), or a "
+            "deep check attempted a build and it failed. A False does not mean the "
+            "process is down — `status` is the liveness field."
         )
     )
     ready_reason: str
@@ -117,7 +120,13 @@ async def health(
             status="ok",
             service=SERVICE_NAME,
             version=SERVICE_VERSION,
-            ready=True,
+            # `ready` answers the table's question — "is a snapshot available RIGHT
+            # NOW" — so it is False when nothing is cached, which is exactly the
+            # state the field description calls "the normal state after a restart".
+            # MEASURED 2026-10-06: this path used to return `ready=True`
+            # unconditionally, so the only way a caller ever saw `False` was a deep
+            # build failure — the one cause the description says it does NOT mean.
+            ready=cached is not None,
             ready_reason=ready_reason,
             cached_snapshot=cached is not None,
             cached_age_hours=cached.age_hours if cached else None,
@@ -136,7 +145,14 @@ async def health(
         _snapshot, provenance = get_snapshot("us", force_refresh=True)
     except SnapshotUnavailableError as exc:
         return HealthResponse(
-            status="degraded",
+            # `status` stays "ok": the process is UP — it answered this request —
+            # and the module docstring's table defines this field as LIVENESS and
+            # keeps readiness in `ready`. MEASURED 2026-10-06: this path returned
+            # "degraded", a third value the field's own description ("Always 'ok'
+            # when the process is up") and the table both deny; a supervisor keying
+            # on `status` would have restarted a healthy process over a data
+            # problem. The diagnosis belongs in `ready_reason`, where it already is.
+            status="ok",
             service=SERVICE_NAME,
             version=SERVICE_VERSION,
             ready=False,
