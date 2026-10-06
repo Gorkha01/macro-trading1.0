@@ -114,7 +114,10 @@ class ThesisResponse(BaseModel):
         description=(
             '"supplied by the caller" or "assumed from api.default_thesis_type". '
             "Stated as its own field because it is the one analytical choice this "
-            "endpoint makes on the caller's behalf."
+            "endpoint makes on the caller's behalf. Always present: the "
+            "orchestration appends the note unconditionally, and a missing one is a "
+            "500 rather than a default — there is no third value that could honestly "
+            "stand for 'we do not know who chose'."
         )
     )
 
@@ -124,6 +127,14 @@ def _http_status_for(exc: Exception, *, country: str) -> HTTPException:
 
     One function rather than a ``try/except`` chain in each handler, so the
     mapping is stated once and a test can exercise it without an HTTP client.
+
+    **It RAISES for an exception it does not map** — the original exception,
+    unchanged — and that half is load-bearing rather than incidental. The three
+    mapped classes are dependency failures (501 for a missing capability, 502 for
+    a provider that did not answer or whose data was unusable), so anything else
+    reaching here is a bug in this service, and dressing it as a 502 would blame
+    the data for it. Callers therefore write ``raise _http_status_for(exc, ...)``,
+    which is correct for both outcomes.
     """
     if isinstance(exc, NotImplementedError):
         return HTTPException(
@@ -220,10 +231,29 @@ async def get_thesis(
             ),
         ) from exc
 
+    # The orchestration appends this note UNCONDITIONALLY (see
+    # `snapshot_to_thesis_inputs`), so a missing one means its shape changed — and
+    # this endpoint must not paper that over by defaulting to "supplied by the
+    # caller". That default is a claim that the CALLER made the analytical choice,
+    # and the API may in fact have assumed it. MEASURED 2026-10-06: the sibling
+    # `/query` returns `None` for the same situation, and this field (`str`, not
+    # `str | None`) cannot express "unknown" at all. A shape change is a defect in
+    # this service, so it is a 500 — the same class as the builder's failures below.
     type_note = next(
         (n for n in inputs.notes if n.name == "thesis_type"),
         None,
     )
+    if type_note is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "the orchestration produced no 'thesis_type' derivation note, so this "
+                "endpoint cannot say whether the thesis family was supplied by the "
+                "caller or assumed from api.default_thesis_type. Reporting the former "
+                "unconditionally would credit the caller with a choice the API may "
+                "have made. This is a defect in this service, not a data condition."
+            ),
+        )
 
     # Provenance first, then the orchestration's warnings, deduplicated in order.
     # The two lists overlap by design (the snapshot's flags reach the thesis AND
@@ -242,5 +272,5 @@ async def get_thesis(
             for n in inputs.notes
         ],
         warnings=combined,
-        thesis_type_source=(type_note.source if type_note else "supplied by the caller"),
+        thesis_type_source=type_note.source,
     )
