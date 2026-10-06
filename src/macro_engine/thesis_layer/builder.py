@@ -362,8 +362,14 @@ def build_policy_gap(
 ) -> tuple[MarketPricingGap, RuleTrio, ModelResult, ModelResult]:
     """Q3-Q5: the three rules, their dispersion, and the canonical gap.
 
-    Returns ``(gap, rules, ensemble)``. The rules are returned alongside the
-    ensemble because ``MacroThesis.policy_view`` is §7.3's documented dict of
+    Returns ``(gap, rules, ensemble, market_path)`` — **four** values, not the
+    three an earlier version of this line listed. ``market_path`` is the
+    ``derive_market_implied_policy_path`` result, and it is returned rather than
+    discarded because it carries the Section 22.5 term-premium contamination
+    warnings that reach the thesis through ``collect_all_warnings``.
+
+    The rules are returned alongside the ensemble because
+    ``MacroThesis.policy_view`` is §7.3's documented dict of
     **all three** rule values plus dispersion **plus** the interpretation, and a
     caller that only kept the ensemble would have to re-run the rules to fill it.
 
@@ -1515,7 +1521,19 @@ def _apply_risk_axis(thesis: MacroThesis, target: RiskBudgetTarget | None) -> Ma
         ThesisPositionInputs(thesis=thesis, risk_budget_target=target)
     )
     value = translation.value
-    assert isinstance(value, dict)
+    # A TYPED raise rather than a bare `assert`, for the reason every other
+    # narrowing in this module is one: an assert is stripped under `-O`, so the
+    # guard would vanish and `ProposedPosition.model_validate` would report the
+    # wrong thing — a schema complaint about a non-dict, instead of
+    # "translate_thesis_to_position changed shape". MEASURED 2026-10-06: this was
+    # the module's ONLY bare assert, against six typed raises elsewhere.
+    if not isinstance(value, dict):
+        raise TypeError(
+            f"translate_thesis_to_position returned a {type(value).__name__} for "
+            f"value; ProposedPosition is built from the documented dict, so a "
+            f"non-dict means the function changed shape and this call site was "
+            f"not updated."
+        )
     proposal = ProposedPosition.model_validate(value)
 
     demotion = get_settings().risk.thesis_demotion_fraction
