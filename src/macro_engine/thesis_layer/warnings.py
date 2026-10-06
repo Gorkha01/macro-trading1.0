@@ -65,12 +65,21 @@ signature takes ``*model_results: ModelResult`` — and a BLOCKED input is one n
 model could run on, so **it is not a ModelResult**. Measured against the live
 registry: **5 known blocked members, 0 routes into the aggregate as specified.**
 
-**6. Section 5.4's disclosure class does not reach it either.** Measured on a
-live snapshot: **5 of 5** ``data_quality_flags`` fail to appear in the aggregate.
-The flag lowers confidence only in ``gdp_nowcast`` (which reads the snapshot
-list directly); every other model ignores it, and it is never surfaced as text
-(§22.8). The fact survives in ``MacroThesis.snapshot_quality_flags``,
-so it is not lost — but §21.4 says *warnings*, and warnings does not get it.
+**6. Section 5.4's disclosure class does not reach the aggregate either.**
+Measured on a live snapshot: **5 of 5** ``data_quality_flags`` fail to appear in
+the aggregate. The flag lowers confidence only in ``gdp_nowcast`` (which reads
+the snapshot list directly); every other model ignores it, and it is never
+surfaced as text (§22.8). The fact survives in
+``MacroThesis.snapshot_quality_flags``, so **§5.4's own requirement is met** —
+it attaches anomalies to the *snapshot*, not to a thesis's ``warnings``.
+
+⚠️ What this passage used to overstate: **§21.4's** *"surfaced in every thesis's
+``warnings``"* clause governs **§21.1's BLOCKED items**, not §5.4's quality
+flags. (Measured 2026-10-06, §21.4's sentence in full: *"Every BLOCKED item in
+Section 21.1 … must be … surfaced in every thesis's ``warnings``"*.) Routing the
+flags into the aggregate as well is **this module's design choice** — the
+``unattributed`` route accepts them — not a specification obligation. The
+earlier wording applied a BLOCKED-input rule to a different class.
 
 **7. Defects 1 and 6 are COUPLED, and the coupling is the point.** The natural
 fix for defect 6 — route snapshot flags into each result's warnings — makes
@@ -246,7 +255,10 @@ class WarningSummary(BaseModel):
         description=(
             "Each model's own warnings, keyed by ``model_name``, in the order "
             "the results were passed. Lets a reader group by source, which the "
-            "flat list's order alone cannot (defect 3)."
+            "flat list's order alone cannot (defect 3). Two results sharing a "
+            "``model_name`` are MERGED in input order rather than the later one "
+            "replacing the earlier, so this view cannot drop a warning; "
+            "``contributing_models`` still counts every result."
         )
     )
     contributing_models: int = Field(
@@ -334,7 +346,17 @@ def collect_all_warnings(
 
     for result in model_results:
         own = tuple(result.warnings)
-        model_warnings[result.model_name] = own
+        # ACCUMULATE, never overwrite. Two results may share a ``model_name`` —
+        # nothing in this function's contract forbids it, and ``ModelResult``
+        # puts no uniqueness requirement on the field — and a plain assignment
+        # drops the earlier result's warnings from this grouping. That is both a
+        # "never dropped" violation and, because the census below measures these
+        # lengths, an ``AssertionError`` out of a public function.
+        # MEASURED 2026-10-06: two same-named results with warnings raised
+        # "attribution lost a raiser" before this line changed, and two same-named
+        # results with NO warnings collapsed to one key while
+        # ``contributing_models`` still reported 2.
+        model_warnings[result.model_name] = (*model_warnings.get(result.model_name, ()), *own)
         if not own:
             continue
         models_with_warnings += 1
