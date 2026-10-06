@@ -2,13 +2,15 @@
 
 The spec's sample, and the two changes it needs
 -----------------------------------------------
-Section 8.1's ``create_app()`` includes four routers. The shipped one includes
-five — the additions are the streaming router from §8.3 and the query router,
-both of which the spec defines in its own sections and neither of which appears
-in the §8.1 sample. (The query router IS in the §8.1 import list; the streaming
-router is not. So the sample silently omits §8.3's endpoint from the app it
-builds, which is not a stylistic omission — an endpoint not included is an
-endpoint that 404s.)
+Section 8.1's ``create_app()`` includes four routers — health, thesis, query and
+dashboard. The shipped one includes **five**: those four plus the streaming router
+from §8.3. MEASURED 2026-10-06 against the spec's sample: ``routes_query.router``
+IS one of the §8.1 four, so the single addition is the streaming router, which the
+sample omits entirely. (An earlier version of this paragraph named both the
+streaming and the query router as additions and said neither appears in the
+sample — wrong twice over, and the arithmetic gave it away: four plus two
+additions is six, not five.) The omission is not stylistic — an endpoint not
+included is an endpoint that 404s.
 
 The second change is CORS, and it is not cosmetic
 ------------------------------------------------
@@ -61,11 +63,15 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     written for.
 
     It is called in the **lifespan** rather than at ``create_app()`` time on
-    purpose: ``create_app`` is called by ~20 tests that build an app object and
-    never serve it, and applying a process-global logging config as a side effect
-    of construction would mutate the test process's root logger. The lifespan
-    runs only when the app is actually served (uvicorn, or ``TestClient`` used as
-    a context manager), which is the moment the config is meant to take effect.
+    purpose: this module ends with ``app = create_app()``, so a construction-time
+    side effect would apply a process-global logging config on **import** — for
+    every test, tool and script that merely imports the module, and long before
+    anything is served. MEASURED 2026-10-06: no test in the repo builds an app at
+    all, so the hazard is import-time rather than test-time. (An earlier version of
+    this note justified the placement with a count of tests that build an app and
+    never serve it; the real count was zero.) The lifespan runs only when the app is
+    actually served (uvicorn, or ``TestClient`` used as a context manager), which
+    is the moment the config is meant to take effect.
 
     A missing/invalid ``config/logging.yaml`` raises here (``configure_logging``
     refuses rather than falling back to ``basicConfig``) — startup fails loudly
