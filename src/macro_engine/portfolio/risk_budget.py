@@ -1583,9 +1583,16 @@ _RISK_BUDGET_SUM_TOLERANCE = 1e-9
 #: kept as the human-readable reference for that leaf (`settings.yaml:1519`).
 #: It is NOT the signature default any more: ``compute_risk_parity_weights`` takes
 #: ``tolerance=None`` and resolves it to the config leaf, so the leaf is live and
-#: a caller-supplied value is the only override. Kept (rather than deleted) because
-#: other modules and tests import it by name; if the leaf is ever re-tuned, this
-#: constant and the YAML must move together.
+#: a caller-supplied value is the only override.
+#:
+#: MEASURED 2026-10-06: this note used to justify keeping the constant by saying
+#: *"other modules and tests import it by name"* — **nothing does**. The only
+#: references in the tree are this definition, its `__all__` entry, and a comment
+#: in `compute_risk_parity_weights`. So the claim that "the constant and the YAML
+#: must move together" had no enforcement either: the two are bound now by
+#: `test_the_tolerance_mirror_matches_the_leaf` in
+#: ``tests/portfolio/test_risk_budget_named_tests.py``, which is what makes the
+#: mirror safe to keep rather than a second copy of one number.
 DEFAULT_RISK_PARITY_TOLERANCE = 1e-10
 
 
@@ -2085,8 +2092,14 @@ def stress_correlations(
     The result is **not guaranteed positive semi-definite** — raising arbitrary
     correlations can make a matrix infeasible — so the caller's solver is the
     check: an infeasible matrix will fail to yield positive weights and that
-    raises rather than producing a false budget. The condition number is
-    reported so an ill-conditioned stress is visible before the solve.
+    raises rather than producing a false budget. (An earlier version of this
+    paragraph claimed *"the condition number is reported so an ill-conditioned
+    stress is visible before the solve"*. MEASURED 2026-10-06: **no condition
+    number is computed anywhere in this module** — the string does not appear
+    outside this note, and `compute_risk_parity_weights`' value dict carries no
+    such key. The diagnostic is a real gap, not a wording slip: it is named here
+    rather than described as present, and reporting one would need a hand-rolled
+    eigenvalue routine this module deliberately avoids.)
     """
     if not 0.0 < stressed_correlation <= 1.0:
         raise ValueError(

@@ -207,12 +207,22 @@ class KellySettings(BaseModel):
         never are. A divisor below the configured floor means the sizing model
         is effectively running full-Kelly — reject it at load time.
         """
-        divisor = float(self.fractional_divisor.value)
-        floor = float(self.min_fractional_divisor.value)
-        if divisor < floor:
+        # Locals are `_`-prefixed and never repeat a member name — the rule
+        # `_ceiling_must_be_reachable_and_binding` documents at length, and the
+        # rule this validator used to break: `divisor` here shadowed the class's
+        # own `divisor` PROPERTY inside this frame (a `model_validator(mode=
+        # "after")` body runs as an ordinary function, so a local wins). It was
+        # benign only by coincidence — the local computed the same value the
+        # property returns — and MEASURED 2026-10-06 it was the ONLY such
+        # collision in the file, which is why nothing noticed:
+        # `test_no_validator_shadows_a_property` (the guard the sibling docstring
+        # names) did not exist.
+        _divisor = float(self.fractional_divisor.value)
+        _floor = float(self.min_fractional_divisor.value)
+        if _divisor < _floor:
             raise ValueError(
-                f"kelly.fractional_divisor ({divisor}) is below the mandated floor "
-                f"({floor}). Full-Kelly sizing is prohibited — see AGENTS.md "
+                f"kelly.fractional_divisor ({_divisor}) is below the mandated floor "
+                f"({_floor}). Full-Kelly sizing is prohibited — see AGENTS.md "
                 f"Section 22.6 / Finding #6."
             )
         return self
@@ -4165,8 +4175,12 @@ class MarkovRegimeSettings(BaseModel):
     than ``CalibratedValue`` envelopes for the reason Section 4a records: the
     envelope answers *"is this number a fact, a convention, or a placeholder?"*,
     and there is no such question about a selection — the invariant in
-    ``tests/test_infrastructure.py`` requires every envelope to be readable as a
-    ``float``, which a string or a bool can never be. Their reasoning lives in
+    ``tests/test_infrastructure.py`` requires every **numeric** envelope to be
+    readable as a ``float``, which a string or a bool can never be. (MEASURED
+    2026-10-06: that invariant was cited here as covering *every* envelope, and
+    19 of the 339 leaves hold a string or a list on purpose — they are pinned as
+    a disclosed set in that file, so a twentieth fails rather than joining.)
+    Their reasoning lives in
     ``settings.yaml`` as a comment beside the value.
 
     The one derived quantity here is the **parameter count**, which the function
@@ -5380,9 +5394,12 @@ class EconometricsSettings(BaseModel):
 
     # These five are CHOICES, not calibrated quantities, and they are plain
     # `str` rather than `CalibratedValue` on purpose. `tests/test_infrastructure.py`
-    # enforces that every `CalibratedValue` leaf is readable as a plain NUMBER by
-    # a property or `Settings.scalar()` — and `scalar()` returns `float`, so a
-    # string leaf cannot satisfy it. Wrapping these in the envelope was tried
+    # enforces that every **numeric** `CalibratedValue` leaf is readable as a plain
+    # NUMBER via `Settings.scalar()` — and `scalar()` returns `float`, so a string
+    # leaf cannot satisfy it. (The file also pins the 19 non-numeric envelopes as a
+    # disclosed set, so the rule it enforces is the one the config actually
+    # satisfies rather than the stronger "every envelope" it used to be described
+    # as. Wrapping these in the envelope was tried
     # first and failed that invariant, correctly: the envelope answers "is this
     # number a fact, a convention, or a placeholder?", and there is no such
     # question about a selection. The reasoning that would have gone in each

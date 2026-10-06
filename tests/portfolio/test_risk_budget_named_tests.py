@@ -258,3 +258,128 @@ def _kelly_inputs() -> KellyInputs:
         payoff_unit="fraction_of_capital",
         limits=RiskLimits.from_settings(),
     )
+
+
+# ---------------------------------------------------------------------------
+# (F-RB-004) the tolerance mirror
+# ---------------------------------------------------------------------------
+
+
+def test_the_tolerance_mirror_matches_the_leaf() -> None:
+    """(F-RB-004) The constant is a MIRROR of ``risk.risk_parity_tolerance``.
+
+    Its note said it was kept "because other modules and tests import it by
+    name" — MEASURED, nothing imports it (only its own definition, its ``__all__``
+    entry, and a comment). The note also required that "the constant and the YAML
+    must move together", which nothing enforced. This test is what makes the
+    mirror safe to keep rather than a second copy of one number.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.portfolio.risk_budget import DEFAULT_RISK_PARITY_TOLERANCE
+
+    assert get_settings().risk.risk_parity_tolerance == DEFAULT_RISK_PARITY_TOLERANCE
+
+
+def test_the_stress_note_does_not_claim_a_condition_number() -> None:
+    """(F-RB-005) The note said the condition number "is reported"; nothing reports it.
+
+    MEASURED 2026-10-06: the word "condition" appeared in the module ONLY inside
+    that sentence, and ``compute_risk_parity_weights``' value dict carries no such
+    key — so a reader was told a diagnostic existed that does not.
+    """
+    import inspect
+    from pathlib import Path
+
+    import macro_engine.portfolio.risk_budget as rb
+
+    source = Path(inspect.getfile(rb)).read_text(encoding="utf-8")
+    assert "The condition number is\n    reported" not in source
+    assert "number is computed anywhere in this module" in source
+
+
+# ---------------------------------------------------------------------------
+# (F-RB-002) declared-vs-PRODUCED, the enforcement the docstring names
+# ---------------------------------------------------------------------------
+
+
+def test_every_declared_translation_outcome_is_actually_produced() -> None:
+    """(F-RB-002) DECLARED vs PRODUCED — not declared vs a hardcoded set.
+
+    ``ProposedPosition``'s class docstring states that the six members are
+    "exhaustive over the refusal and sizing paths", that "'Exhaustive' is a claim
+    this file has now had to repair twice", and that the check that catches a
+    member the code never emits is "the shipped live check" recounting "the
+    members against the outcomes the code actually produces" in
+    ``scripts/live_thesis_position_check.py`` section 5.
+
+    MEASURED 2026-10-06: that script does not exist anywhere in the tree, and the
+    only enforcement that did exist — ``test_every_literal_member_is_accepted`` —
+    compares the declared set against a *hardcoded* expected set: declared vs
+    declared. So the one check that would catch a declared-but-never-produced
+    member (the project's most-found defect class, D-045/D-046/D-048/O-53) was
+    the missing script.
+
+    This test does the comparison the docstring promises, from the AST of
+    ``translate_thesis_to_position`` — the module under review — rather than from
+    a second hand-written set:
+
+    * every ``_refuse(..., outcome="...")`` literal in the function body;
+    * the Kelly outcomes the function propagates through ``_as_translation_outcome``
+      (the two ``SizingOutcome`` members ``apply_fractional_kelly`` can return
+      once ``no_edge`` is handled by its own early refusal).
+
+    Set equality in BOTH directions is the claim: a declared member the body
+    never emits would show up as ``declared - produced`` and must not exist, and a
+    produced literal absent from the ``Literal`` would be a Type error at the
+    narrowing call. The union is asserted equal to the declared members, so this
+    fails on drift in either direction.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    import macro_engine.portfolio.risk_budget as rb
+    from macro_engine.portfolio.risk_budget import (
+        _TRANSLATION_OUTCOMES,
+        PositionTranslationOutcome,
+        SizingOutcome,
+    )
+
+    declared = set(get_args(PositionTranslationOutcome))
+    assert declared == set(_TRANSLATION_OUTCOMES), (
+        "the runtime mirror and the Literal must agree (D-045a)"
+    )
+
+    tree = ast.parse(Path(inspect.getfile(rb)).read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "translate_thesis_to_position"
+    )
+
+    produced: set[str] = set()
+    for node in ast.walk(function):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id == "_refuse":
+            for keyword in node.keywords:
+                if keyword.arg == "outcome" and isinstance(keyword.value, ast.Constant):
+                    produced.add(str(keyword.value.value))
+
+    # The two Kelly verdicts actually propagated. ``no_edge`` returns early
+    # (its own ``_refuse`` above), so the call site can only see these two, and
+    # each is one of the two non-refusal members of the declared set. The set is
+    # read from ``SizingOutcome``'s own annotation so it cannot drift from the
+    # producer.
+    kelly_outcomes = set(get_args(SizingOutcome.model_fields["outcome"].annotation)) - {"no_edge"}
+    produced |= kelly_outcomes
+
+    assert produced <= declared, (
+        f"the code produces outcome(s) not declared in the Literal: {sorted(produced - declared)}"
+    )
+    assert declared - produced == set(), (
+        "declared but never produced by `translate_thesis_to_position`: "
+        f"{sorted(declared - produced)} — a member for a path that cannot run is the "
+        "declared-consumed-unreachable class (D-045/D-046/D-048, O-53)"
+    )
+    assert produced == declared
