@@ -103,9 +103,12 @@ the gap's direction
 value is a signed number, sign opposes  ``"contradicts"``
 the gap's direction
 value is a signed number equal to zero  ``"neutral"``
-value is not a number (dict, str, …)    ``"neutral"``, **and the entry carries**
-                                        ``readable=False`` with the value's
-                                        type name and the reason
+value is not a number (dict, str, …)    ``"neutral"``, **and the assessment
+                                        carries a matching
+                                        ``UnreadableConfirmationInput``** with
+                                        the value's type name and the reason,
+                                        plus a ``[unreadable: …]`` suffix on the
+                                        entry's own ``detail``
 gap has no direction (``raw_gap == 0``) every readable signal is ``"neutral"``
 ======================================  =========================================
 
@@ -190,11 +193,17 @@ _WARNING_MARKER = "model_warnings"
 class UnreadableConfirmationInput(BaseModel):
     """A signal whose ``value`` shape this function cannot turn into a direction.
 
-    Reported inside its own ``ConfirmationSignal`` (with ``readable=False``) so
-    a consumer sees one entry per input — the schema is a list of signals, and
-    silently dropping an input from a list whose length a reader may be counting
-    is the D-054 silence failure. The extra detail lives here so the
-    ``ConfirmationSignal`` schema itself does not change (Section 22.13).
+    Reported in ``ConfirmationSignalAssessment.unreadable``, with a matching
+    entry in ``signals`` reading ``neutral``, so a consumer sees one entry per
+    input — the schema is a list of signals, and silently dropping an input from
+    a list whose length a reader may be counting is the D-054 silence failure.
+
+    The detail lives in this SEPARATE model rather than on the signal so the
+    ``ConfirmationSignal`` schema itself does not change (Section 22.13); the
+    signal carries the same information as a ``[unreadable: …]`` suffix on its
+    ``detail``. (The earlier note said the entry carried ``readable=False`` —
+    measured 2026-10-06: no model here, and none in ``thesis_layer/schemas.py``,
+    has a ``readable`` field.)
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -248,9 +257,12 @@ def _signed_scalar(value: object) -> float | None:
     masquerade] as a contradiction"); a non-finite value is exactly such a
     value, and it was reaching the classifier through the type test.
 
-    ``inf`` is admitted for the same reason: ``inf > 0`` is ``True``, so it
+    ``inf`` is excluded for the same reason: ``inf > 0`` is ``True``, so it
     would publish ``confirms`` — an unbounded reading silently agreeing with
-    whatever the thesis says.
+    whatever the thesis says. The guard is ``isfinite``, which excludes EVERY
+    non-finite float, not only ``nan`` (measured 2026-10-06:
+    ``_signed_scalar(float("inf"))`` and ``_signed_scalar(float("-inf"))`` are
+    both ``None``).
     """
     if isinstance(value, bool):
         return None
@@ -382,8 +394,14 @@ def _family_of(result: ModelResult) -> EvidenceSourceFamily | None:
 
     ``ModelResult.source_family`` is already the right type, so this is a
     pass-through rather than a mapping — the point is that it is **not dropped**
-    (defect 4). A result with no family stays ``None`` and remains visible to
-    ``count_independent_families`` as untagged, which is the honest state.
+    (defect 4). A result with no family stays ``None``, which is the honest state
+    (untagged, not "independent").
+
+    Measured 2026-10-06: nothing in ``src/`` currently COUNTS families from this
+    list — the field is carried and published so the question is *answerable*,
+    not because a caller asks it. The family count a thesis carries comes from
+    the builder's own reads, not from here. (Same root fact as F-TSC-006, which
+    corrected the field's description in ``thesis_layer/schemas.py``.)
     """
     return result.source_family
 
@@ -400,10 +418,12 @@ def _detail_for(
     The interpretation is kept **verbatim** (it is the model's own sentence and
     the sample's instinct to pass it through is right) and the direction is
     appended so a reader sees both the claim and *why* it was classified that
-    way. When the model warned, the warnings count is appended too, with
-    ``hedge_marker`` naming what the count is — a signal can corroborate the
-    gap's direction while its own model reports caveats, and a reader who only
-    sees ``"confirms"`` would not know (defect 5).
+    way. When the model warned **and the direction is not neutral**, the warnings
+    count is appended too, with ``hedge_marker`` naming what the count is — a
+    signal can corroborate the gap's direction while its own model reports
+    caveats, and a reader who only sees ``"confirms"`` would not know (defect 5).
+    A neutral entry does not need the marker: its direction already says it is
+    not a corroboration, so there is no "confirms" to undercut.
     """
     gap_word = "above" if gap_sign > 0 else "below" if gap_sign < 0 else "at"
     if direction == "neutral" and value == 0.0:
