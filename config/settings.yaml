@@ -5223,11 +5223,16 @@ api:
     value: 12
     calibration_status: uncalibrated_illustrative
     note: >
-      Series per family on /dashboard_data. A CAP rather than everything: the
-      endpoint's payload is each series' full history, so an unbounded response
-      is a denial of service against the caller's own browser. Twelve is enough
-      for every Phase-1 chart and small enough that the response stays a
-      dashboard rather than a data dump.
+      POINTS PER SERIES on /dashboard_data — the most recent N observations of
+      every series in every family. NOT the number of series per family: the
+      family table is fixed at 2-5 series each, so a per-family reading would
+      make this leaf inert. A CAP rather than everything: the endpoint's payload
+      is each series' full history, so an unbounded response is a denial of
+      service against the caller's own browser. Twelve is enough for every
+      Phase-1 chart and small enough that the response stays a dashboard rather
+      than a data dump. MUST be >= 1: the panel slices with `points[-limit:]`,
+      which returns EVERYTHING for 0 (reporting nothing withheld) and drops the
+      OLDEST point for a negative value.
   snapshot_max_age_hours_value:
     value: 24.0
     calibration_status: uncalibrated_illustrative

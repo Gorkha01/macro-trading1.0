@@ -22,9 +22,13 @@ they belong to the thesis where they carry evidence. This endpoint publishes the
 
 Why the series are capped
 -------------------------
-``api.dashboard_series_limit`` (default 12) bounds each family. The payload is
+``api.dashboard_series_limit`` (default 12) bounds each series' **history**, not
+the number of series: every panel in every family keeps its most recent ``limit``
+points. (An earlier version of this line described a per-family cap, which the
+code does not do — and which would make the leaf inert, since the family table
+declares 2-5 series per family.) The payload is
 each series' full history, so an unbounded response is kilobytes per series
-times seventeen — a denial of service against the caller's own browser, and a
+times twenty — a denial of service against the caller's own browser, and a
 response too large to render is a response that does not do its job. The cap is
 config, and the response reports **how many points it withheld**, so a truncated
 chart says it is truncated rather than silently drawing a shorter history.
@@ -47,8 +51,11 @@ from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
 router = APIRouter(tags=["dashboard"])
 
 #: The families this endpoint exposes, and the snapshot fields in each. Grouped
-#: because a flat list of seventeen names is not a dashboard — a widget renders
-#: a panel, and the panels are the economic blocks.
+#: because a flat list of **twenty** names is not a dashboard — a widget renders
+#: a panel, and the panels are the economic blocks. (The count was stated as a
+#: smaller number until 2026-10-06; measured, the table declares 20 fields across
+#: 5 families, and a test now binds the number to the table so it cannot drift
+#: again.)
 _SERIES_FAMILIES: dict[str, tuple[str, ...]] = {
     "growth": ("gdp_real", "gdp_nominal", "gdp_potential", "gdi"),
     "prices": ("cpi_headline", "cpi_core", "pce_core", "ppi"),
@@ -171,6 +178,26 @@ async def dashboard_data(
 
     settings = get_settings()
     limit = settings.api.dashboard_series_limit
+    # `points[-limit:]` is NOT a cap for `limit <= 0`: `points[-0:]` is the WHOLE
+    # list (with `points_withheld == 0`, so the response says it truncated
+    # nothing), and a NEGATIVE limit drops the OLDEST point instead of the newest.
+    # So the leaf's own value can silently disable the DoS guard this module
+    # exists to provide — and report nothing. MEASURED 2026-10-06; the leaf is a
+    # `CalibratedValue` whose `value` is typed `Any` with no range constraint, so
+    # nothing else catches it. A non-positive limit is a CONFIGURATION defect, so
+    # it is a 500 here rather than a silently different response.
+    if limit < 1:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"api.dashboard_series_limit is {limit}; it must be at least 1. A "
+                f"non-positive limit does not cap anything — 0 returns every point "
+                f"while reporting nothing withheld, and a negative value drops the "
+                f"OLDEST point — so the response would be the unbounded payload this "
+                f"endpoint's cap exists to prevent. This is a configuration defect, "
+                f"not a data condition."
+            ),
+        )
 
     try:
         snapshot, provenance = get_snapshot(country, force_refresh=fresh)
@@ -246,8 +273,8 @@ def _points_for(snapshot: MacroDataSnapshot, field: str) -> list[ObservationPoin
     caller cannot tell them apart from the return value. The second is a code
     defect: the family table above names a field that no longer exists, which
     D-005 records as exactly how ``treasury_curve`` → ``yield_curve`` alias drift
-    happened. So ``_missing_fields`` reports the second case separately, and the
-    handler turns it into a warning.
+    happened. So ``_declared_but_absent`` reports the second case separately, and
+    the handler turns it into a warning.
     """
     value = getattr(snapshot, field, None)
     if isinstance(value, list):
