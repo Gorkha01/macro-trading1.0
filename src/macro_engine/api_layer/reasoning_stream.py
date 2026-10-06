@@ -29,7 +29,8 @@ spec's sample                       emitted here
 ==================================  ==============================================
 ``"14 series"``                     the real requested/succeeded/failed counts
 ``"9 models completed"``            the real count of reads + rules
-``"gap = -140bp"``                  ``gap.raw_gap`` and the ensemble, in bp
+``"gap = -140bp"``                  ``gap.raw_gap``, both of its sides and the
+                                    dispersion, in bp
 ``"HIGH convergence"``              the real ``ConvergenceClassification``
 ``"long UST 2yr"``                  the real instrument and direction
 ==================================  ==============================================
@@ -55,7 +56,7 @@ agree there is no edge" is a completed analysis, not a failure.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -70,6 +71,14 @@ from macro_engine.thesis_layer.no_trade import NO_TRADE_TRIGGER_LABELS, NoTradeT
 
 router = APIRouter(tags=["streaming"])
 
+#: The SSE terminator. One definition, because the contract is that exactly one
+#: reaches every stream that ended DELIBERATELY — and a test can bind it.
+_TERMINATOR = "data: [DONE]\n\n"
+
+#: The gates that can actually stand a thesis down in this pipeline. ``caller`` is
+#: deliberately absent: it exists so a stand-down outside the three documented
+#: gates is *sayable* (see ``no_trade.NoTradeTrigger``), but ``build_us_macro_thesis``
+#: only ever emits these three, and this trace reads the builder's output.
 _TRIGGERS: tuple[NoTradeTrigger, ...] = (
     "gap_below_dispersion",
     "conflicted_signals",
@@ -97,7 +106,7 @@ def _fired(thesis_warnings: list[str]) -> list[NoTradeTrigger]:
     ]
 
 
-async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
+async def reasoning_step_generator(country: str) -> AsyncGenerator[str, None]:
     """Run the real chain, emitting what each stage actually measured.
 
     The steps are yielded as the work happens rather than pre-computed and
@@ -121,19 +130,28 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
     body with no terminal event** — contradicting this module's own contract
     that ``[DONE]`` always ends the stream.
 
-    So the whole body runs inside one outer ``try`` whose ``finally`` emits the
-    terminator. The per-stage handlers stay because they produce *specific*
-    messages ("country not implemented", "field X could not be read"); the outer
-    handler is the backstop for failures nobody enumerated.
+    So the whole body runs inside one outer ``try``. The terminator is emitted on
+    the normal path and on the handled-error path — **not** from a ``finally``:
+    ``yield`` inside a ``finally`` is unsafe here, because a client disconnect
+    makes the server call ``aclose()``, which throws ``GeneratorExit`` into the
+    generator, and a ``yield`` in response raises
+    ``RuntimeError: async generator ignored GeneratorExit`` (measured
+    2026-10-06). ``GeneratorExit`` derives from ``BaseException``, so the
+    ``except Exception`` backstop does not catch it and the ``else`` clause does
+    not run — the generator then closes cleanly, with no terminator, because
+    there is no longer a client to receive one.
+
+    The per-stage handlers stay because they produce *specific* messages
+    ("country not implemented", "field X could not be read"); the outer handler is
+    the backstop for failures nobody enumerated.
 
     What the guard does and does not cover. An exception raised inside
     ``_reasoning_frames`` is caught here and becomes an ``internal/error`` frame.
     An exception raised *inside the ``except`` body itself* — i.e. by the
-    ``_event(...)`` call that formats the failure message — would not be, but
-    the ``finally`` still runs, so the client gets ``[DONE]`` and a cleanly
-    terminated stream without a diagnosis. That is the right degradation: a
-    terminated stream with a missing explanation beats a truncated one with no
-    way to tell truncation from completion.
+    ``_event(...)`` call that formats the failure message — would not be, and in
+    that case no terminator is emitted at all, so the client sees a truncated
+    stream. That is the residual risk, stated rather than papered over: the
+    alternative (a ``finally``) is the thing that provably cannot work.
 
     A note on the heartbeat: no keepalive frame is emitted here. An SSE
     ``: comment`` line would keep an intermediary from dropping an idle
@@ -156,17 +174,17 @@ async def reasoning_step_generator(country: str) -> AsyncIterator[str]:
             f"the reasoning chain failed outside a handled stage: "
             f"{type(exc).__name__}: {str(exc)[:300]}",
         )
-    finally:
-        # Always terminate — on the success path, on every handled error path,
-        # and on the unhandled path above. A client can therefore treat
-        # ``[DONE]`` as the single signal that the stream ended deliberately.
-        # This is also why no per-stage handler yields its own terminator any
-        # more: one ``finally`` is the one place that can guarantee "exactly
-        # once", which N spreads-out yields cannot.
-        yield "data: [DONE]\n\n"
+        yield _TERMINATOR
+    else:
+        # The deliberate end. NOT a `finally`: see the docstring — a `yield` in a
+        # `finally` raises `RuntimeError: async generator ignored GeneratorExit`
+        # when the server closes the generator because the client disconnected
+        # (measured 2026-10-06). `GeneratorExit` is a `BaseException`, so it skips
+        # both this `else` and the `except` above and the generator closes cleanly.
+        yield _TERMINATOR
 
 
-async def _reasoning_frames(country: str) -> AsyncIterator[str]:
+async def _reasoning_frames(country: str) -> AsyncGenerator[str, None]:
     """The per-stage trace. Split out so the outer guard can wrap it whole."""
     yield _event("fetch_data", "started", f"Loading the {country} macro snapshot via OpenBB")
 
@@ -226,7 +244,11 @@ async def _reasoning_frames(country: str) -> AsyncIterator[str]:
     yield _event(
         "derive_inputs",
         "done",
-        f"{len(inputs.notes)} input(s) derived: "
+        # The COUNT is every note; the list is the five a reader most wants to
+        # check. The frame used to print them as one clause — "N input(s)
+        # derived: a, b, c" — so the count and the list disagreed and the list
+        # read as if it were complete (measured 2026-10-06).
+        f"{len(inputs.notes)} input(s) derived; key measurements: "
         + ", ".join(
             f"{n.name}={n.value}"
             for n in inputs.notes
@@ -242,7 +264,7 @@ async def _reasoning_frames(country: str) -> AsyncIterator[str]:
     )
 
     yield _event("run_models", "started", "Running the policy rules and the gap")
-    gap, rules, _ensemble, market_path = build_policy_gap(
+    gap, rules, _ensemble, _market_path = build_policy_gap(
         inputs.taylor_inputs,
         inputs.first_difference_inputs,
         short_yield=inputs.short_yield,
@@ -258,9 +280,17 @@ async def _reasoning_frames(country: str) -> AsyncIterator[str]:
     yield _event(
         "compute_gap",
         "done",
-        f"Model-implied {market_path.value!r} vs market-implied policy path: "
-        f"gap = {gap.raw_gap:+.4f}pp ({gap.raw_gap * 100:+.1f}bp), "
-        f"dispersion {gap.dispersion:.4f}pp, meaningful={gap.is_meaningful}",
+        # Both sides come from the GAP's own fields, which is what the gap was
+        # built from. `market_path.value` used to sit in the "Model-implied" slot
+        # — and it IS the market-implied path (its own docstring: "A PROXY for the
+        # market-implied policy path") — so the frame named the wrong side of the
+        # gap and never showed the model-implied value at all (measured
+        # 2026-10-06). A trace that mislabels a live number does the same harm as
+        # one that fabricates it.
+        f"Model-implied {gap.model_implied_value:.4f}pp vs market-implied "
+        f"{gap.market_implied_value:.4f}pp: gap = {gap.raw_gap:+.4f}pp "
+        f"({gap.raw_gap * 100:+.1f}bp), dispersion {gap.dispersion:.4f}pp, "
+        f"meaningful={gap.is_meaningful}",
     )
 
     yield _event("build_thesis", "started", "Running the gate chain and building the thesis")
