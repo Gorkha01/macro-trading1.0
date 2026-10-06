@@ -765,14 +765,22 @@ def _labor_leg(
     is a config change plus a registry entry — an increment of its own, not a
     silent substitution here.
 
-    So the score is computed with NFP's weight **redistributed** across the two
-    components that do exist, and the fact is returned as a warning. The
-    alternative — passing ``nfp_3m_avg=0.0`` — is what makes this a decision
-    worth documenting: zero is a *legal* value for the field and means "no
-    payroll growth", so the score would return a plausible number computed from
-    an asserted fact about a series nobody read. Redistribution with disclosure
-    is a different statement: "this score is over two of its three blocks", which
-    is checkable and carries its own confidence penalty.
+    So the NFP block is fed the model's own **neutral pace** rather than ``0.0``,
+    and what that does and does not achieve is returned as a warning. ``0.0`` is
+    the trap: it is a *legal* value for the field and means "no payroll growth",
+    so the score would return a plausible number computed from an asserted fact
+    about a series nobody read — MEASURED 2026-10-06, it drags the score down by
+    ``0.2 * (0 - neutral) / divisor = -3.0`` points, a systematic tilt toward
+    "loosening" on every thesis.
+
+    ⚠️ **The neutral pace makes the block contribute zero; it does NOT
+    redistribute the weight.** ``labor_tightness_score`` applies ``weight_nfp``
+    unconditionally (``(nfp_3m_avg - neutral_nfp_pace) / divisor``), so the
+    published score is the claims+JOLTS sum **compressed 20 % toward zero**. An
+    earlier version of this paragraph said the weight was "redistributed", which
+    the model's API cannot do — the warning now states the compression instead,
+    because a reader comparing this score against a 3-block one needs to know it
+    is on a narrower scale.
     """
     notes: list[DerivationNote] = []
     warnings: list[str] = []
@@ -823,14 +831,26 @@ def _labor_leg(
         )
     )
 
-    # NFP's share (weight_nfp, config) is redistributed over the two blocks that
-    # exist, and the redistribution is disclosed rather than hidden.
+    # NFP's block cannot be read (the snapshot carries no payrolls field), so it
+    # is fed the model's OWN neutral pace rather than 0.0. MEASURED 2026-10-06:
+    # `labor_tightness_score` does NOT redistribute a missing block's weight — it
+    # applies `weight_nfp` unconditionally to `(nfp_3m_avg - neutral) / divisor` —
+    # so passing 0.0 asserts "no payroll growth" and drags the score down by
+    # `0.2 * (0 - 150) / 10 = -3.0` points on every thesis. The neutral pace makes
+    # the block's contribution EXACTLY zero, which is the closest the model's API
+    # allows to "this score is over two of its three blocks": the weight is still
+    # applied, so the score is compressed 20% toward zero rather than
+    # redistributed. That residual is disclosed rather than papered over.
+    neutral_nfp = get_settings().labor.neutral_nfp_pace
     warnings.append(
         "LABOR SCORE INCOMPLETE — NFP MISSING: MacroDataSnapshot carries no "
-        "payrolls field, so labor_tightness_score was computed over its claims "
-        "and JOLTS blocks only, with the NFP weight redistributed across them. "
-        "The score is a 2-block reading, not the 3-block reading Section 6.4 "
-        "defines, and its confidence is reduced accordingly."
+        "payrolls field, so labor_tightness_score was fed the model's own "
+        f"NEUTRAL payroll pace ({neutral_nfp:g}k) for its NFP block. That makes "
+        "the block contribute exactly ZERO, but it does NOT redistribute the "
+        "weight: labor_tightness_score applies weight_nfp unconditionally, so the "
+        "published score is the claims+JOLTS sum COMPRESSED 20% toward zero, not "
+        "a 2-block average. It is a 2-of-3-block reading on the -100..+100 scale, "
+        "and its confidence is reduced accordingly."
     )
 
     result = labor_tightness_score(
@@ -838,7 +858,7 @@ def _labor_leg(
             initial_claims_4wk_avg_change_pct=claims_change,
             jolts_openings_yoy_pct=openings_yoy,
             jolts_quits_level_percentile=quits_percentile,
-            nfp_3m_avg=0.0,
+            nfp_3m_avg=neutral_nfp,
         )
     )
     return result, notes, warnings
@@ -955,10 +975,21 @@ def _inflation_momentum_3m(
             fields=("cpi_headline",),
         )
     momentum = ((latest.value / base.value) ** 4 - 1.0) * 100.0
+    # The span is the ACTUAL calendar distance between the two points, not the
+    # observation count. The expression this replaces,
+    # `len(points) - 1 - (len(points) - 4)`, is a constant 3 for EVERY input — so
+    # a series with a missing month reported "a 3-month span" over a four-month
+    # gap. That is the mislabelled-window failure the sibling
+    # `_trailing_percentile` avoids by reporting `len(window)`, and the module
+    # docstring's own rule is that the window actually used is REPORTED rather
+    # than described.
+    span_months = (latest.observation_date.year - base.observation_date.year) * 12 + (
+        latest.observation_date.month - base.observation_date.month
+    )
     described = (
         f"{momentum:+.4f}% annualized ({latest.observation_date.isoformat()} "
         f"{latest.value:g} vs {base.observation_date.isoformat()} {base.value:g}, "
-        f"a {len(points) - 1 - (len(points) - 4)}-month span)"
+        f"a {span_months}-month span)"
     )
     return momentum, described
 

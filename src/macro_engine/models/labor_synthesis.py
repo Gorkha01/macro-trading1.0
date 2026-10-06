@@ -335,9 +335,14 @@ def labor_tightness_score(inputs: LaborInputs) -> ModelResult:
             "MUST NOT be used as the sole justification for a tightening or "
             "loosening call when its components conflict. Read the components in "
             "`context` first (Section 12: divergence is information).",
-            "MUST NOT be consumed without noticing the NFP-redistribution "
-            "warning on the live path, where the score is computed from three "
-            "components rather than four.",
+            "MUST NOT be consumed without reading the live path's disclosure: "
+            "`api_layer/orchestration.py` cannot read a payrolls series, so it "
+            "feeds this block the model's own NEUTRAL pace. That makes the NFP "
+            "term contribute exactly ZERO, but `weight_nfp` is still applied — so "
+            "a score from that path is the claims+JOLTS sum COMPRESSED 20% toward "
+            "zero, NOT a 2-block average (measured 2026-10-06; the earlier note "
+            "here described an 'NFP-redistribution' the live path does not and "
+            "cannot perform).",
         ],
     )
 
