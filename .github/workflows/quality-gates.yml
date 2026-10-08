@@ -3,26 +3,33 @@ name: quality-gates
 # Phase 0 Definition of Done (AGENTS.md Section 11): pytest collects and
 # passes, ruff clean, mypy clean.
 #
-# SCOPE 2026-10-08. `tools/` and `scripts/` are no longer versioned — the
-# repository carries production code and its tests — so a CI checkout contains
-# `src/`, `tests/`, `config/`, `docs/`, `AGENTS.md` and `pyproject.toml`, and
-# nothing else. Every step that named `tools/` or `scripts/` failed with
-# `EM902 No such file or directory`. Those steps are GONE rather than repaired:
-# a step cannot pass against a tree that does not contain what it reads.
+# SCOPE 2026-10-08. `scripts/` is NOT versioned. The repository carries the
+# production code, its tests, and the `tools/` diagnostics that `src/`
+# docstrings cite as their reproduction path — a published repo has to contain
+# those or the citations dangle, which is the F-CAT-002 defect class. A CI
+# checkout therefore contains `src/`, `tests/`, `tools/`, `config/`, `docs/`,
+# `AGENTS.md` and `pyproject.toml`, and NOT `scripts/`.
 #
-# What was REMOVED, and why:
+# The 52 mutation sweeps in `scripts/` are the one tree that stays local, so
+# exactly one gate could not come back:
 #
-#   * "Reachability gate" (`tools/reachability_audit.py`) and "Sweep health"
-#     (`tools/sweep_health.py`) — both are `tools/` scripts, and sweep_health
-#     additionally reads `scripts/` (the 52 mutation sweeps). Neither tree
-#     ships. Both remain runnable LOCALLY and are now local-only gates.
-#   * The `live-data` job's "OpenBB reachability" step
-#     (`tools/openbb_reachability.py`) — same reason. The live TEST run below
-#     is retained, but note the O-111(a) argument that motivated the probe: a
-#     dead endpoint turns the live run GREEN by skipping the registry-coverage
-#     assertions, and the probe was what caught that. With the probe gone,
-#     `pytest -m live` can go green while deleting assertions. Run
-#     `tools/openbb_reachability.py` by hand before trusting a live run.
+#   * "Sweep health" (`tools/sweep_health.py`) — it READS `scripts/`, so it
+#     cannot pass in a checkout that does not contain it. It stays a local-only
+#     gate, which is the honest consequence of keeping `scripts/` private.
+#
+# NOT restored, and the reason is NOT versioning: the "Reachability gate"
+# (`tools/reachability_audit.py --check-baseline`) is currently FAILING on its
+# own merits. Measured 2026-10-08 it reports 59 reachable functions against a
+# baseline of 58, with `require_finite_scalars` as the regression — even though
+# `src/models/bond_math.py`, `national_accounts.py` and `production_function.py`
+# all still call it, so the audit's own reachability walk is the thing to
+# examine. `tools/` IS versioned now, so this step COULD be restored, but doing
+# so would put CI red for a pre-existing defect. Fix the regression (or
+# regenerate the baseline if the lost caller was a deliberate removal), THEN
+# restore the step.
+#
+# Still missing from this file, also local-only: nothing. The offline suite, the
+# O-111 OpenBB probe and the lint/format/type gates are all back.
 #
 # The offline suite IS retained — it needs only `tests/`, which is versioned.
 
@@ -50,18 +57,19 @@ jobs:
       - name: Install dependencies (locked)
         run: uv sync --extra dev --frozen
 
-      # Scope is `src/ tests/`. `scripts/` was added to this step deliberately
-      # at D-136 (the 52 mutation sweeps are real logic, ~40k lines, and the
-      # only code in the repository that rewrites `src/` at runtime). It is no
-      # longer versioned, so it is no longer linted here; that check is now
-      # local-only.
+      # Scope is `src/ tests/ tools/`. `scripts/` was added to this step
+      # deliberately at D-136 (the 52 mutation sweeps are real logic, ~40k
+      # lines, and the only code in the repository that rewrites `src/` at
+      # runtime). It is no longer versioned, so it is no longer linted here;
+      # that check is now local-only.
       - name: Lint (ruff check)
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ tools/
 
       - name: Format check (ruff format)
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ tools/
 
-      # `mypy` reads its scope from `pyproject.toml` (`files = ["src", "tests"]`).
+      # `mypy` reads its scope from `pyproject.toml`
+      # (`files = ["src", "tests", "tools"]`).
       - name: Type check (mypy --strict)
         run: uv run mypy
 
@@ -77,6 +85,23 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.12
       - run: uv sync --extra dev --frozen
+
+      # O-111(a) ENFORCED, RESTORED 2026-10-08 alongside `tools/`. The probe
+      # exists and is documented as Step 0, but nothing ran it automatically --
+      # and the step below is exactly where it matters. `pytest -m live` SKIPS
+      # the registry-coverage checks when the service is down (correctly: an
+      # external dependency being unavailable is not a regression in this
+      # repository), so a dead endpoint turns this job GREEN while deleting
+      # assertions. That is the O-111 incident one level up, and a skip cannot
+      # distinguish "I chose to run offline" from "the thing I depend on has
+      # been dead all day".
+      #
+      # Exit codes are the contract (O-88): 0 serving, 1 not serving, 2 could not
+      # run. A non-zero exit FAILS the job, which is the point -- this is the one
+      # place where an unserving OpenBB instance is a real failure rather than a
+      # reason to skip.
+      - name: OpenBB reachability (fails if the configured URL does not SERVE)
+        run: uv run python tools/openbb_reachability.py
 
       - name: Live data-layer tests
         env:

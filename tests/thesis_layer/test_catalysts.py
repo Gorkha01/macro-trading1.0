@@ -313,15 +313,6 @@ def test_entries_are_earliest_first(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (Path(__file__).resolve().parents[2] / "tools").is_dir(),
-    reason=(
-        "tools/ is not versioned (2026-10-08) — this checkout carries production "
-        "code and its tests, so there is no tooling tree to check. The claim is "
-        "still enforced LOCALLY. NOTE: this skip removes the assertion in CI "
-        "(O-62) — it is local-only by design now, not silently disabled."
-    ),
-)
 def test_the_named_diagnosis_tool_exists() -> None:
     """(F-CAT-002) The docstring says it "reproduces the whole matrix on demand".
 
@@ -329,8 +320,9 @@ def test_the_named_diagnosis_tool_exists() -> None:
     — added there, dropped by the later history re-init `bd96d5c`), and three docs
     reference it too, so the fix is to restore it rather than delete the claim.
 
-    Skipped where the tooling tree is absent (see the decorator): `tools/` stopped
-    being versioned on 2026-10-08, so a CI checkout cannot answer this question.
+    `tools/` was briefly un-versioned on 2026-10-08, which made this assertion
+    unanswerable in a CI checkout; it was re-tracked the same day, so the test
+    runs everywhere again and no skip is needed.
     """
     root = Path(__file__).resolve().parents[2]
     tool = root / "tools" / "fred_calendar_diagnosis.py"

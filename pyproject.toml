@@ -159,14 +159,15 @@ show_error_codes = true
 # SCOPE 2026-10-08. The list was `["src", "tests", "tools", "scripts"]` (see the
 # D-035 note it replaced: the documented scope and the default scope had to be
 # the same thing for a green run to mean what the records claim).
-# `tools/` and `scripts/` are no longer versioned — the repository carries
-# production code and its tests — so a CI checkout contains `src/` and `tests/`
-# and nothing else, and naming a directory that is not there makes mypy exit
-# non-zero before it checks anything (measured: `EM902 No such file or
-# directory`). Hence `["src", "tests"]`. The tooling is still type-checked
-# LOCALLY, where that tree exists; what changed is that a green CI run is a
-# statement about `src/` and `tests/` only.
-files = ["src", "tests"]
+# `scripts/` is no longer versioned — the repository carries production code,
+# its tests, and the `tools/` diagnostics that `src/` docstrings cite — so a CI
+# checkout contains `src/`, `tests/` and `tools/` and nothing else, and naming a
+# directory that is not there makes mypy exit non-zero before it checks anything
+# (measured: `EM902 No such file or directory`). Hence `["src", "tests",
+# "tools"]`. The 52 mutation sweeps in `scripts/` are still type-checked LOCALLY,
+# where that tree exists; what changed is that a green CI run is a statement
+# about `src/`, `tests/` and `tools/` only.
+files = ["src", "tests", "tools"]
 
 [[tool.mypy.overrides]]
 module = ["openbb.*", "statsmodels.*", "scipy.*", "pyarrow.*"]
