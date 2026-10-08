@@ -631,6 +631,20 @@ def canonical_policy_gap(
     gap = model_implied - market_implied
     is_meaningful = abs(gap) > dispersion
 
+    #: The market leg is an AVERAGE over this horizon; the model leg is a SPOT
+    #: prescription. Published beside the gap (Section 22.5's proxy horizon) so
+    #: the mismatch is visible rather than implied — a reader who sees only
+    #: "model 5.00% vs market 4.00%" would reasonably read it as a same-horizon
+    #: disagreement, which it is not.
+    horizon_months = get_settings().policy.market_implied.proxy_horizon_months_value
+    horizon_note = (
+        f" HORIZON MISMATCH: the model leg is the rules' prescription for the "
+        f"CURRENT period, while the market leg is an AVERAGE over "
+        f"{horizon_months} months — so the gap understates the near-term "
+        f"divergence when the expected path is sloped, and its sign is only "
+        f"guaranteed when the path is flat."
+    )
+
     verdict = "MEANINGFUL" if is_meaningful else "WITHIN NOISE FLOOR"
     if is_meaningful:
         direction = "above" if gap > 0 else "below"
@@ -657,9 +671,31 @@ def canonical_policy_gap(
         interpretation=(
             f"Model (median of 3 rules) {model_implied:.2f}% vs market "
             f"{market_implied:.2f}% = {gap:+.2f}% gap; rule dispersion "
-            f"{dispersion:.2f}pp ({verdict}). {detail}"
+            f"{dispersion:.2f}pp ({verdict}). {detail}{horizon_note}"
         ),
     )
+
+
+#: D2 — the Section 22.5 replacement obligation, given an OWNER.
+#:
+#: Section 22.5 obligates Phase 5+ to *"REPLACE this entirely with a real
+#: Fed-funds-futures-implied probability distribution … this function's
+#: signature is stable so that replacement is a body swap, not a caller-facing
+#: breaking change."*
+#:
+#: Phase 5+ is recorded COMPLETE (Tier 5 = 23/23, D-092 … D-125) and the body was
+#: never swapped. The reason is structural, not an oversight: the obligation is
+#: attached to a **Tier 3** function (AGENTS.md §21.3), while the Phase-5+ work
+#: list was built from the section's **Tier 5** names. **It fell between two
+#: lists, so no gate and no checklist owned it.** "Tier 5 = 23/23" is true and
+#: does not mean Phase 5+ is complete.
+#:
+#: This constant is read by `tests/models/test_policy_rules.py`'s tripwire, which
+#: asserts BOTH that the body is still the Phase 1-4 proxy AND that this marker
+#: still says so — so discharging the obligation FAILS the suite until the
+#: record is updated in the same change. The obligation is closed explicitly or
+#: not at all; it can no longer be absorbed by a quiet refactor.
+PHASE5_REPLACEMENT_OBLIGATION: str = "outstanding"
 
 
 def derive_market_implied_policy_path(
@@ -708,6 +744,21 @@ def derive_market_implied_policy_path(
             )
     settings = get_settings()
     market_implied = settings.policy.market_implied
+    #: The horizon this proxy is an AVERAGE over, from config (never a literal —
+    #: LAW 1). Published beside the gap so a reader can see that the model leg is
+    #: a SPOT prescription and the market leg is an average over this window.
+    horizon_months = market_implied.proxy_horizon_months_value
+    horizon_warning = (
+        f"HORIZON MISMATCH, and it is structural, not incidental: this proxy is "
+        f"the short yield minus a term premium, so it approximates the AVERAGE "
+        f"expected policy rate over {horizon_months} months. canonical_policy_gap "
+        f"compares it against the MEDIAN OF THE THREE RULES, which prescribes a "
+        f"rate for the CURRENT period. Spot minus a {horizon_months}-month average "
+        f"means the gap UNDERSTATES the near-term divergence whenever the expected "
+        f"path is sloped, and its sign is only guaranteed when the path is flat. "
+        f"The system does not measure the path's slope. A Fed-funds-futures-implied "
+        f"distribution would (Section 22.5)."
+    )
 
     if short_tenor_term_premium is not None:
         expectations_component = short_yield - short_tenor_term_premium
@@ -719,10 +770,11 @@ def derive_market_implied_policy_path(
             "The adjustment is only as good as the term-premium model. ACM "
             "estimates are themselves model output with their own revision "
             "history.",
+            horizon_warning,
         ]
         context = (
             f"Adjusted from raw {short_yield:.3f}% by a term premium of "
-            f"{short_tenor_term_premium:.3f}pp"
+            f"{short_tenor_term_premium:.3f}pp; AVERAGE over {horizon_months} months"
         )
     else:
         expectations_component = short_yield
@@ -736,10 +788,11 @@ def derive_market_implied_policy_path(
             "Still a PROXY, and a weaker one than the term-premium-adjusted "
             "variant. Phase 5+ replaces this entirely with a genuine "
             "Fed-funds-futures-implied distribution (Section 22.5).",
+            horizon_warning,
         ]
         context = (
             "No term premium available at this tenor — raw yield returned "
-            "UNCHANGED, per Section 22.5"
+            f"UNCHANGED, per Section 22.5; AVERAGE over {horizon_months} months"
         )
 
     return ModelResult(

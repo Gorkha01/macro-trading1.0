@@ -2636,7 +2636,8 @@ PCA: Σ = VΛV'  (eigen-decomposition of covariance of DAILY CHANGES, never leve
 Kalman: predict x̂_{t|t-1} = F x̂_{t-1|t-1}; update via Kalman gain K_t
 ```
 
-**Outputs:** Phase 5+ items — `yield_curve_pca()` (Section 6.6 stub),
+**Outputs:** Phase 5+ items — `yield_curve_pca()` (Section 6.6; **built, not a stub** — real body in
+`models/yield_curve.py`, D-097-era; see `docs/PHASE5_DEFERRED.md` §1),
 `extensions/bayesian_updater.py`'s Kalman-filtered r*/potential-GDP
 estimates (replacing the Phase 1 static config values in `settings.yaml`).
 
@@ -5538,7 +5539,14 @@ dependency exists.
 `next_catalyst_calendar`, `build_confirmation_signals`,
 `collect_all_warnings`, `no_trade_thesis`, `build_us_macro_thesis`
 
-**Tier 5 — Phase 5+ (stubs only until their phase):**
+**Tier 5 — Phase 5+.** The original plan read *"stubs only until their phase"*; **that is no longer
+what shipped.** Measured 2026-10-08: **all 23 names below have real bodies** in `src/` (0 of them
+raise `NotImplementedError`), and `README.md` / `docs/PHASE5_DEFERRED.md` record the count as
+**23/23 COMPLETE** (D-092 … D-125, one function per increment). The "stubs only" rule now bites in
+exactly one place: **`extensions/` — 6 modules, each gated on an uninstalled §4 package.** Read the
+tags in this section as the **build ORDER**, not as a statement of what is missing; for what is
+genuinely still outstanding see `docs/PHASE5_DEFERRED.md` §2 (GARCH · crisis-shock engine ·
+multi-country · FX-forward data coverage).
 `cip_check`, `uip_expected_move`, `ppp_valuation`, `carry_score`,
 `dollar_smile_regime`, `intervention_capacity`,
 `em_vulnerability_checklist`, `oil_balance_signal`,

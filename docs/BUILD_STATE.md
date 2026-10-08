@@ -760,6 +760,11 @@ live execution as non-substitutable.
 
 ## What is NOT yet built
 
+> **CORRECTED 2026-10-08 — this section is a PHASE-1 SNAPSHOT and is no longer the current state.**
+> It is kept as the record of what was true then. Every claim below has since been discharged: the
+> models layer is **101/101** (§21.3 Tiers 1-4 = 78, Tier 5 = 23), all with real bodies. For the
+> live state see `PROGRESS.md`; for what is genuinely outstanding see `docs/PHASE5_DEFERRED.md` §2.
+
 **Phases 2–5 are not started.** No model function from Section 6, 15, 16 or 20
 exists yet — including the 34 functions Section 20 requires. Those are Phase 2
 backfill and will be implemented one at a time under the Section 21.2 process:

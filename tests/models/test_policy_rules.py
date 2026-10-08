@@ -322,5 +322,118 @@ def test_statement_text_net_tilt_ratio_is_bounded() -> None:
     assert -1.0 <= out.value_dict()["net_tilt"] <= 1.0
 
 
+def test_the_market_legs_horizon_is_disclosed_in_the_gap_it_qualifies() -> None:
+    """D1 — the horizon mismatch is DISCLOSED, not implied.
+
+    The market leg is an AVERAGE over a horizon; the model leg is a SPOT
+    prescription. Before this fix the caveat lived only in the market result's
+    ``assumptions`` field — which ``collect_all_warnings`` does NOT read — so it
+    never reached the thesis, and the gap's own interpretation said nothing. A
+    reader of the published gap saw "model 5.00% vs market 4.00%" and would
+    reasonably read it as a same-horizon disagreement. It is not one.
+    """
+    t = taylor_rule(TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0))
+    b = balanced_approach_rule(TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0))
+    f = first_difference_rule(
+        FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.5)
+    )
+    gap = canonical_policy_gap(t, b, f, market_implied=4.0)
+    assert "HORIZON MISMATCH" in gap.interpretation
+    # It must name BOTH legs' horizons, not just say "a mismatch exists".
+    assert "CURRENT period" in gap.interpretation
+    assert "AVERAGE over" in gap.interpretation
+
+
+def test_the_horizon_comes_from_config_and_the_statement_follows_it() -> None:
+    """LAW 1 + mover proof: the published horizon is the CONFIG value.
+
+    A hardcoded 24 in the prose would pass the disclosure test above while
+    disagreeing with the configured short tenor. This asserts the number the
+    reader sees is the number the config holds — and it moves when the config
+    moves, which is what makes it a mover proof rather than a restatement.
+    """
+    from macro_engine.config import get_settings
+
+    configured = get_settings().policy.market_implied.proxy_horizon_months_value
+    t = taylor_rule(TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0))
+    b = balanced_approach_rule(TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0))
+    f = first_difference_rule(
+        FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.5)
+    )
+    gap = canonical_policy_gap(t, b, f, market_implied=4.0)
+    assert f"{configured} months" in gap.interpretation
+    assert configured > 0
+
+
+def test_the_market_leg_warns_about_the_horizon_so_it_reaches_the_thesis() -> None:
+    """The warning must be in ``warnings`` — the only field the thesis collects.
+
+    ``collect_all_warnings`` reads ``ModelResult.warnings`` and nothing else. The
+    pre-fix caveat sat in ``assumptions``, so it was structurally unable to reach
+    the thesis. This pins the field, not just the text.
+    """
+    out = derive_market_implied_policy_path(short_yield=4.0, short_tenor_term_premium=0.5)
+    assert any("HORIZON MISMATCH" in w for w in out.warnings)
+    # And the same for the no-term-premium branch, which is the LIVE path.
+    live = derive_market_implied_policy_path(short_yield=4.0, short_tenor_term_premium=None)
+    assert any("HORIZON MISMATCH" in w for w in live.warnings)
+
+
+def test_the_horizon_leaf_rejects_a_non_positive_or_fractional_value() -> None:
+    """The value is published as prose, so a bad value makes the prose false."""
+    from macro_engine.config import MarketImpliedPolicySettings
+
+    ok = "uncalibrated_illustrative"
+    base = {
+        "term_premium_available_confidence": {"value": 0.4, "calibration_status": ok},
+        "no_term_premium_confidence": {"value": 0.2, "calibration_status": ok},
+    }
+    for bad in (0, -12, 18.5):
+        settings = MarketImpliedPolicySettings(
+            **base, proxy_horizon_months={"value": bad, "calibration_status": ok}
+        )
+        with pytest.raises(ValueError, match=r"positive|whole number"):
+            _ = settings.proxy_horizon_months_value
+
+
+def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
+    """D2 — a tripwire for an obligation that no work list owned.
+
+    Section 22.5 obligates Phase 5+ to replace the proxy's BODY with a real
+    Fed-funds-futures-implied distribution. Phase 5+ is recorded COMPLETE
+    (Tier 5 = 23/23, D-092 … D-125) and the body is unchanged. The cause is
+    structural: the obligation is attached to a **Tier 3** function while the
+    Phase-5+ work list came from the **Tier 5** names, so it fell between two
+    lists and nothing owned it.
+
+    This test is the owner. It asserts BOTH halves, so neither can drift:
+
+    * the body is still the Phase 1-4 term-premium proxy, AND
+    * the record still says the obligation is outstanding.
+
+    Discharging the obligation therefore FAILS this test until the record is
+    updated in the same change. That is the point — the decision gets recorded
+    rather than absorbed by a quiet refactor. (The project already uses this
+    tripwire idiom: O-34 kept its gates with tripwires rather than deleting
+    them, because deleting them freezes the current state as permanent.)
+    """
+    import inspect
+
+    from macro_engine.models.policy_rules import PHASE5_REPLACEMENT_OBLIGATION
+
+    source = inspect.getsource(derive_market_implied_policy_path)
+    still_the_proxy = "short_yield - short_tenor_term_premium" in source
+    assert still_the_proxy, (
+        "The body no longer looks like the Phase 1-4 term-premium proxy. If the "
+        "Section 22.5 replacement has landed, update PHASE5_REPLACEMENT_OBLIGATION "
+        "and this test IN THE SAME CHANGE — the obligation must be closed "
+        "explicitly, never absorbed."
+    )
+    assert PHASE5_REPLACEMENT_OBLIGATION == "outstanding", (
+        f"PHASE5_REPLACEMENT_OBLIGATION says {PHASE5_REPLACEMENT_OBLIGATION!r} but "
+        "the body is still the proxy. The marker and the body must agree."
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

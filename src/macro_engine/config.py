@@ -2095,6 +2095,14 @@ class MarketImpliedPolicySettings(BaseModel):
 
     term_premium_available_confidence: CalibratedValue
     no_term_premium_confidence: CalibratedValue
+    #: The horizon, in MONTHS, over which the market-implied proxy is an AVERAGE.
+    #: A yield is one number discounting a whole path, so the proxy approximates
+    #: the average expected policy rate over this window — while the model leg
+    #: (the median of the three rules) prescribes a rate for the CURRENT period.
+    #: ``canonical_policy_gap`` publishes this beside the gap so the mismatch is
+    #: visible rather than implied. Required, not defaulted: a literal here would
+    #: be a second home for a value the tenor already determines (LAW 1/LAW 2).
+    proxy_horizon_months: CalibratedValue
 
     @property
     def term_premium_available_confidence_value(self) -> float:
@@ -2103,6 +2111,24 @@ class MarketImpliedPolicySettings(BaseModel):
     @property
     def no_term_premium_confidence_value(self) -> float:
         return float(self.no_term_premium_confidence.value)
+
+    @property
+    def proxy_horizon_months_value(self) -> int:
+        """The proxy's averaging horizon, in months. Must be a positive integer.
+
+        A fractional or non-positive horizon would make the published statement
+        "an AVERAGE over N months" either meaningless or false, and the value is
+        read into user-facing prose — so it is validated rather than trusted.
+        """
+        raw = float(self.proxy_horizon_months.value)
+        if not raw.is_integer() or raw <= 0:
+            raise ValueError(
+                f"policy.market_implied.proxy_horizon_months must be a positive "
+                f"whole number of months; got {raw!r}. It is published as prose "
+                f"beside every policy gap, so a fractional or non-positive value "
+                f"would make that statement false."
+            )
+        return int(raw)
 
 
 class PolicySettings(BaseModel):

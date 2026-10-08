@@ -588,6 +588,12 @@ finally `build_us_macro_thesis` in **D-069** (Section 7.2/§16.2, the seam —
 buildable** — but Phase 3 itself has **not started**: `src/macro_engine/api/`
 does not exist, and §7.3's example objects are not signed off.
 
+> **CORRECTED 2026-10-08.** The paragraph above is a **Phase-4-era snapshot** and is no longer
+> current: Phase 3 **shipped** — the API layer exists as `src/macro_engine/api_layer/` (not `api/`,
+> which is why this line kept reading as true), `build_us_macro_thesis` runs end to end, and the
+> service exposes five surfaces. Phases 0-4 are **complete**; the models layer is **101/101**
+> (Tier 5 = 23/23). See the CURRENT STATE banner in `docs/PROGRESS.md`.
+
 **The instrument half of this tier is finished, and the thesis-layer half closed
 at D-069 — the tier is complete.** The four Phase 4 functions landed in
 D-058/D-059/D-060/D-062, and **seven** thesis-layer functions have shipped —

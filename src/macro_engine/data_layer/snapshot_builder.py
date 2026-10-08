@@ -99,6 +99,21 @@ class SnapshotBuildReport:
         self.failed: dict[str, str] = {}
         self.skipped_unverified: list[str] = []
         self.observation_counts: dict[str, int] = {}
+        #: Mapping fields the SCHEMA declares but ``snapshot_fields`` can never
+        #: fill, because they are not series — they are dicts of series
+        #: (``fx_spot``, ``commodity_spot``, ``equity_index``). Reported
+        #: separately from ``failed`` and ``skipped_unverified`` because the
+        #: cause is different from both: nothing was asked for and nothing
+        #: broke — the field is unreachable BY CONSTRUCTION.
+        #:
+        #: This exists because an empty mapping is indistinguishable from "no
+        #: data this run", and that ambiguity is exactly the class the ``gdi``
+        #: omission already produced once (a field declared in the registry, the
+        #: schema, persistence AND the dashboard, and omitted from the one list
+        #: the builder iterates, so it could never appear). Recording it here
+        #: makes the omission a fact a caller can read rather than an absence
+        #: they must infer.
+        self.declared_not_wired: list[str] = []
         #: True when the Section 6 release calendar answered; False when it
         #: could not be read OR was never attempted. ``release_datetime`` being
         #: None everywhere is consistent with both, which is why this is
@@ -138,6 +153,16 @@ class SnapshotBuildReport:
             flags.append(f"FETCH_FAILED:{field}:{reason}")
         for field in sorted(self.skipped_unverified):
             flags.append(f"UNVERIFIED_SERIES_SKIPPED:{field}")
+        for field in sorted(self.declared_not_wired):
+            # Distinct from EMPTY_SERIES below: that one means "asked and got
+            # nothing", which can be a transient provider problem. This one
+            # means "never asked, and never will be by this path" — a wiring
+            # gap, which no retry will fix.
+            flags.append(
+                f"DECLARED_NOT_WIRED:{field}:declared on the schema but absent from "
+                "snapshot_fields, so this path can never populate it — an empty "
+                "value here is NOT evidence that no data exists"
+            )
         for field in sorted(self.succeeded):
             if self.observation_counts.get(field, 0) == 0:
                 # The detail sentence is carried HERE rather than left to
@@ -860,6 +885,20 @@ def build_snapshot(
 
     report = SnapshotBuildReport()
     report.requested = list(requested)
+
+    # D3 — the DECLARED-BUT-UNWIRED mapping fields. ``fx_spot``,
+    # ``commodity_spot`` and ``equity_index`` are declared on the schema, are
+    # validated, and round-trip through persistence, but they are DICTS OF
+    # SERIES rather than series, so this loop — which sets one attribute per
+    # registry entry — can never fill them. Nothing is asked for and nothing
+    # fails, so without this they are invisible: an empty dict reads the same as
+    # "no data this run". The ``gdi`` omission was the same class (declared
+    # everywhere, absent from the one list the builder iterates) and cost a
+    # series its data path for a whole phase. Named here so it cannot recur
+    # silently.
+    report.declared_not_wired = sorted(
+        f for f in persistence_module.MAPPING_SERIES_FIELDS if f not in requested
+    )
 
     # Section 6: resolve release timing ONCE, before any series fetch, so every
     # point in the snapshot is labelled against a single read.

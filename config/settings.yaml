@@ -175,6 +175,28 @@ policy:
       note: >
         Section 22.5's confidence when no term premium is available and the
         raw, contaminated yield is returned. Deliberately near the floor.
+    proxy_horizon_months:
+      value: 24
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The horizon, in months, over which the market-implied proxy is an
+        AVERAGE rather than a spot reading. The proxy is the short yield minus a
+        tenor-matched term premium, and a yield is ONE number discounting a
+        whole path — so it approximates the AVERAGE expected policy rate over
+        this horizon, not the rate expected today. The default is 24 because
+        the configured short tenor is 2 years; if that tenor changes, THIS leaf
+        must change with it (the mover test asserts they agree).
+
+        WHY IT IS A CONFIG LEAF AND NOT A COMMENT. canonical_policy_gap
+        compares this against the MEDIAN OF THE THREE RULES, which prescribes a
+        rate for the CURRENT period. Spot minus a 24-month average is a horizon
+        mismatch: the gap UNDERSTATES the near-term divergence whenever the
+        expected path is sloped, and its sign is only guaranteed when the path
+        is flat. The system does not measure the path's slope — that is exactly
+        what a Fed-funds-futures-implied distribution would supply, and exactly
+        why Section 22.5 obligates Phase 5+ to replace the proxy. Until it does,
+        the horizon must be published beside the gap so a reader can see that
+        the two legs are not measured at the same horizon.
 
 phillips:
   nairu:

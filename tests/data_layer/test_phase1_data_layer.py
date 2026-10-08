@@ -2273,3 +2273,91 @@ def test_the_empty_frame_fallbacks_never_override_a_populated_frame() -> None:
     )
     assert restored.country == "us"  # the frame wins
     assert restored.as_of == stamp
+
+
+# ---------------------------------------------------------------------------
+# D3 — the declared-but-unwired mapping fields must be DISCLOSED
+# ---------------------------------------------------------------------------
+def test_the_declared_but_unwired_mapping_fields_are_named_in_the_report() -> None:
+    """An empty mapping must be distinguishable from "no data this run".
+
+    ``fx_spot``, ``commodity_spot`` and ``equity_index`` are declared on the
+    schema, validated, and round-tripped by persistence — but they are dicts of
+    series rather than series, so the builder's one-attribute-per-registry-entry
+    loop can never fill them. Nothing is requested and nothing fails, so before
+    this fix they appeared NOWHERE: not in ``requested``, ``failed`` or
+    ``skipped_unverified``. An empty dict therefore read exactly like a run that
+    fetched nothing.
+
+    This is the ``gdi`` class the project already hit once — a field declared in
+    the registry, the schema, persistence AND the dashboard, and omitted from
+    the one list the builder iterates, so it could never appear.
+    """
+    from macro_engine.data_layer import persistence
+    from macro_engine.data_layer.snapshot_builder import SnapshotBuildReport
+
+    report = SnapshotBuildReport()
+    report.requested = ["gdp_real"]
+    report.succeeded = ["gdp_real"]
+    report.observation_counts = {"gdp_real": 10}
+    report.declared_not_wired = sorted(persistence.MAPPING_SERIES_FIELDS)
+
+    flags = report.as_flags()
+    for field in persistence.MAPPING_SERIES_FIELDS:
+        assert any(f.startswith(f"DECLARED_NOT_WIRED:{field}:") for f in flags), field
+    # The flag must say WHY, so a reader does not go looking for a provider fault.
+    assert any("can never populate it" in f for f in flags)
+
+
+def test_the_builder_itself_records_the_unwired_mapping_fields() -> None:
+    """The POPULATION, not just the rendering — this is the half that was missing.
+
+    An earlier version of this test built a ``SnapshotBuildReport`` by hand and
+    checked ``as_flags``. That passes even if ``build_snapshot`` never populates
+    ``declared_not_wired`` — measured: replacing the population with
+    ``declared_not_wired = []`` left the hand-built test GREEN. So this calls the
+    real builder with an injected client (no network needed: the field list is
+    computed BEFORE the fetch loop, so a client that cannot fetch still proves
+    the population ran).
+    """
+    from macro_engine.data_layer import persistence
+    from macro_engine.data_layer.release_calendar import ReleaseDateIndex
+    from macro_engine.data_layer.snapshot_builder import build_snapshot
+
+    class _NoNetwork:
+        """Fails every fetch; irrelevant to the assertion, which is about wiring."""
+
+        def __getattr__(self, _name: str) -> object:
+            def _boom(*_a: object, **_k: object) -> object:
+                raise RuntimeError("no network in this test")
+
+            return _boom
+
+    # An empty release index is passed so the PRE-LOOP release resolution does
+    # not touch the client — otherwise its RuntimeError escapes the per-field
+    # try/except and the test fails for the wrong reason (measured: it did).
+    _snapshot, report = build_snapshot(
+        country="us",
+        fields=["gdp_real"],
+        client=_NoNetwork(),
+        release_index=ReleaseDateIndex(),
+    )
+    assert report.declared_not_wired == sorted(persistence.MAPPING_SERIES_FIELDS)
+
+
+def test_the_unwired_fields_do_not_make_a_build_incomplete() -> None:
+    """By design these are Tier-5 placeholders, not failures.
+
+    D-137 calls them ``legitimate, not a defect`` (schema-only placeholders for
+    Tier-5 multi-asset, US-only in Phases 0-4). ``PHASE5_DEFERRED.md`` §2.5.1
+    calls the omission ``unfinished wiring``. Both can hold at once: the
+    DECLARATION is by design, and the ABSENCE OF WIRING must be visible. So the
+    flag is emitted without making every build report itself incomplete — which
+    would be the opposite error, crying failure on a state the project chose.
+    """
+    from macro_engine.data_layer.snapshot_builder import SnapshotBuildReport
+
+    report = SnapshotBuildReport()
+    report.declared_not_wired = ["fx_spot"]
+    assert report.is_complete is True
+    assert any(f.startswith("DECLARED_NOT_WIRED:fx_spot:") for f in report.as_flags())
