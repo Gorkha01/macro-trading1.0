@@ -7075,6 +7075,83 @@ class VolatilitySettings(BaseModel):
         return int(raw)
 
 
+class ScenarioEngineSettings(BaseModel):
+    """The NAMED, ORDERED factor set the crisis-shock engine works in.
+
+    Section 17.2 names the factors — *"correlated shocks across the portfolio's
+    risk factors (rates, FX, credit, equity)"* — and Section 13.2's
+    ``factor_exposure_breakdown`` output requires them to be **named**, because
+    the system's exposure representation is positional (``models/risk.py``'s
+    ``factor_loadings: list[float]``, ``MonteCarloVaRInputs`` likewise). Without
+    this leaf a joint move can be simulated but the report cannot say WHICH
+    factor produced the loss, and a breakdown with positional keys is not a
+    breakdown.
+
+    **The ORDER is load-bearing**: index ``i`` of ``factors`` is index ``i`` of
+    every exposure vector the engine consumes, so reordering this list silently
+    relabels every exposure. The validator below refuses a duplicate or an empty
+    name rather than letting an ambiguity through.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    factors: list[str]
+    scenarios_dir: str
+
+    @model_validator(mode="after")
+    def _factors_must_be_uniquely_named(self) -> ScenarioEngineSettings:
+        """A duplicate factor name makes the breakdown unreadable.
+
+        Two entries with one name means two positions in the vector report under
+        the same label, so the breakdown's parts no longer sum to an identifiable
+        whole — the same defect class as a positional vector with no names at
+        all, arriving by a different route.
+        """
+        if not self.factors:
+            raise ValueError(
+                "scenario_engine.factors is empty. The shock engine cannot report a "
+                "breakdown across zero factors; Section 17.2 names four."
+            )
+        duplicates = sorted({f for f in self.factors if self.factors.count(f) > 1})
+        if duplicates:
+            raise ValueError(
+                f"scenario_engine.factors contains duplicates: {duplicates}. Each "
+                f"factor labels one position in every exposure vector, so a repeated "
+                f"name makes the breakdown ambiguous."
+            )
+        if any(not f.strip() for f in self.factors):
+            raise ValueError("scenario_engine.factors contains a blank name.")
+        return self
+
+    @property
+    def factor_names(self) -> tuple[str, ...]:
+        """The factor set as an immutable ordered tuple."""
+        return tuple(self.factors)
+
+    @property
+    def factor_count(self) -> int:
+        """How many factors an exposure vector must have."""
+        return len(self.factors)
+
+    def index_of(self, factor: str) -> int:
+        """The position of ``factor`` in every exposure vector. Raises if unknown.
+
+        Raising rather than returning ``-1`` or ``None`` is deliberate: an
+        unknown factor in a shock YAML means the YAML and the config disagree
+        about what the book's risk factors ARE, and silently ignoring it would
+        drop a whole leg of the shock while still publishing a breakdown.
+        """
+        try:
+            return self.factors.index(factor)
+        except ValueError:
+            raise ValueError(
+                f"'{factor}' is not a configured risk factor. Configured: "
+                f"{self.factors} (scenario_engine.factors). A shock naming a factor "
+                f"the book does not carry would be silently dropped, leaving a "
+                f"breakdown that omits a leg of the stress."
+            ) from None
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -7093,6 +7170,7 @@ class Settings(BaseModel):
     labor: LaborSettings
     risk: RiskSettings
     volatility: VolatilitySettings
+    scenario_engine: ScenarioEngineSettings
     kelly: KellySettings
     instrument_selection: InstrumentSelectionSettings
     curve_trade: CurveTradeSettings

@@ -752,7 +752,17 @@ class VolTargetInputs(BaseModel):
         gt=0.0,
         description=(
             "Realised (or estimated) current portfolio vol, annualized and as a "
-            "fraction. MUST be > 0 — it is the denominator."
+            "fraction. MUST be > 0 — it is the denominator. **A FORWARD-LOOKING "
+            "estimate is the better input and is now available**: Module 17 ships "
+            "``models/volatility.py``'s ``garch_conditional_volatility``, which "
+            "forecasts the next period's variance from the volatility clustering "
+            "the trailing sample cannot see. The starter "
+            "``realized_vol_simple`` is backward-looking by construction and "
+            "systematically understates the vol that follows a shock — precisely "
+            "when a vol target is most relied upon. Whichever is passed, it must "
+            "be an ANNUALISED FRACTION (0.10 = 10%) to match "
+            "``target_vol_annualized``; the estimators in ``models/volatility.py`` "
+            "publish PERCENT, so a caller using one must divide by 100."
         ),
     )
     current_gross_exposure: float = Field(
@@ -1623,10 +1633,20 @@ def sample_covariance(
     two-pass mean/centred-sum formulation are all in the body.
 
     **``ddof = 1``** is the unbiased estimator, matching
-    ``realized_vol_simple`` in ``models/risk.py`` — the two must agree on the
+    ``realized_vol_simple`` in ``models/volatility.py`` — the two must agree on the
     diagonal or a book's risk budget and its vol target would be computed from
     two different volatilities for the same instrument. That agreement is
     asserted by ``test_the_diagonal_matches_realized_vol_simple``.
+
+    ⚠️ **This is deliberately the SAMPLE estimator, not the GARCH one.** Module 17
+    now also ships ``models/volatility.py``'s ``garch_conditional_volatility``,
+    and it must NOT be substituted here. The requirement above is an agreement
+    between two *sample* statistics of the same panel — a covariance matrix's
+    diagonal and a rolling standard deviation — and a conditional forecast is
+    not a sample statistic. Swapping it in would break the equality this
+    paragraph exists to guarantee, and the test that enforces it. GARCH belongs
+    at the vol TARGET instead (see ``VolTargetInputs.current_portfolio_vol``),
+    where a forward-looking number is the point rather than a contradiction.
 
     The estimator is the plain sample covariance and **not** a shrinkage or
     factor estimator. That is a real limitation at large N — the sample

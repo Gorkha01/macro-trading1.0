@@ -16,7 +16,7 @@ it calls *done* was checked to have a real body — not a `NotImplementedError`.
 | Are Phases 0–4 done? | **Yes.** All 101 functions named in AGENTS.md §21.3 Tier 1–5 exist in `src/`. |
 | Is Tier 5 (the spec's "stubs only") stubbed? | **No — 23 of 23 Tier 5 functions have real bodies.** |
 | How many `extensions/` modules are stubbed? | **6** — each gated on an uninstalled §4 package. |
-| How many genuine *capability* gaps remain? | **4**: GARCH, the crisis-shock engine, multi-country, and FX-forward/market-data coverage. |
+| How many genuine *capability* gaps remain? | **2 fully open** — multi-country, and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2).** The **crisis-shock engine is HALF closed** (§2.3.1): the engine that applies a shock vector and reports the factor breakdown is built; the **simulated VaR/ES/drawdown under the shocked correlation matrix is not.** |
 | Why are they not implemented? | Mostly AGENTS.md §4 (*"no dependency before its phase"*); two are **data-availability** blocks, not code gaps. |
 
 **Correction on the record:** AGENTS.md §21.3 heads Tier 5 *"Phase 5+ (stubs only until their
@@ -27,10 +27,15 @@ phase)"*. That heading does **not** describe the shipped tree — the Tier 5 mod
 
 ## 2. The genuinely deferred items
 
-### 2.1 `extensions/` — six modules, all deliberate stubs
+### 2.1 `extensions/` — six stub modules, all deliberate
 
-All six raise `NotImplementedError` naming the §4 dependency that gates them. This is the **only**
-place in `src/` where a stub body exists.
+> **AMENDED 2026-10-09.** This section used to read *"six modules, all deliberate stubs … This is the
+> **only** place in `src/` where a stub body exists"* and *"No other file in `extensions/` exists."*
+> **`extensions/scenario_engine.py` now exists and is NOT a stub** — it is a real module with no
+> dependency gate (see §2.3). So the directory is **six stubs plus one real module**, and the
+> "only place a stub body exists" claim still holds for the SIX.
+
+The six below raise `NotImplementedError` naming the §4 dependency that gates them.
 
 | # | Module | Blocking dependency | Interface (already fixed) | What it unlocks |
 |---|---|---|---|---|
@@ -43,31 +48,63 @@ place in `src/` where a stub body exists.
 
 **Read-only confirmation:** `grep -c NotImplementedError src/macro_engine/extensions/*.py` →
 `backtest_vbt=1, bayesian_updater=1, duckdb_store=2, mlflow_tracking=3, nautilus_adapter=1, scheduler=1`.
-No other file in `extensions/` exists.
+**Six stubs; one real module now shares the directory.** `extensions/scenario_engine.py` was added
+2026-10-09 (§2.3) and carries no dependency gate, so it is **not** one of the six.
 
-### 2.2 GARCH-family conditional volatility — **not implemented**
+### 2.2 GARCH-family conditional volatility — **IMPLEMENTED 2026-10-09**
 
-| Check | Result |
-|---|---|
-| `arch` in `pyproject.toml`? | **No** — not in `dependencies`, not in `optional-dependencies.dev` |
-| Any `import arch` in the tree? | **No** |
-| Count of the string "GARCH" in the tree | **3**, all prose, zero code |
+> **This section previously read *"not implemented"* and was correct until 2026-10-09.** It is kept
+> as the record of what was true then; the shipped state follows. **This is the first of §1's four
+> capability gaps to close.**
 
-The three prose occurrences:
-- `models/risk.py:500` — *"Section 6.10 is explicit that a conditional forecast is a Phase 5+ GARCH item"*
-- `models/risk.py:531` — warning: *"Backward-looking by construction — no conditional forecast"*
-- `models/fx_carry.py:906` — *"the GARCH family that replaces `realized_vol_simple`"*
+| Check | Result at 2026-10-06 (when deferred) | Result now |
+|---|---|---|
+| `arch` in `pyproject.toml`? | **No** | **Yes** — `arch>=7.0.0`, resolved to `8.0.0` |
+| Any `import arch` in the tree? | **No** | **Yes** — `models/volatility.py` |
+| Count of the string "GARCH" in the tree | **3**, all prose, zero code | code + prose |
+| Does `models/volatility.py` exist? | **No** — *"never existed"* | **Yes** — created |
 
-What exists instead is `realized_vol_simple` (`models/risk.py:491`) — a rolling sample standard
-deviation with `ddof=1`, annualised by `sqrt(periods_per_year)`. It is the **Phase-1 starter**, and
-it says so itself.
+**What shipped.** `models/volatility.py` — the file §6.10 and §4 both name — now holds
+`garch_conditional_volatility(inputs)`, a GARCH(p, q) conditional-variance forecast fitted by
+maximum likelihood through `arch`, annualised and published in **percent** on the same basis as
+`realized_vol_simple` so the two are directly comparable. The parameters (`garch_p`, `garch_q`,
+`min_observations`, `persistence_ceiling`, `confidence`) are config leaves under `volatility:`, and
+the model **refuses** below `min_observations` rather than warning, per §21.4.
 
-**Spec-vs-shipped note.** AGENTS.md §6.10 gives `# src/macro_engine/models/volatility.py` as the
-file header, and §3/§14 name `models/volatility.py` in the module map and dependency table. That
-file has **never existed** (`git log --all` is empty). The starter shipped in `risk.py`; the spec's
-`volatility.py` was intended to be the **home of the GARCH upgrade**, which never happened.
+**How it was gated.** §4's dependency table already assigned it —
+`| arch | GARCH-family conditional volatility | models/volatility.py | 5+ |` — and §1639 adds
+*"gated individually — do not batch"*. Phase 5 is started, so the gate was open; the operator
+approved the dependency explicitly.
 
-### 2.3 Crisis-scenario shock engine — **split: distribution done, engine not**
+**The starter did NOT move.** `realized_vol_simple` is still defined in `models/risk.py` and is
+**re-exported** by `volatility.py`, so the spec-named module exposes both the starter and the
+upgrade with ONE canonical implementation (LAW 2). A test asserts the re-export is the same object.
+
+**Spec-vs-shipped note (unchanged, and still true).** AGENTS.md §6.10 gives
+`# src/macro_engine/models/volatility.py` as the file header, and the module map at §230 reads
+`volatility.py  # Module 17 (starter; arch/GARCH hook)` with `risk.py` reserved for
+*"Modules 17–18 ↔ VaR/CVaR/drawdown"*. **The starter's canonical definition is therefore still in
+the wrong file per the map** — a divergence this section recorded before the upgrade and which the
+upgrade deliberately did not fix, because moving it touches `risk.py`, which carries mutation
+anchors, and the re-export already satisfies the spec's intent.
+
+**Verification.** Parameter recovery on a simulated series (true persistence 0.98 → fitted 0.9800);
+the units chain cross-checked against an independent recompute of the raw `arch` objects
+(24.0208 == 24.0208); a mutation proof showing `rescale=False` is load-bearing (`rescale=True`
+publishes **2319.912** instead of **24.0208**); 12 behavioural tests. See
+`tests/models/test_volatility.py`.
+
+**⚠️ A limitation measured while building it, recorded so it is not mistaken for a defect later.**
+On near-IGARCH data the GARCH MLE does **not** identify alpha and beta separately: three simulated
+series with true persistence 0.9800 / 0.9900 / 0.9995 all fitted to **0.9800**, redistributing weight
+between alpha and beta rather than raising their sum. The non-stationarity check therefore has
+**limited power against a genuinely near-integrated process** — which is why that warning branch is
+exercised through config rather than from a simulated series.
+
+### 2.3 Crisis-scenario shock engine — **engine BUILT 2026-10-09; the simulation half is not**
+
+> **AMENDED 2026-10-09.** This section read *"split: distribution done, engine not"*. The engine half
+> now exists as `extensions/scenario_engine.py` — see §2.3.1 immediately below.
 
 The spec's §13.2 "Example B" wants a named shock vector (`scenarios/gfc_2008.yaml`) applied to
 portfolio exposures. Status is split:
@@ -82,11 +119,12 @@ portfolio exposures. Status is split:
 | `monte_carlo_var()` | `models/risk.py:1285` | Real — **already simulates normal AND stressed correlation regimes and reports both** (`_uniform_correlation_stress`, `stressed_volatility_multiplier`). This is Module 17.2's "coherent scenario, not isolated shock" principle already working. |
 | schema enforcement | `thesis_layer/schemas.py:706,735` | Real — `_enforce_scenario_probabilities`, `_enforce_scenario_status_matches_distribution` |
 
-**Not done (the shock-engine half):**
+**Not done (the shock-engine half): — AMENDED 2026-10-09, see §2.3.1. The table below was written
+before the engine existed and is kept as the record; the four rows are now:**
 
 | Missing item | Evidence |
 |---|---|
-| `extensions/scenario_engine.py` | File absent; `git log --all -- <path>` **empty** (never committed) |
+| `extensions/scenario_engine.py` | **BUILT 2026-10-09 — §2.3.1.** Was absent; `git log --all -- <path>` was empty (never committed) |
 | `scenarios/` directory + YAML shock files | **No such directory and no scenario YAML anywhere** in the tree |
 | A function applying a named shock vector | **None.** No `def ...scenario.../stress.../shock...` applies `growth_shock` / `credit_spread_hy_shock` / `equity_shock` / `rate_shock` / `correlation_override` to a book |
 
@@ -94,6 +132,42 @@ Spec reference: AGENTS.md §13.2 line 1735 (the example YAML) and §14.1 line 17
 (*"15–16 — Case Studies | `extensions/` scenario YAMLs (Phase 5+) | scenario engine | (Phase 5+)"*).
 AGENTS.md line 1749 phrases the module as optional: *"`extensions/backtest_vbt.py` (or a dedicated
 `extensions/scenario_engine.py`)"*.
+
+#### 2.3.1 AMENDMENT 2026-10-09 — the engine half is BUILT
+
+**Shipped:** `extensions/scenario_engine.py` (the file §13.2 and §14.1 both name), plus
+`scenarios/gfc_2008.yaml` (the spec's own Example B, committed verbatim in its numeric content), plus
+the **named factor set** that had to exist first.
+
+**Why the factor set was the prerequisite.** The system's exposure representation is POSITIONAL —
+`models/risk.py`'s `factor_loadings: list[float]`, `MonteCarloVaRInputs` likewise. A positional vector
+can be *simulated* but not *reported*, and §13.2 asks for `factor_exposure_breakdown`. The names come
+from **§17.2's own words** (`AGENTS.md:3686`): *"correlated shocks across the portfolio's risk factors
+**(rates, FX, credit, equity)**"* — now a config leaf, `scenario_engine.factors`, whose **order is
+load-bearing** because index `i` of the set is index `i` of every exposure vector.
+
+**What it does.** `apply_scenario_shock(exposures, scenario)` returns a `ModelResult` whose `value` is
+the portfolio P&L estimate in **percent**, and whose `context` carries the per-factor breakdown. The
+identity **`total == sum(breakdown.values())`** is asserted on every result, not trusted — a breakdown
+whose parts do not sum to its whole is the same defect as a risk budget whose contributions do not
+reconcile.
+
+**What it deliberately does NOT do.** It does not simulate. §13.2 also asks for
+`var_95_under_scenario` / `expected_shortfall_under_scenario` / `max_drawdown_estimate_pct`, which need
+the *distribution* under the shocked correlation matrix — machinery that already exists
+(`models/risk.py`'s `_simulate_regime_pnls`, `portfolio/risk_budget.py`'s `stress_correlations`).
+The correlation override is **parsed and published but not yet consumed**, and the result says so in a
+warning rather than implying a coherence it does not yet have.
+
+**A driver is never applied.** `growth_shock` has no position in the factor vector — it is the cause
+whose effect arrives through the rate and credit legs — so applying it would double-count. It is
+carried and disclosed.
+
+**Verification.** 13 behavioural tests; the units chain hand-derived and mutation-proved (treating a
+bp shock as a percent shock publishes `rates: 1200.0` instead of `12.0` — a factor of 100); the
+additivity guard asserted against a deliberately mismatched pair.
+
+**Still open in this item:** the simulated VaR/ES/drawdown under the shocked matrix.
 
 ### 2.4 Multi-country (`de`, `jp`, `gb`) — **not implemented** (confirmed)
 
@@ -115,9 +189,10 @@ each need *different logic*, not a relabelled Taylor Rule.
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**
 
-> **REVISIT REGISTER — carry these three forward.** They are *not* phase-gated the way GARCH and the
-> shock engine are. One is a hard data block to re-probe; one is a known Loophole-Ledger set; one is
-> actionable now for two of its three fields. Tracked here so they are not lost behind the
+> **REVISIT REGISTER — carry these three forward.** They are *not* phase-gated the way the shock
+> engine is (and the way GARCH was until 2026-10-09). One is a hard data block to re-probe; one is
+> a known Loophole-Ledger set; one is actionable now for two of its three fields. Tracked here so
+> they are not lost behind the
 > "Phase 5+" label. See §2.5.1 for the concrete next action on each.
 
 This needs care, because "market data is not fetched" is **too broad**. What was measured:
@@ -147,8 +222,9 @@ Three dedicated clients back this: `openbb_client.py` (35 KB), `commodities_clie
 | 2 | **Four more blocked registry items** | Active `blocked:` entries are **5 in total** (with `fx_forward_rate`): `iron_ore_change_pct` (L1832), `supercore_direction` (L1844), `conference_board_lei` (L1861), `inflation_surprise_bp` (L1876), `fx_forward_rate` (L1909). A sixth, `ppp_implied_rate` (L1841), is **commented out**, not active. These are the **§21.4 Loophole Ledger** — the system returns `"unavailable"` rather than a plausible number, which is the intended behaviour, not a defect. | Loophole Ledger — by design |
 | 3 | **`fx_spot` / `commodity_spot` / `equity_index` declared but never filled** | `schemas.py:337-339` declares all three (`dict[str, list[ObservationPoint]]`); `validation.py:735` validates `fx_spot`; `persistence.py:100` lists all three in `MAPPING_SERIES_FIELDS` — but **`snapshot_builder.py` never assigns any of them.** The plumbing exists; the fetch does not. Spot FX reaches models only where a live check pulls it explicitly. | Actionable — see 2.5.1 |
 
-**Why these are not "Phase 5+ deferrals" like the others.** GARCH and the shock engine are deferred
-because a *dependency* is withheld. Item 1 is blocked because **no source on this installation returns
+**Why these are not "Phase 5+ deferrals" like the others.** The shock engine is deferred
+because a *dependency* is withheld — as GARCH was until 2026-10-09, when its gate opened and it
+shipped (§2.2). Item 1 is blocked because **no source on this installation returns
 the data**. Item 2 is a **recorded, deliberate refusal** (§21.4). Item 3 is **unfinished wiring**.
 Only item 1 is a plan; the other two are a decision and an omission respectively.
 
@@ -227,6 +303,10 @@ files, which `git log --all` can still find).
 The spec labels these Phase 5+ or Tier 5. **All of them ship with real bodies.** This is the part
 an earlier read of mine got wrong, so it is stated with the verification method.
 
+**Also now in this section, added 2026-10-09:** `arch`'s GARCH-family conditional volatility. It was
+**not** one of the 23 Tier-5 functions — it was a *capability gap*, tracked at §2.2 — so it is listed
+here only as a pointer, not as a 24th function. See §2.2 for its evidence and its measured limitation.
+
 **All 23 Tier 5 functions — real bodies, zero stubs:**
 
 | Function | Location |
@@ -294,7 +374,7 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | `extensions/mlflow_tracking.py` | Deferred | `mlflow` |
 | `extensions/nautilus_adapter.py` | Deferred | `nautilus_trader` |
 | `extensions/scheduler.py` | Deferred | `apscheduler` |
-| GARCH conditional volatility | **Deferred — genuine gap** | `arch` |
+| ~~GARCH conditional volatility~~ | **CLOSED 2026-10-09 — shipped** (§2.2) | `arch` added; `models/volatility.py` created |
 | `extensions/scenario_engine.py` + `scenarios/*.yaml` | **Deferred — genuine gap** (distribution layer is done) | `vectorbt` / none |
 | Multi-country (`de`, `jp`, `gb`) | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
@@ -376,4 +456,4 @@ grep -rn "conditional forecast" --include=*.py src/
 
 Finding IDs in `.review-evidence/module_findings.json`:
 `F-MOD-001` (path divergences, SEV-3, OPEN), `F-MOD-002` (census verified, INFO),
-`F-MOD-003` (GARCH + scenario shock engine deferred, SEV-3, OPEN).
+`F-MOD-003` (scenario shock engine deferred, SEV-3, OPEN — **GARCH half CLOSED 2026-10-09, §2.2**).

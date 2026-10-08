@@ -1,0 +1,50 @@
+# Section 13.2 Example B — Stress Test Portfolio Under a GFC-Like Scenario.
+#
+# This is the spec's own illustrative scenario, committed verbatim in its
+# numeric content. It is NOT a calibrated forecast: `calibration_status` says so
+# on every shock, because a shock vector that looks precise but was never
+# measured is exactly the failure mode this project refuses elsewhere.
+#
+# UNITS — each shock is in the unit the receiving factor is expressed in, and
+# the two must agree or the P&L is wrong by a constant factor. Stated per line
+# because four different units appear in one file:
+#
+#   rate_shock             basis points of YIELD        (negative = yields fall)
+#   credit_spread_hy_shock basis points of SPREAD       (positive = widening)
+#   equity_shock           PERCENT of index level       (negative = decline)
+#   growth_shock           percentage points of OUTPUT GAP (a macro driver, not
+#                          a factor exposure — see the note below)
+#
+# `growth_shock` has no position in the factor vector. Section 17.2 names the
+# factors (rates, FX, credit, equity), and a growth shock is the *cause* whose
+# effect is transmitted THROUGH them. It is carried here as documentation of the
+# scenario's intent and is deliberately NOT applied as a fifth exposure — doing
+# so would double-count the move already expressed in the rate and credit legs.
+name: gfc_2008_like
+description: >
+  A 2008-style flight to quality: growth collapses, HY credit widens hard,
+  equities fall, and the Fed cuts aggressively. Treasuries RALLY as credit
+  sells off, so the treasury-vs-credit correlation inverts.
+
+calibration_status: uncalibrated_illustrative
+
+shocks:
+  rates:
+    bp: -300          # Fed emergency cutting, bp of yield
+  credit:
+    bp: +600          # HY spread widening, bp
+  equity:
+    pct: -35          # index decline, percent
+  fx:
+    pct: +6           # broad USD strength on the risk-off bid, percent
+
+# The driver that produced the shocks above. Documented, never applied.
+drivers:
+  growth_shock:
+    pp: -4.0          # output gap shift, percentage points
+
+# Module 17.2's "coherent scenario, not isolated shock". The override is the
+# point of a crisis scenario: the diversification a book relies on is what
+# breaks. `treasuries_vs_hy_credit: -0.7` is the flight-to-quality inversion.
+correlation_override:
+  treasuries_vs_hy_credit: -0.7

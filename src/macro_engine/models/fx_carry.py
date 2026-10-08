@@ -1099,8 +1099,10 @@ class DollarSmileInputs(FiniteInputs):
       VIX is quoted in annualised percentage points, so a reading of ``25`` means
       roughly 25 %/yr implied. It is **not** a decimal and **not** a percent
       fraction: a caller wiring in a volatility estimator from this project gets
-      a *decimal* from ``models/risk.py``'s ``realized_vol_simple`` (which in
-      fact publishes **percent**, a third unit), and any of those spellings puts
+      a *decimal* from ``models/volatility.py``'s ``realized_vol_simple`` (which
+      in fact publishes **percent**, a third unit), or — for the forward-looking
+      version of the same quantity — ``garch_conditional_volatility`` from the
+      same module, which also publishes **percent**. Any of those spellings puts
       the reading on the wrong side of every plausible gate.
     * ``us_growth_surprise`` is a **signed surprise**, in the growth series' own
       percentage points — the actual less the consensus, so **exactly zero is

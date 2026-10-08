@@ -5296,6 +5296,24 @@ volatility:
       nobody has measured.
 
 # ---------------------------------------------------------------------------
+# Module 15-16 — the crisis-scenario shock engine (Sections 13.2 / 14.1).
+#
+# `extensions/` scenario YAMLs apply a NAMED shock vector to a book's factor
+# exposures. That needs the factor set to be NAMED and ORDERED, because the
+# system's exposure representation is a POSITIONAL vector
+# (`models/risk.py`'s `factor_loadings: list[float]`, and `MonteCarloVaRInputs`
+# likewise) with no labels — so without this leaf a joint move can be simulated
+# but WHICH factor hurt cannot be reported, which is exactly what Section 13.2's
+# `factor_exposure_breakdown` output requires.
+# ---------------------------------------------------------------------------
+scenario_engine:
+  # Section 17.2's own words (AGENTS.md:3686): "correlated shocks across the
+  # portfolio's risk factors (rates, FX, credit, equity)". The ORDER is
+  # load-bearing — index i here is index i of every exposure vector.
+  factors: ["rates", "fx", "credit", "equity"]
+  scenarios_dir: "scenarios"
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No
