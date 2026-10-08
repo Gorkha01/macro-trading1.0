@@ -1,10 +1,30 @@
 name: quality-gates
 
 # Phase 0 Definition of Done (AGENTS.md Section 11): pytest collects and
-# passes, ruff clean, mypy clean. The offline suite runs here; the live tests
-# are excluded because a network dependency in CI is how a suite becomes
-# something people learn to ignore — and a provider outage would then look
-# like a code regression.
+# passes, ruff clean, mypy clean.
+#
+# SCOPE 2026-10-08. `tools/` and `scripts/` are no longer versioned — the
+# repository carries production code and its tests — so a CI checkout contains
+# `src/`, `tests/`, `config/`, `docs/`, `AGENTS.md` and `pyproject.toml`, and
+# nothing else. Every step that named `tools/` or `scripts/` failed with
+# `EM902 No such file or directory`. Those steps are GONE rather than repaired:
+# a step cannot pass against a tree that does not contain what it reads.
+#
+# What was REMOVED, and why:
+#
+#   * "Reachability gate" (`tools/reachability_audit.py`) and "Sweep health"
+#     (`tools/sweep_health.py`) — both are `tools/` scripts, and sweep_health
+#     additionally reads `scripts/` (the 52 mutation sweeps). Neither tree
+#     ships. Both remain runnable LOCALLY and are now local-only gates.
+#   * The `live-data` job's "OpenBB reachability" step
+#     (`tools/openbb_reachability.py`) — same reason. The live TEST run below
+#     is retained, but note the O-111(a) argument that motivated the probe: a
+#     dead endpoint turns the live run GREEN by skipping the registry-coverage
+#     assertions, and the probe was what caught that. With the probe gone,
+#     `pytest -m live` can go green while deleting assertions. Run
+#     `tools/openbb_reachability.py` by hand before trusting a live run.
+#
+# The offline suite IS retained — it needs only `tests/`, which is versioned.
 
 on:
   push:
@@ -30,47 +50,20 @@ jobs:
       - name: Install dependencies (locked)
         run: uv sync --extra dev --frozen
 
-      # `scripts/` is part of the checked scope on purpose (D-136). It holds the
-      # 52 mutation sweeps -- real logic, ~40k lines, with the only code in the
-      # repository that REWRITES `src/` at runtime -- and it was linted by
-      # nobody: `pyproject.toml`'s mypy `files` list includes it, so mypy saw
-      # it, while these two steps did not. That asymmetry is the D-133a lesson
-      # in its other direction (a gate run at a NARROWER scope than the one the
-      # records claim is not the same gate): the documented close-out scope is
-      # `src tests tools scripts` = 293 files, and this step was checking 198.
+      # Scope is `src/ tests/`. `scripts/` was added to this step deliberately
+      # at D-136 (the 52 mutation sweeps are real logic, ~40k lines, and the
+      # only code in the repository that rewrites `src/` at runtime). It is no
+      # longer versioned, so it is no longer linted here; that check is now
+      # local-only.
       - name: Lint (ruff check)
-        run: uv run ruff check src/ tools/ tests/ scripts/
+        run: uv run ruff check src/ tests/
 
       - name: Format check (ruff format)
-        run: uv run ruff format --check src/ tools/ tests/ scripts/
+        run: uv run ruff format --check src/ tests/
 
+      # `mypy` reads its scope from `pyproject.toml` (`files = ["src", "tests"]`).
       - name: Type check (mypy --strict)
         run: uv run mypy
-
-      # DEFECTS_2026-09-19.md item 3. A unit test tests the callee and a
-      # mutation sweep mutates the callee — neither asks whether the PIPELINE
-      # CALLS IT, which is how 59 Tier 1-4 functions came to be implemented,
-      # tested, and unreachable. This gate asks that question. It fails on a
-      # REGRESSION (a function that was reachable and stopped being) rather
-      # than on the known, triaged backlog, so it stays a signal instead of
-      # becoming noise people learn to ignore.
-      - name: Reachability gate (no new unreachable model functions)
-        run: uv run python tools/reachability_audit.py --check-baseline
-
-      # O-72, O-63. `sweep_health.py` was the project's most valuable gate and it
-      # ran BY HAND ONLY -- "gates run by hand from prose, and prose cannot refuse"
-      # (O-63). It proves every sweep LOADS, every anchor RESOLVES, and no mutant
-      # is left on disk or committed; those are exactly the failures that have
-      # recursed here (O-61 three times, O-98, O-102, O-109). It is cheap (seconds),
-      # stdlib-only, and needs no service -- it degrades to "could not ask git"
-      # rather than failing in a fresh clone -- so it belongs in the merge gate.
-      #
-      # Placed BEFORE the suite so a dirty tree fails fast (the suite is the
-      # long step, and there is no point running it on a tree carrying a mutant).
-      # Note the converse: this is a PHOTOGRAPH of the tree, so it cannot see a
-      # change made after it runs -- locally, run it LAST.
-      - name: Sweep health (no left-on-disk or committed mutants)
-        run: uv run python tools/sweep_health.py
 
       - name: Test suite (offline)
         run: uv run pytest -m "not live"
@@ -85,28 +78,12 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --extra dev --frozen
 
-      # O-111(a) ENFORCED. The probe exists and is documented as Step 0, but
-      # nothing ran it automatically -- and the step below is exactly where it
-      # matters. `pytest -m live` SKIPS the registry-coverage checks when the
-      # service is down (correctly: an external dependency being unavailable is
-      # not a regression in this repository), so a dead endpoint turns this job
-      # GREEN while deleting assertions. That is the O-111 incident one level up,
-      # and a skip cannot distinguish "I chose to run offline" from "the thing I
-      # depend on has been dead all day".
-      #
-      # Exit codes are the contract (O-88): 0 serving, 1 not serving, 2 could not
-      # run. A non-zero exit FAILS the job, which is the point -- this is the one
-      # place where an unserving OpenBB instance is a real failure rather than a
-      # reason to skip.
-      - name: OpenBB reachability (fails if the configured URL does not SERVE)
-        run: uv run python tools/openbb_reachability.py
-
       - name: Live data-layer tests
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         # O-110: this is the one job that deliberately goes to the network, so it
         # is the one where an unbounded test can hang a runner. `--timeout` is set
-        # globally in `addopts` (300 s, derived from the slowest real test); the
+        # globally in `addopts` (600 s, derived from the slowest real test); the
         # per-test limit is repeated here EXPLICITLY rather than relied upon
         # implicitly, because this job selects `-m live` -- a different marker
         # expression from the default -- and a reader of this file should see that

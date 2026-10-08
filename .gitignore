@@ -26,9 +26,10 @@ build/
 .workbuddy-ai/
 .review-evidence/
 .review-probe/
+# `tests/` is TRACKED (re-tracked 2026-10-08): the test suite is the evidence
+# for `src/`, and CI runs it. Only the operator tooling below stays local.
 scripts/
 tools/
-tests/
 # Pinned-basetemp directories. `pytest --basetemp=.pytest_<name>` is how this
 # project keeps a run's temp tree INSIDE the repo (D-087.26: a `--basetemp`
 # outside the project is what a sandbox bulk-delete counter refuses to clean,

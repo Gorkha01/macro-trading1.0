@@ -156,16 +156,17 @@ strict = true
 warn_unreachable = true
 warn_unused_ignores = true
 show_error_codes = true
-# `scripts` is included deliberately. It was NOT in the original list, and the
-# omission was invisible because a bare `uv run mypy --strict` uses this list
-# while the project's own records were produced by an explicit
-# `mypy --strict src tests scripts` — which checks MORE than the configured
-# scope. So the documented gate was stricter than the default gate, and code in
-# `scripts/live_labor_check.py` (real logic: assertions, typed helpers, FRED
-# normalisation) was never checked by a plain run. Adding it here makes the
-# documented scope and the default scope the same thing, which is the only way
-# a green run means what the records say it means (D-035).
-files = ["src", "tests", "tools", "scripts"]
+# SCOPE 2026-10-08. The list was `["src", "tests", "tools", "scripts"]` (see the
+# D-035 note it replaced: the documented scope and the default scope had to be
+# the same thing for a green run to mean what the records claim).
+# `tools/` and `scripts/` are no longer versioned — the repository carries
+# production code and its tests — so a CI checkout contains `src/` and `tests/`
+# and nothing else, and naming a directory that is not there makes mypy exit
+# non-zero before it checks anything (measured: `EM902 No such file or
+# directory`). Hence `["src", "tests"]`. The tooling is still type-checked
+# LOCALLY, where that tree exists; what changed is that a green CI run is a
+# statement about `src/` and `tests/` only.
+files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 module = ["openbb.*", "statsmodels.*", "scipy.*", "pyarrow.*"]
