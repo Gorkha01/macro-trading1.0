@@ -3504,17 +3504,26 @@ scorecard:
 
   # --- the "most of the space is CONFLICTED" disclosure ------------------
   measured_conflicted_share:
-    value: 0.617
+    value: 0.0741
     calibration_status: uncalibrated_illustrative
     note: >
       MEASURED, not assumed: over the full admissible input space (3^4 = 81
-      pillar combinations x 7 family counts), 350 of 567 configurations are
-      CONFLICTED -- 61.7%. Any read of four pillars over {-1,0,+1} opposes
-      itself most of the time, so a bare `CONFLICTED` verdict carries less
-      information than its prominence suggests. The share is published on
-      every output so a reader can see whether CONFLICTED is a finding about
-      this read or the base state of the input space. Compare D-047's
-      `HIGH`-is-the-base-state finding (89.5%), which this mirrors.
+      pillar combinations over {-1,0,+1}), 6 are CONFLICTED -- 7.41%.
+      RECOMPUTED 2026-10-08 (F-SC-001). The prior value, 0.617, was the share
+      under the OLD predicate `opposed = up > 0 and down > 0`, which opposed
+      a read whenever ANY pillar pointed each way (50 of 81 = 61.73%). The fix
+      narrowed it to `opposed = up >= 2 and down >= 2`, and the stored value was
+      never recomputed. Six of the 81 combinations carry two pillars each way,
+      which is exactly the 6/81 measured against the shipped scorecard.
+
+      NOTE THE REVERSAL. The previous note claimed CONFLICTED was the base
+      state of the space and carried "less information than its prominence
+      suggests". Under the narrowed predicate the opposite is true: 7.41% is a
+      genuinely unusual configuration, so a bare `CONFLICTED` verdict is
+      informative. The share is published on every output so a reader can see
+      whether CONFLICTED is a finding about this read or the base state of the
+      input space. D-047's companion `HIGH`-is-the-base-state finding was
+      measured under the old predicate and needs re-measuring the same way.
 
   # --- the pillar DERIVATION bands (not part of Section 20.11) ---------
   #
@@ -3611,23 +3620,34 @@ convergence:
       minimum that makes agreement mean anything. A single family, however many
       sub-measures compose it, is ONE vote and cannot reach MEDIUM.
 
-  # --- the "most of the space is CONFLICTED" disclosure ------------------
+  # --- the CONFLICTED share of the input space (no longer "most of it") ---
   measured_conflicted_share:
-    value: 0.6173
+    value: 0.0741
     calibration_status: uncalibrated_illustrative
     note: >
       MEASURED for n=4 over the full admissible input space (3^4 = 81 signal
-      combinations x 6 family counts = 486 configurations): 300 of 486 are
-      CONFLICTED -- 61.73%. **It agrees with the scorecard's independently
-      measured 61.7% (D-050) to three significant figures, which is a genuine
-      cross-check**: the scorecard is the same predicate over four named
-      pillars and the classifier is that predicate over a four-long list.
+      combinations over {-1,0,+1}): 6 of 81 are CONFLICTED -- 7.41%.
+      RECOMPUTED 2026-10-08 (F-SC-001). The prior value, 0.6173, was the share
+      under the OLD predicate `opposed = up > 0 and down > 0`, which opposed a
+      read whenever ANY signal pointed each way (50 of 81 = 61.73%). The fix
+      narrowed it to `opposed = up >= 2 and down >= 2`, and the stored value was
+      never recomputed -- which is exactly what `live_convergence_check.py`
+      detects when it re-enumerates the space.
 
-      The share is NOT constant in n, and it RISES fast: 0.222 at n=2, 0.444 at
-      n=3, 0.617 at n=4, 0.741 at n=5, 0.826 at n=6, 0.883 at n=7. With more
-      signals it becomes progressively less likely that none oppose each other.
-      A caller handing this classifier a long list should expect CONFLICTED as
-      the DEFAULT, not as a finding.
+      **Cross-check re-run at the corrected value:** the scorecard's
+      `four_pillar_scorecard` enumerates the same 3^4 space and returns the SAME
+      verdict distribution (CONFLICTED 6, HIGH 10, MEDIUM 56, LOW 8, NO_SIGNAL
+      1). The two functions are still the same predicate over four items -- they
+      now agree at 0.0741 rather than at 0.6173.
+
+      The share is NOT constant in n. Re-measured against the shipped classifier
+      on 2026-10-08: 0.0000 at n=2, 0.0000 at n=3, 0.0741 at n=4, 0.2058 at n=5,
+      0.3567 at n=6, 0.4993 at n=7. It is ZERO below n=4 because the narrowed
+      predicate needs at least two signals on EACH side, which four signals can
+      just barely supply and three cannot. Above n=4 the share RISES, because
+      more signals make it progressively more likely that both sides are
+      represented -- the direction is the same as before, but every number
+      differs.
 
       Published on every output so a reader can see whether CONFLICTED is a
       finding about this read or the base state of the input space. The value

@@ -216,13 +216,18 @@ that made dissent non-zero would find the branches gone rather than untested.
 structure and fail if it changes.
 
 **Two shares that disagree, and the disagreement is informative.** `CONFLICTED`
-is **61.7%** of the *admissible input space* (350 of 567 configurations) but
-**66.2%** of **761 real monthly readings** (1963-01 … 2026-09). The historical
-share is **higher** than the space share because real pillars are **correlated** —
-a random draw over the input space over-represents mixed-direction configurations
-that the economy rarely produces. `1963-01` … `1965-01` and `1973-11` … `1975-03`
-are contiguous `CONFLICTED` runs. `HIGH` is 33.0% of history and `NO_SIGNAL`
-0.8%.
+is **7.4%** of the *admissible input space* (6 of 81 configurations) but
+**14.6%** of **762 real monthly readings** (1963-01 … 2026-09). The realised
+share is **higher** than the space share: real pillar readings are correlated,
+so the historical mix is not an independent draw over the space. `1963-01` …
+`1965-01` and `1973-11` … `1975-03` are contiguous `CONFLICTED` runs. `HIGH` is
+20.5% of history and `NO_SIGNAL` 0.8%.
+
+**Both figures were recomputed on 2026-10-08 (F-SC-001).** The earlier numbers
+(61.7% of the space, 66.2% of history) were the shares under the OLD predicate
+`opposed = up > 0 and down > 0`. The fix narrowed it to `opposed = up >= 2 and
+down >= 2`, so both moved by roughly an order of magnitude. The direction of the
+gap — realised above space — is unchanged.
 
 **The all-neutral live finding.** Real history produces **6** readings where every
 pillar is neutral — `1963-05, 1964-08, 2013-10, 2014-07, 2015-11, 2017-10` — which

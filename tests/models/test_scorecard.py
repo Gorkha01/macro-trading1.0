@@ -79,8 +79,8 @@ def test_config_bridging_maps_yaml_leaves_to_code_attributes() -> None:
     assert s.high_family_floor == 3
     # min_independent_families_medium.value == 2 -> medium_family_floor
     assert s.medium_family_floor == 2
-    # measured_conflicted_share.value == 0.617 -> conflicted_base_share
-    assert s.conflicted_base_share == pytest.approx(0.617)
+    # measured_conflicted_share.value == 0.0741 -> conflicted_base_share
+    assert s.conflicted_base_share == pytest.approx(0.0741)
 
 
 def test_confidence_is_flat_and_comes_from_compute_confidence() -> None:
@@ -335,7 +335,7 @@ def test_conflicted_warning_reports_base_share() -> None:
     res = _run(1, 1, -1, -1)
     conflicted_warn = [w for w in res.warnings if "CONFLICTED" in w and "BASE STATE" in w]
     assert conflicted_warn, res.warnings
-    assert "61.7%" in conflicted_warn[0]
+    assert "7.4%" in conflicted_warn[0]
 
 
 def test_redundant_evidence_warning_when_high_agreement_few_families() -> None:

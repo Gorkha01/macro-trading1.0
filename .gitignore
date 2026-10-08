@@ -26,6 +26,9 @@ build/
 .workbuddy-ai/
 .review-evidence/
 .review-probe/
+scripts/
+tools/
+tests/
 # Pinned-basetemp directories. `pytest --basetemp=.pytest_<name>` is how this
 # project keeps a run's temp tree INSIDE the repo (D-087.26: a `--basetemp`
 # outside the project is what a sandbox bulk-delete counter refuses to clean,
@@ -52,6 +55,7 @@ build/
 .coverage.*
 htmlcov/
 coverage.xml
+
 
 # ---------------------------------------------------------------------------
 # Probe scratch tree — untracked by design (see O-44 / O-63).

@@ -478,10 +478,12 @@ def _scorecard_warnings(
     if verdict == "CONFLICTED":
         warnings.append(
             "CONFLICTED — the pillars point opposite ways. This MUST block trade "
-            "construction (Module 12.2). Note that CONFLICTED is the BASE STATE "
-            f"of a four-pillar read: {conflicted_base_share:.1%} of the "
-            "admissible input space classifies this way, so the verdict alone "
-            "does not identify this read as unusual."
+            "construction (Module 12.2). Disclosed for scale: "
+            f"{conflicted_base_share:.1%} of the admissible input space "
+            "classifies as CONFLICTED, so the reader can tell whether this "
+            "verdict is the space's BASE STATE or a finding about this read. A "
+            "small share makes the verdict informative about THIS read; a large "
+            "one makes it mostly a property of the space."
         )
     elif verdict == "NO_SIGNAL":
         warnings.append(
