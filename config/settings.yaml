@@ -5236,6 +5236,66 @@ equity_macro:
       regime-conditional factor tilt beat an unconditional one, a multi-decade
       backtest this build does not attempt.
   # ---------------------------------------------------------------------------
+# Module 17's volatility upgrade (Section 6.10 / Section 4's dependency table:
+# `arch` -> models/volatility.py -> 5+). Phase 1 shipped the backward-looking
+# starter (`realized_vol_simple`); this block configures the CONDITIONAL
+# forecast that `arch` supplies. Every parameter is a leaf so the fitted model
+# is reproducible from config rather than from code.
+# ---------------------------------------------------------------------------
+volatility:
+  garch_p:
+    value: 1
+    calibration_status: institutional_convention
+    note: >
+      ARCH order. GARCH(1,1) is the near-universal default in the literature
+      and the specification's own outline (§6.10, the `arch/GARCH hook`) assumes
+      the standard `arch_model` default, which is (1,1). Raising p adds lagged
+      squared-shock terms; it is a leaf so a caller who wants GARCH(2,1) does
+      not have to edit code.
+  garch_q:
+    value: 1
+    calibration_status: institutional_convention
+    note: >
+      GARCH (lagged-variance) order. See garch_p. Together with it, the model
+      is GARCH(p, q) with a constant mean and normal errors — exactly
+      `arch_model`'s default invocation.
+  min_observations:
+    value: 250
+    calibration_status: institutional_convention
+    note: >
+      Minimum return observations before a GARCH fit is attempted. 250 is
+      roughly one year of daily data. This is NOT a statistical requirement —
+      `arch` will happily fit 20 points — it is a floor against publishing a
+      maximum-likelihood estimate whose standard errors exceed its point
+      estimate. Below it the model REFUSES rather than warning, because a
+      volatility forecast with no data behind it is worse than none.
+  persistence_ceiling:
+    value: 0.999
+    calibration_status: conventional
+    note: >
+      alpha + beta is the GARCH persistence: the fraction of a shock that
+      survives into the next period's variance. At >= 1 the conditional
+      variance is a non-stationary (IGARCH) process, the unconditional variance
+      does not exist, and the long-horizon forecast diverges — so the published
+      number is not an estimate of anything. The check fires a WARNING at or
+      above this ceiling and names the measured value; it does not suppress the
+      result, because the fit itself is still informative about the sample.
+      0.999 rather than 1.0 is deliberate: a fitted 0.9995 is numerically
+      indistinguishable from an integrated process, and the failure this
+      guards is a forecast read as a stable estimate.
+  confidence:
+    value: 0.5
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Section 22.5-style literal, NOT produced by `compute_confidence()`: the
+      spec states GARCH's confidence as a fixed value tied to a methodological
+      property rather than to a model's factor states. Deliberately the SAME as
+      `realized_vol_simple`'s — a conditional forecast is a better estimator,
+      not a better-calibrated one, and the parameters are themselves estimated
+      with error. Raising this without a calibration study would claim accuracy
+      nobody has measured.
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

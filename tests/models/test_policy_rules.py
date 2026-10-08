@@ -381,16 +381,16 @@ def test_the_market_leg_warns_about_the_horizon_so_it_reaches_the_thesis() -> No
 
 def test_the_horizon_leaf_rejects_a_non_positive_or_fractional_value() -> None:
     """The value is published as prose, so a bad value makes the prose false."""
-    from macro_engine.config import MarketImpliedPolicySettings
+    from macro_engine.config import CalibratedValue, MarketImpliedPolicySettings
 
     ok = "uncalibrated_illustrative"
-    base = {
-        "term_premium_available_confidence": {"value": 0.4, "calibration_status": ok},
-        "no_term_premium_confidence": {"value": 0.2, "calibration_status": ok},
-    }
+    conf = CalibratedValue(value=0.4, calibration_status=ok)
+    conf2 = CalibratedValue(value=0.2, calibration_status=ok)
     for bad in (0, -12, 18.5):
         settings = MarketImpliedPolicySettings(
-            **base, proxy_horizon_months={"value": bad, "calibration_status": ok}
+            term_premium_available_confidence=conf,
+            no_term_premium_confidence=conf2,
+            proxy_horizon_months=CalibratedValue(value=bad, calibration_status=ok),
         )
         with pytest.raises(ValueError, match=r"positive|whole number"):
             _ = settings.proxy_horizon_months_value

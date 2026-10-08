@@ -647,15 +647,23 @@ Tier 4 = construction · Tier 5 = deferred to Phase 5+.
 | **Phase 2 — models layer (US scope)** | 101 | 101 | **100%** — Tiers 1-4 (78) + Tier 5 (23), all real bodies |
 | **Phase 3 — thesis + API** | 2 | 2 | **100%** ✅ |
 | **Phase 4 — instruments** | 4 | 4 | **100%** ✅ |
-| **Phases 5+** | 23 | 23 | **COMPLETE** (D-092 … D-125) — see `docs/PHASE5_DEFERRED.md` |
+| **§21.3's Tier-5 function LIST** | 23 | 23 | **complete** (D-092 … D-125) — but see the row below |
+| **Phase 5+ — the PHASE** | — | — | **NOT COMPLETE: the system is US-only.** §22.3 files multi-country under Phase 5+ |
 
 > **CORRECTED 2026-10-08.** This table previously read `86/98 (88%)` for Phase 2 and
 > *"stubs only by design"* for Phases 5+. Both were stale: §21.3's Tier 5 reached **23/23** at
 > **D-125** (`statement_text_diff`, the last name), so the models layer is **101/101**, and Tier 5
 > was never a stub — measured 2026-10-08, **0 of the 23 raise `NotImplementedError`**. The `98`
 > also implied a 20-name Tier 5 where §21.3's list has 23 (the three-count discrepancy recorded
-> above). What remains genuinely outstanding is **not** a tier: GARCH, the crisis-shock engine,
-> multi-country and FX-forward data coverage — `docs/PHASE5_DEFERRED.md` §2.
+> above).
+>
+> ⚠️ **AND A SECOND CORRECTION, same date — an earlier revision of THIS note over-claimed.**
+> It read *"Phases 5+ … COMPLETE"*, which conflates two different things. **§21.3's Tier-5
+> FUNCTION LIST is complete. Phase 5+ as a PHASE is NOT** — §22.3 files **multi-country** under
+> it (*"Multi-country support (`de`, `jp`, `gb`) is Tier 5 — Phase 5+"*), and only `us` is
+> implemented (§1.3). **The system is US-only.** What remains genuinely outstanding:
+> **multi-country** · GARCH · the crisis-shock engine · FX-forward data coverage ·
+> `extensions/` — `docs/PHASE5_DEFERRED.md` §2.
 
 **Phase 4's four items, all closed:** (1) `compute_risk_parity_weights` §9.2 =
 **D-071**; (2) `translate_thesis_to_position` §9.3 = **D-072**;

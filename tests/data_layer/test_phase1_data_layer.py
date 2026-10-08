@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -2339,7 +2339,9 @@ def test_the_builder_itself_records_the_unwired_mapping_fields() -> None:
     _snapshot, report = build_snapshot(
         country="us",
         fields=["gdp_real"],
-        client=_NoNetwork(),
+        # The stub is deliberately not an OpenBBClient: the assertion is about
+        # wiring, and any object that raises on every fetch proves the point.
+        client=cast("OpenBBClient", _NoNetwork()),
         release_index=ReleaseDateIndex(),
     )
     assert report.declared_not_wired == sorted(persistence.MAPPING_SERIES_FIELDS)

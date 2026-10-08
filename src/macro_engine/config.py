@@ -7023,6 +7023,58 @@ class EquityMacroSettings(BaseModel):
         return self
 
 
+class VolatilitySettings(BaseModel):
+    """Module 17's GARCH upgrade (Section 6.10; §4's dependency table).
+
+    Every value here is a leaf rather than a literal so a fitted model is
+    reproducible from config alone — the fit's result depends on the orders,
+    the distribution and the sample floor, and a reader must be able to see
+    all three without reading the code that consumed them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    garch_p: CalibratedValue
+    garch_q: CalibratedValue
+    min_observations: CalibratedValue
+    persistence_ceiling: CalibratedValue
+    confidence: CalibratedValue
+
+    @property
+    def garch_p_value(self) -> int:
+        return self._positive_int(self.garch_p, "garch_p", minimum=1)
+
+    @property
+    def garch_q_value(self) -> int:
+        return self._positive_int(self.garch_q, "garch_q", minimum=1)
+
+    @property
+    def min_observations_value(self) -> int:
+        return self._positive_int(self.min_observations, "min_observations", minimum=2)
+
+    @property
+    def persistence_ceiling_value(self) -> float:
+        return float(self.persistence_ceiling.value)
+
+    @property
+    def confidence_value(self) -> float:
+        return float(self.confidence.value)
+
+    @staticmethod
+    def _positive_int(leaf: CalibratedValue, name: str, *, minimum: int) -> int:
+        """A whole number >= ``minimum``, validated at the point of use.
+
+        These are passed straight into ``arch``'s model constructor and into a
+        length comparison, so a fractional or non-positive value would either
+        raise deep inside a third-party fit or silently make the sample floor
+        meaningless. Validating here names the leaf that is wrong.
+        """
+        raw = float(leaf.value)
+        if not raw.is_integer() or raw < minimum:
+            raise ValueError(f"volatility.{name} must be a whole number >= {minimum}; got {raw!r}.")
+        return int(raw)
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int
@@ -7040,6 +7092,7 @@ class Settings(BaseModel):
     beveridge: BeveridgeSettings
     labor: LaborSettings
     risk: RiskSettings
+    volatility: VolatilitySettings
     kelly: KellySettings
     instrument_selection: InstrumentSelectionSettings
     curve_trade: CurveTradeSettings

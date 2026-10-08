@@ -8,8 +8,6 @@
 > (structural call graph). Every function either tool reports as unwired appears below. If a function  
 > is not here, it is not unwired.
 
-
-
 ---
 
 ## 0. How this was measured (reproducible)
@@ -48,31 +46,31 @@ registration, so every HTTP route handler shows as "uncalled" (see §5).
 | Used by other production code                        | 697                                                      |
 | **NOT used by production code**                      | **298** (193 public · 105 private · 99 test/script-only) |
 
-**The number to remember is 59** — that is the wiring debt in Phases 0-3 scope. The **23 Tier 5 are
-BUILT** (Phase 5+ is complete — §4), **not deferred**; and the 298 is a broader structural measure
+**The number to remember is 59** — that is the wiring debt in Phases 0-3 scope. The **23 Tier 5 are  
+BUILT** (Phase 5+ is complete — §4), **not deferred**; and the 298 is a broader structural measure  
 that includes routes and private helpers.
 
 ---
 
 ## 2. The three buckets — and which are real debt
 
-| Bucket                                               | Count    | Real debt?                                        |
-| ---------------------------------------------------- | -------- | ------------------------------------------------- |
-| Tier 1-4 model functions, no pipeline caller         | **59**   | **Mostly YES** — §21.3 assigns them to Phases 0-3 |
-| ↳ of which Phase 4+ **by endpoint** (risk/portfolio) | ~8       | **NO** — legitimately deferred                    |
-| ↳ of which genuine Phases 0-3 wiring debt            | **~51**  | **YES**                                           |
-| Tier 5 — Phase 5+ **COMPLETE**                       | **23**   | **NO** — built and tested; unwired by design      |
+| Bucket                                               | Count    | Real debt?                                                     |
+| ---------------------------------------------------- | -------- | -------------------------------------------------------------- |
+| Tier 1-4 model functions, no pipeline caller         | **59**   | **Mostly YES** — §21.3 assigns them to Phases 0-3              |
+| ↳ of which Phase 4+ **by endpoint** (risk/portfolio) | ~8       | **NO** — legitimately deferred                                 |
+| ↳ of which genuine Phases 0-3 wiring debt            | **~51**  | **YES**                                                        |
+| Tier 5 — Phase 5+ **COMPLETE**                       | **23**   | **NO** — built and tested; unwired by design                   |
 | Phase 5+ capability gaps                             | **6**    | **YES** — but they are *missing work*, not unwired code (§4.1) |
-| Non-model unreachable modules                        | 30 of 78 | Mixed — see §5                                    |
+| Non-model unreachable modules                        | 30 of 78 | Mixed — see §5                                                 |
 
 **Two different kinds of "not done" — do not conflate them:**
 
-|                                  | The 23 Tier-5 functions                | The 6 capability gaps (§4.1)                                                    |
-| -------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------- |
-| Exists in `src/`?                | **Yes** — real bodies                   | **No**                                                                          |
-| Tested / live-checked?           | **Yes**                                | n/a                                                                             |
-| Problem                          | it exists and nothing calls it         | it does not exist yet                                                           |
-| Fix                              | a product decision (changes published output) | **build it**                                                              |
+|                        | The 23 Tier-5 functions                       | The 6 capability gaps (§4.1) |
+| ---------------------- | --------------------------------------------- | ---------------------------- |
+| Exists in `src/`?      | **Yes** — real bodies                         | **No**                       |
+| Tested / live-checked? | **Yes**                                       | n/a                          |
+| Problem                | it exists and nothing calls it                | it does not exist yet        |
+| Fix                    | a product decision (changes published output) | **build it**                 |
 
 ### Why this is a gap and not a design choice
 
@@ -128,6 +126,7 @@ are themselves unwired — see §3.5. Bond math is a **subtree**, not six indepe
 
 ### 3.2 `national_accounts.py` — 9 functions (Tier 1-3) — **DEBT**
 
+
 Index-number arithmetic and the accounting identities. Nothing in the pipeline uses them.
 
 | Function                            | Tier | Why unwired                      | Where it must be wired                                | What it adds                                                                                       |
@@ -176,7 +175,6 @@ functions have no caller. Module-level reachability ≠ function-level wiring.
 §9.2/9.3 defer `compute_risk_parity_weights` / `translate_thesis_to_position` to Phase 4. They are  
 Tier 1-2 in §21.3, which is why the tool counts them — but counting them as debt would be wrong.
 
-
 | Function                         | Tier | Why unwired          | Where it will be wired                               |
 | -------------------------------- | ---- | -------------------- | ---------------------------------------------------- |
 | `historical_var`                 | 1    | Phase 4+ by endpoint | `portfolio/risk_budget.py` when the risk suite lands |
@@ -205,6 +203,7 @@ function nothing calls. Worth checking whether that agreement is actually assert
 | -------------------- | ---- | -------------------------------- | -------------------------- | -------------------------------------------------------------------------------------- |
 | `output_gap`         | 1    | Live-checked, no pipeline caller | `orchestration.py` GDP leg | Actual vs potential — blocked in practice on `potential_gdp_cobb_douglas`              |
 | `simple_gdp_nowcast` | 2    | Live-checked, no pipeline caller | same                       | The spec's Phase 1 "simple GDP nowcast"; `gdp_gdi_divergence` is wired but this is not |
+
 
 ### 3.8 `probability.py` — 2 (Tier 2) — **DEBT**
 
@@ -259,13 +258,13 @@ cosmetic"). A point-in-time helper with no caller is worth understanding before 
 
 ## 4. Tier 5 — 23 functions — **BUILT (Phase 5+ COMPLETE), unwired by design — NOT debt**
 
-**Phase 5+ is DONE, not pending.** `AGENTS.md` §21.3 lists these as **Tier 5 — Phase 5+**, and the
-project records them as
-**23/23 COMPLETE** (D-092 … D-125): every name has a real `def` with a real body — measured
-2026-10-08, **none of the 23 raises `NotImplementedError`**. The section's old heading, *"stubs only
-until their phase"*, was corrected on 2026-10-08 because it no longer described the shipped tree.
-They are unwired **by design**: Phase 5+ built the *sophisticated* version of each item while Phases
-0-4 shipped the *simple* one, and an upgrade pass **deletes nothing** — so both versions exist and
+**Phase 5+ is DONE, not pending.** `AGENTS.md` §21.3 lists these as **Tier 5 — Phase 5+**, and the  
+project records them as  
+**23/23 COMPLETE** (D-092 … D-125): every name has a real `def` with a real body — measured  
+2026-10-08, **none of the 23 raises `NotImplementedError`**. The section's old heading, *"stubs only  
+until their phase"*, was corrected on 2026-10-08 because it no longer described the shipped tree.  
+They are unwired **by design**: Phase 5+ built the *sophisticated* version of each item while Phases  
+0-4 shipped the *simple* one, and an upgrade pass **deletes nothing** — so both versions exist and  
 only the simple one is called. **Do not wire them; do not count them as debt.**
 
 `cip_check` · `uip_expected_move` · `ppp_valuation` · `carry_score` · `dollar_smile_regime` ·  
@@ -275,93 +274,94 @@ only the simple one is called. **Do not wire them; do not count them as debt.**
 `classify_regime_markov_switching` · `yield_curve_pca` · `run_regression` · `test_stationarity` ·  
 `test_cointegration` · `compute_pca` · `kalman_latent_state` · `statement_text_diff`
 
-**Caveat on the count:** the tool reports 22 as "Tier 5"; §21.3's own list above contains **23**
-names. The discrepancy is one function the tool classifies as Tier 1-4 (`oil_balance_signal` appears
-as a Tier-5 orphan in the tool's output). **23 is authoritative** (§21.3's table, and only that
+**Caveat on the count:** the tool reports 22 as "Tier 5"; §21.3's own list above contains **23**  
+names. The discrepancy is one function the tool classifies as Tier 1-4 (`oil_balance_signal` appears  
+as a Tier-5 orphan in the tool's output). **23 is authoritative** (§21.3's table, and only that  
 table, governs — §22.1).
 
 ### 4.1 What is *genuinely* outstanding in Phase 5+ — 6 items, none of them these 23
 
-Tier 5 being complete does **not** mean Phase 5+ has nothing left. Six things remain, and **none of
-them is a Tier-5 function**. Authority: `docs/PHASE5_DEFERRED.md` §2, plus item 6 (found 2026-10-08
+Tier 5 being complete does **not** mean Phase 5+ has nothing left. Six things remain, and **none of  
+them is a Tier-5 function**. Authority: `docs/PHASE5_DEFERRED.md` §2, plus item 6 (found 2026-10-08  
 by reading §22.5 against the shipped body).
 
-| # | Outstanding item | Why | Blocked on |
-|---|---|---|---|
-| 1 | **`extensions/` — 6 modules** | deliberate stubs (`raise NotImplementedError`) | an uninstalled §4 package, one per module |
-| 2 | **GARCH-family conditional volatility** | not implemented | the `arch` package (§4 phase gate) |
-| 3 | **Crisis-scenario shock engine** | **split** — the *distribution* is done, the *engine* is not | design, not a dependency |
-| 4 | **Multi-country (`de`, `jp`, `gb`)** | not implemented | per country: its own data registry, **its own reaction function**, and its own instrument set |
-| 5 | **Market/price data coverage** (incl. FX forwards) | partially implemented | **source availability**, not code |
-| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE, and no work list owned it** | nothing — it is simply unbuilt |
+| # | Outstanding item                                                | Why                                                         | Blocked on                                                                                    |
+| - | --------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1 | **`extensions/` — 6 modules**                                   | deliberate stubs (`raise NotImplementedError`)              | an uninstalled §4 package, one per module                                                     |
+| 2 | **GARCH-family conditional volatility**                         | not implemented                                             | the `arch` package (§4 phase gate)                                                            |
+| 3 | **Crisis-scenario shock engine**                                | **split** — the *distribution* is done, the *engine* is not | design, not a dependency                                                                      |
+| 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
+| 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code                                                             |
+| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE, and no work list owned it**                     | nothing — it is simply unbuilt                                                                |
 
 ### 4.2 ⚠️ The sixth item — the obligation that fell between two lists
 
-**Every list missed this one, including the first version of this document.** It is recorded
+**Every list missed this one, including the first version of this document.** It is recorded  
 separately because its *shape* is the finding.
 
 `AGENTS.md` **§22.5** obligates, in the spec's own words:
 
-> *"**Phase 5+ REPLACES this entirely** with a real Fed-funds-futures-implied probability
-> distribution (Section 4/16's original intent) — this function's signature is stable so that
+> *"**Phase 5+ REPLACES this entirely** with a real Fed-funds-futures-implied probability  
+> distribution (Section 4/16's original intent) — this function's signature is stable so that  
 > replacement is a body swap, not a caller-facing breaking change."*
 
-**Phase 5+ is recorded COMPLETE (23/23) and the body was never swapped.**
-`derive_market_implied_policy_path` still returns `short_yield - short_tenor_term_premium`, and three
-warnings still say so — `models/policy_rules.py:718`, `:737`, `:775` all read *"Phase 5+ replaces
+
+**Phase 5+ is recorded COMPLETE (23/23) and the body was never swapped.**  
+`derive_market_implied_policy_path` still returns `short_yield - short_tenor_term_premium`, and three  
+warnings still say so — `models/policy_rules.py:718`, `:737`, `:775` all read *"Phase 5+ replaces  
 this entirely (Section 22.5)."*
 
-**Why no gate caught it:** the obligation is attached to a **Tier 3** function (`AGENTS.md:5531`),
-but the Phase-5+ work list was built from §21.3's **Tier 5** names. **The obligation fell between two
+**Why no gate caught it:** the obligation is attached to a **Tier 3** function (`AGENTS.md:5531`),  
+but the Phase-5+ work list was built from §21.3's **Tier 5** names. **The obligation fell between two  
 lists and nothing owned it.** So "Tier 5 = 23/23" is true and does **not** mean Phase 5+ is complete.
 
-**Why it outranks the other five:** `derive_market_implied_policy_path` is **the reference the entire
-gap is measured against.** `canonical_policy_gap` computes
-`raw_gap = model_implied − market_implied`, so **every thesis's gap inherits its error.** It is not a
-leaf — it is the fulcrum. Its confidence is **0.4** (`config/settings.yaml:165`,
-`uncalibrated_illustrative`), and that config note says of itself: *"Explicitly lower than a real
+**Why it outranks the other five:** `derive_market_implied_policy_path` is **the reference the entire  
+gap is measured against.** `canonical_policy_gap` computes  
+`raw_gap = model_implied − market_implied`, so **every thesis's gap inherits its error.** It is not a  
+leaf — it is the fulcrum. Its confidence is **0.4** (`config/settings.yaml:165`,  
+`uncalibrated_illustrative`), and that config note says of itself: *"Explicitly lower than a real  
 futures-implied distribution would earn."*
 
 **The macro error it leaves in place — a horizon mismatch:**
 
-| | What it is | Horizon |
-|---|---|---|
-| `model_implied` | median of the three rules' prescription | **spot** — "what the rate should be now" |
-| `market_implied` | 2y yield − ACM term premium | **average** expected policy **over two years** |
+|                  | What it is                              | Horizon                                        |
+| ---------------- | --------------------------------------- | ---------------------------------------------- |
+| `model_implied`  | median of the three rules' prescription | **spot** — "what the rate should be now"       |
+| `market_implied` | 2y yield − ACM term premium             | **average** expected policy **over two years** |
 
-Subtracting a spot number from a two-year average is apples-to-oranges. Taylor says 5% and the
-2y-implied says 4% does **not** mean "the market is 100bp too dovish" — the market may expect 5% for a
-year and then 3%. **The path SHAPE is exactly what is lost**, and that is precisely what a
-futures-implied *distribution* restores: it yields a path, so the horizons can be aligned. The
+Subtracting a spot number from a two-year average is apples-to-oranges. Taylor says 5% and the  
+2y-implied says 4% does **not** mean "the market is 100bp too dovish" — the market may expect 5% for a  
+year and then 3%. **The path SHAPE is exactly what is lost**, and that is precisely what a  
+futures-implied *distribution* restores: it yields a path, so the horizons can be aligned. The  
 horizon mismatch is not a separate bug — it is **why §22.5 wanted the replacement.**
 
-**What the system does well, and should not lose in the fix:** `canonical_policy_gap`'s noise-floor
-test — `is_meaningful = abs(gap) > dispersion`, the max-min spread of the three rules — is the
-strongest idea in this subsystem. *"Three rules differing by 80bp cannot support a claim about a
+**What the system does well, and should not lose in the fix:** `canonical_policy_gap`'s noise-floor  
+test — `is_meaningful = abs(gap) > dispersion`, the max-min spread of the three rules — is the  
+strongest idea in this subsystem. *"Three rules differing by 80bp cannot support a claim about a  
 50bp gap."* A replacement must preserve it.
 
 ### 4.3 Status of the three defects — ADDRESSED 2026-10-08
 
-| # | Defect | Fix applied | Proof |
-|---|---|---|---|
-| **D1** | horizon mismatch, undisclosed | The horizon is now a **config leaf** (`policy.market_implied.proxy_horizon_months`), published in the market result's **`warnings`** (the only field `collect_all_warnings` reads), in its `context`, and in the **gap's own `interpretation`**. The pre-fix caveat sat in `assumptions` — which the thesis never collects. | 4 tests + mutation proof (removing the warning FAILS the test) |
-| **D2** | §22.5 obligation unowned | `PHASE5_REPLACEMENT_OBLIGATION` marker + a **tripwire test** asserting BOTH that the body is still the proxy AND that the marker says so. Discharging the obligation now FAILS the suite until the record is updated in the same change. | tripwire + mutation proof (marker→`discharged` FAILS) |
+| #      | Defect                                  | Fix applied                                                                                                                                                                                                                                                                                                                        | Proof                                                                                                                      |
+| ------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **D1** | horizon mismatch, undisclosed           | The horizon is now a **config leaf** (`policy.market_implied.proxy_horizon_months`), published in the market result's **`warnings`** (the only field `collect_all_warnings` reads), in its `context`, and in the **gap's own `interpretation`**. The pre-fix caveat sat in `assumptions` — which the thesis never collects.        | 4 tests + mutation proof (removing the warning FAILS the test)                                                             |
+| **D2** | §22.5 obligation unowned                | `PHASE5_REPLACEMENT_OBLIGATION` marker + a **tripwire test** asserting BOTH that the body is still the proxy AND that the marker says so. Discharging the obligation now FAILS the suite until the record is updated in the same change.                                                                                           | tripwire + mutation proof (marker→`discharged` FAILS)                                                                      |
 | **D3** | spot fields declared but never assigned | `SnapshotBuildReport.declared_not_wired` + a **`DECLARED_NOT_WIRED:<field>` data-quality flag**. An empty mapping is now distinguishable from "no data this run". Deliberately does **not** make a build report itself incomplete — the *declaration* is by design (D-137), the *absence of wiring* is what had to become visible. | 3 tests, incl. one that calls the **real builder** (an earlier version of that test passed against the mutant — see below) |
 
-**A note on the D3 test, because it nearly shipped weak.** The first version built a
-`SnapshotBuildReport` by hand and checked `as_flags` — which stays GREEN even if `build_snapshot`
-never populates the field. Measured: replacing the population with `declared_not_wired = []` left it
-passing. The test now calls the real builder with an injected no-network client, so it fails on the
-**assertion** rather than on an escaping exception. *A test that exercises the renderer is not a test
+**A note on the D3 test, because it nearly shipped weak.** The first version built a  
+`SnapshotBuildReport` by hand and checked `as_flags` — which stays GREEN even if `build_snapshot`  
+never populates the field. Measured: replacing the population with `declared_not_wired = []` left it  
+passing. The test now calls the real builder with an injected no-network client, so it fails on the  
+**assertion** rather than on an escaping exception. *A test that exercises the renderer is not a test  
 of the producer.*
 
-**On the D-137 vs `PHASE5_DEFERRED.md` contradiction:** both readings are satisfied. D-137 is right
-that the fields are deliberate Tier-5 placeholders, so they must **not** make a build report itself
-incomplete. `PHASE5_DEFERRED.md` §2.5.1 is right that the omission must be visible. The fix does
+**On the D-137 vs `PHASE5_DEFERRED.md` contradiction:** both readings are satisfied. D-137 is right  
+that the fields are deliberate Tier-5 placeholders, so they must **not** make a build report itself  
+incomplete. `PHASE5_DEFERRED.md` §2.5.1 is right that the omission must be visible. The fix does  
 both: report the absence, do not cry failure on a state the project chose.
 
-**Still open:** D2's *substance* — the actual Fed-funds-futures-implied replacement — needs a futures
-source (and, per §2.5, FX/rates market data is partly source-blocked). What is fixed is that the
+**Still open:** D2's *substance* — the actual Fed-funds-futures-implied replacement — needs a futures  
+source (and, per §2.5, FX/rates market data is partly source-blocked). What is fixed is that the  
 obligation can no longer be lost silently.
 
 ---
@@ -418,6 +418,7 @@ the tool does not model that:
 | `portfolio.risk_budget`          | 4     | Phase 4+                                                     |
 | *(41 further modules, 1-4 each)* | 90    | See `.review-probe/callgraph_uncalled.txt` for the full list |
 
+
 The full per-function list is reproducible with  
 `uv run python tools/call_graph_audit.py --uncalled`.
 
@@ -432,7 +433,6 @@ them.
 | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `thesis_layer/builder.py::build_us_macro_thesis` (line 753) | `contracts`, `convergence`, `instrument_selection`, `policy_rules`, `probability`, `portfolio.risk_budget`, + 6 `thesis_layer` modules |
 | `api_layer/orchestration.py`                                | `as_of`, `contracts`, `gdp_nowcast`, `instrument_selection`, `labor_synthesis`, `policy_rules`, `regime`, `yield_curve`                |
-
 
 ### Target stages, and what each unlocks
 
@@ -466,16 +466,16 @@ them.
 
 ### Do NOT wire
 
-- **Tier 5 (§4)** — **BUILT, not deferred.** Phase 5+ is complete (23/23, D-092 … D-125); these are
-  the *sophisticated* versions that sit beside the simple ones the pipeline calls. Wiring them is a
+- **Tier 5 (§4)** — **BUILT, not deferred.** Phase 5+ is complete (23/23, D-092 … D-125); these are  
+  the *sophisticated* versions that sit beside the simple ones the pipeline calls. Wiring them is a  
   product decision that changes published output, not a debt repayment.
 - **`risk.py` (§3.5)** — Phase 4+ by endpoint. O-162 explicitly warns that treating these as debt is wrong.
 
 ### DO work on — the 6 genuinely-outstanding Phase 5+ items (§4.1)
 
-`extensions/` (6 stubs) · GARCH family · crisis-shock engine · multi-country · market/price data
-coverage · **the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5
-function** — they are capability gaps, and they are the real Phase-5 remainder. **§4.2 is the one to
+`extensions/` (6 stubs) · GARCH family · crisis-shock engine · multi-country · market/price data  
+coverage · **the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5  
+function** — they are capability gaps, and they are the real Phase-5 remainder. **§4.2 is the one to  
 read first:** it is the reference every thesis's gap is measured against.
 
 ### How to keep this honest

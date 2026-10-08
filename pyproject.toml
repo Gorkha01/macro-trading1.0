@@ -22,6 +22,12 @@ dependencies = [
     "sqlalchemy>=2.0.54",
     "openbb-fred>=1.6.2",
     "openbb-economy>=1.6.2",
+    # Phase 5+ — AGENTS.md Section 4's dependency table names it explicitly:
+    #   | `arch` | GARCH-family conditional volatility | `models/volatility.py` | 5+ |
+    # Section 1639 adds "gated individually — do not batch; ship and test one
+    # extension at a time". Phase 5 is started, so this gate is open; the package
+    # is added for the GARCH increment ONLY and nothing else imports it.
+    "arch>=7.0.0",
 ]
 
 [project.optional-dependencies]
