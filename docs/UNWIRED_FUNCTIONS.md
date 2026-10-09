@@ -288,8 +288,8 @@ by reading §22.5 against the shipped body).
 | # | Outstanding item                                                | Why                                                         | Blocked on                                                                                    |
 | - | --------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | 1 | **`extensions/` — 6 modules**                                   | deliberate stubs (`raise NotImplementedError`)              | an uninstalled §4 package, one per module                                                     |
-| 2 | **GARCH-family conditional volatility**                         | not implemented                                             | the `arch` package (§4 phase gate)                                                            |
-| 3 | **Crisis-scenario shock engine**                                | **split** — the *distribution* is done, the *engine* is not | design, not a dependency                                                                      |
+| 2 | ~~**GARCH-family conditional volatility**~~ | **CLOSED 2026-10-09** — `models/volatility.py` built, `arch` added | — |
+| 3 | ~~**Crisis-scenario shock engine**~~                            | **CLOSED 2026-10-09** — engine, simulation half and all four §9.4 scenarios ship | — |
 | 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
 | 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code                                                             |
 | 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE, and no work list owned it**                     | nothing — it is simply unbuilt                                                                |
@@ -471,12 +471,13 @@ them.
   product decision that changes published output, not a debt repayment.
 - **`risk.py` (§3.5)** — Phase 4+ by endpoint. O-162 explicitly warns that treating these as debt is wrong.
 
-### DO work on — the 6 genuinely-outstanding Phase 5+ items (§4.1)
+### DO work on — the genuinely-outstanding Phase 5+ items (§4.1)
 
-`extensions/` (6 stubs) · GARCH family · crisis-shock engine · multi-country · market/price data  
-coverage · **the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5  
-function** — they are capability gaps, and they are the real Phase-5 remainder. **§4.2 is the one to  
-read first:** it is the reference every thesis's gap is measured against.
+`extensions/` (6 stubs) · multi-country · market/price data coverage ·
+**the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5
+function** — they are capability gaps, and they are the real Phase-5 remainder. **GARCH and the whole crisis-shock engine
+closed 2026-10-09** — `docs/PHASE5_DEFERRED.md` §2.2 and §2.3. **§4.2 is the one to read first:** it is the reference every thesis's gap is measured
+against.
 
 ### How to keep this honest
 

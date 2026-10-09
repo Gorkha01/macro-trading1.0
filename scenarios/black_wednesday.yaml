@@ -1,0 +1,54 @@
+# Section 9.4's scenario library — Black Wednesday, 16 September 1992.
+#
+# AGENTS.md §9.4 names four case studies; §13.2 gives a full example for one
+# (gfc_2008). This is the second.
+#
+# UNITS — as gfc_2008.yaml: bp for rates and credit, percent for equity and fx.
+#
+# THE EPISODE, and why the shocks are these. The UK was forced out of the ERM
+# when sterling came under sustained speculative pressure. The distinctive
+# feature — and the reason this scenario belongs in a library alongside the
+# others — is that **it is an FX crisis, not an equity or credit crisis**:
+#
+#   * Sterling fell sharply against the DM (~ -4% on the day, ~ -15% over the
+#     following months) while UK rates were hiked 12% -> 15% intraday in a
+#     failed defence, then CUT back the same evening.
+#   * UK EQUITIES ROSE on the exit — the devaluation was read as a growth
+#     positive, not a catastrophe. A stress that dumped equities would be
+#     modelling 2008 again with a different label.
+#   * Credit barely moved. There was no solvency event.
+#
+# The lesson the project cites it for (AGENTS.md §1824, the impossible trinity)
+# is a POLICY-REGIME failure, and this file encodes exactly that: the rate
+# round-trip and the FX break, with the other two legs quiet.
+name: black_wednesday
+description: >
+  An exchange-rate-mechanism crisis: a forced devaluation with an intraday
+  rate defence that failed and reversed the same day. An FX and policy event —
+  equities and credit were NOT the transmission channel.
+
+calibration_status: uncalibrated_illustrative
+
+shocks:
+  rates:
+    bp: -200          # NET easing once the defence was abandoned (12% -> 15%
+                      # intraday, then back and lower within days)
+  credit:
+    bp: +15           # essentially flat — there was no solvency event
+  equity:
+    pct: +3           # UK equities ROSE on the devaluation
+  fx:
+    pct: -4           # sterling against the DM on the day
+
+drivers:
+  growth_shock:
+    pp: -1.0          # a confidence shock, not a demand collapse
+
+# ⚠️ THE OVERRIDE IS THE OPPOSITE OF THE OTHER THREE, AND THAT IS THE POINT.
+# In 2008, 1987 and 2020 the flight was INTO Treasuries and OUT of credit, so
+# `treasuries_vs_hy_credit` goes strongly negative. In 1992 the shock was to the
+# CURRENCY, and the policy response was a rate cut that steepened the curve.
+# A library whose every crisis assumed the same correlation response would be
+# one scenario written four times.
+correlation_override:
+  treasuries_vs_hy_credit: -0.1

@@ -5552,9 +5552,11 @@ multi-country leg — three tasks per country (its own verified sources, its own
 function, its own instrument set) — is not built.
 
 The "stubs only" rule now bites in exactly one place: **`extensions/` — 6 modules, each gated on an
-uninstalled §4 package.** Read the tags in this section as the **build ORDER**, not as a statement of
-what is missing; for the genuinely outstanding items see `docs/PHASE5_DEFERRED.md` §2 (GARCH ·
-crisis-shock engine · **multi-country** · FX-forward data coverage).
+uninstalled §4 package** (`scenario_engine.py` shares that directory and is **not** one of them).
+Read the tags in this section as the **build ORDER**, not as a statement of what is missing; for the
+genuinely outstanding items see `docs/PHASE5_DEFERRED.md` §2 (**multi-country** · FX-forward data
+coverage). **GARCH and the entire crisis-shock engine closed 2026-10-09 — do not re-list either as
+outstanding.**
 `cip_check`, `uip_expected_move`, `ppp_valuation`, `carry_score`,
 `dollar_smile_regime`, `intervention_capacity`,
 `em_vulnerability_checklist`, `oil_balance_signal`,

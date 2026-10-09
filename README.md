@@ -46,7 +46,7 @@ No function may claim country-genericity it has not earned.
 | 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **101/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 23/23** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work is the GARCH family and the multi-country theses**; multi-country still needs, per country, its *own* data registry, reaction function and instrument set |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: multi-country** (per country, its *own* data registry, reaction function and instrument set) **and FX-forward data coverage.** GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded
@@ -57,8 +57,8 @@ No function may claim country-genericity it has not earned.
 >
 > **Phase 5 is under way by explicit operator instruction**, one function per increment, each
 > to production standard and each independently verified. With the §21.3 list complete, the
-> standing obligations are the **GARCH volatility family** and the **multi-country theses** —
-> and the **22 Tier-5 functions wired but not yet called from the thesis pipeline**. See
+> standing obligations are the **multi-country theses** — and the **22 Tier-5 functions wired but
+> not yet called from the thesis pipeline**. See
 > `docs/PROGRESS.md` for the live state and `docs/DECISIONS.md` for the per-increment evidence.
 
 **Run the API:**
@@ -189,7 +189,7 @@ src/macro_engine/
   thesis_layer/         MacroThesis schema + build_us_macro_thesis()
   portfolio/            risk budgeting (Riskfolio-Lib hook)
   api_layer/            FastAPI service
-  extensions/           Phase 5+ stubs, signatures only
+  extensions/           Phase 5+ stubs (6, dependency-gated) + scenario_engine.py (real)
 tests/                  mirrors src/ (api_layer, data_layer, models, portfolio, thesis_layer)
 tools/                  gates and probes — sweep_health, reachability_audit,
                         openbb_reachability, integrity_audit, record_verification,

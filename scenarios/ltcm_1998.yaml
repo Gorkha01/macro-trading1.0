@@ -1,0 +1,50 @@
+# Section 9.4's scenario library — the LTCM crisis, autumn 1998.
+#
+# AGENTS.md §9.4 names four case studies; §13.2 gives a full example for one
+# (gfc_2008). This is the fourth and last.
+#
+# UNITS — as gfc_2008.yaml: bp for rates and credit, percent for equity and fx.
+#
+# THE EPISODE, and why the shocks are these. Russia defaulted in August 1998.
+# LTCM — levered roughly 25:1 on a book of convergence trades that were
+# supposed to be market-neutral — lost ~$4.6bn in under four months and was
+# recapitalised by a Fed-organised consortium.
+#
+# **This is the scenario the project cites more than any other, and for one
+# specific reason: it is the episode where DIVERSIFICATION FAILED.** LTCM's
+# positions were individually hedged and collectively catastrophic, because in
+# a liquidity crisis correlations converge toward 1 — the exact lesson encoded
+# in Module 17.1's `stress_correlations` and in the `only_correlations_that_rise`
+# flag that preserves a genuine hedge rather than forcing it positive.
+#
+# So this file's override is the STRONGEST in the library (-0.8), and its
+# equity leg is modest. The loss did not come from a market falling; it came
+# from spreads that were meant to converge widening together.
+name: ltcm_1998
+description: >
+  A leveraged-fund unwind after the Russian default: credit spreads blow out
+  together, liquidity evaporates, and correlations converge. The episode that
+  defines the correlation-breakdown lesson.
+
+calibration_status: uncalibrated_illustrative
+
+shocks:
+  rates:
+    bp: -75           # the Fed's three 1998 cuts, and the Treasury bid
+  credit:
+    bp: +200          # swap spreads and HY widened hard — the LTCM channel
+  equity:
+    pct: -19          # the S&P's autumn 1998 drawdown
+  fx:
+    pct: +3           # a flight to the dollar
+
+drivers:
+  growth_shock:
+    pp: -2.0          # a funding shock more than a demand shock
+
+# The strongest inversion in the library, and the reason this scenario exists
+# separately from gfc_2008: it is the purest case of the correlation lesson.
+# Treasuries rallied while credit — including paper LTCM held as its "hedge" —
+# sold off, and the two moved together across every book that was levered.
+correlation_override:
+  treasuries_vs_hy_credit: -0.8

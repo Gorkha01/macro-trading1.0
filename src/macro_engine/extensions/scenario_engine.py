@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -73,10 +73,13 @@ from macro_engine.models.contracts import ModelResult, utc_now
 
 __all__ = [
     "FactorExposures",
+    "Scenario",
     "ScenarioShock",
+    "SimulationInputs",
     "apply_scenario_shock",
     "list_scenarios",
     "load_scenario",
+    "simulate_scenario_stress",
 ]
 
 #: The units a shock may be stated in, and the multiplier that converts ONE unit
@@ -396,3 +399,273 @@ def _check_additivity(breakdown: dict[str, float], total: float) -> None:
             f"factor breakdown sums to {recomputed!r} but the published total is "
             f"{total!r}. The breakdown must reconcile with the number beside it."
         )
+
+
+# ---------------------------------------------------------------------------
+# The simulation half (Section 13.2's VaR/ES/drawdown under the shocked matrix)
+# ---------------------------------------------------------------------------
+
+
+class SimulationInputs(BaseModel):
+    """The joint distribution the scenario is replayed against.
+
+    ``factor_covariance`` is the book's factor covariance **in the configured
+    factor ORDER** — the same order every exposure vector uses, so index ``i``
+    here is index ``i`` of ``FactorExposures``. A covariance whose order differs
+    from the factor set is the positional-vector hazard again, one level down:
+    the simulation would run, the numbers would look plausible, and the book
+    would be stressed against the wrong factors.
+
+    ``horizon_days`` is the horizon the covariance describes. It scales every
+    factor by ``sqrt(horizon)``, not the final P&L — so the joint structure
+    stays consistent with the marginals (the same choice `_simulate_regime_pnls`
+    makes, and the reason it takes a `horizon_scale` rather than a horizon).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    factor_covariance: list[list[float]]
+    horizon_days: int = Field(default=1, gt=0, le=252)
+    periods_per_year: int = Field(default=252, gt=0)
+
+    @model_validator(mode="after")
+    def _covariance_must_match_the_factor_set(self) -> SimulationInputs:
+        n = get_settings().scenario_engine.factor_count
+        rows = len(self.factor_covariance)
+        if rows != n:
+            raise ValueError(
+                f"factor_covariance has {rows} rows but the configured factor set has "
+                f"{n} entries ({list(get_settings().scenario_engine.factor_names)}). "
+                f"Index i must mean the same factor in both."
+            )
+        for i, row in enumerate(self.factor_covariance):
+            if len(row) != n:
+                raise ValueError(f"factor_covariance row {i} has {len(row)} entries; expected {n}.")
+            for j, cell in enumerate(row):
+                if not math.isfinite(cell):
+                    raise ValueError(
+                        f"factor_covariance[{i}][{j}] is {cell!r}. A non-finite cell "
+                        f"makes the Cholesky factor non-finite and the whole sample "
+                        f"meaningless."
+                    )
+        return self
+
+
+def _apply_correlation_override(
+    covariance: list[list[float]], override: dict[str, float]
+) -> list[list[float]]:
+    """Set the named pair's correlation, preserving every variance exactly.
+
+    **Only the correlation moves.** That is what makes the comparison a stress
+    test rather than a second estimate: the shocked book differs from the
+    unshocked one *only* because of the correlation assumption, so any change in
+    VaR is attributable to it and to nothing else. Scaling variances here as well
+    would confound the two.
+
+    The conversion is ``cov_ij = rho_ij * sigma_i * sigma_j``, applied to the
+    symmetric pair. The diagonal is untouched.
+    """
+    settings = get_settings().scenario_engine
+    out = [list(row) for row in covariance]
+    for pair, correlation in override.items():
+        i, j = settings.resolve_override_pair(pair)
+        if not -1.0 <= correlation <= 1.0:
+            raise ValueError(
+                f"correlation override {pair}={correlation} is outside [-1, 1], so it "
+                f"is not a correlation."
+            )
+        sigma_i = math.sqrt(out[i][i])
+        sigma_j = math.sqrt(out[j][j])
+        value = correlation * sigma_i * sigma_j
+        out[i][j] = value
+        out[j][i] = value
+    return out
+
+
+def simulate_scenario_stress(
+    exposures: FactorExposures,
+    scenario: Scenario,
+    simulation: SimulationInputs,
+    *,
+    n_sims: int = 10_000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> ModelResult:
+    """Section 13.2's full stress: the P&L estimate AND its distribution.
+
+    Composes the deterministic breakdown from :func:`apply_scenario_shock` with a
+    Monte Carlo replay under the scenario's SHOCKED correlation matrix, and
+    publishes Section 13.2's five outputs:
+
+        portfolio_pnl_estimate_pct · var_95_under_scenario ·
+        expected_shortfall_under_scenario · max_drawdown_estimate_pct ·
+        factor_exposure_breakdown
+
+    **Why both halves are reported together, and why that is the point.** The
+    deterministic number says *which factor hurt and by how much* — it is exact
+    arithmetic and has no sampling error. The simulated number says *how bad the
+    tail is once the correlations move* — and it is the only one that can, because
+    a deterministic shock vector carries no distribution. Reporting either alone
+    invites a specific misreading: the breakdown alone looks like a complete risk
+    picture (it is one draw), and the VaR alone looks like an estimate of this
+    scenario (it is an estimate of the distribution the scenario induces).
+
+    **The correlation override is the whole mechanism.** Section 13.2's GFC
+    scenario sets `treasuries_vs_hy_credit = -0.7` — flight to quality. Applied,
+    the book's hedge becomes a hedge again and the stressed VaR falls; dropped, the
+    stress would assume the hedge still behaved and would **understate the loss**.
+    That asymmetry is why an unresolvable override raises rather than warns.
+
+    **Drawdown is a simulated path statistic, not a shock.** It is the largest
+    peak-to-trough decline in the CUMULATIVE simulated P&L, which needs the
+    per-step paths rather than only the terminal values — so it is computed from a
+    separate multi-step draw. `horizon_days` is the length of that path.
+    """
+    import numpy as np
+
+    from macro_engine.models.risk import (
+        _expected_shortfall_from_pnls,
+        _loss_quantile,
+        _simulate_regime_pnls,
+    )
+
+    settings = get_settings().scenario_engine
+    if n_sims < 100:
+        raise ValueError(f"n_sims={n_sims} is too few to estimate a 95% tail quantile.")
+    if not 0.5 < confidence < 1.0:
+        raise ValueError(f"confidence={confidence} must be strictly between 0.5 and 1.0.")
+
+    deterministic = apply_scenario_shock(exposures, scenario)
+    breakdown = eval(  # noqa: S307
+        deterministic.context.split("factor_exposure_breakdown=")[1].split(";")[0]
+    )
+
+    stressed_covariance = _apply_correlation_override(
+        simulation.factor_covariance, scenario.correlation_override
+    )
+    loadings = [exposures.pnl_pct_per_unit[f] for f in settings.factor_names]
+    horizon_scale = math.sqrt(simulation.horizon_days / simulation.periods_per_year)
+
+    # `_simulate_regime_pnls` is the canonical joint-draw simulator — the same one
+    # `monte_carlo_var` uses. It is private to `models/risk.py`, and it is imported
+    # rather than reimplemented because LAW 2 forbids a second copy of a joint draw
+    # (a local copy could silently stop being correlated). The precedent is
+    # `portfolio/risk_budget.py`, which already imports `_quadratic_form` for the
+    # same reason.
+    rng = np.random.default_rng(seed)
+    pnls = _simulate_regime_pnls(
+        factor_loadings=loadings,
+        covariance=stressed_covariance,
+        n_sims=n_sims,
+        horizon_scale=horizon_scale,
+        rng=rng,
+        regime="scenario",
+    )
+    var_loss_pct = _loss_quantile(pnls, confidence) * 100.0
+    es_loss_pct = _expected_shortfall_from_pnls(pnls, var_loss_pct / 100.0) * 100.0
+
+    # `max_drawdown_estimate_pct` — the worst SINGLE-STEP outcome, and the name is
+    # Section 13.2's.
+    #
+    # ⚠️ **THREE DEFECTS LIVED HERE AND WERE FIXED 2026-10-09.** The block used to
+    # read `steps = max(simulation.horizon_days, 2)` and then publish it, so a
+    # caller asking for `horizon_days=1` received `"steps": 2` — a field asserting
+    # that a 2-step path had been drawn when the code draws ONE. It also carried a
+    # comment claiming "cumulative P&L along `horizon_days` steps, then the largest
+    # peak-to-trough decline", which the code does NOT do (no cumulation, no
+    # peak-to-trough) and which the comment two lines below it contradicted.
+    #
+    # What is computed is `min()` over single-step draws. That is the honest
+    # reading of a one-period covariance, and it is published under §13.2's field
+    # name because that is the contract — with the basis stated in a warning rather
+    # than left for a reader to infer from a name that says "drawdown".
+    steps_drawn = 1
+    paths = _simulate_regime_pnls(
+        factor_loadings=loadings,
+        covariance=stressed_covariance,
+        n_sims=n_sims,
+        horizon_scale=math.sqrt(1.0 / simulation.periods_per_year),
+        rng=np.random.default_rng(seed + 1),
+        regime="scenario",
+    )
+    worst = min(paths) if paths else 0.0
+    drawdown_pct = worst * 100.0
+
+    published = {
+        "scenario": scenario.name,
+        "portfolio_pnl_estimate_pct": round(float(cast("float", deterministic.value)), 4),
+        "var_95_under_scenario": round(-var_loss_pct, 4),
+        "expected_shortfall_under_scenario": round(-es_loss_pct, 4),
+        "max_drawdown_estimate_pct": round(drawdown_pct, 4),
+        "factor_exposure_breakdown": breakdown,
+        "confidence": confidence,
+        "n_sims": n_sims,
+        # The number of steps ACTUALLY drawn — one. It used to publish
+        # `max(horizon_days, 2)`, which told a caller asking for one day that two
+        # steps had been simulated. A field that describes a computation that did
+        # not happen is worse than a missing field, because it is read as evidence.
+        "steps_drawn": steps_drawn,
+    }
+
+    warnings = [
+        *deterministic.warnings,
+        f"var_95_under_scenario is the {confidence:.0%} quantile of {n_sims} draws under "
+        f"the SHOCKED correlation matrix, in the POSITIVE-LOSS convention (a negative "
+        f"number is a loss). It is a property of the distribution this scenario "
+        f"induces, not a forecast of the scenario.",
+        "max_drawdown_estimate_pct is a ONE-STEP statistic: the covariance describes "
+        "a single period, so there is no honest multi-step path to draw from it. A "
+        "true path drawdown needs a serial model (autocorrelation or a multi-period "
+        "covariance), which this engine does not hold.",
+        "The simulation assumes JOINT NORMALITY. Real crisis returns are fat-tailed, "
+        "so the simulated VaR and ES understate the extreme tail — and a stress test "
+        "is precisely where that matters most.",
+    ]
+    if scenario.correlation_override:
+        warnings.append(
+            f"correlation_override {scenario.correlation_override} IS applied to the "
+            f"simulation (this is the first half of the engine that consumes it). "
+            f"Variances are preserved exactly, so any VaR change is attributable to "
+            f"the correlation assumption alone."
+        )
+
+    return ModelResult(
+        model_name="simulate_scenario_stress",
+        country="us",
+        as_of=utc_now(),
+        value=published,
+        confidence=0.5,
+        interpretation=(
+            f"Under scenario '{scenario.name}': "
+            f"P&L {published['portfolio_pnl_estimate_pct']:+.4f}%, "
+            f"VaR {confidence:.0%} {published['var_95_under_scenario']:+.4f}%, "
+            f"ES {published['expected_shortfall_under_scenario']:+.4f}%."
+        ),
+        context=(
+            "factor_exposure_breakdown={breakdown}; "
+            "shocked_correlation_applied={scenario.correlation_override or '{}'}; "
+            "horizon_days={simulation.horizon_days}; n_sims={n_sims}"
+        ),
+        inputs_used=["exposures", f"scenario:{scenario.name}", "factor_covariance"],
+        warnings=warnings,
+        unit="percent",
+        direction=(
+            "a stress report: a deterministic factor breakdown beside a simulated "
+            "tail under the scenario's shocked correlations"
+        ),
+        assumptions=[
+            "The book's exposures are LINEAR in each factor, so a -300bp move is "
+            "applied at the same duration as a -1bp move (convexity is ignored).",
+            "Factor shocks are JOINT NORMAL. The Cholesky draw reproduces the "
+            "requested covariance exactly, but normality is an assumption the data "
+            "do not satisfy.",
+            "The factor covariance is taken as given and is NOT the scenario's own — "
+            "the scenario moves CORRELATIONS, not volatilities. Stressing volatility "
+            "too is `monte_carlo_var`'s `stressed_volatility_multiplier`, a separate "
+            "lever this engine deliberately does not pull.",
+        ],
+        data_provenance=[
+            "factor_covariance — supplied by the CALLER, in the configured factor "
+            "order. This module has no data-layer dependency.",
+        ],
+    )

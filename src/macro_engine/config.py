@@ -7097,6 +7097,34 @@ class ScenarioEngineSettings(BaseModel):
 
     factors: list[str]
     scenarios_dir: str
+    #: Desk vocabulary -> configured factor name. A scenario authors its override
+    #: in the language a trader uses (`treasuries_vs_hy_credit`); the engine works
+    #: in the four factor names. The mapping is data, not a hardcoded dict, so a
+    #: new alias is a config change and an alias that maps to nothing is caught
+    #: here rather than silently leaving a correlation override unapplied.
+    override_aliases: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _aliases_must_resolve_to_configured_factors(self) -> ScenarioEngineSettings:
+        """An alias pointing at an unknown factor would silently drop an override.
+
+        The failure this prevents is specific and nasty: a scenario that inverts
+        `treasuries_vs_hy_credit` to -0.7 is asserting that the hedge breaks in
+        the crisis. If the alias does not resolve, the correlation is never
+        applied, the simulation runs with the hedge INTACT, and the stress
+        reports a smaller loss than reality — a stress test that flatters the
+        book.
+        """
+        unknown = sorted({v for v in self.override_aliases.values() if v not in self.factors})
+        if unknown:
+            raise ValueError(
+                f"scenario_engine.override_aliases maps to factor(s) that are not "
+                f"configured: {unknown}. Configured factors: {self.factors}. An "
+                f"alias that does not resolve would leave a scenario's correlation "
+                f"override silently unapplied, so the stress would run with the "
+                f"hedge intact and understate the loss."
+            )
+        return self
 
     @model_validator(mode="after")
     def _factors_must_be_uniquely_named(self) -> ScenarioEngineSettings:
@@ -7132,6 +7160,43 @@ class ScenarioEngineSettings(BaseModel):
     def factor_count(self) -> int:
         """How many factors an exposure vector must have."""
         return len(self.factors)
+
+    def resolve_override_pair(self, pair: str) -> tuple[int, int]:
+        """``"treasuries_vs_hy_credit"`` -> the two indices into the factor vector.
+
+        A scenario's ``correlation_override`` names a pair in desk vocabulary;
+        this engine works in factor indices. Resolving here — and raising when a
+        side is unknown — is what stops an override being silently dropped. The
+        consequence of a silent drop is asymmetric and worth stating: the stress
+        would run with the hedge INTACT, so it would report a smaller loss than
+        the scenario describes. **A stress test that flatters the book is worse
+        than no stress test**, because it is believed.
+        """
+        if "_vs_" not in pair:
+            raise ValueError(
+                f"correlation override '{pair}' is not a pair. Expected the form "
+                f"'<a>_vs_<b>' — e.g. 'treasuries_vs_hy_credit' (Section 13.2)."
+            )
+        left, right = pair.split("_vs_", 1)
+        indices: list[int] = []
+        for side in (left, right):
+            factor = self.override_aliases.get(side, side)
+            if factor not in self.factors:
+                raise ValueError(
+                    f"correlation override '{pair}': '{side}' resolves to "
+                    f"'{factor}', which is not a configured factor "
+                    f"({self.factors}). Add it to scenario_engine.override_aliases "
+                    f"or fix the scenario. Left unresolved it would be applied to "
+                    f"nothing, leaving the hedge intact and understating the loss."
+                )
+            indices.append(self.factors.index(factor))
+        if indices[0] == indices[1]:
+            raise ValueError(
+                f"correlation override '{pair}' names the SAME factor twice "
+                f"('{self.factors[indices[0]]}'). A factor's correlation with "
+                f"itself is 1 by definition and cannot be overridden."
+            )
+        return indices[0], indices[1]
 
     def index_of(self, factor: str) -> int:
         """The position of ``factor`` in every exposure vector. Raises if unknown.

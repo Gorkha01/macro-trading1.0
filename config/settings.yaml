@@ -5312,6 +5312,23 @@ scenario_engine:
   # load-bearing — index i here is index i of every exposure vector.
   factors: ["rates", "fx", "credit", "equity"]
   scenarios_dir: "scenarios"
+  # A scenario's `correlation_override` names a PAIR in the desk's vocabulary —
+  # Section 13.2 writes `treasuries_vs_hy_credit` — while this engine works in
+  # the four factor names above. This maps one onto the other, so an override
+  # can be authored in the language a trader uses without the engine having to
+  # guess, and so an alias that maps to nothing is a loud error rather than a
+  # silently unapplied correlation (which would leave the stress looking
+  # coherent while the hedge was still assumed intact).
+  override_aliases:
+    treasuries: "rates"
+    treasury: "rates"
+    rates: "rates"
+    hy_credit: "credit"
+    credit: "credit"
+    fx: "fx"
+    usd: "fx"
+    equities: "equity"
+    equity: "equity"
 
 # ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture

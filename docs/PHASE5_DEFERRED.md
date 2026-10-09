@@ -16,7 +16,7 @@ it calls *done* was checked to have a real body — not a `NotImplementedError`.
 | Are Phases 0–4 done? | **Yes.** All 101 functions named in AGENTS.md §21.3 Tier 1–5 exist in `src/`. |
 | Is Tier 5 (the spec's "stubs only") stubbed? | **No — 23 of 23 Tier 5 functions have real bodies.** |
 | How many `extensions/` modules are stubbed? | **6** — each gated on an uninstalled §4 package. |
-| How many genuine *capability* gaps remain? | **2 fully open** — multi-country, and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2).** The **crisis-shock engine is HALF closed** (§2.3.1): the engine that applies a shock vector and reports the factor breakdown is built; the **simulated VaR/ES/drawdown under the shocked correlation matrix is not.** |
+| How many genuine *capability* gaps remain? | **2** — multi-country, and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included.** |
 | Why are they not implemented? | Mostly AGENTS.md §4 (*"no dependency before its phase"*); two are **data-availability** blocks, not code gaps. |
 
 **Correction on the record:** AGENTS.md §21.3 heads Tier 5 *"Phase 5+ (stubs only until their
@@ -101,7 +101,7 @@ between alpha and beta rather than raising their sum. The non-stationarity check
 **limited power against a genuinely near-integrated process** — which is why that warning branch is
 exercised through config rather than from a simulated series.
 
-### 2.3 Crisis-scenario shock engine — **engine BUILT 2026-10-09; the simulation half is not**
+### 2.3 Crisis-scenario shock engine — **CLOSED 2026-10-09 (engine, simulation and library)**
 
 > **AMENDED 2026-10-09.** This section read *"split: distribution done, engine not"*. The engine half
 > now exists as `extensions/scenario_engine.py` — see §2.3.1 immediately below.
@@ -167,7 +167,56 @@ carried and disclosed.
 bp shock as a percent shock publishes `rates: 1200.0` instead of `12.0` — a factor of 100); the
 additivity guard asserted against a deliberately mismatched pair.
 
-**Still open in this item:** the simulated VaR/ES/drawdown under the shocked matrix.
+**Still open in this item:**
+1. **The simulated VaR/ES/drawdown** under the shocked correlation matrix — `models/risk.py`'s
+   `_simulate_regime_pnls` and `portfolio/risk_budget.py`'s `stress_correlations` already exist to be
+   wired.
+2. **Three of the four scenario files.** `AGENTS.md` §9.4 (line 1549) names a **library** —
+   `black_wednesday.yaml`, `gfc_2008.yaml`, `covid_2020.yaml`, `ltcm_1998.yaml`. **Only `gfc_2008.yaml`
+   is committed** (the one §13.2 gives a full example for). The engine loads any of them, so the other
+   three are data, not code — but until they exist, §9.4's library is one-quarter built and this
+   document should say so rather than implying four.
+
+#### 2.3.2 CLOSED 2026-10-09 — the simulation half and the library
+
+**Both items above are now done.**
+
+**The simulation half** is `simulate_scenario_stress(...)`, which publishes **all five** of §13.2's
+outputs — `portfolio_pnl_estimate_pct`, `var_95_under_scenario`, `expected_shortfall_under_scenario`,
+`max_drawdown_estimate_pct`, `factor_exposure_breakdown`. It **consumes the correlation override**,
+which is the part §13.2 cares about: the override is applied to the covariance (variances preserved
+exactly, so any VaR change is attributable to the correlation assumption alone), and the book is
+replayed under it.
+
+**Measured, and the direction is the assertion.** With `treasuries_vs_hy_credit = -0.7` applied to a
+book that is long treasuries and short credit, the tail **shrinks**: VaR −0.0154 → **−0.0146**,
+ES −0.0192 → **−0.0182**, drawdown −0.0361 → **−0.0341**. That is flight to quality working — the
+hedge becomes a hedge again. The sign convention is §13.2's own (negative = loss, matching its
+`-22.1`).
+
+**It reuses the canonical simulator.** `_simulate_regime_pnls`, `_loss_quantile` and
+`_expected_shortfall_from_pnls` are imported from `models/risk.py` rather than reimplemented — LAW 2
+forbids a second joint draw, and a local copy could silently stop being correlated. They are private,
+and the precedent is `portfolio/risk_budget.py`, which already imports `_quadratic_form` for the same
+reason.
+
+**Two limitations are disclosed, not papered over.** `max_drawdown_estimate_pct` is a **one-step**
+statistic — the covariance describes a single period, so there is no honest multi-step path to draw
+from it, and a true path drawdown needs a serial model this engine does not hold. And the simulation
+assumes **joint normality**, which understates the extreme tail — precisely where a stress test
+matters most.
+
+**The library is complete: all four of §9.4's case studies.** Each encodes a *different* crisis, and
+the test asserts the overrides are **four distinct values**, because a library whose every scenario
+assumed the same correlation response would be one scenario written four times:
+
+| Scenario | The crisis | `treasuries_vs_hy_credit` |
+|---|---|---|
+| `black_wednesday` | 1992 ERM — an **FX** event; UK equities **rose**, credit flat | −0.1 |
+| `covid_2020` | 2020 — the dash for cash **broke** the flight to quality | −0.3 |
+| `gfc_2008` | 2008 — the credit crisis | −0.7 |
+| `ltcm_1998` | 1998 — the correlation-breakdown episode | −0.8 |
+
 
 ### 2.4 Multi-country (`de`, `jp`, `gb`) — **not implemented** (confirmed)
 

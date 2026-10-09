@@ -19,11 +19,14 @@ from macro_engine.extensions.scenario_engine import (
     FactorExposures,
     Scenario,
     ScenarioShock,
+    SimulationInputs,
     _check_additivity,
     apply_scenario_shock,
     list_scenarios,
     load_scenario,
+    simulate_scenario_stress,
 )
+from macro_engine.models.contracts import ModelResult
 
 #: A book with one leg per configured factor. `rates = -0.04` means a 1bp FALL
 #: in yields gains 0.04% of the portfolio (a modified duration of ~4 years).
@@ -134,12 +137,29 @@ def test_a_driver_is_carried_but_never_applied() -> None:
 
 
 def test_an_unshocked_factor_is_reported_as_an_explicit_zero() -> None:
-    """Its zero is an ABSENCE of a shock, not a measurement of no exposure."""
+    """Its zero is an ABSENCE of a shock, not a measurement of no exposure.
+
+    ⚠️ **This test was WEAK and a mutation survived it — measured 2026-10-09.**
+    It originally asserted only the published VALUE and the warning, so a mutant
+    that **omitted** every unshocked factor from the breakdown passed: the total
+    was still 4.0 and the warning still fired. The breakdown is the deliverable
+    and its COMPLETENESS is the behaviour, so that is what is now asserted.
+    """
     scenario = Scenario(name="rates_only", shocks={"rates": ScenarioShock(unit="bp", value=-100)})
     out = apply_scenario_shock(_EXPOSURES, scenario)
+
     # rates contributes +4.0; every other factor is an explicit 0.0.
     assert cast("float", out.value) == pytest.approx(4.0)
     assert any("NO shock" in w for w in out.warnings)
+
+    # THE ASSERTION THE MUTANT SURVIVED WITHOUT: the breakdown covers EVERY
+    # configured factor, with the unshocked ones present and exactly zero.
+    breakdown = eval(  # noqa: S307
+        out.context.split("factor_exposure_breakdown=")[1].split(";")[0]
+    )
+    assert set(breakdown) == set(get_settings().scenario_engine.factor_names)
+    for factor in ("fx", "credit", "equity"):
+        assert breakdown[factor] == 0.0, factor
 
 
 def test_a_missing_scenario_names_what_is_committed() -> None:
@@ -166,6 +186,203 @@ def test_the_correlation_override_is_published_but_disclosed_as_unconsumed() -> 
     out = apply_scenario_shock(_EXPOSURES, scenario)
     assert "treasuries_vs_hy_credit" in out.context
     assert any("does not yet consume it" in w for w in out.warnings)
+
+
+# ---------------------------------------------------------------------------
+# The simulation half (Section 13.2's VaR/ES/drawdown under the shocked matrix)
+# ---------------------------------------------------------------------------
+
+#: A plausible DAILY factor covariance, in the configured order
+#: (rates, fx, credit, equity). Rates most volatile, fx least.
+_COV = [
+    [4.0e-4, -1.2e-5, 6.0e-5, -2.0e-5],
+    [-1.2e-5, 3.6e-5, -4.0e-6, 1.0e-5],
+    [6.0e-5, -4.0e-6, 9.0e-4, -1.5e-5],
+    [-2.0e-5, 1.0e-5, -1.5e-5, 2.5e-4],
+]
+
+
+def _sim(scenario: Scenario, *, n_sims: int = 20000, seed: int = 0) -> ModelResult:
+    return simulate_scenario_stress(
+        _EXPOSURES,
+        scenario,
+        SimulationInputs(factor_covariance=_COV, horizon_days=1),
+        n_sims=n_sims,
+        seed=seed,
+    )
+
+
+def test_the_correlation_override_is_consumed_and_shrinks_the_tail() -> None:
+    """Section 13.2's `treasuries_vs_hy_credit = -0.7` is flight to quality.
+
+    The book is long treasuries (a negative `rates` exposure) and short credit.
+    Inverting their correlation means the treasury leg rallies as credit sells
+    off, so the hedge WORKS and the tail must be SMALLER than without the
+    override. The direction is the assertion: a drop of the wrong sign would mean
+    the override was applied backwards, which is the failure that matters.
+    """
+    scenario = load_scenario("gfc_2008")
+    without = _sim(scenario.model_copy(update={"correlation_override": {}}))
+    with_override = _sim(scenario)
+
+    plain_var = cast("float", without.value_dict()["var_95_under_scenario"])
+    hedged_var = cast("float", with_override.value_dict()["var_95_under_scenario"])
+    # Published NEGATIVE (Section 13.2's own example: -22.1), so a LESS negative
+    # number is a SMALLER loss. The hedge working means the tail shrinks, i.e.
+    # hedged_var > plain_var. (An earlier version of this test asserted `<` and
+    # was wrong: the code was right and the sign reasoning here was not.)
+    assert hedged_var > plain_var
+    assert any("IS applied" in w for w in with_override.warnings)
+
+
+def test_an_unresolvable_override_pair_raises_rather_than_being_dropped() -> None:
+    """A dropped override would run the stress with the hedge intact.
+
+    That understates the loss, and a stress test that flatters the book is worse
+    than none because it is believed.
+    """
+    with pytest.raises(ValueError, match=r"not a configured factor|not a pair"):
+        get_settings().scenario_engine.resolve_override_pair("treasuries_vs_vix")
+
+
+def test_a_self_correlated_override_pair_is_refused() -> None:
+    """A factor's correlation with itself is 1 by definition."""
+    with pytest.raises(ValueError, match=r"SAME factor twice"):
+        get_settings().scenario_engine.resolve_override_pair("rates_vs_treasuries")
+
+
+def test_the_covariance_must_match_the_configured_factor_set() -> None:
+    """Index i must mean the same factor in the covariance and the exposures."""
+    with pytest.raises(ValueError, match=r"configured factor set has"):
+        SimulationInputs(factor_covariance=[[1.0, 0.0], [0.0, 1.0]])
+
+
+def test_a_non_finite_covariance_cell_is_refused() -> None:
+    bad = [row[:] for row in _COV]
+    bad[1][1] = float("nan")
+    with pytest.raises(ValueError, match=r"non-finite"):
+        SimulationInputs(factor_covariance=bad)
+
+
+def test_the_report_publishes_all_five_of_section_13_2s_outputs() -> None:
+    """§13.2 names five fields; the report must carry every one."""
+    out = _sim(load_scenario("gfc_2008"))
+    published = out.value_dict()
+    for field in (
+        "portfolio_pnl_estimate_pct",
+        "var_95_under_scenario",
+        "expected_shortfall_under_scenario",
+        "max_drawdown_estimate_pct",
+        "factor_exposure_breakdown",
+    ):
+        assert field in published, field
+    # ES is at least as severe as VaR — a tail mean beyond the quantile.
+    assert published["expected_shortfall_under_scenario"] <= published["var_95_under_scenario"]
+    # And the deterministic breakdown still reconciles with its own total.
+    assert sum(published["factor_exposure_breakdown"].values()) == pytest.approx(
+        published["portfolio_pnl_estimate_pct"], abs=1e-6
+    )
+
+
+def test_the_simulation_is_seeded_and_reproducible() -> None:
+    """A stress report that moved between runs could not be argued with."""
+    a = _sim(load_scenario("gfc_2008"), seed=7)
+    b = _sim(load_scenario("gfc_2008"), seed=7)
+    assert a.value_dict()["var_95_under_scenario"] == b.value_dict()["var_95_under_scenario"]
+
+
+def test_the_one_step_drawdown_limitation_is_disclosed() -> None:
+    """A one-period covariance has no honest multi-step path."""
+    out = _sim(load_scenario("gfc_2008"))
+    assert any("ONE-STEP" in w for w in out.warnings)
+    assert any("JOINT NORMALITY" in w for w in out.warnings)
+
+
+def test_the_published_step_count_is_the_number_actually_drawn() -> None:
+    """A published field must describe the computation that ran.
+
+    ⚠️ **DEFECT FOUND AND FIXED 2026-10-09.** The report used to publish
+    `"steps": max(horizon_days, 2)`, so a caller asking for `horizon_days=1`
+    received `steps: 2` — a field asserting that a two-step path had been drawn
+    when the code draws ONE. Worse, the block's own comment claimed "cumulative
+    P&L along `horizon_days` steps, then the largest peak-to-trough decline",
+    which the code does not do and which the comment two lines below contradicted.
+
+    A field that describes a computation that did not happen is worse than a
+    missing field, because it is read as evidence.
+    """
+    out = _sim(load_scenario("gfc_2008"))
+    published = out.value_dict()
+    assert published["steps_drawn"] == 1
+    # And the field is not merely present-but-stale: it must agree with the horizon
+    # the covariance can support.
+    assert "steps" not in published, "the old mis-describing field is gone"
+
+
+def test_max_drawdown_is_the_worst_single_step_outcome_not_a_path_statistic() -> None:
+    """§13.2 names the field; the BASIS is what must not be implied.
+
+    The value is `min()` over single-step draws — the worst one-step outcome. It
+    is published under §13.2's name, so the warning is what carries the basis.
+    """
+    out = _sim(load_scenario("gfc_2008"))
+    published = out.value_dict()
+    # In the positive-loss convention a drawdown is the most negative outcome.
+    assert published["max_drawdown_estimate_pct"] <= published["portfolio_pnl_estimate_pct"]
+
+
+# ---------------------------------------------------------------------------
+# Section 9.4's library — all four case studies, each encoding its own crisis
+# ---------------------------------------------------------------------------
+def test_the_whole_library_is_committed() -> None:
+    """AGENTS.md §9.4 names four scenarios; all four must load."""
+    assert list_scenarios() == [
+        "black_wednesday",
+        "covid_2020",
+        "gfc_2008",
+        "ltcm_1998",
+    ]
+
+
+def test_each_scenario_encodes_a_different_correlation_response() -> None:
+    """The library's value is that the four crises are not one crisis relabelled.
+
+    A set of scenarios that all assumed the same flight-to-quality response
+    would be one scenario written four times. Measured: -0.1 / -0.3 / -0.7 /
+    -0.8, from the mildest (1992, an FX event) to the strongest (1998, the
+    correlation-breakdown episode).
+    """
+    overrides = {
+        name: load_scenario(name).correlation_override["treasuries_vs_hy_credit"]
+        for name in list_scenarios()
+    }
+    assert len(set(overrides.values())) == 4, overrides
+    assert overrides["black_wednesday"] > overrides["covid_2020"] > overrides["gfc_2008"]
+    assert overrides["ltcm_1998"] == min(overrides.values())
+
+
+def test_black_wednesday_is_an_fx_event_not_an_equity_one() -> None:
+    """1992 was a currency crisis: sterling broke, UK equities ROSE.
+
+    A scenario that dumped equities would be 2008 with a different label, and the
+    library exists so different crises can be replayed AS THEMSELVES.
+    """
+    scenario = load_scenario("black_wednesday")
+    assert scenario.shocks["fx"].value < 0
+    assert scenario.shocks["equity"].value > 0
+    assert abs(scenario.shocks["credit"].value) < 50
+
+
+def test_every_scenario_shocks_all_four_factors() -> None:
+    """A scenario that leaves a factor unshocked is a decision, not an accident.
+
+    All four committed scenarios move all four factors, so no leg of the book is
+    silently assumed unmoved by the crisis.
+    """
+    for name in list_scenarios():
+        assert set(load_scenario(name).shocks) == set(
+            get_settings().scenario_engine.factor_names
+        ), name
 
 
 if __name__ == "__main__":

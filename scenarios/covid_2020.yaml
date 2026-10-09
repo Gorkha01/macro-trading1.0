@@ -1,0 +1,46 @@
+# Section 9.4's scenario library — the COVID-19 shock of 2020.
+#
+# AGENTS.md §9.4 names four case studies; §13.2 gives a full example for one
+# (gfc_2008). This is the third.
+#
+# UNITS — as gfc_2008.yaml: bp for rates and credit, percent for equity and fx.
+#
+# THE EPISODE, and why the shocks are these. February-March 2020: the fastest
+# equity drawdown in history (the S&P fell ~34% in ~23 sessions), an oil price
+# war on top of it, and — the part that matters here — a TREASURY MARKET
+# DYSFUNCTION in mid-March. The "dash for cash" briefly broke the usual
+# flight-to-quality relationship: even Treasuries sold off as funds raised
+# cash, before the Fed's unlimited QE restored the bid.
+#
+# **That is why this scenario's correlation override is WEAKER than the other
+# two.** The 1987 and 2008 scenarios both encode a clean flight to quality
+# (`treasuries_vs_hy_credit` strongly negative). 2020 is the case where that
+# relationship TRANSIENTLY FAILED, so a milder inversion is the honest
+# encoding. A library whose every crisis assumed the same correlation response
+# would be four copies of one scenario.
+name: covid_2020
+description: >
+  A pandemic shock: the fastest equity drawdown on record, an oil price war,
+  and a brief Treasury-market dysfunction where the flight-to-quality bid
+  FAILED before central-bank intervention restored it.
+
+calibration_status: uncalibrated_illustrative
+
+shocks:
+  rates:
+    bp: -150          # emergency cuts to the zero bound
+  credit:
+    bp: +350          # IG and HY both widened sharply in the dash for cash
+  equity:
+    pct: -34          # the peak-to-trough drawdown, not a single day
+  fx:
+    pct: +8           # global USD funding squeeze — a strong, fast USD bid
+
+drivers:
+  growth_shock:
+    pp: -8.0          # far larger than 2008's -4.0; output collapsed by design
+
+# The distinguishing feature. Weaker than 1987 (-0.6) and 2008 (-0.7) because
+# the March 2020 dash for cash broke the relationship it encodes.
+correlation_override:
+  treasuries_vs_hy_credit: -0.3
