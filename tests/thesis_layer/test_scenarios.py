@@ -36,6 +36,22 @@ _DISTRIBUTABLE = (
 _REFUSED = (ConvergenceClassification.CONFLICTED, ConvergenceClassification.NO_SIGNAL)
 
 
+def _outcome() -> ScenarioOutcome:
+    """A minimal valid ScenarioOutcome for constructing KellyInputs in a test."""
+    return ScenarioOutcome(
+        name="base",
+        probability=0.5,
+        payoff_estimate=100.0,
+        unit="bp_pnl_proxy",
+        description="",
+    )
+
+
+def _cal(value: float) -> dict[str, object]:
+    """A minimal CalibratedValue payload for constructing config in a test."""
+    return {"value": value, "calibration_status": "uncalibrated_illustrative"}
+
+
 def _gap(
     raw_gap: float = -1.4,
     *,
@@ -246,3 +262,118 @@ def test_every_probability_mass_leaf_is_covered_by_the_check() -> None:
         f"probability leaf is not covered by scenario_probabilities_are_calibrated()."
     )
     assert len(_PROBABILITY_LEAVES) == 6
+
+
+# ---------------------------------------------------------------------------
+# The six killing tests (2026-10-09)
+# ---------------------------------------------------------------------------
+# `mutation_scenario_distribution` reported SIX mutations surviving with no
+# proof. They were not false survivors: the test file the sweep originally named
+# (`test_scenario_distribution.py`) was DELETED by the `bd96d5c` re-init, and the
+# coverage it carried was never replaced. Each test below is aimed at exactly one
+# mutant, so the sweep can certify.
+
+
+def test_the_scenario_outcome_re_export_is_importable_from_the_thesis_layer() -> None:
+    """M3.1 — `thesis_layer.schemas` must re-export the producer's class.
+
+    The thesis layer is the schema contract's second home; removing the re-export
+    makes `ScenarioOutcome` importable from one layer and not the other. Asserting
+    the identity (not merely the import) is what makes the removal observable.
+    """
+    from macro_engine.models import probability
+    from macro_engine.thesis_layer import schemas
+
+    assert schemas.ScenarioOutcome is probability.ScenarioOutcome
+
+
+def test_high_convergence_carries_the_high_base_probability_not_the_low_one() -> None:
+    """M6.1 — reading HIGH's base case from the LOW leaf reverses the ordering.
+
+    The distribution is only meaningful if the highest-convergence verdict carries
+    the highest base probability. The assertion is the ORDER, which is what the
+    mutation breaks.
+    """
+    probs = get_settings().scenario_distribution.base_probabilities
+    assert probs["HIGH"] > probs["LOW"]
+
+
+def test_remaining_shares_that_do_not_sum_to_one_are_refused() -> None:
+    """M6.3 — the sum-to-one constraint on the remaining shares.
+
+    They are the split of (1 - base_probability) across the three non-base
+    branches, so their sum IS the total probability of the non-base case. With the
+    guard removed the four published probabilities do not sum to 1 and NO single
+    leaf shows why (O-41's shape).
+    """
+    from macro_engine.config import ScenarioDistributionSettings
+
+    live = get_settings().scenario_distribution
+    assert sum(live.remaining_shares.values()) == pytest.approx(1.0)
+
+    # A config whose shares sum to 1.5 must not load. The payload starts from the
+    # LIVE settings (so every required leaf is present and valid) and overrides
+    # only the shares — isolating the sum guard as the thing that refuses.
+    payload = live.model_dump()
+    payload["remaining_share_partial_close"] = _cal(0.5)
+    payload["remaining_share_reversal"] = _cal(0.5)
+    payload["remaining_share_tail"] = _cal(0.5)  # 1.5, not 1.0
+    with pytest.raises((ValueError, ValidationError), match=r"sum|1\.0"):
+        ScenarioDistributionSettings(**payload)
+
+
+def test_the_published_payoff_unit_is_the_bp_proxy_not_the_kelly_unit() -> None:
+    """M7.3 — the scenario distribution publishes a bp P&L proxy.
+
+    Publishing `fraction_of_capital` instead would let a bp distribution be read
+    as if its payoffs were fractions of capital — the unit confusion the named
+    refusal exists to prevent.
+    """
+    gap = _gap()
+    conv = ConvergenceClassification.HIGH
+    outcomes = build_scenario_distribution(gap, conv)
+    assert outcomes, "a HIGH-convergence gap must produce a distribution"
+    assert {o.unit for o in outcomes} == {"bp_pnl_proxy"}
+
+
+def test_a_kelly_input_without_a_payoff_unit_is_refused() -> None:
+    """M9.1 — `payoff_unit` must stay REQUIRED.
+
+    A default re-introduces exactly the failure the field was added to fix: a bp
+    or dollar payoff silently sized by fraction-of-capital arithmetic, returning a
+    plausible number.
+    """
+    from macro_engine.portfolio.risk_budget import KellyInputs, RiskLimits
+
+    with pytest.raises(ValidationError, match=r"payoff_unit"):
+        KellyInputs(  # type: ignore[call-arg]
+            scenarios=[_outcome()],
+            limits=RiskLimits.from_settings(),
+        )
+
+
+def test_a_non_fraction_payoff_unit_is_refused_by_name() -> None:
+    """M9.3 — the named refusal, not a silent mis-sizing.
+
+    `KellyPayoffUnit` admits two members; the validator refuses the one the Kelly
+    arithmetic cannot consume, so a declared bp distribution is rejected rather
+    than sized as if its payoffs were fractions of capital.
+    """
+    from macro_engine.portfolio.risk_budget import KellyInputs, RiskLimits
+
+    # ⚠️ **This test passed for the WRONG reason and the mutant SURVIVED it —
+    # measured 2026-10-09.** It originally passed `scenarios=[]`, which is invalid
+    # on its own, and matched on the bare word `payoff_unit`, which appears in
+    # pydantic's field listing regardless. So removing the refusal changed
+    # nothing the test looked at. The payload must now be VALID apart from the
+    # unit, and the match is the refusal's OWN phrase.
+    with pytest.raises(ValidationError, match=r"Kelly arithmetic"):
+        KellyInputs(
+            scenarios=[_outcome()],
+            limits=RiskLimits.from_settings(),
+            payoff_unit="bp_pnl_proxy",
+        )
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
