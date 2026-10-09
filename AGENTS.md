@@ -2636,8 +2636,7 @@ PCA: Σ = VΛV'  (eigen-decomposition of covariance of DAILY CHANGES, never leve
 Kalman: predict x̂_{t|t-1} = F x̂_{t-1|t-1}; update via Kalman gain K_t
 ```
 
-**Outputs:** Phase 5+ items — `yield_curve_pca()` (Section 6.6; **built, not a stub** — real body in
-`models/yield_curve.py`, D-097-era; see `docs/PHASE5_DEFERRED.md` §1),
+**Outputs:** Phase 5+ items — `yield_curve_pca()` (Section 6.6 stub),
 `extensions/bayesian_updater.py`'s Kalman-filtered r*/potential-GDP
 estimates (replacing the Phase 1 static config values in `settings.yaml`).
 
@@ -5539,24 +5538,7 @@ dependency exists.
 `next_catalyst_calendar`, `build_confirmation_signals`,
 `collect_all_warnings`, `no_trade_thesis`, `build_us_macro_thesis`
 
-**Tier 5 — Phase 5+.** ⚠️ **"Tier 5" names two different things in this document, and they have
-different status.** Do not conflate them.
-
-| | Where | Status |
-|---|---|---|
-| **§21.3's Tier 5 — this list of 23 FUNCTIONS** | here | **COMPLETE.** Measured 2026-10-08: all 23 names below have real bodies in `src/` (0 raise `NotImplementedError`). The heading *"stubs only until their phase"* no longer described the shipped tree and was corrected. |
-| **"Tier 5 — Phase 5+" — the PHASE** | §22.3 | **NOT COMPLETE.** §22.3 files **multi-country** under it (*"Multi-country support (`de`, `jp`, `gb`) is Tier 5 — Phase 5+"*), and only `us` is implemented (§1.3). |
-
-**So this list being complete does NOT mean Phase 5+ is complete.** The system is **US-only**; the
-multi-country leg — three tasks per country (its own verified sources, its own central-bank reaction
-function, its own instrument set) — is not built.
-
-The "stubs only" rule now bites in exactly one place: **`extensions/` — 6 modules, each gated on an
-uninstalled §4 package** (`scenario_engine.py` shares that directory and is **not** one of them).
-Read the tags in this section as the **build ORDER**, not as a statement of what is missing; for the
-genuinely outstanding items see `docs/PHASE5_DEFERRED.md` §2 (**multi-country** · FX-forward data
-coverage). **GARCH and the entire crisis-shock engine closed 2026-10-09 — do not re-list either as
-outstanding.**
+**Tier 5 — Phase 5+ (stubs only until their phase):**
 `cip_check`, `uip_expected_move`, `ppp_valuation`, `carry_score`,
 `dollar_smile_regime`, `intervention_capacity`,
 `em_vulnerability_checklist`, `oil_balance_signal`,
