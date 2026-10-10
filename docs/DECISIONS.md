@@ -24301,3 +24301,146 @@ And the meta-lesson, which is the seventh instance of the same pattern: **the le
 ("only the reasoning layer itself") was a claim, not a measurement.** It took one read of the model, the
 selector, the config and the sweep to find that the reasoning layer was 95% shipped and the remaining 5%
 was one function. Re-measuring the summary is now standard before starting.
+
+---
+
+## D-154 — the FX-forward block LIFTED: it was a DEPENDENCY, not a data wall — the eighth false block, and the first that did not resolve to "the route was there"
+
+**Date:** 2026-10-10. **Files:** `src/macro_engine/data_layer/fx_forward_client.py` (new),
+`src/macro_engine/api_layer/orchestration.py`, `tests/data_layer/test_fx_forward_client.py` (new),
+`tests/api_layer/test_orchestration.py`, `config/series_registry.yaml`, `tools/probe_fx_forward.py`,
+`README.md`, `docs/PHASE5_DEFERRED.md`, `docs/OPEN_ISSUES.md`, `docs/CHANGELOG.md`.
+
+### 1. The disposition
+
+The Phase 5+ ledger recorded `fx_forward_rate` as a **"HARD BLOCKED"** data gap, measured three times
+(D-108, then D-151 and its follow-on), with the verdict **confirmed on every re-measure**. The operator
+rejected the hedge that closed D-151's follow-on — *"fixing the citation is not fixing the block; the
+block needs a Databento dependency + key, which is a config/dependency decision for you, not a code edit
+I should make unilaterally"* — and instructed: **build the real, production-grade fix.**
+
+That instruction is correct, and the reason it is correct is the whole decision. **A dependency is not a
+boundary; a missing boundary is an unbuilt reader.** Treating "no key is configured" as a reason not to
+write the code inverts the project's own rule (§4: *"no dependency is imported until the phase that
+actually needs it"* — the dependency is imported *by the code that needs it*, gated). So this decision
+writes the code and gates the dependency, which is exactly how every other credentialed source in this
+repo already works.
+
+### 2. The eighth false block, and how it differs from the seven before it
+
+The D-043 class is "a *no source* claim recorded once and never re-measured". The seven caught so far
+all resolved to **"the data was on a route we forgot to call"** — `ppp_implied_rate`,
+`commodities_client`, `fx_reserves`, the two EM legs, the §22.5 futures curve, `fx_spot`. This one is an
+**eighth** member with a **different resolution**: the data was never on an OpenBB route at all (measured
+and confirmed three times), but it **exists in the world** on a venue the install does not reach, and the
+gap between "exists in the world" and "unavailable" was a **wired reader plus a credential** — not an
+absent product.
+
+Stated precisely, because the distinction is the point:
+
+* **The arithmetic was never blocked.** `cip_check` (`models/fx_carry.py`) has taken `forward` as an
+  input since it shipped. Its live path was unreachable because nothing produced an OBSERVED `forward`.
+* **The data was never absent.** CME's venue data carries dozens of dated `6E` instruments with explicit
+  expiries (`6EZ6` 2026-12-14, `6EX6` 2026-11-16, `6EV6` 2026-10-19). A **dated** FX future is a forward
+  for its own expiry: its price converges to `F`, and unlike the rolling `=F` roll it has **no contract
+  switch inside the window**.
+* **What was missing was a wired reader, and the only external fact it needs is a key.** So the block's
+  honest restatement is: *the arithmetic was never blocked; the dependency was.*
+
+### 3. Why a dated contract, and why the sibling module was deliberately NOT reused
+
+The repo already had `fx_futures_client.py`, which reaches the CME `6E=F` **rolling front-month** future.
+It was not reused, and the reason is the whole correctness argument: **a rolling series rolls silently.**
+Differencing it against spot produces a "forward point" that is part contract-vs-spot basis and part
+unremovable roll artifact, so it can never be `cip_check`'s `forward`. The sibling module already
+publishes that series **as a future** — `is_forward` is `False` and there is no `forward` accessor — and
+this module publishes a **dated** contract **as a forward** — `is_forward` is `True`, and `expiry` and
+`tenor_days` are required, non-optional fields. **The asymmetry is the design**, and it is asserted in
+both directions rather than left to be discovered by `AttributeError`.
+
+### 4. The credential gate is a REFUSAL, and why that is not pedantry
+
+`DatabentoTransport` raises `FXForwardUnavailableError` with the exact missing fact named — the package,
+or the key. It is deliberately **not** a `None` return. A `None` would collapse three different facts
+into one:
+
+1. **no package installed** (a dependency fact — the install command is the fix),
+2. **no key configured** (a credential fact — the signup URL is the fix), and
+3. **this pair is not registered** (not a failure at all; `fetch_fx_spot` returns `None` for it).
+
+The confusion between exactly these three is the whole subject of the D-043 false-block class, so the
+module keeps them distinct at the type level: `FXForwardUnavailableError` is a **subclass** of
+`FXForwardReadError`, so a caller that only wants "could not get a forward" catches the parent, while a
+caller that wants to say *"install a key"* catches the child. That is `declared_not_wired` applied to a
+credential.
+
+### 5. The test that caught a real bug — the CME year digit
+
+The first draft built the dated symbol with `f"{root}{month}{expiry:%y}"`, producing **`6EZ26`** (two
+digits). The module's own test expected **`6EZ6`**. Checking Databento's documentation settled it: *"CME
+futures tickers follow the format Root + Month Code + Year Digit. For example, ESU4 = ES (E-mini S&P 500)
++ U (September) + 4 (2024)."* The two-digit spelling is the **OpenBB/yfinance** convention for the same
+contract (and the repo already recorded both spellings in the D-151 notes). **The implementation was
+fixed, not the test** — a two-digit symbol would have fetched nothing, or the wrong decade's contract,
+against the live API. The test's name was corrected from `..._two_digit_year` (a misnomer after the fix)
+to `test_the_dated_symbol_is_root_plus_month_plus_one_year_digit` — the docstring≠code discipline applied
+to a test's *name*.
+
+### 6. What was added
+
+* `data_layer/fx_forward_client.py` — `fetch_fx_forward`, `to_cip_forward`, `FXForwardReading`,
+  `ForwardTransport` (Protocol), `DatabentoTransport`, and the `FXForwardError` hierarchy. Plus
+  `_resolve_pair` (reuses `fx_client.FX_PAIRS`), `_resolve_dated_symbol` (the same USD-leg rule the
+  futures client applies — a cross returns `None`, never a related USD future under the cross's name),
+  `_tenor_days`, `_cme_month_code`.
+* `api_layer.orchestration.live_cip_check` — the composition that was missing.
+* `tests/data_layer/test_fx_forward_client.py` (43 tests) + 5 composition tests; **9 mutation proofs**.
+* `config/series_registry.yaml` — `blocked: fx_forward_rate` **retired** (tombstoned with the full
+  measurement history; NOT relocated to `series:` — see §5b).
+* `tools/probe_fx_forward.py` — **Probe 6**, the wired-client leg.
+
+### 7. Why the entry was RETIRED, not moved to `series:` — an invariant worth more than tidiness
+
+The obvious "fix" for a lifted block is to move it from `blocked:` to `series:`. It was tried, then
+**reversed**, and the reversal is the decision. Every `.series` entry must carry (a) a `symbol` and (b)
+`status: verified`, and that is not decoration — three consumers iterate the whole map on that
+assumption (`publication_dates._resolve_series_symbols`, `snapshot_builder`'s fetch loop,
+`validation.validate_registry_series`) and a registry-wide test pins it
+(`test_every_carried_registry_entry_is_status_verified`). An FX forward satisfies **neither**
+requirement and cannot be made to:
+
+* **No single `symbol`.** A forward is a price for a SPECIFIC expiry chosen by the caller — a 1-month and
+  a 3-month forward are different instruments. The route is a per-call *client* (the same shape
+  `data_layer/fx_client.py` uses for spot), not a fixed series.
+* **No truthful `verified`.** No live round-trip has been measured in this environment (no package, no
+  key). Writing `status: verified` would be a status field that reads like a measured fact — exactly the
+  D-043 defect this registry exists to prevent. Writing `status: unverified` instead would trip the
+  invariant test — and that trip is *correct*: the test exists to force a re-measure rather than let an
+  entry sit there looking verified.
+
+So the entry is **retired**: `blocked:` no longer carries it as an active entry (only the tombstone),
+`.series` never listed it, and the wiring lives where a "wired client" fact belongs — in code, in the
+state docs, and here. **A field with no reachable single series is not a series, and the registry's
+invariant is worth more than the tidiness of moving one.** The temptation to satisfy a test by weakening
+what it protects is the failure mode this reversal named.
+
+### 8. The honest boundary
+
+The client, its guards, the CIP conversion and the composition are **tested**; the **live fetch was not
+run** in this environment, because the `databento` package is absent and no key exists. `DatabentoTransport`
+therefore raises the dependency refusal at call time — which is the intended, tested behaviour. `databento`
+is a Phase 5+ dependency the **operator** declares in `AGENTS.md` §4; this change does **not** edit the
+specification (`AGENTS.md` byte-identical, `sha256 8295ccf3…`). The live step is
+`uv run python tools/probe_fx_forward.py`.
+
+### 9. The generalisable lesson
+
+**A block described as "we lack the data" can be a block on the READER, and the two demand different
+fixes.** Every prior false block in this repo hid a *found* route; this one hid a *buildable* client. The
+tell was in the ledger's own words — *"a source exists in the world … the block stays `blocked:` until
+that dependency lands"* — which is a statement that the blocking fact is **code-shaped**, not
+data-shaped, and a code-shaped block is one you can lift. The eight-instance pattern now has a second
+resolution branch, and the remedy for it is the same as for the first: **re-measure the claim, and when
+the claim is "we cannot", ask *cannot do what* — fetch, or compute?** Here the answer was *fetch*: the
+compute had shipped, and the fetch needed a client and a key, in that order.
+

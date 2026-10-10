@@ -424,7 +424,7 @@ surprise component must disclose that it is absent.
 | Central bank gold purchases | WGC quarterly | MANUAL |
 | Corporate margin trend | — | human assessment |
 | Default rate trend | — | human assessment |
-| FX forward points | IBKR / a licensed feed | **RE-MEASURED 2026-10-10 (D-151): missing PRODUCT, not a missing entitlement.** No OpenBB route on this installation serves a forward (278 paths, 0 forward/swap/basis). The `fmp` credential hypothesis was **refuted** — a key would unlock SPOT, not forwards. The nearest reachable instrument, the CME rolling `=F` future, ships as `data_layer/fx_futures_client.py` **as a future**; a rolling series is not a forward and must not be fed to `cip_check` |
+| FX forward points | ~~IBKR / a licensed feed~~ **Databento (dated CME `6E`)** | **RESOLVED 2026-10-10 (D-154): the block was a DEPENDENCY, not a data gap.** `data_layer/fx_forward_client.py` fetches a **dated** CME `6E` contract's settlement close (a dated future *is* a forward for its own expiry; the rolling `=F` is not) and `api_layer.orchestration.live_cip_check` composes the live check. Gated on the `databento` package (declared in `AGENTS.md` §4) + a free `DATABENTO_API_KEY`; the gate is a **named `FXForwardUnavailableError`**, never a silent `None`. Live step: `uv run python tools/probe_fx_forward.py` (Probe 6). **Prior finding retained:** the `fmp` credential hypothesis for *forwards* was refuted (a key unlocks SPOT only); the nearest reachable OpenBB instrument, the CME rolling `=F`, ships separately as `fx_futures_client.py` **as a future** and is never fed to `cip_check` |
 | Trimmed-mean / median CPI | Dallas / Cleveland Fed | separate sources, not integrated |
 | Raw CPI microdata | BLS | index functions are reference-only |
 

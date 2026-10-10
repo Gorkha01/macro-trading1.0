@@ -867,3 +867,122 @@ def test_the_join_maps_each_country_to_its_own_policy_series() -> None:
         assert -20.0 < leg.long_rate < 40.0, f"{country} long rate looks like bp, not percent"
         assert -20.0 < leg.inflation < 100.0, f"{country} inflation out of plausible range"
     assert "iorb" in declared and "cpi_headline" in declared
+
+
+# ---------------------------------------------------------------------------
+# live_cip_check — the composition that wires an OBSERVED forward into cip_check
+# ---------------------------------------------------------------------------
+
+
+class _StubForwardTransport:
+    """A ``ForwardTransport`` injected at the data SOURCE (never the function under test)."""
+
+    def __init__(self, close: float, *, expiry: date | None = None) -> None:
+        self._close = close
+        self._expiry = expiry
+
+    def fetch_dated_close(
+        self, *, dataset: str, schema: str, symbol: str, expiry: date
+    ) -> tuple[float, date]:
+        return (self._close, self._expiry if self._expiry is not None else expiry)
+
+
+def _fx_snapshot() -> MacroDataSnapshot:
+    """A minimal snapshot carrying only the FX spot leg ``live_cip_check`` reads."""
+    return MacroDataSnapshot(
+        as_of=AS_OF,
+        data_quality_flags=[],
+        fx_spot={
+            "EURUSD": _series(
+                [1.1180, 1.1195, 1.1206],
+                series="fx_spot_eurusd",
+                start="2026-09-07",
+            )
+        },
+    )
+
+
+_EXPIRY = date(2026, 12, 14)
+
+
+def test_live_cip_check_runs_on_an_observed_forward() -> None:
+    """The composition produces a cip_check result from a fetched dated contract.
+
+    The forward is injected at the TRANSPORT boundary, so every guard in
+    ``fetch_fx_forward`` and the whole composition run — the test proves the WIRING
+    (spot from the snapshot + fetched forward -> CIPInputs -> cip_check), not a stub.
+    """
+    result = orch.live_cip_check(
+        _fx_snapshot(),
+        symbol="EURUSD",
+        expiry=_EXPIRY,
+        i_domestic_annualized=0.0404,
+        i_foreign_annualized=0.0205,
+        transport=_StubForwardTransport(1.1150),
+    )
+    # US rates (4.04%) above euro (2.05%) -> the forward sits BELOW spot -> negative
+    # deviation, foreign (EUR) stressed. This is the sign rule on an OBSERVED forward.
+    assert result.value_dict()["deviation_pct"] < 0.0
+    assert result.value_dict()["stressed_currency"] == "foreign"
+
+
+def test_live_cip_check_refuses_a_snapshot_without_the_spot_leg() -> None:
+    """No spot leg -> OrchestrationError (a dependency failed), never a skipped check."""
+    empty = MacroDataSnapshot(as_of=AS_OF, data_quality_flags=[])
+    with pytest.raises(orch.OrchestrationError, match="no FX spot leg"):
+        orch.live_cip_check(
+            empty,
+            symbol="EURUSD",
+            expiry=_EXPIRY,
+            i_domestic_annualized=0.04,
+            i_foreign_annualized=0.02,
+            transport=_StubForwardTransport(1.1150),
+        )
+
+
+def test_live_cip_check_refuses_a_cross_that_has_no_dated_future() -> None:
+    """A cross has no CME future -> OrchestrationError naming the reason."""
+    snapshot = MacroDataSnapshot(
+        as_of=AS_OF,
+        data_quality_flags=[],
+        fx_spot={"EURGBP": _series([0.86, 0.861], series="fx_spot_eurgbp")},
+    )
+    with pytest.raises(orch.OrchestrationError, match="no dated CME future"):
+        orch.live_cip_check(
+            snapshot,
+            symbol="EURGBP",
+            expiry=_EXPIRY,
+            i_domestic_annualized=0.04,
+            i_foreign_annualized=0.04,
+            transport=_StubForwardTransport(0.862),
+        )
+
+
+def test_live_cip_check_translates_a_forward_failure_into_an_orchestration_error() -> None:
+    """A transport failure is re-raised as OrchestrationError (the API maps it to 502).
+
+    The dependency/credential refusal (``FXForwardUnavailableError``) is an
+    ``FXForwardError``, so it must arrive as an ``OrchestrationError`` carrying its
+    own message — the caller can still tell "install a key" from "the fetch failed".
+    """
+
+    class _Failing:
+        def fetch_dated_close(
+            self, *, dataset: str, schema: str, symbol: str, expiry: date
+        ) -> tuple[float, date]:
+            raise RuntimeError("socket closed")
+
+    with pytest.raises(orch.OrchestrationError, match="could not fetch an observed FX forward"):
+        orch.live_cip_check(
+            _fx_snapshot(),
+            symbol="EURUSD",
+            expiry=_EXPIRY,
+            i_domestic_annualized=0.04,
+            i_foreign_annualized=0.02,
+            transport=_Failing(),
+        )
+
+
+def test_live_cip_check_is_exported() -> None:
+    """The composition is a PUBLIC entry point, not an internal helper."""
+    assert "live_cip_check" in orch.__all__

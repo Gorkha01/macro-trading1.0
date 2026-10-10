@@ -101,9 +101,10 @@ been declared on the schema and empty in every build since Phase 1; it was recor
 block and re-measured as a *wiring* gap (the sixth FALSE BLOCK). Now `data_layer/fx_client.py`
 fetches the configured G10 pairs, `build_snapshot` fills `snapshot.fx_spot`, and
 `models/fx_conversion.py` converts between currencies with the direction derived from the codes
-rather than assumed. **Spot only:** FX forwards remain unavailable on this installation (no
-`forward`/`swap`/`basis` route; D-108), so `cip_check`'s live check stays unavailable and no forward
-is ever synthesised from a spot value.
+rather than assumed. **Forward points landed later the same day (D-154):** the block turned out to be a
+*dependency* block, not a data gap — `data_layer/fx_forward_client.py` now supplies `cip_check`'s
+OBSERVED `forward` from a dated CME `6E` contract, and `live_cip_check` composes the live check (see
+below). No forward is ever *synthesised* from a spot value.
 
 **The forward block was RE-MEASURED 2026-10-10 by CALLING the source** (`tools/probe_fx_forward.py`) —
 the seventh false-block check, and it returned a *split* verdict. CONFIRMED: 278 paths, no forward
@@ -124,6 +125,22 @@ explicit expiries and *are* forwards for their expiry; Databento serves them wit
 `databento` is not an installed OpenBB provider — so lifting the block is a **dependency + credential**
 task, not a "no data exists" wall. Both new checks are permanent probe legs.
 
+**The block was then LIFTED 2026-10-10 (D-154) — it was a DEPENDENCY block, not a data wall.**
+`data_layer/fx_forward_client.py` fetches a **dated** CME `6E` contract's settlement close (a dated
+future *is* a forward for its own expiry; the rolling `=F` is not, and still ships separately as
+`fx_futures_client.py`, published **as a future**), and `api_layer.orchestration.live_cip_check`
+composes the live check — spot from `snapshot.fx_spot`, the forward fetched, `CIPInputs` built,
+`cip_check` run. **The credential gate is a REFUSAL, not a silent `None`:** `DatabentoTransport` raises
+`FXForwardUnavailableError` at call time, naming the missing fact (package vs key). The client is
+covered by 43 tests with the transport injected at a documented seam plus 9 mutation proofs; the
+`databento` package (a Phase 5+ addition) is declared in `AGENTS.md` §4 by the operator, and a **live**
+dated close is reported by `uv run python tools/probe_fx_forward.py` once the package and a free
+`DATABENTO_API_KEY` are present. `fx_forward_rate` **left the `blocked:` list** — and, deliberately,
+was **not** relocated to a `series:` entry: it has no single `symbol` (a forward is per-expiry) and no
+measured round-trip, so a `series:` entry would have made the registry's own "every carried series is
+`status: verified`" invariant false. The block is **retired**, and the wiring is recorded in code and
+in D-154.
+
 ## Phase status
 
 | Phase | Scope | Status |
@@ -133,7 +150,7 @@ task, not a "no data exists" wall. Both new checks are permanent probe legs.
 | 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **101/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 23/23** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: the two-snapshot cross-country orchestration** (the cross-country *reasoning* layer itself shipped 2026-10-10, D-150 — per-country coverage is complete for all five modelled countries — `us`, `gb`, the euro area `eu`, `de` and `jp` — each with its *own* data registry, reaction function and instrument set, and the reasoning layer now measures the divergence between any two of them) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: the two-snapshot cross-country orchestration** (the cross-country *reasoning* layer itself shipped 2026-10-10, D-150 — per-country coverage is complete for all five modelled countries — `us`, `gb`, the euro area `eu`, `de` and `jp` — each with its *own* data registry, reaction function and instrument set, and the reasoning layer now measures the divergence between any two of them; the two-snapshot orchestration followed at D-153) **and FX-forward coverage** (spot shipped 2026-10-10; the forward landed the same day, D-154, as a dependency-gated client — `data_layer/fx_forward_client.py` + `live_cip_check` — with the `databento` dependency declared in `AGENTS.md` §4 by the operator and a live check runnable via `tools/probe_fx_forward.py`). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded

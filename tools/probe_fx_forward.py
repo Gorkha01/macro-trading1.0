@@ -46,7 +46,7 @@ FRED's "Currency; Swaps" family, which reads like a CIP source but is a
 look-alike. A re-probe that only CONFIRMS is worth less than the negative
 results it produces, so both are now permanent.
 
-Run:  uv run python scripts/probe_fx_forward.py
+Run:  uv run python tools/probe_fx_forward.py
 """
 
 from __future__ import annotations
@@ -308,6 +308,7 @@ def main() -> int:
     probe_fred_swaps()
     probe_credential_boundary()
     probe_via_client()
+    probe_databento_path()
     print()
     print("=" * 78)
     print("VERDICT is derived by the reader of this output, from the CALLS above.")
@@ -318,18 +319,87 @@ def main() -> int:
         "(3b) does the `expiration` parameter reach a dated contract? "
         "(3c) is the FRED 'swaps' family a forward or a look-alike? "
         "(4) is the block a missing CREDENTIAL or a missing PRODUCT? "
-        "(5) does the production transport read it at all?"
+        "(5) does the production transport read it at all? "
+        "(6) does the WIRED Databento client fetch a dated close?"
     )
     print()
     print(
-        "MEASURED VERDICT (2026-10-10): the block STANDS. No forward route, no"
-        " dated contract via yfinance, no CIP series on FRED. A source EXISTS in"
-        " the world -- CME's 96 dated 6E instruments, served by Databento with"
-        " free keys -- but databento is NOT an installed OpenBB provider (0"
-        " routes) and no key is set. Lifting the block is a DEPENDENCY +"
-        " CREDENTIAL task, not a 'no data exists' wall."
+        "MEASURED VERDICT (2026-10-10): the block STANDS as a DATA block for"
+        " every OpenBB route -- no forward route, no dated contract via yfinance,"
+        " no CIP series on FRED. BUT the block is NOT 'no data exists in the"
+        " world': CME's 96 dated 6E instruments ARE forwards for their expiry,"
+        " served by Databento with free keys."
+    )
+    print(
+        "LIFTED 2026-10-10 (D-154): the block was a DEPENDENCY block, not a data"
+        " wall. `data_layer/fx_forward_client.py` + `live_cip_check` now supply"
+        " `cip_check`'s observed `forward` from a dated CME contract. Probe 6"
+        " above runs the WIRED client; it reports the dependency/credential"
+        " refusal explicitly until `databento` is installed and"
+        " DATABENTO_API_KEY is set -- and a live dated close once both are."
     )
     return 0
+
+
+# --------------------------------------------------------------------------
+# Probe 6: the WIRED client path -- does the real Databento fetch work?
+# --------------------------------------------------------------------------
+def probe_databento_path() -> None:
+    print()
+    print("=" * 78)
+    print("PROBE 6 - the WIRED client: fetch_fx_forward via the default transport")
+    print("          This is the path `live_cip_check` uses. It is the ONE probe")
+    print("          here that can LIFT the block rather than re-confirm it.")
+    print("          Expect a named refusal until the dependency + key are set.")
+    print("-" * 78)
+    from datetime import date
+
+    from macro_engine.data_layer.fx_forward_client import (
+        FXForwardError,
+        FXForwardUnavailableError,
+        fetch_fx_forward,
+    )
+
+    expiry = date(2026, 12, 14)  # the 6EZ6 settlement date (a live catalog read)
+    try:
+        reading = fetch_fx_forward("EURUSD", expiry=expiry)
+    except FXForwardUnavailableError as exc:
+        # The EXPECTED outcome in a bare environment: a dependency or a
+        # credential is missing. Printed as its own case so it is never mistaken
+        # for "no data exists" -- the exact confusion this whole probe exists to
+        # prevent.
+        print("  [GATED] a required external fact is missing (NOT a data gap):")
+        print(f"      {str(exc)[:300]}")
+        print(
+            "  Reading: the block is a DEPENDENCY/CREDENTIAL block. Install the"
+            " `databento` package and set DATABENTO_API_KEY (free key) and this"
+            " probe returns a live dated close instead."
+        )
+        return
+    except FXForwardError as exc:
+        print(f"  [FAIL] the fetch was attempted and failed: {type(exc).__name__}")
+        print(f"      {str(exc)[:300]}")
+        return
+
+    if reading is None:
+        print("  [NONE] EURUSD is not registered for the dated-forward layer")
+        return
+
+    print(
+        f"  [OK] dated contract {reading.symbol} root={reading.root} "
+        f"expiry={reading.expiry.isoformat()}"
+    )
+    print(
+        f"       raw settlement={reading.forward}  pair_forward={reading.pair_forward} "
+        f"(is_inverse={reading.is_inverse})  tenor_days={reading.tenor_days}"
+    )
+    print(f"       convention: {reading.convention}")
+    print(f"       source: {reading.source}")
+    print(
+        "  Reading: this is the OBSERVED forward `cip_check` needs. Feed it"
+        " through `live_cip_check` with the two money-market rates to measure the"
+        " market's own CIP deviation."
+    )
 
 
 if __name__ == "__main__":

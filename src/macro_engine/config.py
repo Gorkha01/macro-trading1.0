@@ -8034,12 +8034,13 @@ class FXFuturesSettings(BaseModel):
     """Section 22.3's FX-futures layer — the exchange-traded nearest-a-forward.
 
     **Why this exists beside ``fx_carry``.** ``cip_check`` wants an OBSERVED FX
-    forward and this installation has none (re-measured 2026-10-10 across all 32
-    installed providers: the whole FX surface is four routes, none a
-    forward/swap/basis; recorded at ``series_registry.yaml`` ``fx_forward_rate``).
-    What IS reachable is the **CME FX futures** complex via
-    ``derivatives.futures.historical``. This block holds the two constants that
-    layer needs, so the fetch is reproducible from config alone (LAW 1).
+    forward. Until 2026-10-10 the only *wired* path to one was absent; a genuine
+    forward now ships via ``data_layer/fx_forward_client.py`` (a dated CME ``6E``
+    contract through Databento, dependency + credential gated; D-154), and this
+    OpenBB-futures block remains the route to the **CME FX futures** complex via
+    ``derivatives.futures.historical`` — the reachable instrument the OpenBB
+    installation *does* serve. This block holds the two constants that layer
+    needs, so the fetch is reproducible from config alone (LAW 1).
 
     **The dangerous substitution this block must not enable.** A rolling
     front-month future (``=F``) is NOT a forward: it switches contract on a

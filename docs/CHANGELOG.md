@@ -10,6 +10,70 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-154 — the FX-forward block LIFTED: it was a DEPENDENCY, not a data wall — `fx_forward_client` + `live_cip_check` (2026-10-10)
+
+The Phase 5+ ledger called this a *"hard data block"*: no source on the install, three probes
+exhausted (D-108), re-measured twice (D-151 + follow-on) with the verdict confirmed each time. It was
+the **eighth** member of the D-043 false-block class, and the FIRST to resolve to something other than
+"the data was on a route we forgot to call": the block was a **dependency**. The arithmetic was never
+blocked — `cip_check` has taken `forward` as an input since it shipped — and the data was never
+absent — CME's dated `6E` instruments ARE forwards for their expiry. What was missing was a **wired
+reader**, and the only external fact it needs is a credential.
+
+- **Added** `data_layer/fx_forward_client.py` — `fetch_fx_forward(symbol, *, expiry, transport=None,
+  valuation_date=None)` fetches a **dated** CME `6E` contract's settlement close from Databento
+  (GLBX.MDP3, `ohlcv-1d`), and `to_cip_forward(reading, ...)` performs the ONE CIP conversion. A dated
+  future is a forward **for its own expiry**, so `FXForwardReading.is_forward` is `True` and the object
+  carries `expiry` + `tenor_days` as first-class fields — the exact inverse of the sibling
+  `fx_futures_client.FXFuturesReading`, whose `is_forward` is `False` because a rolling `=F` is not a
+  forward. The asymmetry is the design, not an omission.
+- **Added** `ForwardTransport` (a `Protocol`) as the transport seam and `DatabentoTransport` as the
+  default: it **lazy-imports** `databento` and reads `DATABENTO_API_KEY` via `config.env` at CALL time,
+  so the core environment satisfies §4's *"no dependency before its phase"* rule and the module imports
+  cleanly either way.
+- **The credential gate is a REFUSAL, not a silent `None`.** `FXForwardUnavailableError` (a SUBCLASS of
+  `FXForwardReadError`) is raised with the exact missing fact named — package vs key — because a `None`
+  would make "no key" indistinguishable from "pair not registered" and from "no data this run", the
+  three-way confusion the D-043 class is made of.
+- **Added** `api_layer.orchestration.live_cip_check(snapshot, *, symbol, expiry, i_domestic_annualized,
+  i_foreign_annualized, transport=None)` — the composition: reads spot from `snapshot.fx_spot` (refuses
+  when absent), fetches the forward, re-raises `FXForwardError` as `OrchestrationError` (→ HTTP 502),
+  calls `to_cip_forward`, and returns `cip_check(CIPInputs(**kwargs))`. Exported in `__all__`.
+- **A real bug was caught by a test while writing the client: the CME symbol year digit.** The first
+  draft built the dated symbol with `{expiry:%y}` — producing `6EZ26` (TWO digits) where Databento's own
+  symbology documentation specifies **Root + Month Code + ONE year digit** (`ESU4` = ES + Sep + 2024).
+  The two-digit spelling is the **OpenBB/yfinance** convention for the same contract; the repo already
+  recorded both. Fixed to `expiry.year % 10`; a two-digit symbol would have fetched nothing (or the
+  wrong decade) against the live API. Recorded in the docstring, and the test that caught it was renamed
+  from a now-misnomer (`..._two_digit_year`) to `test_the_dated_symbol_is_root_plus_month_plus_one_year_digit`.
+- **Added** `tests/data_layer/test_fx_forward_client.py` (43 tests) and 5 `live_cip_check` tests in
+  `tests/api_layer/test_orchestration.py`, all injecting a stub at the `ForwardTransport` boundary (the
+  fault-injection rule: stub the SOURCE of a failure, never the function under test). **9 mutation
+  proofs**, each killed (revert → FAIL → restore → PASS).
+- **`config/series_registry.yaml`:** the `blocked: fx_forward_rate` entry is **RETIRED** (kept only as a
+  commented-out tombstone with the full measurement history, per the D-047 rule — a `blocked:` entry that
+  vanishes without a trace is how the ABSENT-block defect opens). It was deliberately **NOT relocated to a
+  `series:` entry**: a `series:` entry needs a single `symbol` and `status: verified`, and an FX forward
+  has neither (it is per-expiry, chosen by the caller) — forcing it in would have made the registry-wide
+  invariant *"every carried series is `verified`"* false, which several consumers and a pinned test rely
+  on. **A field with no reachable single series is not a series.** Active `blocked:` entries drop **5 → 4**.
+- **`tools/probe_fx_forward.py`:** gains **Probe 6**, which runs the WIRED client through the default
+  transport and reports the dependency/credential refusal **as its own case** — printed so it can never
+  be mistaken for "no data exists". The probe now has eight legs. It needs a live dated close to promote
+  the wiring from "tested with an injected stub" to "live-verified".
+
+**Honest boundary, stated so it cannot be misread:** the client, the guards, the CIP conversion and the
+composition are TESTED, but the **live fetch has NOT been run here** — the `databento` package is not
+installed and no key exists in this environment, so `DatabentoTransport` correctly raises the dependency
+refusal at call time. `databento` is a Phase 5+ dependency the **operator** declares in `AGENTS.md` §4;
+this change does not edit the specification. The live step is `uv run python tools/probe_fx_forward.py`
+once the package and a free key are present.
+
+- **Gates:** `ruff check src/ tests/ tools/ config/` PASS · `ruff format --check` clean (**195 files**) ·
+  `mypy` clean (**195**) · suite **2050 passed / 5 deselected** (+48 tests) · `test_infrastructure.py`
+  15 passed with **no config-leaf count change** (reuses `fx_futures.cme_roots`/`provider` — LAW 2).
+  `AGENTS.md` byte-identical (`sha256 8295ccf3…`).
+
 ### D-153 — the two-snapshot cross-country orchestration: layer 4's last joint SHIPPED (2026-10-10)
 
 The increment the Phase 5+ ledger called *"only the reasoning layer itself"* turned out, on

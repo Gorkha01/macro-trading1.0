@@ -116,6 +116,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from macro_engine.config import get_settings
+from macro_engine.data_layer.fx_forward_client import ForwardTransport
 from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
 from macro_engine.models.as_of import observation_as_of
 from macro_engine.models.contracts import ModelResult
@@ -182,6 +183,8 @@ __all__ = [
     "DerivationNote",
     "OrchestrationError",
     "ThesisInputs",
+    "cross_country_thesis_inputs",
+    "live_cip_check",
     "snapshot_to_thesis_inputs",
 ]
 
@@ -2434,6 +2437,119 @@ def cross_country_thesis_inputs(
             ),
         ),
     )
+
+
+def live_cip_check(
+    snapshot: MacroDataSnapshot,
+    *,
+    symbol: str,
+    expiry: date,
+    i_domestic_annualized: float,
+    i_foreign_annualized: float,
+    transport: ForwardTransport | None = None,
+) -> ModelResult:
+    """Run ``cip_check`` against a LIVE observed forward — the wired live check.
+
+    Why this function exists, and what it replaces
+    ----------------------------------------------
+    Section 6.7's ``cip_check`` has always taken ``forward`` as an INPUT and its
+    arithmetic is complete, but no OpenBB route on this installation returns FX
+    forward points, so the LIVE check could never run — the earlier probe
+    measured the *sign rule* on parity-IMPLIED forwards instead, and said so.
+
+    Re-measured 2026-10-10 (the eighth false-block check): the gap was never the
+    arithmetic, it was the **dependency**. A DATED CME ``6E`` future is a forward
+    for its own expiry, and ``data_layer/fx_forward_client.py`` fetches one from
+    Databento. This function is the composition that was missing: it reads SPOT
+    from the snapshot, FETCHES the forward, and builds the ``CIPInputs`` the
+    model consumes — so ``cip_check`` now runs on an OBSERVED forward rather than
+    a synthesised one.
+
+    The three things this function refuses, each because it would otherwise
+    produce a confident wrong deviation
+    -------------------------------------------------------------------
+    1. **A pair absent from ``snapshot.fx_spot``.** The spot leg is required and
+       is not defaulted: a missing spot is a 502 (a dependency failed), never a
+       silently skipped check.
+    2. **A forward whose ``pair_forward`` convention disagrees with the spot
+       leg's.** Both legs must be in the SAME quote convention; ``CIPInputs``'
+       own docstring says a convention error "produces a perfectly plausible
+       number that means the opposite of the truth". The spot is in the pair's
+       own space (``fx_client``'s convention, ``quote`` per one ``base``), and
+       ``to_cip_forward`` returns the forward in that same space — so the two
+       cannot be mixed here.
+    3. **A tenor mismatch between the forward's expiry and the rates.** The two
+       money-market rates are scaled to the forward's OWN ``tenor_days``, so a
+       caller passing a 3-month forward against 1-month rates gets a wrong
+       calculation with no complaint. The rates are taken as given (they are the
+       caller's data), but ``tenor_days`` comes from the READING, never a
+       parameter — so the horizon the arithmetic uses is the forward's, by
+       construction.
+
+    Parameters
+    ----------
+    snapshot:
+        Supplies the spot leg from ``snapshot.fx_spot`` (keyed by canonical pair
+        code, e.g. ``"EURUSD"``).
+    symbol / expiry:
+        The pair and the dated contract's settlement date, passed through to
+        :func:`~macro_engine.data_layer.fx_forward_client.fetch_fx_forward`.
+    i_domestic_annualized / i_foreign_annualized:
+        ANNUALISED DECIMALS (``0.04`` = 4%/yr), the unit ``CIPInputs`` documents.
+        The caller supplies these because a money-market rate is a *choice of
+        tenor and source*, not something this composition can infer.
+    transport:
+        Injected for tests (and for a non-Databento source); ``None`` builds the
+        default transport, which needs the package + key.
+
+    Raises
+    ------
+    OrchestrationError
+        The pair has no spot leg in the snapshot, or the forward could not be
+        fetched (including the dependency/credential refusals, which are
+        re-raised with their own message so the caller can act on them).
+    """
+    from macro_engine.data_layer.fx_forward_client import (
+        FXForwardError,
+        fetch_fx_forward,
+        to_cip_forward,
+    )
+    from macro_engine.models.fx_carry import CIPInputs, cip_check
+
+    key = symbol.strip().upper().replace("/", "").replace("-", "")
+    series = snapshot.fx_spot.get(key)
+    if not series:
+        raise OrchestrationError(
+            f"no FX spot leg for {key} in the snapshot (snapshot.fx_spot has "
+            f"{sorted(snapshot.fx_spot)}), so the covered-interest-parity check "
+            f"cannot be run. The spot leg is required and is NOT defaulted."
+        )
+    spot_points = _realised(series, as_of=snapshot.as_of, field=f"fx_spot.{key}")
+    spot = float(spot_points[-1].value)
+
+    try:
+        reading = fetch_fx_forward(key, expiry=expiry, transport=transport)
+    except FXForwardError as exc:
+        # Re-raised as an orchestration failure so the API maps it to a 502 (a
+        # dependency failed), carrying the original message so a caller can tell
+        # "install the package / set the key" from "the fetch failed".
+        raise OrchestrationError(
+            f"could not fetch an observed FX forward for {key} expiring {expiry.isoformat()}: {exc}"
+        ) from exc
+
+    if reading is None:
+        raise OrchestrationError(
+            f"no dated CME future is registered for {key} (a cross, or an "
+            f"unmapped currency), so no observed forward can be built for it."
+        )
+
+    kwargs = to_cip_forward(
+        reading,
+        spot=spot,
+        i_domestic_annualized=i_domestic_annualized,
+        i_foreign_annualized=i_foreign_annualized,
+    )
+    return cip_check(CIPInputs(**kwargs))
 
 
 @dataclass(frozen=True)

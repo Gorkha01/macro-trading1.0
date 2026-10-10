@@ -38,10 +38,13 @@ Measured the same session: a walk of the live OpenAPI spec returns **278
 routes**, and **none** matches ``forward`` / ``swap`` / ``basis`` under
 ``currency`` or ``fixedincome`` (the only ``forward_*`` routes are
 ``equity.estimates.forward_eps`` and friends — equity metrics, not FX). So
-**FX spot is reachable and forward points are not**. ``cip_check`` needs
-``forward`` as an *input* and remains un-live-checkable; this module deliberately
-supplies only the spot leg, because supplying a forward would mean inventing one
-(Section 21.0 rule 3).
+**FX spot is reachable on an OpenBB route and forward points are not**. This
+module deliberately supplies only the spot leg, because supplying a forward from
+a spot value would mean inventing one (Section 21.0 rule 3). A genuine forward
+is fetched by a different route entirely — a dated CME ``6E`` contract via
+Databento (``data_layer/fx_forward_client.py``; D-154) — which is why
+``cip_check``'s live path (``api_layer.orchestration.live_cip_check``) composes
+the two.
 
 The quote convention, stated because it is the whole ballgame
 -------------------------------------------------------------
