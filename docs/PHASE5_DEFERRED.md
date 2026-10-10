@@ -263,13 +263,23 @@ Three dedicated clients back this: `openbb_client.py` (35 KB), `commodities_clie
 `fetch_opec_spare_capacity`), plus `alfred_client.py` (vintages), `world_bank_client.py`,
 `reserves_client.py`, `release_calendar.py`.
 
-**Three things are genuinely broken or missing:**
+**Two things are genuinely broken or missing** (a third — the unwired spot fields — was closed
+2026-10-09 by DISCLOSING the gap rather than by fetching the data; see item 3 below and §2.5.1):
 
 | # | Gap | Evidence | Nature |
 |---|---|---|---|
 | 1 | **FX forward points / cross-currency basis — HARD BLOCKED** | `config/series_registry.yaml:1908` — `blocked: fx_forward_rate`. Measured **2026-09-25 (D-108)** with three independent probes: (1) the OpenBB route inventory walks to **443 routes and none matches forward/swap/basis** under `currency` or `fixedincome`; (2) CME futures proxies `6E=F` / `6J=F` / `6B=F` all return `EmptyDataError` via yfinance; (3) FRED's H.10 family (`DEXUSEU`, `DEXJPUS`, …) is **spot only** — the release carries no forwards. **Consequence: `cip_check` takes `forward` as an INPUT and its arithmetic is complete, but its LIVE check cannot run, so the market's own CIP deviation cannot be measured on this build.** | Data block — no source on this install |
 | 2 | **Four more blocked registry items** | Active `blocked:` entries are **5 in total** (with `fx_forward_rate`): `iron_ore_change_pct` (L1832), `supercore_direction` (L1844), `conference_board_lei` (L1861), `inflation_surprise_bp` (L1876), `fx_forward_rate` (L1909). A sixth, `ppp_implied_rate` (L1841), is **commented out**, not active. These are the **§21.4 Loophole Ledger** — the system returns `"unavailable"` rather than a plausible number, which is the intended behaviour, not a defect. | Loophole Ledger — by design |
-| 3 | **`fx_spot` / `commodity_spot` / `equity_index` declared but never filled** | `schemas.py:337-339` declares all three (`dict[str, list[ObservationPoint]]`); `validation.py:735` validates `fx_spot`; `persistence.py:100` lists all three in `MAPPING_SERIES_FIELDS` — but **`snapshot_builder.py` never assigns any of them.** The plumbing exists; the fetch does not. Spot FX reaches models only where a live check pulls it explicitly. | Actionable — see 2.5.1 |
+| 3 | ~~**`fx_spot` / `commodity_spot` / `equity_index` declared but never filled**~~ | **CLOSED 2026-10-09 as a DISCLOSURE, and the honest disposition is that the *fetch* was never the right fix.** `schemas.py:337-339` declares all three; `snapshot_builder.py` still does not assign them — deliberately (D-137: the declaration is by design). What changed is that the absence is now **visible**: `SnapshotBuildReport.declared_not_wired` plus a `DECLARED_NOT_WIRED:<field>` data-quality flag distinguish "declared but unwired" from "no data this run". Tests: `test_phase1_data_layer.py:2303`, `:2363`. **Corrected 2026-10-10** — this row still read "Actionable" after the fix landed. | Done — disclosure, not fetch |
+
+**⚠️ A caution about probe (1) above, added 2026-10-10.** The D-108 inventory walk is cited as
+evidence that no forwards route exists, and it searched for `forward|swap|basis`. **It never searched
+for `futur`** — and `derivatives.futures.curve` DOES exist, which is how the §22.5 fed-funds curve was
+missed for a whole session (see §5.1; the same false-block class as `commodities_client`, the fifth
+FALSE BLOCK). This does **not** overturn item 1 — the three probes above are specific and the
+`blocked:` entry is legitimate — but it means the *route-inventory* probe alone is not sufficient
+evidence of absence. Re-probing on a schedule (item 1's §2.5.1 action) should search the inventory for
+the *economic concept*, not only the instrument's usual name.
 
 **Why these are not "Phase 5+ deferrals" like the others.** The shock engine is deferred
 because a *dependency* is withheld — as GARCH was until 2026-10-09, when its gate opened and it
@@ -281,13 +291,16 @@ Only item 1 is a plan; the other two are a decision and an omission respectively
 
 | # | Next action | Blocker to clear first |
 |---|---|---|
-| 1 | Re-probe FX forwards on a schedule (the block is recorded precisely so it *can* be re-probed). Candidate sources already identified in the registry note: any provider publishing forward points or a cross-currency basis — a licensed source, or CME settlement data via a credentialed provider (`fmp` / `polygon`). **The registry records that both currently fail on MISSING CREDENTIALS rather than a missing product** — i.e. this is potentially a *config* fix, not a code fix. | Credentials / licensed feed |
+| 1 | Re-probe FX forwards on a schedule (the block is recorded precisely so it *can* be re-probed). Candidate sources already identified in the registry note: any provider publishing forward points or a cross-currency basis — a licensed source, or CME settlement data via a credentialed provider (`fmp` / `polygon`). **The registry records that both currently fail on MISSING CREDENTIALS rather than a missing product** — i.e. this is potentially a *config* fix, not a code fix. **Search the route inventory for the ECONOMIC CONCEPT, not only the instrument name** — see the caution above. | Credentials / licensed feed |
 | 2 | No action — leave as `blocked:` so the block remains re-probeable. Any attempt to populate these would violate §21.0 rule 3 (*"no input may be invented"*). | None (intentional) |
-| 3 | **Populate two of the three now.** `commodity_spot` and `equity_index` have verified FRED routes already in the registry (`metals_*`, `gold_*`, `crude_inventory_weekly`, `sp500_index`, `VIXCLS`). Only `fx_spot` is genuinely source-blocked, sharing item 1's block. Decide whether `snapshot_builder` should assign the two that are reachable. | A decision, not a dependency |
+| 3 | ~~Populate two of the three now~~ **No action — CLOSED 2026-10-09.** The fix was a **disclosure**, not a fetch, and that was the correct disposition: the three fields are declared by design (D-137), and the defect was that their absence was *invisible*. `SnapshotBuildReport.declared_not_wired` + a `DECLARED_NOT_WIRED:<field>` flag now make an empty mapping distinguishable from "no data this run". | Done |
 
-**Note on item 3:** it is the only one of the three where a *partial* fix is available today, and it is
-also the only one that is currently invisible to any test — the fields exist on the schema, validate
-clean, and persist, so an empty dict looks the same as "no data this run."
+**Note on item 3 (updated 2026-10-10):** this used to say it was "the only one currently invisible to
+any test — an empty dict looks the same as 'no data this run'." That was the defect, and it is now
+fixed: the invisibility was the bug, and it is asserted by `test_phase1_data_layer.py:2303` and
+`:2363`. The original framing — *"decide whether `snapshot_builder` should assign the two reachable
+fields"* — was the wrong question: assigning them would publish two spot levels under a report that
+declares three, which is a different mis-description. **Disclosing the gap was the fix.**
 
 ### 2.6 "Conditional" forecasting — what the word means here
 
@@ -331,11 +344,17 @@ can check in one command."*
 |---|---|---|
 | `models/monetary.py` (marked **"NEW FILE — Phase 2 backfill"**) | `models/national_accounts.py:191` → `quantity_theory_implied_inflation` | AGENTS.md:4097, §20.1 |
 | `models/volatility.py` | `models/risk.py:491` → `realized_vol_simple` (**starter only** — see 2.2) | AGENTS.md:230, 280, 300, 1128, 1787 |
-| `extensions/scenario_engine.py` | not built at all — see 2.3 | AGENTS.md:1749 |
+| `extensions/scenario_engine.py` | **BUILT 2026-10-09** at the spec path itself — see 2.3.1. This row said *"not built at all"* until 2026-10-10; corrected. | AGENTS.md:1749 |
 
 Neither `monetary.py` nor `volatility.py` has ever existed in this repo's history. This is a
 **spec/implementation naming divergence**, not a `bd96d5c` casualty (that re-init deleted *committed*
 files, which `git log --all` can still find).
+
+**A fourth false negative, found 2026-10-10 the same way.** `models/volatility.py` DID get built
+(2026-10-09) with the GARCH estimator, and §2.2 records it — but this table kept pointing at
+`risk.py`'s `realized_vol_simple` and calling that the implementation. Both rows above for
+`volatility.py` were reconciled in that change; the `scenario_engine` row was missed, which is the
+*pair* defect: a doc that tracks a gap must be re-read in full, not only the row being edited.
 
 ### 2.8 Deliberately-empty config surfaces
 
@@ -370,7 +389,7 @@ here only as a pointer, not as a 24th function. See §2.2 for its evidence and i
 | `classify_regime_markov_switching` | `models/regime.py:1815` |
 | `yield_curve_pca` | `models/yield_curve.py:1946` |
 | `run_regression`, `test_stationarity`, `test_cointegration`, `compute_pca`, `kalman_latent_state` | `models/econometrics.py` |
-| `statement_text_diff` | `models/policy_rules.py:1172` |
+| `statement_text_diff` | `models/policy_rules.py:1461` |
 
 Two of these deserve a specific note, because the spec calls them Phase 5+ *replacements*:
 
@@ -424,16 +443,19 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | `extensions/nautilus_adapter.py` | Deferred | `nautilus_trader` |
 | `extensions/scheduler.py` | Deferred | `apscheduler` |
 | ~~GARCH conditional volatility~~ | **CLOSED 2026-10-09 — shipped** (§2.2) | `arch` added; `models/volatility.py` created |
-| `extensions/scenario_engine.py` + `scenarios/*.yaml` | **Deferred — genuine gap** (distribution layer is done) | `vectorbt` / none |
+| ~~`extensions/scenario_engine.py` + `scenarios/*.yaml`~~ | **CLOSED 2026-10-09 — shipped** (§2.3.1); corrected 2026-10-10 | file exists at the spec path, 0 `NotImplementedError`, 4 `scenarios/*.yaml` |
 | Multi-country (`de`, `jp`, `gb`) | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | `fx_spot` / `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them |
-| 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden || `bayesian.likelihoods.table` (data) | Deferred | historical evidence-vs-outcome data |
+| 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden |
+| §22.5 Fed-funds-futures-implied policy path | **Built + tested, deliberately UNWIRED** (2026-10-10) | the SOURCE exists; the block is the *signature*, not the data — see §5.1 |
+| `bayesian.likelihoods.table` (data) | Deferred | historical evidence-vs-outcome data |
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
-| `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence | — |
+| `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
 
-**Four genuine capability gaps: GARCH, the crisis-shock engine, multi-country, and FX-forward
-coverage (a data block, not a plan).**
+**Two genuine capability gaps remain: multi-country, and FX-forward coverage** (a data block, not a
+plan). Two closures landed 2026-10-09 and this table said four until 2026-10-10 — GARCH (§2.2) and the
+crisis-shock engine (§2.3.1) were both built, and the count was not decremented.
 Everything else the spec defers is either an `extensions/` backend gated on an uninstalled package,
 a Loophole-Ledger data block, or a documentation path that drifted from the code.
 
@@ -477,10 +499,15 @@ grep -rn "import arch" --include=*.py src/     # empty
 
 # 4. Paths named in the spec but absent from disk, and whether they ever existed
 grep -oE "(models|extensions)/[a-z_]+\.py" AGENTS.md | sort -u
-git log --all --oneline -- src/macro_engine/models/volatility.py   # empty
+git log --all --oneline -- src/macro_engine/models/volatility.py   # empty BEFORE 2026-10-09; now created
+git log --all --oneline -- src/macro_engine/models/volatility.py   # 2026-10-09: the GARCH build
+git log --all --oneline -- src/macro_engine/extensions/scenario_engine.py  # 2026-10-09: the shock engine
 
-# 5. Scenario shock engine
-ls -d scenarios/ 2>&1                            # No such file or directory
+# 5. Scenario shock engine — CORRECTED 2026-10-10 (this printed "No such file or directory" when
+#    written, and kept printing it after the file was built; a repro that must be re-run, not copied)
+ls -d scenarios/ 2>&1                            # four files: the four §9.4 scenarios
+ls -l src/macro_engine/extensions/scenario_engine.py
+grep -c "raise NotImplementedError" src/macro_engine/extensions/scenario_engine.py   # 0 — it is not a stub
 
 # 6. Multi-country
 grep -n "implemented:" config/settings.yaml      # implemented: ["us"]
@@ -506,3 +533,55 @@ grep -rn "conditional forecast" --include=*.py src/
 Finding IDs in `.review-evidence/module_findings.json`:
 `F-MOD-001` (path divergences, SEV-3, OPEN), `F-MOD-002` (census verified, INFO),
 `F-MOD-003` (scenario shock engine deferred, SEV-3, OPEN — **GARCH half CLOSED 2026-10-09, §2.2**).
+
+### 5.1 §22.5 — the Fed-funds-futures path: the source EXISTS, the obstacle is the SIGNATURE
+
+Measured 2026-10-10. **This reverses a previous finding.** An earlier pass recorded §22.5 as
+*"needs data"*, on the strength of a D-108 route inventory that had been grepped for
+`forward|swap|basis` — and **never for `futur`**. The source was there the whole time:
+
+```bash
+uv run python tools/probe_fed_funds_futures.py
+# → derivatives.futures.curve, symbol="ZQ", provider="yfinance" returns 16 expirations
+# → front contract (2026-10) implies 3.88%, EQUAL to measured DFF and EFFR (both 3.880)
+# → inside the 3.75-4.00% DFEDTARL/DFEDTARU range
+# → SOURCE DEFECT: 6 of the 16 expirations carry a price near 47-48 → ~52% implied rate,
+#   deterministic across three calls (min 47.64, max 96.12 every time)
+```
+
+The read is now implemented and tested — `data_layer/fed_funds_futures_client.py` (the data leg) and
+`models/policy_rules.futures_implied_policy_path` (the model leg), with the six ~52% rows **rejected
+and named**, never clamped.
+
+**Why it is nevertheless NOT wired, and why that is a SPEC defect rather than a work item.** §22.5
+promises the replacement is *"a body swap, not a caller-facing breaking change"* because *"this
+function's signature is stable"*. That premise is false, and it is checkable in one command:
+
+```bash
+uv run python -c "
+import inspect
+from macro_engine.models.policy_rules import (
+    derive_market_implied_policy_path, futures_implied_policy_path)
+print(list(inspect.signature(derive_market_implied_policy_path).parameters))
+# ['short_yield', 'short_tenor_term_premium']   <- two SCALARS
+print(list(inspect.signature(futures_implied_policy_path).parameters))
+# ['curve', 'proxy_horizon_months']             <- a CURVE
+"
+```
+
+A curve is a **collection of expirations**. No body can carry one through a two-float signature
+without reconstructing it from the scalars, which §21.0 rule 3 forbids. The scalar shape propagates
+the whole way to the live path — `build_policy_gap(short_yield, short_tenor_term_premium)`
+(`thesis_layer/builder.py:356`) ← `build_us_macro_thesis` ← `_reasoning_frames`
+(`api_layer/reasoning_stream.py`), whose own docstring documents a `TypeError` that fires when the
+proxy "changes shape". Wiring the replacement therefore **IS** a caller-facing change — the exact
+thing §22.5 said it would not be.
+
+So the obligation is **still outstanding**, now blocked on the specification's own swap mechanism
+rather than on data or ownership. `PHASE5_REPLACEMENT_OBLIGATION` keeps the value `"outstanding"`,
+and `tests/models/test_policy_rules.py` pins the impossibility in two tests
+(`test_the_section_22_5_swap_mechanism_is_impossible_as_specified`,
+`test_the_replacement_is_built_and_tested_but_deliberately_unwired`) so the record cannot be
+quietly "closed" by someone who assumes the build was what was missing. Discharging it requires an
+operator decision about the signature — recorded in AGENTS.md by the operator, not silently here.
+

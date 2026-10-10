@@ -60,16 +60,16 @@ that includes routes and private helpers.
 | ↳ of which Phase 4+ **by endpoint** (risk/portfolio) | ~8       | **NO** — legitimately deferred                                 |
 | ↳ of which genuine Phases 0-3 wiring debt            | **~51**  | **YES**                                                        |
 | Tier 5 — Phase 5+ **COMPLETE**                       | **23**   | **NO** — built and tested; unwired by design                   |
-| Phase 5+ capability gaps                             | **6**    | **YES** — but they are *missing work*, not unwired code (§4.1) |
+| Phase 5+ capability gaps                             | **6**    | **YES** — but they are *missing work*, not unwired code (§4.1). Items 2, 3 are now CLOSED; item 6 is *built but unwired* — see §4.2.1 |
 | Non-model unreachable modules                        | 30 of 78 | Mixed — see §5                                                 |
 
 **Two different kinds of "not done" — do not conflate them:**
 
 |                        | The 23 Tier-5 functions                       | The 6 capability gaps (§4.1) |
 | ---------------------- | --------------------------------------------- | ---------------------------- |
-| Exists in `src/`?      | **Yes** — real bodies                         | **No**                       |
-| Tested / live-checked? | **Yes**                                       | n/a                          |
-| Problem                | it exists and nothing calls it                | it does not exist yet        |
+| Exists in `src/`?      | **Yes** — real bodies                         | **Mostly NO** — one exception since 2026-10-10: the §22.5 reader and model ARE built (§4.2.1) |
+| Tested / live-checked? | **Yes**                                       | n/a — except the §22.5 pair, which is tested |
+| Problem                | it exists and nothing calls it                | it does not exist yet — or, for §22.5, it exists and *cannot* be wired without a spec change |
 | Fix                    | a product decision (changes published output) | **build it**                 |
 
 ### Why this is a gap and not a design choice
@@ -283,7 +283,11 @@ table, governs — §22.1).
 
 Tier 5 being complete does **not** mean Phase 5+ has nothing left. Six things remain, and **none of  
 them is a Tier-5 function**. Authority: `docs/PHASE5_DEFERRED.md` §2, plus item 6 (found 2026-10-08  
-by reading §22.5 against the shipped body).
+by reading §22.5 against the shipped body, and **re-measured 2026-10-10** — see §4.2).
+
+Two of the six are now closed (items 2 and 3) and item 6's blocked-on has changed; the count of six
+is kept because the six *slots* are still the register, and a closed slot is struck through rather
+than deleted.
 
 | # | Outstanding item                                                | Why                                                         | Blocked on                                                                                    |
 | - | --------------------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -291,8 +295,14 @@ by reading §22.5 against the shipped body).
 | 2 | ~~**GARCH-family conditional volatility**~~ | **CLOSED 2026-10-09** — `models/volatility.py` built, `arch` added | — |
 | 3 | ~~**Crisis-scenario shock engine**~~                            | **CLOSED 2026-10-09** — engine, simulation half and all four §9.4 scenarios ship | — |
 | 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
-| 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code                                                             |
-| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE, and no work list owned it**                     | nothing — it is simply unbuilt                                                                |
+| 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code — EXCEPT the §22.5 path, where a source WAS found (item 6)     |
+| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE — a source EXISTS, but the swap is impossible as specified** | the SPEC's own "stable signature" promise, which is false (see §4.2)                |
+
+**Corrected 2026-10-10.** Item 6's blocked-on said *"nothing — it is simply unbuilt"*, and the earlier
+version of §4.2 (and of this file's own §5) said the source *"needs data"*. Both were wrong. The data
+exists (item 6's source was found — see §4.2), and the obstacle is the specification's *mechanism*.
+Item 5's *"source availability, not code"* now has one exception and is annotated accordingly.
+
 
 ### 4.2 ⚠️ The sixth item — the obligation that fell between two lists
 
@@ -307,9 +317,13 @@ separately because its *shape* is the finding.
 
 
 **Phase 5+ is recorded COMPLETE (23/23) and the body was never swapped.**  
-`derive_market_implied_policy_path` still returns `short_yield - short_tenor_term_premium`, and three  
-warnings still say so — `models/policy_rules.py:718`, `:737`, `:775` all read *"Phase 5+ replaces  
-this entirely (Section 22.5)."*
+`derive_market_implied_policy_path` still returns `short_yield - short_tenor_term_premium`, and its  
+warnings still say so — search for the exact prose rather than a line number, which drifts on every  
+edit above it:
+
+```bash
+grep -n "Phase 5+ replaces this entirely" src/macro_engine/models/policy_rules.py
+```
 
 **Why no gate caught it:** the obligation is attached to a **Tier 3** function (`AGENTS.md:5531`),  
 but the Phase-5+ work list was built from §21.3's **Tier 5** names. **The obligation fell between two  
@@ -339,6 +353,56 @@ horizon mismatch is not a separate bug — it is **why §22.5 wanted the replace
 test — `is_meaningful = abs(gap) > dispersion`, the max-min spread of the three rules — is the  
 strongest idea in this subsystem. *"Three rules differing by 80bp cannot support a claim about a  
 50bp gap."* A replacement must preserve it.
+
+### 4.2.1 ⚠️ MEASURED 2026-10-10 — the source EXISTS and the swap is IMPOSSIBLE as written
+
+**Two earlier claims in this document were wrong, and both are corrected here.**
+
+**(a) "It needs data" was false.** The source is `derivatives.futures.curve` with `symbol="ZQ"` and
+`provider="yfinance"`, and it returns the 30-Day Fed Funds futures term structure. It was missed
+because the D-108 route inventory was grepped for `forward|swap|basis` and **never for `futur`** —
+the same false-block class this repository has now caught six times. Verified three ways: the front
+contract (2026-10) implies **3.88%**, EQUAL to the measured `DFF` and `EFFR` (both 3.880) and inside
+the 3.75–4.00% `DFEDTARL`/`DFEDTARU` range.
+
+**Re-measure it:**
+```bash
+uv run python tools/probe_fed_funds_futures.py
+# 16 expirations; front 3.88%; slope +80bp out to 2028-01
+# SOURCE DEFECT: 6 of 16 carry a price near 47-48 → ~52% implied, deterministic (min 47.64, max 96.12)
+```
+
+**(b) "the signature is stable so that replacement is a body swap" is false — and this is a SPEC
+defect, not a work item.** A futures curve is a **collection of expirations**; the proxy's signature
+carries two **scalars**:
+
+```bash
+uv run python -c "
+import inspect
+from macro_engine.models.policy_rules import (
+    derive_market_implied_policy_path, futures_implied_policy_path)
+print(list(inspect.signature(derive_market_implied_policy_path).parameters))
+# ['short_yield', 'short_tenor_term_premium']   <- two SCALARS
+print(list(inspect.signature(futures_implied_policy_path).parameters))
+# ['curve', 'proxy_horizon_months']             <- a CURVE
+"
+```
+
+No body can carry a curve through a two-float signature without reconstructing it from the scalars,
+which §21.0 rule 3 forbids. The scalar shape runs the whole way to the live path —
+`build_policy_gap(short_yield, short_tenor_term_premium)` (`thesis_layer/builder.py:356`) ←
+`build_us_macro_thesis` ← `_reasoning_frames` (`api_layer/reasoning_stream.py`, whose own docstring
+documents a `TypeError` for exactly this "shape change"). Wiring the replacement **is** a
+caller-facing change, which is what §22.5 promised it would not be.
+
+**What WAS built (and is tested), and what was deliberately NOT done:**
+
+| Piece | State |
+|---|---|
+| `data_layer/fed_funds_futures_client.py` | **BUILT.** Reads the curve; the six ~52% rows are **REJECTED and named**, never clamped. Tests: `tests/data_layer/test_fed_funds_futures_client.py` |
+| `models/policy_rules.futures_implied_policy_path` | **BUILT.** Publishes the NEAR rate (not the path mean, which would rebuild the horizon mismatch in reverse) and reports the slope. Tests: `tests/models/test_policy_rules.py` |
+| Wiring into `build_policy_gap` | **NOT DONE, deliberately.** It requires changing the signature §22.5 called stable — an operator decision. Pinned by `test_the_replacement_is_built_and_tested_but_deliberately_unwired`, so an unnoticed wiring FAILS the suite. |
+| `PHASE5_REPLACEMENT_OBLIGATION` | **still `"outstanding"`.** The tripwire now also pins the impossibility, so the record cannot be closed by someone who assumes the build was the missing piece. |
 
 ### 4.3 Status of the three defects — ADDRESSED 2026-10-08
 
@@ -473,11 +537,19 @@ them.
 
 ### DO work on — the genuinely-outstanding Phase 5+ items (§4.1)
 
-`extensions/` (6 stubs) · multi-country · market/price data coverage ·
+`extensions/` (6 stubs) · multi-country · market/price data coverage (FX forwards) ·
 **the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5
-function** — they are capability gaps, and they are the real Phase-5 remainder. **GARCH and the whole crisis-shock engine
-closed 2026-10-09** — `docs/PHASE5_DEFERRED.md` §2.2 and §2.3. **§4.2 is the one to read first:** it is the reference every thesis's gap is measured
-against.
+function** — they are capability gaps, and they are the real Phase-5 remainder.
+**GARCH and the whole crisis-shock engine closed 2026-10-09** — `docs/PHASE5_DEFERRED.md` §2.2 and
+§2.3.
+
+⚠️ **On §22.5, re-measured 2026-10-10 (§4.2.1): this is NOT "write the code" work.** The reader and
+the model are already built and tested. What remains is a **specification decision**: §22.5 promises a
+body swap behind a stable signature, and that promise is checkably false — the replacement's input is
+a curve (a collection of expirations) and the proxy's signature carries two scalars, so the swap
+cannot be done without a caller-facing signature change. An operator must decide whether to make
+that change; until then the marker stays `"outstanding"` and the record is pinned by tests.
+**All the same, read §4.2 first:** the proxy is the reference every thesis's gap is measured against.
 
 ### How to keep this honest
 

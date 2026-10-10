@@ -21,6 +21,10 @@ from __future__ import annotations
 
 import pytest
 
+from macro_engine.data_layer.fed_funds_futures_client import (
+    FedFundsFuturesCurve,
+    FuturesExpiration,
+)
 from macro_engine.models.policy_rules import (
     BalanceSheetInputs,
     FirstDifferenceInputs,
@@ -30,6 +34,7 @@ from macro_engine.models.policy_rules import (
     canonical_policy_gap,
     derive_market_implied_policy_path,
     first_difference_rule,
+    futures_implied_policy_path,
     policy_rule_ensemble,
     qe_qt_stance,
     statement_text_diff,
@@ -396,6 +401,216 @@ def test_the_horizon_leaf_rejects_a_non_positive_or_fractional_value() -> None:
             _ = settings.proxy_horizon_months_value
 
 
+# ---------------------------------------------------------------------------
+# Section 22.5 — the futures-implied policy path (the REPLACEMENT body)
+# ---------------------------------------------------------------------------
+def _curve(
+    rates: list[tuple[str, float]],
+    *,
+    rejected: int = 0,
+    returned: int | None = None,
+) -> FedFundsFuturesCurve:
+    """A synthetic curve with HAND-CHOSEN implied rates, for the model tests.
+
+    Built directly rather than fetched, so the model layer's arithmetic is
+    tested against values this file controls — a fetch would couple the model
+    test to the provider's behaviour and hide a mutation behind a live read.
+    ``implied_rate_pct`` is given explicitly, so the identity is NOT re-derived
+    here (that is the client test's job); the point is the model's use of it.
+    """
+    expirations = tuple(
+        FuturesExpiration(
+            expiration=expiration,
+            price=100.0 - rate,
+            implied_rate_pct=rate,
+            months_ahead=index,
+            raw_price=100.0 - rate,
+        )
+        for index, (expiration, rate) in enumerate(rates)
+    )
+    return FedFundsFuturesCurve(
+        symbol="ZQ",
+        provider="yfinance",
+        settlement_offset=100.0,
+        as_of="2026-10-10",
+        expirations=expirations,
+        rows_returned=returned if returned is not None else len(rates) + rejected,
+        rows_rejected=rejected,
+        rows_dropped_past=0,
+        rejected_detail=(
+            ("2027-04: implied rate 52.26% outside the plausible band",) if rejected else ()
+        ),
+        source_retrieved_at="2026-10-10T00:00:00+00:00",
+    )
+
+
+def test_the_futures_path_publishes_the_near_rate_not_the_mean() -> None:
+    """``value`` is the front contract, not an average over the path.
+
+    The whole point of the replacement: ``canonical_policy_gap`` compares the
+    model's SPOT prescription against the market's CURRENT expectation, so the
+    market leg must be the front rate. Hand values from the synthetic curve:
+    the front is 3.88%, the mean of {3.88, 4.10, 4.40, 4.69} is 4.2675% — and
+    the test proves the mean is NOT what was published.
+
+    Publishing the mean would rebuild the proxy's horizon mismatch in the
+    opposite direction, which is the exact defect Section 22.5 exists to fix.
+    """
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.10), ("2026-12", 4.40), ("2028-01", 4.69)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+
+    assert result.value == pytest.approx(3.88)
+    mean = (3.88 + 4.10 + 4.40 + 4.69) / 4
+    assert mean == pytest.approx(4.2675)
+    # And explicitly NOT the mean — the horizon-mismatch regression this
+    # replacement exists to prevent, asserted rather than implied.
+    assert result.value != pytest.approx(mean)
+
+
+def test_the_futures_path_carries_the_slope_in_words_and_context() -> None:
+    """The path's SHAPE is not discarded — it is reported.
+
+    Hand arithmetic: slope = (4.69 - 3.88) * 100 = 81bp > 25bp → "pricing
+    HIKES". The context must state the horizon it covers.
+    """
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.10), ("2028-01", 4.69)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+
+    assert "HIKES" in result.interpretation
+    assert "+81bp" in result.interpretation
+    assert "30-Day Fed Funds futures curve" in result.context
+    assert "Implied rate = 100 - price" in result.context
+
+
+def test_a_downward_curve_is_reported_as_cuts() -> None:
+    """Sign both ways: a falling path must say CUTS, not HIKES."""
+    curve = _curve([("2026-10", 4.50), ("2026-11", 4.00), ("2027-06", 3.10)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    assert "CUTS" in result.interpretation
+    assert "-140bp" in result.interpretation
+
+
+def test_a_flat_curve_is_reported_as_flat_not_falsely_directional() -> None:
+    """A 20bp slope is inside the +-25bp dead band → FLAT.
+
+    Hand arithmetic: 3.88 → 4.10 is 22bp, below the threshold, so neither
+    HIKES nor CUTS may appear.
+    """
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.00), ("2026-12", 4.10)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    assert "FLAT" in result.interpretation
+    assert "HIKES" not in result.interpretation
+    assert "CUTS" not in result.interpretation
+
+
+def test_the_path_refuses_when_has_path_is_false() -> None:
+    """A one-point "path" is what the proxy this replaces already was.
+
+    ``has_path`` reads ``min_expirations`` from config (3), so a two-point
+    curve must raise rather than publish a point as a path.
+    """
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.00)])
+    assert curve.has_path is False
+    with pytest.raises(ValueError, match=r"at least 3 plausible expirations"):
+        futures_implied_policy_path(curve, proxy_horizon_months=24)
+
+
+def test_the_path_truncates_to_the_comparison_horizon() -> None:
+    """The published path covers ``proxy_horizon_months``, and says how many.
+
+    Synthetic curve with horizons 0, 6, 18, 30 months. With a 24-month window
+    the 30-month point is excluded from the path (but the front rate is
+    unchanged, since the front is still the front).
+    """
+    curve = _curve([("2026-10", 3.88), ("2027-04", 4.00), ("2028-04", 4.20), ("2029-04", 4.50)])
+    # Rebuild with correct horizons rather than enumeration.
+    expirations = tuple(
+        FuturesExpiration(e.expiration, e.price, e.implied_rate_pct, horizon, e.raw_price)
+        for e, horizon in zip(curve.expirations, (0, 6, 18, 30), strict=True)
+    )
+    curve = FedFundsFuturesCurve(
+        symbol="ZQ",
+        provider="yfinance",
+        settlement_offset=100.0,
+        as_of="2026-10-10",
+        expirations=expirations,
+        rows_returned=4,
+        rows_rejected=0,
+        rows_dropped_past=0,
+        rejected_detail=(),
+        source_retrieved_at="2026-10-10T00:00:00+00:00",
+    )
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+
+    assert "Path covers 18 months" in result.context
+    assert "24-month comparison window" in result.context
+    # The 30-month point is outside the window, so it is not in observation_dates.
+    assert "2029-04" not in result.observation_dates
+    assert "2028-04" in result.observation_dates
+
+
+def test_the_path_reports_the_rejection_count_in_warnings() -> None:
+    """A corrupted curve must warn, and the warning must name the count."""
+    curve = _curve(
+        [("2026-10", 3.88), ("2026-11", 4.10), ("2028-01", 4.69)],
+        rejected=6,
+        returned=9,
+    )
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    joined = " ".join(result.warnings)
+    assert "6 of 9 expirations" in joined
+    assert "REJECTED as implausible" in joined
+
+
+def test_a_clean_flat_curve_produces_no_warnings() -> None:
+    """No corruption and no slope → no warnings. The conditional is real."""
+    curve = _curve([("2026-10", 3.88), ("2026-11", 3.90), ("2026-12", 3.92)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    assert result.warnings == []
+
+
+def test_the_path_confidence_comes_from_config_not_a_literal() -> None:
+    from macro_engine.config import get_settings
+
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.10), ("2028-01", 4.69)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    assert result.confidence == pytest.approx(
+        get_settings().market_implied_futures.distribution_confidence
+    )
+    assert result.unit == "percent"
+    assert result.model_name == "futures_implied_policy_path"
+
+
+def test_the_path_must_not_be_confused_with_the_proxy() -> None:
+    """The two functions are different objects; the result says so.
+
+    A guard against a caller silently swapping one for the other — the
+    prohibition must be present in ``decision_prohibition``.
+    """
+    curve = _curve([("2026-10", 3.88), ("2026-11", 4.10), ("2028-01", 4.69)])
+    result = futures_implied_policy_path(curve, proxy_horizon_months=24)
+    joined = " ".join(result.decision_prohibition)
+    assert "derive_market_implied_policy_path" in joined
+    assert "NOT be described as a probability distribution" in joined
+
+
+def test_the_config_asserts_the_two_horizons_agree() -> None:
+    """``max_path_horizon_months`` must equal the proxy's horizon leaf.
+
+    The caller passes ``proxy_horizon_months``; if the two config leaves
+    disagreed, a caller following one would compare over a different window
+    than the one the proxy warned about. The cross-check makes that
+    impossible, so this test pins the invariant AND the error class.
+    """
+    from macro_engine.config import get_settings
+
+    settings = get_settings()
+    assert (
+        settings.market_implied_futures.max_path_horizon_months
+        == settings.policy.market_implied.proxy_horizon_months_value
+    )
+
+
 def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
     """D2 — a tripwire for an obligation that no work list owned.
 
@@ -432,6 +647,82 @@ def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
     assert PHASE5_REPLACEMENT_OBLIGATION == "outstanding", (
         f"PHASE5_REPLACEMENT_OBLIGATION says {PHASE5_REPLACEMENT_OBLIGATION!r} but "
         "the body is still the proxy. The marker and the body must agree."
+    )
+
+
+def test_the_section_22_5_swap_mechanism_is_impossible_as_specified() -> None:
+    """The MEASURED reason the obligation cannot be discharged by a body swap.
+
+    Section 22.5 promises the replacement is *"a body swap, not a caller-facing
+    breaking change"* because *"this function's signature is stable"*. Measured
+    2026-10-10 that promise is unachievable: the replacement's input is a
+    **curve** (a collection of expirations) and this function's signature carries
+    two **scalars**. No body can conjure a curve from two floats without
+    inventing the input, which Section 21.0 rule 3 forbids.
+
+    This test PINS the impossibility, so the record cannot be quietly "fixed" by
+    someone who assumes the build is what was missing. Both halves are asserted:
+
+    * the proxy's signature is still the two-scalar one §22.5 called stable, and
+    * the replacement takes a ``FedFundsFuturesCurve``, so it cannot be dropped
+      into that signature.
+
+    If a future change DOES rewire the chain, this test fails and forces the
+    decision to be recorded — which is the point.
+    """
+    import inspect
+
+    proxy_params = list(inspect.signature(derive_market_implied_policy_path).parameters)
+    assert proxy_params == ["short_yield", "short_tenor_term_premium"], (
+        "the proxy's signature changed; Section 22.5's 'stable signature' premise "
+        "must be re-read against the new shape"
+    )
+    # Neither parameter can carry a curve: both are annotated as floats.
+    hints = inspect.getsource(derive_market_implied_policy_path)
+    assert "short_yield: float" in hints
+    assert "short_tenor_term_premium: float | None" in hints
+
+    replacement_params = list(inspect.signature(futures_implied_policy_path).parameters)
+    assert replacement_params[0] == "curve", (
+        "the replacement must take the curve as its first argument — that is "
+        "exactly why it cannot be a body swap"
+    )
+    curve_hint = inspect.getsource(futures_implied_policy_path)
+    assert "curve: FedFundsFuturesCurve" in curve_hint, (
+        "the replacement's first parameter must be typed as the curve; a scalar "
+        "there would mean the path was reconstructed from invented inputs"
+    )
+
+
+def test_the_replacement_is_built_and_tested_but_deliberately_unwired() -> None:
+    """The state of the increment, asserted rather than claimed.
+
+    ``futures_implied_policy_path`` exists and is tested, but **nothing in
+    ``src/`` calls it** — wiring it means changing the signature §22.5 promised
+    was stable, which is a caller-facing change and an operator decision.
+
+    A test rather than a note, because "built but not wired" is exactly the kind
+    of claim that rots: if someone wires it without updating the record, this
+    fails; if someone deletes it, the import at the top of this module fails.
+    """
+    import pathlib
+
+    src_root = pathlib.Path(__file__).resolve().parents[2] / "src"
+    callers: list[str] = []
+    for path in src_root.rglob("*.py"):
+        rel = path.as_posix()
+        if rel.endswith(("models/policy_rules.py", "data_layer/fed_funds_futures_client.py")):
+            continue  # the definition sites, not callers
+        text = path.read_text(encoding="utf-8")
+        # Match the BARE names, not "name(" — a wiring may be an import first.
+        # Matching only the call form let an import-only wiring pass, which was
+        # measured by injection: a module importing the function was not caught.
+        if "futures_implied_policy_path" in text or "fetch_fed_funds_futures_curve" in text:
+            callers.append(rel)
+    assert callers == [], (
+        f"the replacement is now WIRED (or imported) at {callers}. That is a "
+        f"caller-facing signature change; update PHASE5_REPLACEMENT_OBLIGATION "
+        f"and this record in the same commit rather than letting the state drift."
     )
 
 

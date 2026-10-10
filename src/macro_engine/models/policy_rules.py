@@ -37,6 +37,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from macro_engine.config import get_settings
+from macro_engine.data_layer.fed_funds_futures_client import (
+    FUTURES_ROUTE_ENDPOINT,
+    FedFundsFuturesCurve,
+)
 from macro_engine.models.contracts import (
     ConfidenceInputs,
     FiniteInputs,
@@ -58,6 +62,7 @@ __all__ = [
     "canonical_policy_gap",
     "derive_market_implied_policy_path",
     "first_difference_rule",
+    "futures_implied_policy_path",
     "policy_rule_ensemble",
     "qe_qt_stance",
     "statement_text_diff",
@@ -684,11 +689,42 @@ def canonical_policy_gap(
 #: breaking change."*
 #:
 #: Phase 5+ is recorded COMPLETE (Tier 5 = 23/23, D-092 … D-125) and the body was
-#: never swapped. The reason is structural, not an oversight: the obligation is
-#: attached to a **Tier 3** function (AGENTS.md §21.3), while the Phase-5+ work
-#: list was built from the section's **Tier 5** names. **It fell between two
-#: lists, so no gate and no checklist owned it.** "Tier 5 = 23/23" is true and
-#: does not mean Phase 5+ is complete.
+#: never swapped. The first reason found (2026-10-09) was structural: the
+#: obligation is attached to a **Tier 3** function (AGENTS.md §21.3), while the
+#: Phase-5+ work list was built from the section's **Tier 5** names. **It fell
+#: between two lists, so no gate and no checklist owned it.** "Tier 5 = 23/23" is
+#: true and does not mean Phase 5+ is complete.
+#:
+#: **Measured 2026-10-10 — the second reason, and it invalidates the MECHANISM.**
+#: The data source §22.5 assumed might not exist DOES exist: the route
+#: ``derivatives.futures.curve`` with ``symbol="ZQ"`` returns the 30-Day Fed
+#: Funds futures term structure, and ``futures_implied_policy_path`` +
+#: ``fetch_fed_funds_futures_curve`` now read it. But §22.5's stated swap
+#: procedure **cannot be executed**, and that is a defect in the specification
+#: rather than in the work:
+#:
+#:   A futures curve is a **collection of expirations**. The proxy's signature is
+#:   ``(short_yield: float, short_tenor_term_premium: float | None)`` — two
+#:   SCALARS. No body can carry a curve through a two-float signature without
+#:   inventing the curve from the scalars, which is precisely the "input may not
+#:   be invented" prohibition (§21.0 rule 3). So the promised *"body swap, not a
+#:   caller-facing breaking change"* is **not achievable**: the replacement is
+#:   necessarily a signature change at this function AND at its callers.
+#:
+#: The chain that would have to change is scalar-shaped the whole way down:
+#: ``build_policy_gap(short_yield, short_tenor_term_premium)``
+#: (thesis_layer/builder.py) ← ``build_us_macro_thesis(...)`` ←
+#: ``_reasoning_frames(...)`` (api_layer/reasoning_stream.py), whose own docstring
+#: documents a ``TypeError`` guard that fires when this function "changes shape".
+#: Rewiring it is therefore a **caller-facing** change — the opposite of what
+#: §22.5 promised — and it is a decision for the operator, not a quiet refactor.
+#:
+#: The obligation is therefore STILL OUTSTANDING, and it is now blocked on a
+#: **specification** defect (the swap mechanism) rather than on missing data or a
+#: missing owner. ``futures_implied_policy_path`` is BUILT and TESTED
+#: (tests/data_layer/test_fed_funds_futures_client.py,
+#: tests/models/test_policy_rules.py) but deliberately **UNWIRED**: nothing calls
+#: it, because wiring it means changing the signature §22.5 promised was stable.
 #:
 #: This constant is read by `tests/models/test_policy_rules.py`'s tripwire, which
 #: asserts BOTH that the body is still the Phase 1-4 proxy AND that this marker
@@ -889,6 +925,206 @@ def derive_market_implied_policy_path(
             "about the gap's direction inherits that.",
         ],
     )
+
+
+def futures_implied_policy_path(
+    curve: FedFundsFuturesCurve,
+    *,
+    proxy_horizon_months: int,
+) -> ModelResult:
+    """Section 22.5's REPLACEMENT: the market leg from the futures curve.
+
+    ``value`` is a ``float``: the **near** implied policy rate in percent — the
+    front expiration, which is the market's expectation for the CURRENT period.
+    That is the quantity ``canonical_policy_gap`` compares against the model's
+    median prescription, and it is the whole point of the replacement: the proxy
+    returned a number that was an AVERAGE over two years, so subtracting a spot
+    prescription from it was apples-to-oranges.
+
+    **Why ``value`` is the near rate and not the mean of the path.** The gap
+    asks *"is the model's prescription for now different from what the market
+    prices for now"*. A mean over the whole path answers a different question
+    (roughly "where does policy settle"), and publishing it under this model's
+    name would rebuild the horizon mismatch in the opposite direction. The
+    path's SHAPE is not thrown away — it is carried on the context and on the
+    ``path_slope_bp``-derived interpretation, so a caller can see the market
+    pricing +80bp of hikes while still comparing like with like at the front.
+
+    **The horizon is now stated, not assumed.** The old proxy carried a warning
+    that its number was an average over ``proxy_horizon_months`` while the model
+    leg was spot. This function truncates the path to that SAME window (the
+    caller passes it, and config asserts the two leaves agree) so the two legs
+    are compared over one horizon. The warning becomes a statement of what the
+    path covers rather than an admission of a defect.
+
+    **What it still is NOT.** It is not a probability distribution over policy
+    *decisions*. ZQ gives the market's expected AVERAGE effective rate per
+    contract month; recovering "the probability of a 25bp cut at the September
+    meeting" from that needs the meeting calendar and a step-function
+    assumption this module does not make. Section 22.5's phrase
+    "probability distribution" is therefore met only in the weak sense that the
+    path is a set of priced points rather than one number — and the result says
+    so, loudly, in ``limitations`` and ``decision_prohibition`` rather than
+    implying a distribution it does not have.
+    """
+    settings = get_settings().market_implied_futures
+    confidence = settings.distribution_confidence
+    offset = curve.settlement_offset
+
+    if not curve.has_path:
+        # Refusing is the honest move, and it is reachable: the source's own
+        # corruption can leave fewer expirations than the floor. A one-point
+        # "path" is what the proxy this replaces already was.
+        raise ValueError(
+            f"futures_implied_policy_path needs at least "
+            f"{settings.min_expirations} plausible expirations for a PATH, but "
+            f"the curve for {curve.symbol} carries {len(curve.expirations)} "
+            f"({curve.rows_returned} rows returned, {curve.rows_rejected} "
+            f"rejected, {curve.rows_dropped_past} past-dated). Refusing rather "
+            f"than publishing a point as a path."
+        )
+
+    near = curve.near_rate_pct
+    slope_bp = curve.path_slope_bp
+
+    # Truncate the published path to the comparison horizon. A contract whose
+    # month begins INSIDE the window counts; one beyond it does not. Measured
+    # 2026-10-10 the curve spans 0..16 months, so the default 24-month window
+    # keeps the whole usable path and this filter is inert — it exists so the
+    # horizon is ENFORCED rather than implied by whatever the provider sent.
+    within_horizon = tuple(e for e in curve.expirations if e.months_ahead <= proxy_horizon_months)
+
+    covered_months = within_horizon[-1].months_ahead if within_horizon else 0
+
+    # The shape, in words, from the measured slope — not a hardcoded label.
+    if slope_bp > 25.0:
+        shape = f"pricing HIKES (+{slope_bp:.0f}bp across the curve)"
+    elif slope_bp < -25.0:
+        shape = f"pricing CUTS ({slope_bp:.0f}bp across the curve)"
+    else:
+        shape = f"broadly FLAT ({slope_bp:+.0f}bp across the curve)"
+
+    return ModelResult(
+        model_name="futures_implied_policy_path",
+        country="us",
+        as_of=utc_now(),
+        value=round(near, 3),
+        confidence=confidence,
+        interpretation=(
+            f"Futures-implied policy path: the nearest contract "
+            f"({curve.expirations[0].expiration}) prices {near:.2f}%, and the "
+            f"curve is {shape} out to {curve.expirations[-1].expiration}."
+        ),
+        context=(
+            f"From the 30-Day Fed Funds futures curve ({curve.symbol} via "
+            f"{curve.provider}, {len(curve.expirations)} usable expirations of "
+            f"{curve.rows_returned} returned). Implied rate = {offset:.0f} - price. "
+            f"Path covers {covered_months} months against the "
+            f"{proxy_horizon_months}-month comparison window."
+        ),
+        inputs_used=["curve"],
+        warnings=_futures_curve_warnings(curve, slope_bp),
+        unit="percent",
+        direction=(
+            "the market-implied average policy rate for the CURRENT contract "
+            "month, read from the front of the futures curve"
+        ),
+        assumptions=[
+            "A 30-Day Fed Funds future settles to 100 minus the contract month's "
+            "average effective funds rate, so its price inverts directly into an "
+            "expected average policy rate. That is the contract's definition, not "
+            "a modelling choice — but it makes the output an AVERAGE over the "
+            "month, not a rate for a specific day.",
+            "Each expiration's price is treated as a clean read of that month's "
+            "expectation. In practice a front contract also carries a small "
+            "settlement-timing and risk-premium component that this module does "
+            "NOT remove, because no term-premium decomposition exists at this "
+            "horizon in the tree.",
+            "The market's expectation is informative about policy but is not a "
+            "forecast of it: futures prices embed a risk premium and can be "
+            "dominated by hedging flows in stressed markets.",
+        ],
+        data_provenance=[
+            f"curve — read live from {FUTURES_ROUTE_ENDPOINT!r} via "
+            f"{curve.provider!r} for symbol {curve.symbol!r}, retrieved "
+            f"{curve.source_retrieved_at}",
+            f"settlement_offset — config leaf "
+            f"market_implied_futures.settlement_offset_value ({offset:.1f}), the "
+            f"contract's own settlement identity rather than a fitted constant",
+            f"confidence — config leaf "
+            f"market_implied_futures.distribution_confidence_value ({confidence}), "
+            f"NOT computed by compute_confidence(): the specification fixes it as "
+            f"a property of the METHOD (a traded price beats an adjusted yield), "
+            f"not of a run's inputs",
+        ],
+        observation_dates={e.expiration: e.expiration for e in within_horizon},
+        limitations=[
+            "NOT A PROBABILITY DISTRIBUTION OVER DECISIONS. The curve yields an "
+            "expected AVERAGE rate per contract month; converting that into the "
+            "probability of a specific move at a specific meeting needs the "
+            "meeting calendar and a step-function assumption this module does not "
+            "make. Section 22.5's phrase 'probability distribution' is met only "
+            "in the weak sense that the path is many priced points rather than "
+            "one number.",
+            "It inherits the source's corruption budget: the provider returned "
+            f"{curve.rows_returned} expirations and this module REJECTED "
+            f"{curve.rows_rejected} as implausible. Those rejections are named on "
+            "the curve object, but a caller reading only `value` cannot see them.",
+            "The near rate is an average over the contract MONTH, so it already "
+            "blends any meeting that falls inside that month. It is not a "
+            "point-in-time policy expectation.",
+            "ZQ is a single contract family at one exchange. A dislocation in "
+            "that market — not a change in policy expectations — moves this value.",
+        ],
+        decision_relevance=(
+            "This is the MARKET side of Section 16.2's Q6 gap, replacing the "
+            "term-premium-adjusted-yield proxy. canonical_policy_gap subtracts it "
+            "from the median of the three rules, so it is a direct input to the "
+            "significance test that decides whether the thesis trades at all."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described as a probability distribution over policy "
+            "decisions. It is a path of expected average rates.",
+            "MUST NOT be compared against a value produced by "
+            "`derive_market_implied_policy_path`. That function returns a "
+            "term-premium-adjusted YIELD; this returns a futures-implied RATE. "
+            "They are different objects with different horizons and different "
+            "units of meaning, and the difference is not an error to reconcile.",
+            "MUST NOT be consumed without reading the curve's rejection count. A "
+            "run where the source was badly corrupted yields a path built from "
+            "fewer points than usual, and the value alone does not say so.",
+            "MUST NOT be treated as a forecast of policy. It is what the market "
+            "PRICES, which includes a risk premium and can be moved by flows "
+            "rather than by expectations.",
+        ],
+    )
+
+
+def _futures_curve_warnings(curve: FedFundsFuturesCurve, slope_bp: float) -> list[str]:
+    """The conditional warnings for a futures-implied path.
+
+    Kept beside the model rather than inlined so the conditions are readable as
+    a list of situations, and so each is separately testable.
+    """
+    warnings: list[str] = []
+    if curve.rows_rejected:
+        warnings.append(
+            f"{curve.rows_rejected} of {curve.rows_returned} expirations returned "
+            f"by the provider were REJECTED as implausible (a ~52% implied policy "
+            f"rate is source corruption, not a market view). The path below is "
+            f"built from the {len(curve.expirations)} that survived; the rejected "
+            f"rows are named on the curve object."
+        )
+    if abs(slope_bp) > 25.0:
+        direction_word = "hikes" if slope_bp > 0 else "cuts"
+        warnings.append(
+            f"The curve is sloped, pricing {abs(slope_bp):.0f}bp of {direction_word}. "
+            f"The comparison leg (the model's median prescription) is a SPOT rate "
+            f"while each point here is a month AVERAGE, so the gap's magnitude "
+            f"understates the divergence at any single horizon and its sign is "
+            f"only exact when the path is flat."
+        )
+    return warnings
 
 
 # ---------------------------------------------------------------------------

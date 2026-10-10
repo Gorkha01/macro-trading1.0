@@ -71,6 +71,13 @@ _NON_NUMERIC_ENVELOPES = frozenset(
         "api.cors_origins_value",
         "api.short_yield_tenor_value",
         "api.default_thesis_type_value",
+        # Section 22.5's futures-implied policy path. These two are the
+        # contract's IDENTITY (the CME product code and the provider that
+        # serves it), so they are strings by nature — the same shape as
+        # `api.short_yield_tenor_value` above, not a numeric leaf that
+        # drifted to a string.
+        "market_implied_futures.symbol_value",
+        "market_implied_futures.provider_value",
     }
 )
 

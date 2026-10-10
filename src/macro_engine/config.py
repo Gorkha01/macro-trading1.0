@@ -7075,6 +7075,115 @@ class VolatilitySettings(BaseModel):
         return int(raw)
 
 
+class MarketImpliedFuturesSettings(BaseModel):
+    """Section 22.5's Fed-funds-futures-implied policy path (the replacement).
+
+    Section 22.5 obligates Phase 5+ to replace the term-premium-adjusted-yield
+    PROXY with *"a real Fed-funds-futures-implied probability distribution"*.
+    Every constant that replacement needs lives here, so the arithmetic is
+    reproducible from config alone (LAW 1) — a reader can see the contract's
+    settlement identity, the plausibility bounds that reject corrupt source
+    rows, and the horizon, without reading the code that consumed them.
+
+    **The two leaves whose relationship is a test.** ``settlement_offset`` is
+    the contract's defining identity (``implied_rate = offset - price``) and
+    ``max_path_horizon_months`` must AGREE with
+    ``policy.market_implied.proxy_horizon_months``, because removing the
+    horizon mismatch is the entire purpose of this replacement. The validator
+    below enforces the second rather than leaving it to a comment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Field names carry the ``_value`` suffix so they match the YAML keys
+    #: exactly — ``extra="forbid"`` means a mismatch is a LOAD error, which is
+    #: the right failure for a leaf whose absence would otherwise be a default.
+    symbol_value: CalibratedValue
+    provider_value: CalibratedValue
+    settlement_offset_value: CalibratedValue
+    plausible_rate_min_value: CalibratedValue
+    plausible_rate_max_value: CalibratedValue
+    min_expirations_value: CalibratedValue
+    distribution_confidence_value: CalibratedValue
+    max_path_horizon_months_value: CalibratedValue
+    staleness_days_value: CalibratedValue
+
+    @property
+    def symbol(self) -> str:
+        return str(self.symbol_value.value)
+
+    @property
+    def provider(self) -> str:
+        return str(self.provider_value.value)
+
+    @property
+    def settlement_offset(self) -> float:
+        """The constant in ``implied_rate = offset - price``; 100.0 for ZQ."""
+        return float(self.settlement_offset_value.value)
+
+    @property
+    def plausible_rate_min(self) -> float:
+        return float(self.plausible_rate_min_value.value)
+
+    @property
+    def plausible_rate_max(self) -> float:
+        return float(self.plausible_rate_max_value.value)
+
+    @property
+    def min_expirations(self) -> int:
+        raw = float(self.min_expirations_value.value)
+        if not raw.is_integer() or raw < 2:
+            raise ValueError(
+                f"market_implied_futures.min_expirations_value must be a whole number "
+                f">= 2; got {raw!r}. A single expiry is a point, not a path, and the "
+                f"object this replaces was already a single point."
+            )
+        return int(raw)
+
+    @property
+    def distribution_confidence(self) -> float:
+        return float(self.distribution_confidence_value.value)
+
+    @property
+    def max_path_horizon_months(self) -> int:
+        raw = float(self.max_path_horizon_months_value.value)
+        if not raw.is_integer() or raw < 1:
+            raise ValueError(
+                f"market_implied_futures.max_path_horizon_months_value must be a whole "
+                f"number >= 1; got {raw!r}."
+            )
+        return int(raw)
+
+    @property
+    def staleness_days(self) -> int:
+        raw = float(self.staleness_days_value.value)
+        if not raw.is_integer() or raw < 1:
+            raise ValueError(
+                f"market_implied_futures.staleness_days_value must be a whole number "
+                f">= 1; got {raw!r}."
+            )
+        return int(raw)
+
+    @model_validator(mode="after")
+    def _plausibility_bounds_must_not_be_inverted(self) -> MarketImpliedFuturesSettings:
+        """An inverted band would reject EVERY row — the D-118 inverted-branch class.
+
+        The two bounds exist to reject corrupt source rows (measured: 6 of 16
+        ZQ expirations imply a ~52% policy rate). If ``min > max`` the filter
+        rejects everything, which reads as strict validation while validating
+        nothing — and the loader's own minimum-expiration floor would then
+        refuse every run for a reason that looks like a data outage.
+        """
+        low, high = self.plausible_rate_min, self.plausible_rate_max
+        if low >= high:
+            raise ValueError(
+                f"market_implied_futures plausibility band is inverted or empty: "
+                f"min={low!r} >= max={high!r}. This rejects EVERY expiration and "
+                f"presents as a data outage rather than the config error it is."
+            )
+        return self
+
+
 class ScenarioEngineSettings(BaseModel):
     """The NAMED, ORDERED factor set the crisis-shock engine works in.
 
@@ -7236,6 +7345,7 @@ class Settings(BaseModel):
     risk: RiskSettings
     volatility: VolatilitySettings
     scenario_engine: ScenarioEngineSettings
+    market_implied_futures: MarketImpliedFuturesSettings
     kelly: KellySettings
     instrument_selection: InstrumentSelectionSettings
     curve_trade: CurveTradeSettings
@@ -7269,6 +7379,35 @@ class Settings(BaseModel):
     equity_macro: EquityMacroSettings
     api: ApiSettings
     snapshot_fields: dict[str, list[str]]
+
+    @model_validator(mode="after")
+    def _market_implied_path_horizon_must_match_the_proxy(self) -> Settings:
+        """The futures path and the proxy it replaces must share ONE horizon.
+
+        Section 22.5's replacement exists to remove the HORIZON MISMATCH — the
+        model leg prescribes a rate for the CURRENT period, while the proxy was
+        an average over ``policy.market_implied.proxy_horizon_months``.
+        Truncating the futures path to a different window would rebuild the
+        defect inside the object meant to fix it.
+
+        The check lives HERE, not on ``MarketImpliedFuturesSettings``, because
+        it spans two sibling blocks: a per-block validator cannot see
+        ``policy``. Checking it at assembly time means an inconsistent pair is
+        refused when the config LOADS, rather than producing a subtly wrong gap
+        at request time.
+        """
+        proxy_months = int(self.policy.market_implied.proxy_horizon_months_value)
+        path_months = self.market_implied_futures.max_path_horizon_months
+        if path_months != proxy_months:
+            raise ValueError(
+                f"market_implied_futures.max_path_horizon_months ({path_months}) must "
+                f"equal policy.market_implied.proxy_horizon_months ({proxy_months}). "
+                f"These two describe ONE horizon — the window over which the "
+                f"market-implied path and the model's prescription are compared. "
+                f"Letting them differ reintroduces the horizon mismatch that "
+                f"Section 22.5's replacement exists to fix."
+            )
+        return self
 
     def scalar(self, path: str) -> float:
         """Fetch a ``a.b.c`` path whose leaf is a ``{value: <number>}`` envelope.

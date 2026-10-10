@@ -5331,6 +5331,118 @@ scenario_engine:
     equity: "equity"
 
 # ---------------------------------------------------------------------------
+# Section 22.5 — the market-implied policy path built from FED FUNDS FUTURES.
+#
+# Section 22.5 obligates Phase 5+ to REPLACE the term-premium-adjusted-yield
+# PROXY with "a real Fed-funds-futures-implied probability distribution". This
+# block carries every constant that replacement needs, so nothing about it is a
+# literal in code (LAW 1).
+#
+# PROBED 2026-10-10 — the source EXISTS on this installation:
+#   obb.derivatives.futures.curve(symbol="ZQ", provider="yfinance")
+# returns the 30-Day Fed Funds futures term structure (16 expirations). The
+# earlier "needs data" reading was wrong; the route inventory had been grepped
+# for forward|swap|basis and never for future.
+# ---------------------------------------------------------------------------
+market_implied_futures:
+  # The CME product code. ZQ is the 30-Day Federal Funds futures contract —
+  # the ONLY futures contract that settles directly to the policy rate, which
+  # is why it is the one Section 22.5 names. Probed: on `derivatives.futures.
+  # curve` the bare code `ZQ` resolves; `ZQ=F` 404s on this route.
+  symbol_value:
+    value: "ZQ"
+    calibration_status: institutional_fact
+    note: >
+      The 30-Day Federal Funds futures root symbol. `ZQ=F` was measured to 404
+      on the CURVE route while resolving on the HISTORICAL route, so the bare
+      code is what the curve loader must send. A leaf, not a literal, so a
+      provider change is a config edit.
+  provider_value:
+    value: "yfinance"
+    calibration_status: institutional_fact
+    note: >
+      The only provider this installation's `derivatives.futures.curve` route
+      serves. Measured 2026-10-10.
+  settlement_offset_value:
+    value: 100.0
+    calibration_status: institutional_fact
+    note: >
+      THE CONTRACT'S DEFINING IDENTITY. A 30-Day Fed Funds future settles to
+      `100 - <average effective federal funds rate over the contract month>`,
+      so the market-implied average rate for that month is `100 - price`.
+      Verified 2026-10-10 three ways: the front contract (2026-10) implied
+      **3.88%**, which EQUALS the measured `DFF` and `EFFR` (both 3.880) and
+      sits INSIDE the 3.75-4.00% target range (`DFEDTARL`/`DFEDTARU`). A wrong
+      offset here would shift every point on the path by the same amount while
+      leaving the SHAPE intact -- a plausible-looking wrong number end to end.
+      Hence a leaf with a mover proof.
+  plausible_rate_min_value:
+    value: -1.0
+    calibration_status: conventional
+    note: >
+      Lower bound, in PERCENT, on an implied policy rate. The effective funds
+      rate has never been materially below zero on this series (the Fed's
+      administered floor is 0-0.25%), and `-1.0` admits the ZIRP era with
+      room while still rejecting a corrupt row. Used with the maximum below to
+      REJECT a source row, never to clamp it: clamping would publish a
+      fabricated number in the range while the source said something else.
+  plausible_rate_max_value:
+    value: 25.0
+    calibration_status: conventional
+    note: >
+      Upper bound, in PERCENT. The all-time high effective funds rate is
+      ~20% (1981), so 25 admits the historical extreme with headroom. THIS
+      BOUND IS LOAD-BEARING: measured 2026-10-10, SIX of the sixteen expirations
+      returned by the curve route carry a price near 47-48 instead of 95-96,
+      implying a ~52% policy rate. That is impossible against a 4% target range
+      and is source corruption, not a market view. It is DETERMINISTIC -- the
+      same six rows on three separate calls (min price 47.64, max 96.12 every
+      time) -- so it will not fix itself. Without this bound the loader would
+      publish a 52% market-implied policy path.
+  min_expirations_value:
+    value: 3
+    calibration_status: conventional
+    note: >
+      Minimum number of PLAUSIBLE expirations before a path is published. The
+      measured curve offers 16 rows of which 10 are plausible; three is the
+      point below which a "path" cannot be distinguished from a single point
+      plus noise, which is what the proxy this replaces already was. Below it
+      the loader REFUSES rather than publishing a two-point line.
+  distribution_confidence_value:
+    value: 0.7
+    calibration_status: uncalibrated_illustrative
+    note: >
+      Confidence for the futures-implied path. DELIBERATELY HIGHER than the
+      proxy's `policy.market_implied.term_premium_available_confidence` (0.4)
+      because the object is genuinely better: a futures price is a traded
+      market observation rather than a model-adjusted yield. It is NOT 1.0
+      because the path is still not a full probability distribution over
+      policy decisions -- ZQ gives the expected AVERAGE rate per month, and
+      recovering a probability of a specific decision needs an assumption about
+      the meeting calendar that this module does not yet make (recorded in the
+      model's own limitations).
+  max_path_horizon_months_value:
+    value: 24
+    calibration_status: institutional_convention
+    note: >
+      How far out the published path is truncated, in months. MATCHED
+      DELIBERATELY to `policy.market_implied.proxy_horizon_months` (24): the
+      whole point of Section 22.5's replacement is to remove the HORIZON
+      MISMATCH -- the model leg is a SPOT prescription while the old proxy was
+      an average over 24 months. Truncating the futures path to the same window
+      lets the gap be computed over ONE horizon instead of two. The mover test
+      asserts the two leaves agree, so changing one alone is an error rather
+      than a silent re-introduction of the mismatch.
+  staleness_days_value:
+    value: 5
+    calibration_status: conventional
+    note: >
+      Maximum age, in calendar days, of the newest expiration whose price is
+      used for the near leg. Beyond this the quote is stale and the path is
+      reported as degraded rather than silently published. Five days covers a
+      weekend plus a holiday; a longer gap means the feed, not the calendar.
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No
