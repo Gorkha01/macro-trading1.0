@@ -309,6 +309,141 @@ def test_curve_legs_on_a_non_curve_thesis_are_reported_not_dropped() -> None:
     assert result.thesis_type.value == get_settings().api.default_thesis_type
 
 
+# ---------------------------------------------------------------------------
+# Section 22.3 — the euro-area derivation's UNITS (two real defects repaired)
+#
+# Both defects returned a plausible-looking number of the WRONG quantity, which
+# is why neither was caught by a "does it run" probe. These tests pin the units,
+# not merely the presence of a value.
+# ---------------------------------------------------------------------------
+def _eu_snapshot() -> MacroDataSnapshot:
+    """A euro-area snapshot carrying every series the eu derivation reads.
+
+    The HICP series is a monthly INDEX (values near 103), because that is what
+    the euro area publishes and what the real snapshot carries — the whole point
+    of the two unit tests below is that a series of INDEX levels must NOT have its
+    raw one-step difference fed to a rule expecting a rate change.
+
+    The GDP series is at REAL national-accounts magnitude — MILLIONS of chained
+    euros, ~3,000,000 — because that magnitude is what makes the two unit defects
+    distinguishable. A synthetic series near 100 would make the GDP-level change
+    and the gap change both small, so the level-defect would pass the bound
+    below; the live defect only blew up because real GDP levels are of order
+    10^6-10^7 and their one-step difference is therefore of order 10^4. The
+    fixture reproduces the CONDITIONS, not just the shape.
+
+    The qoq growth VARIES, so the estimated output gap and its change are
+    non-trivial (a constant-growth series would make the gap change zero).
+    """
+    return MacroDataSnapshot(
+        country="eu",
+        as_of=AS_OF,
+        data_quality_flags=[],
+        eu_hicp_index=_monthly(
+            [
+                100.0,
+                100.2,
+                100.4,
+                100.6,
+                100.9,
+                101.2,
+                101.5,
+                101.8,
+                102.1,
+                102.4,
+                102.8,
+                103.1,
+                103.0,
+                103.22,
+                103.66,
+            ],
+            series="eu_hicp_index",
+        ),
+        # Real national-accounts magnitude: a one-step LEVEL change is ~10^4,
+        # whereas the GAP change (a percentage-point quantity) is of order 0.1-1.
+        eu_gdp_real_level=_series(
+            [2_950_000.0, 2_975_000.0, 2_998_000.0, 3_041_000.0, 3_070_000.0, 3_130_000.0],
+            start="2025-09-01",
+            step_days=91,
+            series="eu_gdp_real_level",
+        ),
+        eu_ecb_main_refi_rate=_series(
+            [3.15, 2.90, 2.65], start="2025-09-01", step_days=91, series="eu_ecb_main_refi_rate"
+        ),
+        eu_unemployment_rate=_monthly(
+            [6.4, 6.3, 6.2, 6.2, 6.1, 6.1], series="eu_unemployment_rate"
+        ),
+        eu_short_rate_3m=_series(
+            [2.10, 2.05, 2.0277], start="2025-09-01", step_days=91, series="eu_short_rate_3m"
+        ),
+        eu_long_rate_10y=_series(
+            [3.60, 3.70, 3.748], start="2025-09-01", step_days=91, series="eu_long_rate_10y"
+        ),
+    )
+
+
+def test_the_eu_output_gap_change_is_a_gap_change_not_a_gdp_level_change() -> None:
+    """(§22.3, unit defect) ``output_gap_change`` is in PERCENTAGE POINTS of the gap.
+
+    This was a real defect: the eu derivation fed ``output_gap_change`` the raw
+    one-step difference of ``eu_gdp_real_level`` — a national-accounts index whose
+    step is of order 10^4 in its own units — which the error-correction rules
+    multiplied by their 0.266 gap coefficient, producing a prescription near
+    4885% and a dispersion near 4882pp. The wrong number is PLAUSIBLE-LOOKING in
+    the sense that nothing raises; a reader cannot distinguish it from a genuine
+    regime call.
+
+    The gap is a percentage-point quantity (qoq growth minus its window mean), so
+    its change is bounded by the series' own growth variability — a few pp at
+    most for this fixture — NOT by the GDP level's magnitude. The bound below is
+    the test: a defect of the original kind gives a value in the thousands.
+    """
+    inputs = orch.snapshot_to_thesis_inputs(_eu_snapshot())
+    assert inputs.eu_inputs is not None
+    change = inputs.eu_inputs.error_correction.output_gap_change
+    assert abs(change) < 100.0, (
+        f"output_gap_change is {change}; a gap change in percentage points cannot "
+        f"be of this magnitude. A value in the thousands means the change was "
+        f"taken on the raw GDP LEVEL rather than on the gap."
+    )
+    # And it is genuinely the gap's change, i.e. small and of the growth series'
+    # own order — not zero (the fixture's growth varies on purpose).
+    assert change != 0.0
+
+
+def test_the_eu_pi_change_is_a_rate_change_not_a_price_index_change() -> None:
+    """(§22.3, unit defect) ``pi_change`` is the change in the YoY RATE, in pp.
+
+    The second unit defect, same class as the first: ``pi_change`` was computed
+    as the raw one-step difference of the HICP INDEX (a monthly index near 103),
+    giving an index-point change of order +0.4 — a quantity in neither the rule's
+    units nor a rate's. The rule's input is documented as ``pi_t - pi_{t-1}``, the
+    change between two YEAR-OVER-YEAR RATES.
+
+    Both are of order 0.1-0.5, so the value alone cannot distinguish them; the
+    test therefore pins the DERIVATION by checking the change against the two
+    YoY rates the canonical ``_yoy_percent`` produces from the same series — a
+    price-index change would not equal their difference.
+    """
+    from macro_engine.api_layer.orchestration import _yoy_percent
+
+    snapshot = _eu_snapshot()
+    inputs = orch.snapshot_to_thesis_inputs(snapshot)
+    assert inputs.eu_inputs is not None
+    change = inputs.eu_inputs.error_correction.pi_change
+
+    points = snapshot.eu_hicp_index
+    current, _ = _yoy_percent(points, field="eu_hicp_index")
+    prior, _ = _yoy_percent(points[:-1], field="eu_hicp_index")
+    assert change == pytest.approx(current - prior)
+
+    # It must NOT equal the raw index-level change, which is the defect.
+    index_change = float(points[-1].value) - float(points[-2].value)
+    assert change != pytest.approx(index_change), (
+        "pi_change equals the raw HICP index-level change — the price-index defect is back"
+    )
+
+
 def _full_snapshot() -> MacroDataSnapshot:
     """A snapshot with every required series populated, for the entry-point tests."""
     return MacroDataSnapshot(

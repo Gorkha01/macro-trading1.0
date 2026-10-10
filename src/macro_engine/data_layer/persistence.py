@@ -104,6 +104,20 @@ SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "gb_bank_rate",
     "gb_gilt_10y_yield",
     "gb_short_rate_3m",
+    # Section 22.3 — the euro-area block. Added 2026-10-10 with the second
+    # multi-country increment, and added HERE in the same change rather than
+    # after the gate failed: the failure this tuple causes is silent — these
+    # fields would be declared, fetched, populated, and ERASED from every
+    # persisted snapshot (the P-1 defect). The registry-key/schema-attribute
+    # naming is what makes the two lists easy to get out of step.
+    "eu_hicp_index",
+    "eu_ecb_deposit_rate",
+    "eu_ecb_main_refi_rate",
+    "eu_estr",
+    "eu_unemployment_rate",
+    "eu_gdp_real_level",
+    "eu_short_rate_3m",
+    "eu_long_rate_10y",
 )
 
 # Curve-shaped series: stored with field == curve name and the tenor in series_id.

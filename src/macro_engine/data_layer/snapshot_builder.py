@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pandas as pd
@@ -362,10 +362,25 @@ def fetch_field(
             f"registry entry '{field_name}' declares no symbol but is being fetched as a scalar"
         )
 
+    # The route's own extra query parameters, merged UNDER the two the fetcher
+    # owns. `extra_params` exists because a route may need a parameter the
+    # fetcher cannot know about — measured 2026-10-10: `economy.indicators`
+    # (provider `econdb`) requires `country=EU` for the euro-area unemployment
+    # series, and the euro-area leg is unreachable on any symbol-only route.
+    # The ordering is deliberate: the fetcher's own keys go LAST so a malformed
+    # entry cannot shadow `symbol`/`start_date` even though the config validator
+    # already rejects that combination. Belt and braces is cheap here and the
+    # failure it prevents (reading a different series than the entry verifies)
+    # is silent.
+    params: dict[str, Any] = {
+        **(entry.extra_params or {}),
+        "symbol": entry.symbol,
+        "start_date": start,
+    }
     frame = client.fetch_series(
         provider=entry.provider,
         endpoint=entry.endpoint,
-        params={"symbol": entry.symbol, "start_date": start},
+        params=params,
         series_label=field_name,
     )
     return _points_from_frame(

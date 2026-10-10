@@ -95,11 +95,28 @@ country:
   # instrument set is the gilt / short-sterling / SONIA block in
   # `thesis_layer.schemas.ProductionUniverse`.
   #
+  # "eu" (euro area / ECB) was added 2026-10-10 after all three were built and
+  # tested. It is NOT a relabelled Fed OR a relabelled BoE: the reaction
+  # function is the euro area's own estimated rule set from ECB Working Paper
+  # No 258 (the long rate as a long-run regressor; an error-correction form the
+  # Fed and BoE rules do not have; the euro area's own estimated coefficients
+  # 2.733 / 1.443, not Taylor's 1.5 / 0.5), the series are the eight prefixed
+  # `eu_*` entries in series_registry.yaml (HICP, the two-rate ECB policy set,
+  # ESTR, unemployment, real GDP, the 3m and 10y rates), and the instrument set
+  # is the Bund / Eurex / ESTR / sovereign-spread block in
+  # `thesis_layer.schemas.ProductionUniverse`.
+  #
   # de/jp are NOT listed. A country that is not built must not be enabled —
   # the honest representation of "planned" is a roadmap entry, not a flag that
   # silently produces a US-shaped thesis with a foreign label.
-  enabled: ["us", "gb"]
-  implemented: ["us", "gb"]
+  #
+  # NOTE the euro area is enabled as the AGGREGATE ("eu"), not per member state.
+  # A member-state reaction function is not calibrated here (the operator's
+  # choice, 2026-10-10): the ECB sets ONE policy rate for the currency union, so
+  # the honest unit for a euro-area reaction function is the aggregate, not a
+  # member state's.
+  enabled: ["us", "gb", "eu"]
+  implemented: ["us", "gb", "eu"]
 
 policy:
   r_star:
@@ -392,6 +409,253 @@ policy:
           horizons are DIFFERENT (3 vs 5) and are deliberately two leaves, so
           a change to one cannot silently move the other.
         source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+
+  # ---------------------------------------------------------------------------
+  # Section 22.3 — the ECB's reaction function (country "eu").
+  #
+  # NOT a relabelled Fed Taylor rule. Two structural features make the euro
+  # area's OWN reaction function genuinely different, and both are enforced in
+  # the code, not merely asserted here:
+  #
+  #   1. THE LONG RATE ENTERS THE RULE. The ECB's own estimated euro-area
+  #      reaction function carries the 10-year rate as a regressor, because the
+  #      long rate is a proxy for the public's perception of the LONG-RUN
+  #      INFLATION OBJECTIVE (pi_inf). The estimation finds the long rate
+  #      SIGNIFICANT and argues the short rate responds to it. None of the Fed's
+  #      three rules reads the long bond as a stance proxy; a rule that dropped
+  #      it would be a Fed rule with euro-area series substituted, which is the
+  #      exact §22.3 fake.
+  #   2. THE FORM IS AN ERROR-CORRECTION. The ECB estimation shows the LEVEL
+  #      specification is unstable (unit roots in the euro-area short rate,
+  #      inflation and the output gap) and estimates an I(1) error-correction
+  #      form instead: the CHANGE in the policy rate responds to the deviation
+  #      of the level from its long-run equilibrium. That is a different
+  #      functional form from the Fed's level rules.
+  #
+  # The coefficients are the ECB's own, from ECB Working Paper No 258
+  # (September 2003, "Interest rate reaction functions and the Taylor rule in
+  # the euro area"), read from the paper's Tables 2 and 4 directly (pypdf), not
+  # restated from memory. They live here rather than as literals in an
+  # expression (LAW 1) so the calibration a result was produced under is
+  # inspectable after the fact.
+  #
+  # The euro-area aggregate only: no member-state reaction function is
+  # calibrated here (the operator's choice, 2026-10-10). This is the 20-country
+  # aggregate the ECB actually sets policy for.
+  # ---------------------------------------------------------------------------
+  eu:
+    # The ECB's HICP target. 2%, SYMMETRIC — the ECB's 2021 monetary policy
+    # strategy statement says so in terms ("negative and positive deviations
+    # from this target as equally undesirable").
+    pi_target:
+      value: 2.0
+      calibration_status: institutional_fact
+      note: >
+        The euro area's 2% HICP inflation target. The ECB's 2021 strategy
+        review states the target as symmetric: the Governing Council considers
+        "negative and positive deviations from this target as equally
+        undesirable". Distinct from the Fed's 2% PCE objective and the BoE's 2%
+        CPI: the TARGET MEASURE is HICP, which is why the eu rule reads the
+        euro-area HICP leg.
+      source_reference: >-
+        ECB, "The ECB's monetary policy strategy" (July 2021) — HICP, 2%,
+        symmetric, medium-term oriented.
+
+    # The ECB's nominal neutral rate convention. The ECB does not publish a
+    # single illustrative i* the way the BoE does; ECB WP 258 estimates a
+    # real-rate intercept whose 95% interval is wide ([-0.85, 5.48] in the I(0)
+    # form). The convention used here is the target plus an illustrative real
+    # rate, kept as its own leaf so the mover test can assert the decomposition
+    # and so the number is auditable.
+    i_star:
+      value: 2.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The illustrative nominal neutral rate: the 2% HICP target plus a 0.0%
+        illustrative real r* by DEFAULT. r* is UNOBSERVABLE (Section 21.4 item
+        13), and the ECB's own estimate of the euro-area real-rate intercept is
+        imprecise — WP 258 reports a 95% interval for rho spanning roughly
+        [-0.85, 5.48]. A zero real-rate default is therefore the honest choice:
+        it is inside the estimate's interval, it does not import the Fed's 0.5
+        or the BoE's 1.0, and the uncertainty is carried by the rule's
+        depends_on_unobservable flag rather than hidden in the point value. The
+        mover test asserts i_star == target + real_rate_assumption.
+      source_reference: >-
+        ECB Working Paper No 258 (Sept 2003), Table 2 — the real-rate intercept
+        is insignificantly different from zero with a wide interval.
+
+    # The real-rate component of i_star, kept as its own leaf so the mover test
+    # can assert i_star is DERIVED from the target rather than a second
+    # independent constant (LAW 2). 0.0 is the euro-area default, NOT the Fed's
+    # 0.5 or the BoE's 1.0.
+    real_rate_assumption:
+      value: 0.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The illustrative long-run real rate added to the 2% HICP target to
+        obtain i*=2%. Zero by default: the ECB's own euro-area estimate of the
+        real-rate intercept is insignificantly different from zero (WP 258,
+        Table 2), and importing another central bank's positive real-rate
+        assumption would be the relabel §22.3 rejects. A different value here
+        moves i_star and therefore the level rule; the uncertainty is
+        deliberate and disclosed.
+      source_reference: "ECB Working Paper No 258 (Sept 2003), Table 2."
+
+    # The published smoothing/interest-rate-persistence coefficient. The ECB
+    # estimation fits kr = 0.884 on the lagged short rate in the traditional
+    # I(0) form (WP 258, Table 2) — the ECB moves toward the prescription, it
+    # does not jump to it, the same behavioural fact the BoE's 0.85 encodes,
+    # but a DIFFERENT number from the euro area's own estimation.
+    smoothing:
+      value: 0.884
+      calibration_status: institutional_fact
+      note: >
+        The estimated persistence coefficient on the lagged euro-area short
+        rate (WP 258, Table 2, kr = 0.884). Read into the LEVEL rule so the
+        prescription is a move toward the raw rule value, not a jump to it.
+        Must be in [0, 1); a value of 1 would make the rule inert. Deliberately
+        a euro-area estimate, not the BoE's 0.85 — the two persistence
+        estimates are close but are separate facts about separate economies.
+      source_reference: "ECB Working Paper No 258 (Sept 2003), Table 2."
+
+    # Coefficients on the traditional I(0) level rule. This is the ECB's own
+    # estimated euro-area Taylor-type LEVEL rule, kept as the level-based leg
+    # of the trio so the ECB arm has the same LEVEL/LEVEL/CHANGE structure the
+    # Fed and BoE arms have. Coefficients are the euro area's, not Taylor's.
+    contemporaneous:
+      inflation_coefficient:
+        value: 2.733
+        calibration_status: institutional_fact
+        note: >
+          Estimated euro-area response to current HICP inflation (WP 258,
+          Table 2, k_pi = 2.733, significant at 1%). Above unity: the Taylor
+          principle holds. Deliberately NOT Taylor (1993)'s 1.5 — the euro
+          area's own estimated response is nearly twice Taylor's proposal, and
+          the paper rejects k_pi = 1.5 jointly with k_y = 0.5 (p = 0.04).
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 2."
+      output_gap_coefficient:
+        value: 1.443
+        calibration_status: institutional_fact
+        note: >
+          Estimated euro-area response to the output gap (WP 258, Table 2,
+          k_y = 1.443, significant at 10%). ~3x Taylor's 0.5. The paper notes
+          the euro area's estimated responses are larger than Taylor's
+          original suggestions, which is why importing 1.5/0.5 here would be a
+          substitution the primary source itself rejects.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 2."
+
+    # Coefficients on the cointegration (I(1)) error-correction rule — the
+    # structural leg. The change in the policy rate responds to the deviation
+    # of the LEVEL from its long-run equilibrium, where that equilibrium links
+    # the short rate to the LONG rate, inflation and the output gap. This is
+    # the form the paper argues captures euro-area interest-rate setting
+    # better than the traditional level rule (which it finds unstable).
+    error_correction:
+      # b_l — the long-run coefficient on the LONG rate, normalised on r = 1.
+      long_rate_coefficient:
+        value: 0.827
+        calibration_status: institutional_fact
+        note: >
+          The estimated long-run coefficient on the 10-year euro-area rate in
+          the cointegrating vector r = b_l·l + b_pi·pi + b_y·y (WP 258, Table
+          4, equation (4), b_l = 0.827, significant at 1%). THE STRUCTURAL
+          MARKER: no Fed rule carries the long rate. The paper interprets l as
+          a proxy for the public's long-run inflation perception, which is what
+          makes the euro-area rule forward-looking in a way the Fed's level
+          rules are not.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
+      # b_pi — the cointegrating coefficient on inflation (UNRESTRICTED form).
+      inflation_coefficient:
+        value: 0.900
+        calibration_status: institutional_fact
+        note: >
+          The estimated long-run coefficient on HICP inflation in the
+          cointegrating vector (WP 258, Table 4, equation (4), b_pi = 0.900,
+          significant at 5%). The paper separately tests imposing b_pi = 1.0
+          (the restricted form) and does not reject it (p = 0.78); the
+          UNRESTRICTED value is used here because it is the estimated one.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
+      # b_y — the cointegrating coefficient on the output gap.
+      output_gap_coefficient:
+        value: 0.358
+        calibration_status: institutional_fact
+        note: >
+          The estimated long-run coefficient on the output gap in the
+          cointegrating vector (WP 258, Table 4, equation (4), b_y = 0.358,
+          significant at 10%). Close to Taylor's 0.5, unlike the level rule's
+          1.443 — the paper notes the cointegrating coefficients resemble
+          Taylor's original suggestions while the level-rule estimates do not.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
+      # c_e — the error-correction speed of adjustment.
+      adjustment_coefficient:
+        value: -0.189
+        calibration_status: institutional_fact
+        note: >
+          The error-correction feedback coefficient (WP 258, Table 6, equation
+          (8), c_e = -0.189, significant at 1%). NEGATIVE by construction: a
+          positive deviation of the level from its long-run equilibrium must
+          produce an OFFsetting negative move in the change. ~19% of the
+          disequilibrium is corrected per quarter. Must be < 0; a non-negative
+          value would make the rule diverge from equilibrium instead of
+          converging to it, and is rejected at the model boundary.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 6."
+      # c_pi0 — the short-run response to the CHANGE in inflation.
+      inflation_change_coefficient:
+        value: 0.628
+        calibration_status: institutional_fact
+        note: >
+          The short-run coefficient on the current change in HICP inflation
+          (WP 258, Table 6, equation (8), c_pi0 = 0.628, significant at 1%).
+          This is the SHORT-RUN response, distinct from the long-run
+          cointegrating coefficient: the rule reacts to both the change in
+          inflation this quarter and the level disequilibrium.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 6."
+      # c_y0 — the short-run response to the change in the output gap.
+      output_gap_change_coefficient:
+        value: 0.266
+        calibration_status: institutional_fact
+        note: >
+          The short-run coefficient on the current change in the output gap
+          (WP 258, Table 6, equation (8), c_y0 = 0.266, significant at 1%).
+          Again the SHORT-RUN response, alongside the long-run cointegrating
+          coefficient on the gap's level.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 6."
+      # c_r — the coefficient on the lagged change in the policy rate.
+      rate_change_persistence_coefficient:
+        value: 0.370
+        calibration_status: institutional_fact
+        note: >
+          The coefficient on the lagged change in the policy rate (WP 258,
+          Table 6, equation (8), c_r = 0.370, significant at 1%): a change
+          this quarter tends to be followed by a same-signed change next
+          quarter. This is persistence in the CHANGE, distinct from the level
+          persistence (smoothing) of the level rule.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 6."
+      # The RESTRICTED cointegrating vector's re-estimated coefficients
+      # (WP 258, eq. (5), Table 4 right column). These are NOT the unrestricted
+      # values above: imposing b_pi = 1 re-estimates the long-rate and
+      # output-gap coefficients. Keeping them as SEPARATE leaves is what stops
+      # the restricted rule silently reading the unrestricted numbers.
+      restricted_long_rate_coefficient:
+        value: 0.771
+        calibration_status: institutional_fact
+        note: >
+          The long-run coefficient on the 10-year rate in the RESTRICTED
+          cointegrating vector rho = a + b_l·l + b_y·y (WP 258, Table 4,
+          equation (5), eb_l = 0.771, significant at 1%). Smaller than the
+          unrestricted 0.827 because the restriction re-allocates explanatory
+          weight; using the unrestricted value here would be a different vector
+          than the one the paper reports for the restricted form.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
+      restricted_output_gap_coefficient:
+        value: 0.437
+        calibration_status: institutional_fact
+        note: >
+          The long-run coefficient on the output gap in the RESTRICTED
+          cointegrating vector (WP 258, Table 4, equation (5), eb_y = 0.437,
+          significant at 5%). Larger than the unrestricted 0.358, again because
+          the restriction re-allocates weight away from inflation.
+        source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
 
 phillips:
   nairu:
@@ -2249,7 +2513,10 @@ instrument_selection:
       ThesisType -> the country's OWN instrument template. Every template here
       names an instrument that exists in that country's ProductionUniverse plan
       and NOT in the US one, so a country cannot be served the base table's
-      instruments silently. gb is the first entry (the BoE's UK market).
+      instruments silently. gb was the first entry (the BoE's UK market); eu (the
+      ECB's euro-area market) is the second, and its four templates each name a
+      member of ProductionUniverse(country="eu") and NOT a member of the us or
+      gb universe. us itself needs no entry: it IS the base table.
     routes:
       gb:
         policy_path_gap:
@@ -2285,6 +2552,66 @@ instrument_selection:
             The UK broad-index instrument, named VERBATIM as a member of
             ProductionUniverse(country="gb").equity so membership is literal, not
             keyword-only.
+
+      eu:
+        policy_path_gap:
+          instrument_template: "ESTR futures"
+          universe_category: rates
+          rationale: >
+            The euro-area policy-path instrument. ESTR (the euro short-term rate)
+            is the ECB's policy-expectations point -- the direct analogue of the
+            US SOFR/fed-funds futures and the UK short-sterling contract this
+            route names in the other two tables. NOT a Bund: a Bund carries
+            duration and term premium, whereas the policy-path view is about the
+            near path, so naming a Bund here would import a risk the view does
+            not. ESTR is admitted ONLY by the eu rates vocabulary, so this
+            template cannot be selected into a us or gb thesis (measured: the gb
+            and us universes both classify "ESTR futures" as out of universe).
+        curve_shape_gap:
+          instrument_template: "Duration-weighted {short}/{long} Bund {direction_word}"
+          universe_category: rates
+          rationale: >
+            The euro-area slope instrument. Bunds are the euro area's benchmark
+            sovereign curve (the risk-free German curve), so a Bund slope trade
+            is the euro analogue of the UST and gilt curve trades the other two
+            tables name. The leading "Bund" is load-bearing: the legs are
+            substituted at call time from the caller's tenors, and without a
+            market anchor the string would name no instrument the eu universe
+            recognises. NOTE the curve-shape words ("duration-weighted",
+            "steepener", "flattener") are the DELIBERATE shared exception across
+            all three countries -- a steepener is a steepener in every market --
+            so this emitted name is admitted by the us and gb vocabularies too.
+            That is not a leak: the ROUTE TABLE is the gate that keeps a eu
+            template out of a us/gb thesis, and each of those countries has its
+            own curve override (UST / gilt) which is what is actually emitted.
+        inflation_expectations_gap:
+          instrument_template: "Duration-matched euro-area inflation-linked long / nominal Bund short"
+          universe_category: rates
+          rationale: >
+            The euro-area breakeven instrument. Euro-area inflation-linked bonds
+            (linkers) against nominal Bunds of matching duration isolate
+            inflation expectations from real-yield direction -- the euro
+            analogue of the TIPS and index-linked-gilt breakeven trades the other
+            tables name. The wording is deliberately "euro-area
+            inflation-linked / nominal Bund" rather than the words
+            "index-linked"/"breakeven": measured, the strings carrying those two
+            words are also admitted by the gb vocabulary (which owns
+            "index-linked" for gilts), whereas THIS exact phrasing is classified
+            rates by the eu universe and OUT OF UNIVERSE by both the us and gb
+            universes -- the cleanest three-way isolation available, and the most
+            accurate description of the structure.
+        equity_macro:
+          instrument_template: "Euro Stoxx 50 index futures"
+          universe_category: equity
+          rationale: >
+            The euro-area broad-index instrument, named VERBATIM as a member of
+            ProductionUniverse(country="eu").equity so membership is literal, not
+            keyword-only. Euro Stoxx 50 rather than the DAX (also a listed eu
+            member): the Euro Stoxx 50 spans the currency area, so it expresses a
+            EURO-AREA macro view, whereas the DAX is a single member state's index
+            and would smuggle in a country bet the thesis did not make. The
+            single-country DAX remains a listed universe member for a thesis that
+            specifically wants it, but it is not the default macro expression.
 
   curve_default_short_tenor:
     value: "2y"
@@ -6036,6 +6363,28 @@ snapshot_fields:
     - gb_bank_rate
     - gb_gilt_10y_yield
     - gb_short_rate_3m
+
+  # Section 22.3 — the euro-area fetch plan (European Central Bank). Same
+  # convention as the gb block above: these are registry KEYS. For the euro
+  # block every key happens to equal its schema attribute, so the two conventions
+  # do not diverge here — unlike the UK, whose keys carry a `_yoy` suffix.
+  #
+  # NOTE there is no `eu_hicp_yoy` or `eu_gdp_growth_qoq` here, deliberately.
+  # Neither is a fetchable series: the euro area publishes an HICP INDEX and a
+  # real GDP LEVEL currently, and publishes the corresponding RATES only with a
+  # lag that reaches into 2023-2025. The rates are DERIVED in the models layer
+  # from the index and the level, and a key listed here that no fetch could
+  # populate is the "declared in five places, fetched in none" defect the `gdi`
+  # note above records.
+  eu:
+    - eu_hicp_index
+    - eu_ecb_deposit_rate
+    - eu_ecb_main_refi_rate
+    - eu_estr
+    - eu_unemployment_rate
+    - eu_gdp_real_level
+    - eu_short_rate_3m
+    - eu_long_rate_10y
 
 # ---------------------------------------------------------------------------
 # fx_pairs — Section 22.3's FX layer (the bridge between two countries)

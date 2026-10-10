@@ -216,6 +216,7 @@ async def get_thesis(
             universe=inputs.universe,
             country=inputs.country,
             boe_inputs=inputs.boe_inputs,
+            eu_inputs=inputs.eu_inputs,
             short_yield=inputs.short_yield,
             regime=inputs.regime,
         )

@@ -248,7 +248,7 @@ class OpenBBClient:
             try:
                 if self.config.use_local_api_first:
                     return self._fetch_via_local_api(provider, endpoint, params, series_label)
-                return self._fetch_via_package(endpoint, params, series_label)
+                return self._fetch_via_package(provider, endpoint, params, series_label)
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
@@ -265,7 +265,7 @@ class OpenBBClient:
                     # one exactly once before declaring total failure.
                     try:
                         if self.config.use_local_api_first:
-                            return self._fetch_via_package(endpoint, params, series_label)
+                            return self._fetch_via_package(provider, endpoint, params, series_label)
                         return self._fetch_via_local_api(provider, endpoint, params, series_label)
                     except Exception as fallback_exc:
                         last_exc = fallback_exc
@@ -337,7 +337,7 @@ class OpenBBClient:
                     return self._fetch_records_via_local_api(
                         provider, endpoint, params, series_label
                     )
-                return self._fetch_records_via_package(endpoint, params, series_label)
+                return self._fetch_records_via_package(provider, endpoint, params, series_label)
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
@@ -352,7 +352,9 @@ class OpenBBClient:
                 else:
                     try:
                         if self.config.use_local_api_first:
-                            return self._fetch_records_via_package(endpoint, params, series_label)
+                            return self._fetch_records_via_package(
+                                provider, endpoint, params, series_label
+                            )
                         return self._fetch_records_via_local_api(
                             provider, endpoint, params, series_label
                         )
@@ -384,9 +386,20 @@ class OpenBBClient:
         return self._coerce_records(raw, series_label)
 
     def _fetch_records_via_package(
-        self, endpoint: str, params: dict[str, Any], series_label: str
+        self, provider: str, endpoint: str, params: dict[str, Any], series_label: str
     ) -> list[dict[str, Any]]:
-        """Call the ``openbb`` package directly and return its raw records."""
+        """Call the ``openbb`` package directly and return its raw records.
+
+        **``provider`` is forwarded, not dropped.** This is the records-path
+        analogue of the same defect fixed in :meth:`_fetch_via_package`: the
+        package path used to call ``target(**params)`` with the provider omitted,
+        so OpenBB validated the kwargs against whichever provider it defaulted to
+        and raised on the WRONG provider's parameter model. Measured on the
+        econdb route: ``economy.indicators`` with no provider raised
+        ``ImfEconomicIndicatorsQueryParams`` ("Invalid symbol format 'URATE'")
+        because ``imf`` was tried first -- and the error named a provider the
+        caller never asked for, which is what made the misroute hard to see.
+        """
         obb = self._lazy_import_obb()
         target: Any = obb
         for part in endpoint.split("."):
@@ -396,7 +409,7 @@ class OpenBBClient:
                 raise OpenBBFetchError(
                     f"openbb package has no endpoint '{endpoint}' (failed at '{part}')"
                 ) from exc
-        result = target(**params)
+        result = target(**params, provider=provider)
         raw: Any = result.results if hasattr(result, "results") else result
         return self._coerce_records(raw, series_label)
 
@@ -496,9 +509,26 @@ class OpenBBClient:
         return self._normalize(raw, series_label, served_by=_PATH_LOCAL_API)
 
     def _fetch_via_package(
-        self, endpoint: str, params: dict[str, Any], series_label: str
+        self, provider: str, endpoint: str, params: dict[str, Any], series_label: str
     ) -> pd.DataFrame:
-        """Call the ``openbb`` Python package directly, for the same endpoint."""
+        """Call the ``openbb`` Python package directly, for the same endpoint.
+
+        **``provider`` is forwarded, not dropped.** This was a real defect:
+        the package path used to call ``target(**params)`` with the provider
+        omitted, on the assumption that OpenBB would select the configured
+        default. That assumption held for the single-provider FRED routes the
+        engine used through Phase 4, and it broke the moment a route had TWO
+        providers with DISJOINT required parameters — ``economy.indicators``
+        (``econdb`` + ``imf``). Measured 2026-10-10: with no provider, OpenBB
+        validates the request against **every** candidate provider's params and
+        the ``imf`` validator raised first (``Invalid symbol format 'URATE'.
+        Expected 'dataflow::identifier'``) even though ``econdb`` is the
+        configured priority — so a route that was perfectly reachable on
+        ``local_api`` (which passes ``provider`` explicitly) failed on the
+        default package path, and the error named the WRONG provider. The
+        local-API path already forwarded ``provider``; this makes the package
+        path agree, so the two paths read the same route.
+        """
         obb = self._lazy_import_obb()
         target: Any = obb
         for part in endpoint.split("."):
@@ -508,7 +538,7 @@ class OpenBBClient:
                 raise OpenBBFetchError(
                     f"openbb package has no endpoint '{endpoint}' (failed at '{part}')"
                 ) from exc
-        result = target(**params)
+        result = target(**params, provider=provider)
         if hasattr(result, "to_df"):
             return self._normalize(result.to_df(), series_label, served_by=_PATH_PACKAGE)
         return self._normalize(result, series_label, served_by=_PATH_PACKAGE)

@@ -397,6 +397,96 @@ class MacroDataSnapshot(BaseModel):
         ),
     )
 
+    # --- Euro area (Section 22.3 — country "eu") ---------------------------
+    #
+    # A DEDICATED block, for the same reason the UK block is one. The euro area
+    # is the ECB's currency union, and the sharpest form of the relabel Section
+    # 22.3 rejects would be reusing ``cpi_headline`` for HICP: the schema would
+    # look currency-generic while every consumer read a euro-area number through
+    # a field documented as FRED's US series.
+    #
+    # The euro block's SHAPE differs from the UK's in one visible way: there is
+    # no ``eu_hicp_yoy`` / ``eu_gdp_growth_qoq`` field, because neither is
+    # published currently on a reachable route. The euro area's HICP rate and
+    # GDP growth are DERIVED from the index and the level respectively — see
+    # ``eu_hicp_index`` and ``eu_gdp_real_level`` — and a derived quantity
+    # belongs to the model that derives it, not to the snapshot that carries
+    # inputs. Declaring a field for it would be a field no fetch could ever
+    # populate.
+    eu_hicp_index: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Euro-area HICP (all items, harmonised), INDEX 2015=100 — FRED "
+            "CP0000EZ19M086NEST, current through 2026-08. The INPUT from which "
+            "the euro HICP inflation rate is derived; the euro area has no "
+            "currently-published HICP rate on any reachable route."
+        ),
+    )
+    eu_ecb_deposit_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "ECB deposit facility rate (%) — FRED ECBDFR, daily. The euro "
+            "area's EFFECTIVE policy rate since 2014: the ``i_prev`` input to "
+            "the ECB rules, and the euro analogue of ``iorb`` and "
+            "``gb_bank_rate``."
+        ),
+    )
+    eu_ecb_main_refi_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "ECB main refinancing operations rate (%) — FRED ECBMRRFR, daily. "
+            "Carried alongside the deposit rate because the ECB runs a two-rate "
+            "system and the two differ; which one a rule reads is declared, not "
+            "assumed."
+        ),
+    )
+    eu_estr: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "ESTR — the euro short-term rate (%) — FRED ECBESTRVOLWGTTRMDMNRT, "
+            "daily. The euro area's risk-free overnight benchmark: the analogue "
+            "of SOFR and SONIA. A MARKET rate, kept separate from the policy "
+            "rates above."
+        ),
+    )
+    eu_unemployment_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Euro-area unemployment rate (%) — econdb ``economy.indicators`` "
+            "symbol URATE, country EU, monthly, current. The euro area's "
+            "labour read. Reachable on no FRED route (every variant stops in "
+            "<=2023), which is why this one series forced the registry's "
+            "``extra_params`` surface."
+        ),
+    )
+    eu_gdp_real_level: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Euro-area real GDP, LEVEL in millions of euro, SA — FRED "
+            "CLVMNACSCAB1GQEA19, through 2026-Q2. The INPUT from which euro "
+            "GDP growth is derived; the euro-area GDP growth series stop in "
+            "2023 while the level does not."
+        ),
+    )
+    eu_short_rate_3m: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Euro-area 3-month interbank rate (%) — FRED IR3TIB01EZM156N, "
+            "monthly. The euro analogue of ``gb_short_rate_3m``, and the input "
+            "the euro market-implied path is derived from."
+        ),
+    )
+    eu_long_rate_10y: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Euro-area 10-year government bond yield (%) — econdb "
+            "``economy.indicators`` symbol Y10YD, country EU, monthly, current "
+            "through 2026-07. Served as a FRACTION by the route "
+            "(``source_units: decimal``) and converted to percent by the "
+            "fetcher, so this field is always percent."
+        ),
+    )
+
     # --- Cross-asset (Modules 9, 10, 11) ---
     fx_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)
     commodity_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)

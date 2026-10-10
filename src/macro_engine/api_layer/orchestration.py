@@ -137,6 +137,9 @@ from macro_engine.models.policy_rules import (
     BoeContemporaneousInputs,
     BoeFirstDifferenceInputs,
     BoeForwardLookingInputs,
+    EcbContemporaneousInputs,
+    EcbErrorCorrectionInputs,
+    EcbRestrictedCointegrationInputs,
     FirstDifferenceInputs,
     TaylorRuleInputs,
     qe_qt_stance,
@@ -148,7 +151,7 @@ from macro_engine.models.yield_curve import (
     breakeven_inflation,
     curve_slope,
 )
-from macro_engine.thesis_layer.builder import BoeRuleInputs, EconomyReads
+from macro_engine.thesis_layer.builder import BoeRuleInputs, EconomyReads, EuRuleInputs
 from macro_engine.thesis_layer.schemas import ProductionUniverse
 
 #: The balance-sheet change window, in WEEKLY observations (thirteen weeks ~ one
@@ -238,6 +241,12 @@ class ThesisInputs:
     #: The BoE's three rule-input records. Required for a gb thesis, ``None``
     #: for a US one. See :class:`BoeRuleInputs`.
     boe_inputs: BoeRuleInputs | None = None
+    #: The ECB's three rule-input records. Required for a eu thesis, ``None``
+    #: for a US or gb one. See :class:`EuRuleInputs`. Carried alongside
+    #: ``boe_inputs`` rather than folded into it because the two carry different
+    #: regressor sets — the euro area's error-correction rule reads the LONG
+    #: rate and the changes, which the BoE's records have no field for.
+    eu_inputs: EuRuleInputs | None = None
     #: Section 16.2 Q1's **fourth** read: the regime classification. ``None``
     #: means the classifier was not run, and the builder then publishes
     #: ``regime.state = None`` with its ``NOT_COMPUTED`` note (D-043/D-045) —
@@ -2077,6 +2086,16 @@ def snapshot_to_thesis_inputs(
             curve_long_tenor=curve_long_tenor,
             short_tenor_term_premium=short_tenor_term_premium,
         )
+    if snapshot.country == "eu":
+        return _eu_thesis_inputs(
+            snapshot,
+            thesis_type=thesis_type,
+            universe=universe,
+            short_yield_tenor=short_yield_tenor,
+            curve_short_tenor=curve_short_tenor,
+            curve_long_tenor=curve_long_tenor,
+            short_tenor_term_premium=short_tenor_term_premium,
+        )
     raise NotImplementedError(
         f"country '{snapshot.country}' is listed in country.implemented but has "
         f"no derivation in snapshot_to_thesis_inputs (Section 22.3). Add one — a "
@@ -2371,6 +2390,475 @@ def _gb_thesis_inputs(
         notes=tuple(notes),
         warnings=tuple(warnings),
     )
+
+
+def _eu_thesis_inputs(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+) -> ThesisInputs:
+    """Derive the euro-area thesis inputs from an ``eu`` snapshot (Section 22.3).
+
+    The euro-area half of the country dispatch. It mirrors ``_us_thesis_inputs``'s
+    contract — three reads, the policy-rule inputs, the short yield, the same
+    notes/warnings discipline — but sources every quantity from the ``eu_*``
+    fields and feeds the **ECB's** three rules rather than the Fed's or the BoE's.
+
+    What is genuinely different, and why it is not a relabel
+    --------------------------------------------------------
+    1. **The inflation measure.** The ECB's target is 2% HICP (symmetric), not
+       core PCE and not UK CPI. The snapshot carries the HICP INDEX
+       (``eu_hicp_index``); the YoY rate the rules read is DERIVED from it by the
+       shared ``_yoy_percent`` helper — the same canonical derivation the US
+       headline uses, so the two cannot drift. The operator's choice (2026-10-10)
+       was to derive the rate from the current index rather than route the
+       published rate series, because the published euro-area HICP RATE stops in
+       2025-12 while the index is current; the overlap was measured over 337
+       common months (max |diff| 0.076pp), so the derivation reproduces the
+       published rate.
+    2. **The policy rate is the MAIN REFINANCING OPERATIONS rate.**
+       ``eu_ecb_main_refi_rate``, not the deposit facility. Both are fetched and
+       the deposit rate is recorded in the notes, but the rule's ``i_prev`` is the
+       main refi rate — the rate the euro area's policy stance is conventionally
+       quoted against, and the one comparable to the Fed's ``iorb`` and the BoE's
+       Bank Rate.
+    3. **The long rate is a rule INPUT, not a market aside.** ``eu_long_rate_10y``
+       feeds the error-correction rules' long-run equilibrium. This is the euro
+       area's defining structural feature and the reason its rule set is not the
+       Fed's with euro-area series.
+    4. **The rule set.** The three inputs feed ``ecb_contemporaneous_taylor_rule``,
+       ``ecb_error_correction_rule`` and ``ecb_restricted_cointegration_rule`` via
+       the ``eu_inputs`` bundle — the Fed's ``taylor_inputs`` and the BoE's
+       ``boe_inputs`` are ``None``, which ``build_policy_gap`` refuses to accept
+       alongside the ECB's.
+
+    The output gap is ESTIMATED from the euro-area real GDP level the snapshot
+    carries, against its own mean growth, exactly as the UK gap is — the euro
+    area has no published output-gap series on this route. The estimate is
+    disclosed as an estimate in the notes, not passed off as a measurement.
+    """
+    settings = get_settings()
+    as_of = snapshot.as_of
+
+    resolved_type = thesis_type or ThesisType(settings.api.default_thesis_type)
+    resolved_universe = universe if universe is not None else ProductionUniverse(country="eu")
+
+    notes: list[DerivationNote] = []
+    warnings: list[str] = []
+
+    # -- Q1's three reads, from the euro-area series.
+    # Inflation: the euro-area HICP, as a level and as a deviation from target.
+    # The euro-area target is read here so the note states the DEVIATION the
+    # level rule forms internally: the ECB's rule takes `pi_current` as a LEVEL
+    # and subtracts the target itself (config leaf policy.eu.pi_target), so the
+    # gap is NOT a rule input here — structurally unlike the BoE, whose input
+    # record takes the pre-computed component gaps. Recording the target and the
+    # deviation keeps the note honest about what the rule consumes and what the
+    # reader is looking at.
+    pi_target = float(settings.policy.eu.pi_target.value)
+    hicp_points = _realised(snapshot.eu_hicp_index, as_of=as_of, field="eu_hicp_index")
+    hicp_yoy, hicp_described = _yoy_percent(hicp_points, field="eu_hicp_index")
+    notes.append(
+        DerivationNote(
+            name="pi_current (eu, HICP YoY)",
+            value=f"{hicp_yoy:+.4f} (target {pi_target:.1f}%, gap {hicp_yoy - pi_target:+.4f}pp)",
+            source=(
+                "eu_hicp_index, year-over-year via the shared _yoy_percent "
+                "derivation (the euro area publishes the INDEX currently and the "
+                "RATE with a lag reaching into 2023; the index-derived rate was "
+                "overlap-checked against the published rate over 337 common "
+                "months, max |diff| 0.076pp). The level feeds the ECB rule, which "
+                "subtracts the policy.eu.pi_target leaf internally."
+            ),
+            window=hicp_described,
+        )
+    )
+
+    inflation = inflation_breadth_score(
+        InflationSubMeasures(
+            cpi_headline_mom=hicp_yoy,
+            cpi_core_mom=hicp_yoy,
+            pce_core_mom=hicp_yoy,
+        )
+    )
+    # The euro area publishes no US-style core PCE on this route; the score takes
+    # three m/m measures and is fed the euro-area HICP level three times. Recorded
+    # explicitly rather than silently, because the score is a breadth read and a
+    # repeated leg changes what "breadth" means.
+    warnings.append(
+        "EU INFLATION BREADTH: the score's three m/m measures are the euro-area "
+        "HICP level repeated (the euro area publishes no US-style core PCE on this "
+        "route). Breadth is therefore a single measure, not three — read the score "
+        "as a level, not a breadth signal."
+    )
+
+    # Labor: the euro-area unemployment read. Published as a read (the
+    # EconomyReads slot) but the score is neutral by construction, so the genuine
+    # number is the note below.
+    unemployment_points = _realised(
+        snapshot.eu_unemployment_rate, as_of=as_of, field="eu_unemployment_rate"
+    )
+    unemployment, unemployment_described = _latest_percent(
+        unemployment_points, field="eu_unemployment_rate"
+    )
+    labor = labor_tightness_score(
+        LaborInputs(
+            initial_claims_4wk_avg_change_pct=0.0,
+            jolts_openings_yoy_pct=0.0,
+            jolts_quits_level_percentile=0.0,
+            nfp_3m_avg=get_settings().labor.neutral_nfp_pace,
+        )
+    )
+    warnings.append(
+        "EU LABOR READ: the euro area publishes no JOLTS, initial-claims or "
+        "payrolls series on this route, so every labor-tightness block is at its "
+        "neutral point and the score is ~0 by construction — it says nothing "
+        "about euro-area labor tightness. The genuine euro-area read "
+        "(eu_unemployment_rate) is carried in the notes; the score is published "
+        "only so the reads record keeps its three-read shape, and it must not be "
+        "read as a tightness measure."
+    )
+    notes.append(
+        DerivationNote(
+            name="eu_unemployment_rate",
+            value=f"{unemployment:g}",
+            source=(
+                "eu_unemployment_rate (euro-area harmonised unemployment, %), "
+                "latest realised point (econdb economy.indicators/URATE, "
+                "country=EU — the only route carrying a CURRENT euro-area "
+                "unemployment series; every FRED variant stops <=2023)"
+            ),
+            window=unemployment_described,
+        )
+    )
+
+    # Growth: the output gap is ESTIMATED from the real GDP level (the euro area
+    # has no published gap series on this route). The gap is the current
+    # quarter-on-quarter growth minus the series' own mean over the realised
+    # window — the same simple disclosed estimate the UK path uses, labelled as an
+    # estimate rather than passed off as a measurement.
+    gdp_points = _realised(snapshot.eu_gdp_real_level, as_of=as_of, field="eu_gdp_real_level")
+    if len(gdp_points) < 2:
+        raise OrchestrationError(
+            f"snapshot field 'eu_gdp_real_level' has {len(gdp_points)} "
+            f"observation(s); a quarter-on-quarter growth needs at least 2.",
+            fields=("eu_gdp_real_level",),
+        )
+    gdp_growth = (gdp_points[-1].value / gdp_points[-2].value - 1.0) * 100.0
+    # The trend is the mean of the quarter-on-quarter growth rates over the window.
+    qoq_rates = [
+        (gdp_points[i].value / gdp_points[i - 1].value - 1.0) * 100.0
+        for i in range(1, len(gdp_points))
+    ]
+    mean_growth = sum(qoq_rates) / len(qoq_rates)
+    eu_output_gap = gdp_growth - mean_growth
+    notes.append(
+        DerivationNote(
+            name="output_gap (eu, ESTIMATED)",
+            value=f"{eu_output_gap:+.4f}",
+            source=(
+                "ESTIMATE: latest euro-area q/q real GDP growth minus its own mean "
+                f"over the realised window (mean {mean_growth:+.4f}) — the euro "
+                "area has no published output-gap series on this route, so the ECB "
+                "rules' gap input is estimated, not measured"
+            ),
+            window=(
+                f"eu_gdp_real_level: {gdp_points[-1].observation_date.isoformat()} "
+                f"{gdp_points[-1].value:g} vs "
+                f"{gdp_points[-2].observation_date.isoformat()} {gdp_points[-2].value:g}"
+            ),
+        )
+    )
+    growth = output_gap(
+        OutputGapInputs(
+            # The euro-area output-gap ESTIMATE, routed through the real model so
+            # the provenance (potential GDP is unobservable -> confidence) is the
+            # model's, not invented here. `actual/potential` are normalised to
+            # encode the estimated gap in percent: potential := 1.0, actual :=
+            # 1.0 + gap/100, so `100*(actual-potential)/potential == gap`. The
+            # normalisation is disclosed in the note above.
+            actual_gdp=1.0 + eu_output_gap / 100.0,
+            potential_gdp=1.0,
+        )
+    )
+
+    reads = EconomyReads(growth=growth, inflation=inflation, labor=labor)
+
+    # -- Q3/Q4's market read: the short yield from the euro area's 3-month rate.
+    #    The euro-area snapshot carries two scattered points, not a full curve, so
+    #    the shared curve helper cannot serve it.
+    short_yield, short_described = _eu_short_yield(snapshot, as_of=as_of)
+    notes.append(
+        DerivationNote(
+            name="short_yield",
+            value=f"{short_yield:g}",
+            source=(
+                "eu_short_rate_3m, in percent (never basis points) — the euro-area "
+                "snapshot carries no 11-tenor curve, so the short end is the "
+                "3-month rate rather than a curve tenor"
+            ),
+            window=short_described,
+        )
+    )
+
+    # -- Q5's rule inputs: the three ECB records.
+    policy_rate, policy_described = _eu_policy_rate(snapshot, as_of=as_of)
+    notes.append(
+        DerivationNote(
+            name="i_prev",
+            value=f"{policy_rate:g}",
+            source=(
+                "MAIN REFINANCING OPERATIONS rate (eu_ecb_main_refi_rate), the "
+                "euro area's policy rate — the rate comparable to the Fed's iorb "
+                "and the BoE's Bank Rate; the DEPOSIT facility rate is carried "
+                "separately in the registry but is NOT the rule's input"
+            ),
+            window=policy_described,
+        )
+    )
+    # The long rate — the euro area's structural rule input.
+    long_rate_points = _realised(snapshot.eu_long_rate_10y, as_of=as_of, field="eu_long_rate_10y")
+    long_rate, long_rate_described = _latest_percent(long_rate_points, field="eu_long_rate_10y")
+    notes.append(
+        DerivationNote(
+            name="long_rate",
+            value=f"{long_rate:g}",
+            source=(
+                "eu_long_rate_10y (euro-area 10-year government bond yield, %). "
+                "THE structural regressor of the euro-area error-correction rules "
+                "— it proxies the public's long-run inflation perception. No Fed "
+                "or BoE rule reads it."
+            ),
+            window=long_rate_described,
+        )
+    )
+
+    # The change terms the error-correction rules read. Where fewer than two
+    # prints exist the change is 0.0 and the stand-in is DISCLOSED, because a
+    # fabricated non-zero change would move the rule on no evidence.
+    #
+    # `pi_change` is the change in the INFLATION RATE, π_t - π_{t-1}, in
+    # percentage points — NOT the change in the price INDEX. This was a second
+    # real defect of the same class as the gap change above: the HICP series is a
+    # monthly INDEX (~103), so a naive one-step difference of it returns an
+    # index-point change (~+0.44), a quantity whose units are neither the rule's
+    # nor a rate's. The rule's own input description says π_t - π_{t-1}, so the
+    # change must be taken between two YoY RATES. The previous quarter's rate is
+    # derived from the index the same way the current one is (a year-over-year
+    # ratio around the previous point), so both rates come from the ONE canonical
+    # derivation.
+    pi_change = _hicp_rate_change_pp(hicp_points, field="eu_hicp_index", warnings=warnings)
+    # `output_gap_change` is the change in the GAP, NOT the change in the GDP
+    # LEVEL. This was a real defect: `_last_change(gdp_points, ...)` returned the
+    # one-step difference of the raw real-GDP level (a national-accounts index,
+    # ~18351 of its own units), which the error-correction rules then multiplied
+    # by their 0.266 gap coefficient — producing a prescription near 4885% and a
+    # dispersion of ~4882pp that a reader could not distinguish from a genuine
+    # regime call. The gap is a percentage-point quantity (qoq growth minus its
+    # window mean), so its change must be computed in those units. Because the
+    # window mean is a single constant subtracted from every quarter, the change
+    # in the gap equals the change in qoq growth — computed here from
+    # `qoq_rates`, the ONLY series carrying the gap's own units.
+    if len(qoq_rates) >= 2:
+        output_gap_change = qoq_rates[-1] - qoq_rates[-2]
+    else:
+        output_gap_change = 0.0
+        warnings.append(
+            "EU OUTPUT-GAP CHANGE STAND-IN: the euro-area real-GDP series carries "
+            "a single quarter-on-quarter growth rate, so the gap's one-step change "
+            "is set to 0.0. A fabricated non-zero change would move the "
+            "error-correction rules on no evidence; 0.0 is the honest neutral "
+            "input and is disclosed rather than left implicit."
+        )
+    i_prev_change = 0.0
+    policy_points = _realised(
+        snapshot.eu_ecb_main_refi_rate, as_of=as_of, field="eu_ecb_main_refi_rate"
+    )
+    if len(policy_points) >= 2:
+        i_prev_change = float(policy_points[-1].value) - float(policy_points[-2].value)
+    else:
+        warnings.append(
+            "EU POLICY-RATE CHANGE STAND-IN: the euro-area snapshot carries a "
+            "single observed policy rate, so the error-correction rules' lagged "
+            "change term is set to 0.0. A fabricated non-zero change would move "
+            "the prescription on no evidence; 0.0 is the honest neutral input and "
+            "is disclosed rather than left implicit."
+        )
+
+    eu_inputs = EuRuleInputs(
+        contemporaneous=EcbContemporaneousInputs(
+            i_prev=policy_rate,
+            pi_current=hicp_yoy,
+            output_gap=eu_output_gap,
+        ),
+        error_correction=EcbErrorCorrectionInputs(
+            i_prev=policy_rate,
+            i_prev_change=i_prev_change,
+            long_rate=long_rate,
+            pi_current=hicp_yoy,
+            pi_change=pi_change,
+            output_gap=eu_output_gap,
+            output_gap_change=output_gap_change,
+        ),
+        restricted_cointegration=EcbRestrictedCointegrationInputs(
+            i_prev=policy_rate,
+            i_prev_change=i_prev_change,
+            long_rate=long_rate,
+            real_rate=policy_rate - hicp_yoy,
+            pi_change=pi_change,
+            output_gap=eu_output_gap,
+            output_gap_change=output_gap_change,
+        ),
+    )
+
+    if resolved_type is ThesisType.CURVE_SHAPE_GAP:
+        notes.append(
+            DerivationNote(
+                name="curve legs",
+                value=f"{curve_short_tenor} -> {curve_long_tenor}",
+                source="forwarded from the caller; a curve expression names its own legs",
+                window=None,
+            )
+        )
+    elif curve_short_tenor is not None or curve_long_tenor is not None:
+        warnings.append(
+            "CURVE LEGS IGNORED: curve_short_tenor/curve_long_tenor were supplied "
+            f"but the thesis type is {resolved_type.value}, so nothing reads them "
+            "(D-037's inert-input class)."
+        )
+
+    notes.append(
+        DerivationNote(
+            name="thesis_type",
+            value=resolved_type.value,
+            source=(
+                "assumed from api.default_thesis_type"
+                if thesis_type is None
+                else "supplied by the caller"
+            ),
+            window=None,
+        )
+    )
+    if short_tenor_term_premium is not None:
+        notes.append(
+            DerivationNote(
+                name="short_tenor_term_premium",
+                value=f"{short_tenor_term_premium:g}",
+                source="supplied by the caller",
+                window=None,
+            )
+        )
+
+    return ThesisInputs(
+        reads=reads,
+        taylor_inputs=None,
+        first_difference_inputs=None,
+        short_yield=short_yield,
+        thesis_type=resolved_type,
+        universe=resolved_universe,
+        country="eu",
+        boe_inputs=None,
+        eu_inputs=eu_inputs,
+        regime=None,
+        national_accounts=None,
+        curve=(),
+        balance_sheet=None,
+        notes=tuple(notes),
+        warnings=tuple(warnings),
+    )
+
+
+def _eu_policy_rate(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:
+    """``i_prev`` for the euro area: the MAIN REFINANCING OPERATIONS rate.
+
+    A named helper rather than an inline read so the one series choice is
+    documented once. The euro area has TWO policy rates (the main refi rate and
+    the deposit facility rate); the rule is calibrated on the policy rate the
+    stance is quoted against — the main refinancing operations rate — and the
+    deposit rate is a separate series. Conflating them would put the deposit rate
+    into a rule written for the main refi rate.
+    """
+    points = _realised(snapshot.eu_ecb_main_refi_rate, as_of=as_of, field="eu_ecb_main_refi_rate")
+    value, described = _latest_percent(points, field="eu_ecb_main_refi_rate")
+    return value, described
+
+
+def _eu_short_yield(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:
+    """The euro-area market short yield, in percent — the market-implied path input.
+
+    The euro-area snapshot carries **two scattered points** (``eu_long_rate_10y``
+    and ``eu_short_rate_3m``), not an 11-tenor curve, so the shared curve helper
+    cannot serve it. The short end — the point that prices near-term policy
+    expectations — is the 3-month rate.
+
+    The same plausibility bound is applied, read from the SAME config leaf the
+    curve helper reads, so the bp-vs-percent guard is not re-typed (LAW 2).
+    """
+    points = _realised(snapshot.eu_short_rate_3m, as_of=as_of, field="eu_short_rate_3m")
+    value, described = _latest_percent(points, field="eu_short_rate_3m")
+    max_yield = get_settings().validation.max_yield
+    if not 0.0 < value < max_yield:
+        raise OrchestrationError(
+            f"the euro-area 3-month rate is {value}, outside the plausible bond "
+            f"range (Section 5.4's max_plausible_yield_pct is {max_yield:g}). A "
+            f"value in basis points would read as a percent and inflate every "
+            f"downstream gap.",
+            fields=("eu_short_rate_3m",),
+        )
+    return value, f"eu_short_rate_3m = {value:g}% ({described})"
+
+
+def _hicp_rate_change_pp(
+    points: Sequence[ObservationPoint], *, field: str, warnings: list[str]
+) -> float:
+    """The one-step change in the YEAR-OVER-YEAR INFLATION RATE, in percentage points.
+
+    This is the euro-area error-correction rules' short-run inflation input,
+    ``pi_t - pi_{t-1}``. It is **not** the change in the price INDEX, which is a
+    different quantity in different units: the HICP series is a monthly index
+    (~103), so a one-step difference of it gives an index-point change (~+0.44)
+    that is neither a rate change nor comparable to the rule's coefficients. The
+    defect is invisible in the returned number — both are of order 0.1-0.5 — and
+    a reader cannot tell which one the rule consumed, which is why it is derived
+    here from the ONE canonical YoY definition rather than approximated.
+
+    Both rates are taken from ``_yoy_percent``: the current rate from the whole
+    series, the previous rate from the series truncated to its penultimate point.
+    Reusing the shared derivation means the two rates cannot disagree about how
+    the year-over-year ratio is formed, and a single quarter's change is
+    ``pi_t - pi_{t-1}`` with both terms YoY rates in percent.
+
+    Falls back to 0.0 with a DISCLOSED stand-in when the series is too short for
+    even one YoY pair plus a prior point — the honest-neutral discipline: a
+    fabricated non-zero change would move the rules on no evidence, and a silent
+    0.0 would hide that the term was inert.
+    """
+    if len(points) < 3:
+        warnings.append(
+            f"EU INFLATION-RATE CHANGE STAND-IN: snapshot field '{field}' carries "
+            f"{len(points)} observation(s) — too few to form two year-over-year "
+            f"rates — so the error-correction rules' inflation-change term is set "
+            f"to 0.0. A fabricated non-zero change would move the prescription on "
+            f"no evidence; 0.0 is the honest neutral input and is disclosed."
+        )
+        return 0.0
+    try:
+        current_rate, _ = _yoy_percent(points, field=field)
+        prior_rate, _ = _yoy_percent(points[:-1], field=field)
+    except OrchestrationError:
+        warnings.append(
+            f"EU INFLATION-RATE CHANGE STAND-IN: snapshot field '{field}' has no "
+            f"observation within the YoY tolerance of the anniversary, so the "
+            f"error-correction rules' inflation-change term is set to 0.0 and "
+            f"disclosed rather than fabricated."
+        )
+        return 0.0
+    return current_rate - prior_rate
 
 
 def _gb_policy_rate(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:

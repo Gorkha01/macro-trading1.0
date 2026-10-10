@@ -23425,3 +23425,180 @@ the `api.host_value` CHOICE pattern, rather than joining the disclosed list.
 `config/settings.yaml`, `tests/data_layer/test_fx_client.py` (NEW),
 `tests/models/test_fx_conversion.py` (NEW), `tests/data_layer/test_phase1_data_layer.py`,
 `docs/{PHASE5_DEFERRED.md,BUILD_STATE.md,OPENBB_ENDPOINT_RECONCILIATION.md}`, `README.md`.
+
+
+---
+
+## D-148 — §22.3 multi-country, country 2: the euro area (`eu`) wired end-to-end, and the ECB reaction function that is not a relabelled Taylor rule
+
+### 1. What this increment is, against the four-layer bar
+
+D-146 fixed the bar: country-specific **data**, a country-specific **reaction function** (layer 2 —
+the un-fakeable one), country-specific **instruments + FX**, then **cross-country reasoning**. D-145
+closed `gb` (country 1). This increment closes **`eu`, country 2** — the second country modelled
+end-to-end on its own data, its own central bank and its own instruments, and the first whose reaction
+function is structurally different from *both* the Fed's and the BoE's (see §3).
+
+The euro area is enabled as the **20-country aggregate**, not per member state: the ECB sets one rate
+for the union, so a "German" policy rule would be a fiction. Recorded here because it is a choice the
+spec left open.
+
+### 2. WS1 — the euro-area data workstream
+
+Eight `eu_*` series added to `config/series_registry.yaml`, registered in `persistence`
+`SCALAR_SERIES_FIELDS` **in the same change** (the D-145 lesson: a field declared, fetched and
+populated, then silently erased from every persisted snapshot):
+
+`eu_hicp_index`, `eu_ecb_main_refi_rate`, `eu_ecb_deposit_rate`, `eu_estr`,
+`eu_unemployment_rate`, `eu_gdp_real_level`, `eu_short_rate_3m`, `eu_long_rate_10y`.
+
+**One derivation worth recording.** The euro-area HICP **rate** stops in 2025-12 on the reachable
+route — a stale rate is not usable by a live rule. So the rules' inflation input is **derived from the
+current index** via the shared `_yoy_percent`, and the derived series was **overlap-checked against
+the published rate over 337 common months (max |diff| 0.076pp)** before it was admitted. The shared
+derivation is the DRY form; the overlap check is what makes it evidence rather than a substitution.
+
+**The unemployment leg is `econdb`, not FRED.** Every FRED euro-area unemployment variant stops
+≤ 2023; `economy.indicators/URATE` with `country=EU` is the only route carrying a current series.
+This is why the pub-date gate moved by two different amounts (6 of 8 eu legs FRED, 2 econdb) — worth
+keeping, and the gate caught it.
+
+### 3. WS2 — the ECB reaction function (the layer that decides whether this is real)
+
+Three rules in `models/policy_rules.py`, grounded in **ECB Working Paper No 258 (September 2003)** —
+**read directly via `pypdf`**, Tables 2/4/6 transcribed rather than recalled — each with its own input
+record, `rule_variant` **and** `country="eu"`:
+
+* **`ecb_contemporaneous_taylor_rule`** — the I(0) **level** rule:
+  `i = 0.884·i_prev + 0.116·(i* + 2.733(π − π*) + 1.443·y)`.
+* **`ecb_error_correction_rule`** — the unrestricted cointegrating vector
+  `eqm = π* + 0.827·l + 0.900·π + 0.358·y`, with
+  `Δi = 0.628·Δπ + 0.266·Δy + 0.370·Δi_prev + (−0.189)·(i_prev − eqm)`.
+* **`ecb_restricted_cointegration_rule`** — the restricted vector (b_π ≡ 1, restriction not rejected,
+  p=0.78): `eqm = 0.771·l + 0.437·y` on the **real** rate; it carries no `pi_current` field at all.
+
+**The three structural markers that make this un-fakeable, and each is tested:**
+
+1. **The long rate is a regressor.** `l` proxies the public's long-run inflation perception. No Fed
+   and no BoE rule reads a long rate — `test_the_long_rate_moves_the_ecb_error_correction_rule_and_no_fed_rule`
+   moves the long rate and asserts the ECB change rule **responds** (3.34 → 3.49) while a Fed rule
+   **does not**.
+2. **The form is error-correction (change).** The level spec is unstable — the paper's own unit-root
+   tests reject it — so the euro-area rules are *change* rules over a cointegrating equilibrium. Only
+   one of the three is a level rule; the Fed and BoE arms are two-level-one-change. The dispatch
+   encodes that structure (`build_policy_gap`'s `elif country == "eu"`); it is not a parameterisation.
+3. **The coefficients are the euro area's own.** 2.733 / 1.443 — and the paper **rejects** the Taylor
+   (1.5, 0.5) pair at a joint Wald **p = 0.04**, which is exactly what a relabelled Fed rule would
+   carry. `test_the_ecb_contemporaneous_rule_is_not_a_relabelled_fed_rule` asserts the prediction
+   differs from what a Taylor rule would emit on the same inputs.
+
+Config lives under `policy.eu.*`. **`real_rate_assumption = 0.0`** — deliberately different from the
+Fed's 0.5 and the BoE's 1.0, because the euro-area real-rate estimate in the paper is insignificantly
+different from zero; copying either anchor would have been an invented input. `adjustment_coefficient`
+is **sign-validated `< 0` at the leaf** (`EuErrorCorrectionCoefficients` raises otherwise), because a
+positive adjustment coefficient is an anti-stable system, not a calibration choice.
+
+### 4. WS3 — the euro-area instrument set
+
+`ProductionUniverse(country="eu")` — `_EU_PLAN`, the `_EU_RATES` / `_EU_EQUITY` keyword sets, and
+`_EU_BARE_TICKERS` keyed on the Eurex roots (FGBL/FGBM/FGBS/FBTP/FOAT, FESX/FDAX) with a three-way
+`_bare_ticker_category` dispatch. The `config/settings.yaml` `instrument_selection.country_routes.eu`
+block names **`ESTR futures`** for the policy-path leg, a duration-weighted Bund curve for the shape
+leg, a euro-area inflation-linked-vs-nominal Bund pair for the inflation-expectations leg, and
+**Euro Stoxx 50 index futures** for the equity leg — each a member of `_EU_PLAN`.
+
+**Measured isolation:** `ESTR futures` is admitted **only** by eu; the us and gb universes both refuse
+it (`test_the_eu_policy_path_instrument_is_refused_by_the_us_and_gb_universes`). The curve and equity
+templates leak into us/gb via the **deliberate shared shape vocabulary** (`steepener`, `index
+futures`) — a documented design decision; the **route table** is the gate, and the three-way test
+`test_every_country_route_names_an_instrument_its_own_universe_permits` is what holds it.
+
+### 5. The FOUR defects found live (all fixed)
+
+This is the increment's other half. The increment exists to *know* the euro area, and knowing it
+required reading the live output rather than trusting a green probe.
+
+**(a) The route table was missing — and the failure was correct, not a bug.** `country_routes` had
+only a `gb` entry, so `routes_for("eu")` fell through to the **base US table** and `select_instrument`
+emitted `UST 2yr note futures` into a `eu` thesis, failing the eu universe membership check. The whole
+chain (`builder.py` passes `country=country`; `select_instrument` calls `routes_for(country)`) was
+**already** country-aware — only the eu entry was absent. The loud failure is exactly right: a country
+whose instruments differ *must* supply its own table or the base template fails its own universe check.
+
+**(b) `openbb_client` did not forward `provider` — on the records path too.** D-147's `_fetch_via_package`
+fix had a twin: `_fetch_records_via_package` also dropped `provider`, so OpenBB validated kwargs
+against the **wrong** provider's parameter model (the `econdb` route raised on the IMF parser). Both
+now take and forward `provider`.
+
+**(c) REAL unit defect 1 — `output_gap_change` was the change in the GDP LEVEL.** The first live probe
+printed `dispersion 4882.47`. Root cause: `_eu_thesis_inputs` built `output_gap_change` from
+`_last_change(gdp_points, field="eu_gdp_real_level")` — a change in the national-accounts **level**
+(~18352, an index in millions of euros), not in the **gap** in percentage points. Multiplied by the
+0.266 gap coefficient it drove the prescription to ~4885%. Fixed: derived from `qoq_rates` (the gap's
+**own** units) with a disclosed stand-in branch. Post-fix: rules **3.02 / 4.04 / 3.69**, dispersion
+**102bp**.
+
+**(d) REAL unit defect 2 — `pi_change` was the change in the HICP INDEX.** `pi_change` came from
+`_last_change(hicp_points)`, a change in the price **index** (~+0.44 index points), not in the YoY
+**rate** the rule's input docstring names. Fixed with a new `_hicp_rate_change_pp(points, *, field,
+warnings)` that differences two `_yoy_percent` rates — reusing the canonical derivation rather than
+inventing a second one (LAW 2).
+
+**`_last_change` then had no caller and was DELETED**; every comment referencing it was reworded.
+A variable computed and only published is dead or a mis-description — here it was both, twice.
+
+**`pi_target` was assigned but never used** (F841). The honest repair — matching the comment's own
+intent — was to **use** it: the HICP derivation note now reports the deviation from target, which is
+correct because the ECB level rule subtracts `policy.eu.pi_target` **internally** (structurally unlike
+the BoE, whose rules take a pre-net inflation gap).
+
+### 6. The mutation proofs (7, all killed)
+
+| # | Mutation | Killed by |
+|---|---|---|
+| R1 | ECB level-rule coefficient edited | `..._matches_the_published_wp258_primary_source` |
+| R2 | ECB error-correction coefficient edited | `..._error_correction_rule_matches_the_hand_calculation` |
+| R3 | the sign guard relaxed to `>= 0.0` | `..._adjustment_coefficient_must_be_negative` |
+| R4 | the long rate removed from the ECB change rule | `..._long_rate_moves_the_ecb_error_correction_rule_and_no_fed_rule` |
+| R5 | the ECB rules relabelled `country="us"` | `..._labelled_eu_not_us_and_carry_distinct_variants` |
+| U1 | `output_gap_change` reverted to the GDP-**level** change | `..._output_gap_change_is_a_gap_change_not_a_gdp_level_change` |
+| U2 | `pi_change` reverted to the HICP-**index** change | `..._pi_change_is_a_rate_change_not_a_price_index_change` |
+
+Tree restored **byte-identical** after every mutation (`policy_rules.py` sha256 `5fd24b07…`,
+`orchestration.py` sha256 `576683f7…`).
+
+**One proof failed the first time, and the reason matters.** U1's mutation **survived** on the first
+attempt: the `_eu_snapshot` fixture had a synthetic GDP series near **100**, so the level-change and
+the gap-change were both tiny and the defect was invisible. The fixture had to reproduce the
+**conditions** of the defect — it was rebuilt at realistic national-accounts magnitude
+(~2,950,000–3,130,000), and the re-applied mutation was killed (`29000.0 < 100.0` failed). A mutation
+proof is only as good as the fixture's magnitude; this is the concrete form of that rule.
+
+### 7. The live end-to-end verification
+
+Against the **live** routes, `/thesis/eu` runs and prints (verbatim):
+
+```
+policy_view:  taylor 3.02 · balanced 4.04 · first_difference 3.69
+dispersion_pp: 1.02   agreement: UNCERTAIN
+market_pricing_gap: raw_gap=+1.662  model_implied=3.69  market_implied=2.028  is_meaningful=True
+instrument: ESTR futures
+```
+
+The three rules disagree by 102bp (`UNCERTAIN`), the level rule (3.02) sits below the two
+change rules (4.04 / 3.69) — the expected shape for a euro area below its equilibrium — the market
+prices 2.03 against the model's 3.69, and the trade idea selects the euro-area instrument. `country.
+enabled` / `implemented` are `["us", "gb", "eu"]`.
+
+### 8. Gates
+
+`ruff check` PASS · `ruff format --check` **188** clean · bare `mypy` **188** clean · suite
+**1920 passed / 5 deselected** (up from 1884 — +36 new tests). `AGENTS.md` byte-identical
+(`sha256 8295ccf3…`).
+
+**Files:** `src/macro_engine/{config.py,models/policy_rules.py,thesis_layer/schemas.py,
+data_layer/openbb_client.py,api_layer/orchestration.py}`,
+`config/{settings.yaml,series_registry.yaml}`,
+`tests/{models/test_policy_rules.py,models/test_instrument_selection.py,
+thesis_layer/test_schemas.py,api_layer/test_orchestration.py,data_layer/test_eu_registry.py}`,
+`docs/{CHANGELOG.md,DECISIONS.md}`, `README.md`.

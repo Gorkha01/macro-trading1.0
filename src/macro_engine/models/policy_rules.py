@@ -54,6 +54,9 @@ __all__ = [
     "BoeContemporaneousInputs",
     "BoeFirstDifferenceInputs",
     "BoeForwardLookingInputs",
+    "EcbContemporaneousInputs",
+    "EcbErrorCorrectionInputs",
+    "EcbRestrictedCointegrationInputs",
     "FirstDifferenceInputs",
     "MarketPricingGap",
     "PolicyRuleResult",
@@ -67,6 +70,9 @@ __all__ = [
     "boe_forward_looking_taylor_rule",
     "canonical_policy_gap",
     "derive_market_implied_policy_path",
+    "ecb_contemporaneous_taylor_rule",
+    "ecb_error_correction_rule",
+    "ecb_restricted_cointegration_rule",
     "first_difference_rule",
     "futures_implied_policy_path",
     "policy_rule_ensemble",
@@ -967,6 +973,669 @@ def boe_first_difference_rule(inputs: BoeFirstDifferenceInputs) -> PolicyRuleRes
             "MUST NOT be compared directly against the Fed's first-difference "
             "rule. Different regressors, different horizon (3 quarters vs "
             "current), different economy.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Module 5 — Section 22.3: the ECB reaction function.
+#
+# These three functions are the "eu" arm of the multi-country increment. They
+# are NOT the Fed rules with euro-area series substituted — Section 22.3 rejects
+# exactly that as the un-fakeable layer. Each of the structural differences
+# below is enforced in the code:
+#
+#   1. THE LONG RATE ENTERS THE RULE. The euro area's own estimated reaction
+#      function carries the 10-year rate as a long-run regressor, because the
+#      long rate proxies the public's perception of the LONG-RUN INFLATION
+#      OBJECTIVE. None of the Fed's three rules reads the long bond. The rule
+#      that does is `ecb_error_correction_rule`; its `long_rate` input has no
+#      analogue in `TaylorRuleInputs` or `FirstDifferenceInputs`.
+#   2. THE THIRD RULE IS AN ERROR-CORRECTION, NOT A FORWARD-LOOKING TAYLOR OR
+#      SPEED-LIMIT RULE. The euro area's level specification is unstable (unit
+#      roots), so the euro-area estimation is an I(1) error-correction form: the
+#      CHANGE responds to the deviation of the LEVEL from its long-run
+#      equilibrium. That is a different functional form from anything in the
+#      Fed's or the BoE's arms.
+#   3. The level rule's coefficients are the euro area's OWN estimates
+#      (k_pi = 2.733, k_y = 1.443), which the primary source's own joint Wald
+#      test shows are NOT Taylor's 1.5 / 0.5 (p = 0.04).
+#
+# The coefficients are from ECB Working Paper No 258 (September 2003, "Interest
+# rate reaction functions and the Taylor rule in the euro area"), Tables 2, 4
+# and 6, read from ``settings.policy.eu`` — never written into an expression
+# (LAW 1). The same tables state each rule in the form implemented below.
+#
+# The euro-area AGGREGATE only: no member-state reaction function is calibrated
+# here (the operator's choice, 2026-10-10). This is the 20-country aggregate the
+# ECB actually sets policy for, which is the honest unit for a euro-area rule.
+# ---------------------------------------------------------------------------
+
+
+class EcbContemporaneousInputs(_FiniteInputs):
+    """Inputs for the ECB's traditional I(0) level rule (WP 258, eq. (2)).
+
+    ``pi_current`` is HICP inflation as a LEVEL (percent, year-over-year) and
+    ``output_gap`` is the gap as percent of potential. Unlike the BoE's
+    contemporaneous rule there is no energy / non-energy split: the euro area's
+    published rule does not decompose inflation, and inventing a split here
+    would be a BoE feature wearing an EU label.
+
+    There is deliberately no ``long_rate`` field: the level rule (WP 258,
+    equation (2)) reads inflation and the output gap only. The long rate enters
+    the *cointegrating* rule, and keeping it out of this input record is what
+    makes the two functions' regressor sets structurally distinct rather than
+    two names for one list.
+    """
+
+    i_prev: float = Field(
+        description=(
+            "The euro-area policy rate in the previous quarter, percent. The "
+            "ECB's MAIN REFINANCING OPERATIONS rate — the rate the euro area's "
+            "policy stance is quoted against."
+        ),
+    )
+    pi_current: float = Field(
+        description="Current HICP inflation, percent, year-over-year. A LEVEL.",
+    )
+    output_gap: float = Field(
+        description="Output gap as percent of potential, current quarter.",
+    )
+
+
+class EcbErrorCorrectionInputs(_FiniteInputs):
+    """Inputs for the ECB's cointegration (I(1)) error-correction rule.
+
+    The structural difference is ``long_rate``. In the euro-area estimation the
+    10-year rate is a **regressor**, not a market-control aside: it proxies the
+    public's perception of the long-run inflation objective (``pi_inf``), which
+    is what makes the euro-area rule forward-looking in a way the Fed's level
+    rules are not. A euro-area rule with no long-rate term is a Fed rule with
+    euro-area series, which is the §22.3 fake.
+
+    The rule is written in CHANGES, so it also carries ``i_prev`` (to form the
+    prescribed level) and ``i_prev_change`` (the lagged change, whose
+    coefficient is the estimation's persistence-in-change term — distinct from
+    the level rule's smoothing). All the change terms are quarter-on-quarter,
+    in the same units as the levels (percent for rates and inflation, percent
+    of potential for the gap).
+    """
+
+    i_prev: float = Field(
+        description=(
+            "The euro-area policy rate in the previous quarter, percent. Used "
+            "to form the prescribed LEVEL from the rule's prescribed change."
+        ),
+    )
+    i_prev_change: float = Field(
+        description=(
+            "The change in the policy rate over the previous quarter, in "
+            "percentage points (i_{t-1} - i_{t-2}). The estimated persistence of "
+            "the CHANGE, not of the level."
+        ),
+    )
+    long_rate: float = Field(
+        description=(
+            "The euro-area 10-year government bond yield, percent. THE "
+            "STRUCTURAL REGRESSOR: it proxies the public's long-run inflation "
+            "perception. No Fed rule reads it."
+        ),
+    )
+    pi_current: float = Field(
+        description="Current HICP inflation, percent, year-over-year. A LEVEL.",
+    )
+    pi_change: float = Field(
+        description=(
+            "The change in HICP inflation over the current quarter, in "
+            "percentage points (pi_t - pi_{t-1}). The SHORT-RUN response."
+        ),
+    )
+    output_gap: float = Field(
+        description="Output gap as percent of potential, current quarter. A LEVEL.",
+    )
+    output_gap_change: float = Field(
+        description=(
+            "The change in the output gap over the current quarter, in "
+            "percentage points. The SHORT-RUN response to the gap."
+        ),
+    )
+
+
+def _ecb_stance_word(rate: float, i_star: float) -> str:
+    """``restrictive`` / ``accommodative`` / ``neutral`` — the euro area vs i*.
+
+    The same three-state classification as ``_boe_stance_word``, kept as its own
+    function rather than shared, for the same reason: the comparison is
+    load-bearing and a shared helper would silently couple the two central
+    banks' descriptive vocabulary. The exact-equality case is separated so a
+    float landing on ``i*`` cannot be mislabelled by a branch's ``else`` (the
+    D-040 class of defect).
+    """
+    if rate > i_star:
+        return "restrictive"
+    if rate < i_star:
+        return "accommodative"
+    return "neutral"
+
+
+def ecb_contemporaneous_taylor_rule(inputs: EcbContemporaneousInputs) -> PolicyRuleResult:
+    """``i_t = 0.884·i_{t-1} + 0.116·(i* + 2.733·(π - π*) + 1.443·y)``
+
+    The ECB's traditional I(0) level rule for the euro area, from ECB Working
+    Paper No 258, Table 2 (equation (2)). Two things make this **not** a
+    relabelled Fed rule (Section 22.3):
+
+    * **The coefficients are the euro area's own.** The estimated responses are
+      ``k_pi = 2.733`` and ``k_y = 1.443`` — nearly twice and nearly three times
+      Taylor's 1.5 and 0.5. The paper's joint Wald test REJECTS ``k_pi = 1.5,
+      k_y = 0.5`` at p = 0.04, so importing the Fed's (or Taylor's) coefficients
+      would contradict the primary source, not merely round it.
+    * **The persistence is the euro area's own estimate.** ``0.884``, fit on the
+      lagged euro-area short rate. The BoE's arm uses 0.85 and the Fed's rules
+      have no term at all — three different behavioural facts.
+
+    The rule is smoothed: the prescription is a weighted average of the previous
+    rate and the raw rule value, because the estimation shows the euro-area rate
+    does not jump to the raw prescription. A reader who wants the un-smoothed
+    value can recover it from ``value["raw_prescription_pct"]``.
+
+    Confidence is ``compute_confidence()``'s, never asserted, and carries
+    ``depends_on_unobservable=True`` because ``i*`` is an illustrative neutral
+    rate — unobservable by nature, the same Section 21.4 item 13 limitation the
+    Fed and BoE rules carry. The euro area's real-rate estimate is particularly
+    imprecise (WP 258 reports a 95% interval for rho spanning roughly
+    [-0.85, 5.48]), which the warning states rather than hides.
+    """
+    eu = get_settings().policy.eu
+    i_star = eu.i_star_value
+    pi_target = eu.pi_target_value
+    smoothing = eu.smoothing_value
+    coefficients = eu.contemporaneous
+
+    inflation_gap = inputs.pi_current - pi_target
+    raw = (
+        i_star
+        + coefficients.inflation_coefficient_value * inflation_gap
+        + coefficients.output_gap_coefficient_value * inputs.output_gap
+    )
+    # Written as `1 - smoothing` rather than a second literal so the two halves
+    # of the published persistence pair are one number in config (LAW 2).
+    rate = smoothing * inputs.i_prev + (1.0 - smoothing) * raw
+
+    return PolicyRuleResult(
+        model_name="ecb_contemporaneous_taylor_rule",
+        rule_variant="ecb_contemporaneous_taylor",
+        country="eu",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"The ECB's estimated euro-area level rule prescribes a policy rate "
+            f"of {rate:.2f}% (raw, un-smoothed prescription {raw:.2f}%)"
+        ),
+        context=(
+            f"Reads current HICP inflation {inputs.pi_current:.2f}% against the "
+            f"{pi_target:.1f}% target (gap {inflation_gap:+.2f}pp, weight "
+            f"{coefficients.inflation_coefficient_value:g}) and the output gap "
+            f"{inputs.output_gap:+.2f}% (weight "
+            f"{coefficients.output_gap_coefficient_value:g}); smoothed "
+            f"{smoothing:.3f} from {inputs.i_prev:.2f}%."
+        ),
+        inputs_used=["i_prev", "pi_current", "output_gap"],
+        warnings=[
+            "i* is an ILLUSTRATIVE euro-area neutral rate and is unobservable "
+            "(Section 21.4 item 13). The euro area's own real-rate estimate is "
+            "imprecise: ECB WP 258 reports a 95% interval for the real-rate "
+            "intercept spanning roughly [-0.85, 5.48]. Every percentage point "
+            "of error in i* passes through at ~0.12 into this quarter's "
+            "prescription but cumulates to 1:1 in the level the rule settles at.",
+            "The coefficients (2.733 on inflation, 1.443 on the output gap) are "
+            "the EURO AREA's estimates, not Taylor's 1.5 / 0.5. The paper's own "
+            "joint Wald test rejects Taylor's values at p = 0.04, so this is not "
+            "a rounding: reading the rule as a textbook Taylor rule misstates "
+            "the estimated euro-area response.",
+            "This rule was estimated on euro-area data 1988-2002, BEFORE the "
+            "2008 crisis, the sovereign-debt crisis and the 2021-23 inflation "
+            "episode. The coefficients describe the euro area as it was then; "
+            "they are the best published estimate of the euro area's own rule, "
+            "not a claim about the Governing Council's current behaviour.",
+        ],
+        unit="percent",
+        direction=(
+            f"{_ecb_stance_word(rate, i_star)} relative to the illustrative "
+            f"euro-area neutral rate of {i_star:.2f}%"
+        ),
+        assumptions=[
+            "The rule is smoothed: the published prescription is a weighted "
+            "average of the previous rate and the raw rule value, matching the "
+            "estimated persistence on the lagged euro-area short rate.",
+            "HICP inflation, not CPI or PCE — the ECB's target measure. The "
+            "euro-area HICP leg (eu_hicp_*) supplies pi_current.",
+            "The output gap is the euro-area aggregate, not a member state's; "
+            "the ECB sets one policy rate for the currency union.",
+        ],
+        data_provenance=[
+            "i_prev — the euro-area policy rate in the previous quarter. The "
+            "MAIN REFINANCING OPERATIONS rate (eu_ecb_main_refi_rate in the "
+            "registry), the rate the euro area's stance is quoted against.",
+            "pi_current — euro-area HICP inflation, year-over-year, from the eu_hicp_* series",
+            "coefficients — config leaves policy.eu.contemporaneous.*, the euro "
+            "area's estimates from ECB WP 258 (Sept 2003), Table 2",
+            "i_star — config leaf policy.eu.i_star, derived from the target plus "
+            "an illustrative real rate (policy.eu.real_rate_assumption)",
+        ],
+        limitations=[
+            "This is a SIMULATION rule transcribed from a published estimation. "
+            "It describes what the estimated rule WOULD prescribe, not what the "
+            "Governing Council decided or will decide.",
+            "i* is held constant; a time-varying euro-area equilibrium real rate "
+            "would shift the rule's level, and this module cannot detect that.",
+            "The sample (1988-2002) predates the euro's full institutional "
+            "history and every major shock since; the estimate is the euro "
+            "area's own, but it is a historical one.",
+            "The output is a prescribed RATE, not a forecast of the ECB's next decision.",
+        ],
+        decision_relevance=(
+            "The 'eu' arm of Section 16.2's Q6 gap. Its value, alongside the "
+            "euro area's other two rules, defines the euro-area model-implied "
+            "policy path that a euro thesis compares against the market-implied "
+            "path — exactly the role the Fed rules play for a US thesis."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described as the ECB's reaction function in the sense "
+            "of the Governing Council's actual decision process. It is an "
+            "estimated rule on historical data; treating it as a description of "
+            "current policy is the misreading this prohibition exists to "
+            "prevent.",
+            "MUST NOT be combined with the Fed's or the BoE's rules in one "
+            "ensemble or have their dispersion read across countries. The three "
+            "arms have different targets, measures and coefficients; mixing them "
+            "would make the dispersion a measure of the currency, not the model.",
+            "MUST NOT be consumed without the raw prescription visible: the "
+            "smoothed value alone hides how far the rule wants the rate to move.",
+        ],
+    )
+
+
+def ecb_error_correction_rule(inputs: EcbErrorCorrectionInputs) -> PolicyRuleResult:
+    """``Δi = c_π0·Δπ + c_y0·Δy + c_r·Δi_{t-1} + c_e·(i_{t-1} - b_l·l - b_π·π - b_y·y)``
+
+    The ECB's cointegration (I(1)) error-correction rule for the euro area, from
+    ECB Working Paper No 258, equations (3), (4) and (8). This is the leg that
+    makes the euro-area arm structurally unlike the Fed's or the BoE's, and the
+    difference is the **long rate**.
+
+    **Why the long rate is in the rule, in the primary source's own terms.** The
+    euro-area level specification is unstable — the short rate, inflation and
+    the output gap have unit roots — so the paper estimates a cointegrating
+    relationship instead. The estimated vector is ``r = 0.827·l + 0.900·π +
+    0.358·y``: the 10-year rate ``l`` enters with a large, significant
+    coefficient. The paper argues ``l`` proxies the public's perception of the
+    LONG-RUN INFLATION OBJECTIVE (``pi_inf``), so a rise in the long rate is
+    read as a rise in expected future inflation and the short rate responds —
+    which is what makes the euro-area rule forward-looking in a way a
+    level-only rule is not. **A euro-area rule without the long-rate term is a
+    Fed rule with euro-area series substituted, and the long-rate term is
+    exactly the feature §22.3's "genuinely distinct" bar is about.**
+
+    **The error-correction mechanism.** ``ecr`` is the deviation of the level
+    from its long-run equilibrium. The coefficient ``c_e = -0.189`` on the
+    lagged ``ecr`` is NEGATIVE by construction: a positive deviation produces an
+    offsetting negative change, so ~19% of the disequilibrium is corrected per
+    quarter. The function does NOT impose that sign by ``abs()`` or a ``min`` —
+    the sign lives in the config leaf and is validated there, so a sign flip is
+    caught rather than masked, and the arithmetic below is the published
+    equation.
+
+    Confidence is ``compute_confidence()``'s with
+    ``depends_on_unobservable=False``: unlike the level rules, this rule needs
+    no ``i*`` — it is written so the equilibrium level carries the constant, and
+    the rule prescribes a CHANGE from the observed previous rate. (The
+    equilibrium it corrects toward is itself estimated rather than observed,
+    which the warning states; but the rule's own inputs are all observed, so it
+    does not inherit the level rules' unobservable-neutral-rate penalty.)
+    """
+    eu = get_settings().policy.eu
+    pi_target = eu.pi_target_value
+    coefficients = eu.error_correction
+
+    # The long-run equilibrium level the rule corrects toward, from the
+    # cointegrating vector (WP 258, eq. (3)). The constant is the target — the
+    # equilibrium nominal short rate is the inflation target plus the long-run
+    # real rate, and the real-rate intercept is not separately identified, so
+    # the equilibrium is anchored at pi_target rather than at a fitted
+    # constant. This is stated in the assumptions, not left implicit.
+    equilibrium = (
+        pi_target
+        + coefficients.long_rate_coefficient_value * inputs.long_rate
+        + coefficients.inflation_coefficient_value * inputs.pi_current
+        + coefficients.output_gap_coefficient_value * inputs.output_gap
+    )
+    # The error-correction term: the deviation of the PREVIOUS level from that
+    # equilibrium, as the published equation uses ecr_{t-1}.
+    ecr = inputs.i_prev - equilibrium
+
+    delta = (
+        coefficients.inflation_change_coefficient_value * inputs.pi_change
+        + coefficients.output_gap_change_coefficient_value * inputs.output_gap_change
+        + coefficients.rate_change_persistence_coefficient_value * inputs.i_prev_change
+        + coefficients.adjustment_coefficient_value * ecr
+    )
+    rate = inputs.i_prev + delta
+
+    return PolicyRuleResult(
+        model_name="ecb_error_correction_rule",
+        rule_variant="ecb_error_correction",
+        country="eu",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The ECB's estimated euro-area error-correction rule prescribes a "
+            f"policy rate of {rate:.2f}% ({delta:+.2f}pp from {inputs.i_prev:.2f}%)"
+        ),
+        context=(
+            f"The long-run equilibrium level is {equilibrium:.2f}%, so the "
+            f"previous rate {inputs.i_prev:.2f}% sat {ecr:+.2f}pp from it; the "
+            f"error-correction term contributes "
+            f"{coefficients.adjustment_coefficient_value * ecr:+.3f}pp to the "
+            f"prescribed change. Short-run terms: Δπ {inputs.pi_change:+.2f}pp "
+            f"(weight {coefficients.inflation_change_coefficient_value:g}), Δy "
+            f"{inputs.output_gap_change:+.2f}pp (weight "
+            f"{coefficients.output_gap_change_coefficient_value:g}), Δi_prev "
+            f"{inputs.i_prev_change:+.2f}pp (weight "
+            f"{coefficients.rate_change_persistence_coefficient_value:g})."
+        ),
+        inputs_used=[
+            "i_prev",
+            "i_prev_change",
+            "long_rate",
+            "pi_current",
+            "pi_change",
+            "output_gap",
+            "output_gap_change",
+        ],
+        warnings=[
+            "THE LONG RATE IS A REGRESSOR HERE, and the primary source's own "
+            "interpretation is that it proxies the public's long-run inflation "
+            "perception. This means the rule is exposed to movements in the "
+            "10-year yield that are NOT about inflation expectations — term "
+            "premium, duration supply, safe-asset demand. The paper itself notes "
+            "the long rate is contaminated by the current short rate; a user "
+            "reading the long-rate term as a pure inflation-expectations signal "
+            "overstates what the estimate identifies.",
+            "The equilibrium level is anchored at the inflation target plus the "
+            "estimated long-run coefficients; the constant in the published "
+            "equation is not separately identified and is treated as the target. "
+            "A different anchoring would shift the level the rule corrects "
+            "toward, and thus the prescribed change.",
+            "The sample is 1988-2002, ending before the euro's institutional "
+            "maturity and every major shock since. The estimated "
+            "error-correction speed (-0.19, ~19% per quarter) is a fact about "
+            "that sample, not a current estimate.",
+            "This rule prescribes a CHANGE from the observed previous rate; it "
+            "cannot detect that the LEVEL itself is wrong, which is the question "
+            "the level rule answers. The two are reported together for that "
+            "reason.",
+        ],
+        unit="percent",
+        direction=(
+            f"{'tightening' if delta > 0 else 'easing' if delta < 0 else 'holding'} "
+            f"relative to the previous euro-area policy rate of {inputs.i_prev:.2f}%"
+        ),
+        assumptions=[
+            "The rule is an error-correction (change) form, matching the euro "
+            "area's estimated I(1) specification. Substituting a level form "
+            "would be a different rule, not the euro area's.",
+            "The long rate enters the LONG-RUN equilibrium, not the short-run "
+            "dynamics: the estimated short-run response to the change in the "
+            "long rate was insignificant and is dropped, as the published final "
+            "specification (equation (8)) drops it.",
+            "The constant in the cointegrating vector is anchored at the "
+            "inflation target, because the real-rate intercept is not separately "
+            "identified in the published estimation.",
+        ],
+        data_provenance=[
+            "long_rate — the euro-area 10-year government bond yield "
+            "(eu_long_rate_10y in the registry, from the econdb long-rate "
+            "route). THE structural input; no Fed rule reads it.",
+            "pi_current / pi_change — euro-area HICP inflation level and its "
+            "quarter-on-quarter change, from the eu_hicp_* series",
+            "output_gap / output_gap_change — the euro-area gap and its change",
+            "coefficients — config leaves policy.eu.error_correction.*, the "
+            "euro area's estimates from ECB WP 258 (Sept 2003), Tables 4 and 6",
+            "i_prev / i_prev_change — the euro-area policy rate and its change",
+        ],
+        limitations=[
+            "The cointegrating vector was estimated on a SHORT sample (1988-2002, "
+            "roughly 55 quarters); the paper itself cautions that Johansen "
+            "asymptotics should not be over-interpreted given the sample length. "
+            "The estimate is the best published euro-area one, not a precise "
+            "one.",
+            "The rule corrects toward an equilibrium built from the long rate "
+            "and the current level variables; if the true long-run relationship "
+            "has shifted (a credibility change, a regime change), the rule "
+            "corrects toward the wrong level.",
+            "It prescribes a CHANGE, not a level, and cannot detect an incorrect level.",
+        ],
+        decision_relevance=(
+            "Part of the 'eu' model-implied policy path (Section 16.2 Q6). It "
+            "is the euro-area leg that carries the long rate, so it is the "
+            "bridge between the policy-rule view and the bond market — a wide "
+            "divergence from the level rule means the long-run inflation "
+            "perception embedded in the curve disagrees with the current reading, "
+            "which the ensemble reports rather than averages away."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a level. It is a change from the previous "
+            "rate; publishing it as a target rate misstates what the rule says.",
+            "MUST NOT be run without the long-rate input. The long rate is the "
+            "structural regressor; substituting a constant (or dropping the "
+            "term) would turn this into a level-only rule while it still "
+            "reported itself as the euro-area error-correction rule — a field "
+            "describing a computation that did not happen.",
+            "MUST NOT be compared directly against the Fed's or the BoE's rules. "
+            "Different functional form, different regressors, different economy.",
+        ],
+    )
+
+
+class EcbRestrictedCointegrationInputs(_FiniteInputs):
+    """Inputs for the ECB's RESTRICTED cointegration rule (WP 258, eq. (5)).
+
+    The paper estimates TWO cointegrating vectors. The unrestricted one (used by
+    ``ecb_error_correction_rule``) links the short rate to the long rate,
+    inflation AND the output gap. The **restricted** one imposes a UNIT
+    coefficient on inflation — ``rho_t = a + 0.771·l + 0.437·y`` — on the
+    argument that policymakers set the REAL short rate in response to the long
+    rate and the gap, with the inflation coefficient absorbed into the real
+    rate. The paper does not reject the restriction (p = 0.78) and finds the
+    restricted form forecasts at least as well.
+
+    This is a genuinely different rule, not a reparameterisation of the
+    unrestricted one: it drops ``pi`` from the long-run vector and re-estimates
+    ``l`` and ``y`` (0.771 / 0.437 against 0.827 / 0.358). Modelling it as its
+    own function with its own coefficients — rather than as the unrestricted
+    rule with a coefficient set to 0 and 1 — is what keeps the two estimands
+    from being confused.
+
+    The input set differs: there is **no ``pi_current``**, because the
+    restricted vector does not include inflation as a separate regressor. A
+    caller cannot silently pass inflation here — the field does not exist.
+    """
+
+    i_prev: float = Field(
+        description="The euro-area policy rate in the previous quarter, percent.",
+    )
+    i_prev_change: float = Field(
+        description="The change in the policy rate over the previous quarter, in pp.",
+    )
+    long_rate: float = Field(
+        description=(
+            "The euro-area 10-year government bond yield, percent. The "
+            "structural regressor in the restricted vector too."
+        ),
+    )
+    real_rate: float = Field(
+        description=(
+            "The euro-area REAL short rate, percent (nominal policy rate minus "
+            "inflation). The restricted form is written in the real rate, the "
+            "point of the restriction."
+        ),
+    )
+    pi_change: float = Field(
+        description="The change in HICP inflation over the current quarter, in pp.",
+    )
+    output_gap: float = Field(
+        description="Output gap as percent of potential, current quarter. A LEVEL.",
+    )
+    output_gap_change: float = Field(
+        description="The change in the output gap over the current quarter, in pp.",
+    )
+
+
+def ecb_restricted_cointegration_rule(
+    inputs: EcbRestrictedCointegrationInputs,
+) -> PolicyRuleResult:
+    """``Δi = c_pi0·Δπ + c_y0·Δy + c_r·Δi_{t-1} + c_e·(real_rate_{t-1} - 0.771·l - 0.437·y)``
+
+    The ECB's RESTRICTED cointegration rule for the euro area, from ECB Working
+    Paper No 258, equations (5) and (9). The restriction is ``b_pi = 1``: the
+    real short rate ``real_rate`` — not the nominal rate — responds to the long rate and
+    the output gap, with the inflation coefficient absorbed into the real rate.
+    The paper tests and does not reject this (p = 0.78) and finds the restricted
+    form fits and forecasts at least as well as the unrestricted one.
+
+    **Why this is a separate function and not a flag on the unrestricted rule.**
+    The restriction RE-ESTIMATES the remaining coefficients rather than merely
+    fixing one: ``l`` and ``y`` become 0.771 / 0.437 here against 0.827 / 0.358
+    in the unrestricted vector. Treating it as "the unrestricted rule with
+    b_π = 1" would silently use the wrong coefficients for the two regressors
+    that remain. The two are different estimands, so they are two functions, and
+    this one's input record has no ``pi_current`` field at all — inflation
+    enters only through the real rate and its change.
+
+    Confidence is ``compute_confidence()`` with ``depends_on_unobservable=False``,
+    the same as the unrestricted error-correction rule: it needs no ``i*``.
+    """
+    eu = get_settings().policy.eu
+    coefficients = eu.error_correction
+
+    # The restricted long-run equilibrium: the REAL rate against the long rate
+    # and the gap, with a unit coefficient on inflation imposed (WP 258, eq.
+    # (5)). The restricted long-rate and output-gap coefficients are NOT the
+    # unrestricted ones — they are the re-estimated 0.771 / 0.437.
+    equilibrium = (
+        coefficients.restricted_long_rate_coefficient_value * inputs.long_rate
+        + coefficients.restricted_output_gap_coefficient_value * inputs.output_gap
+    )
+    ecr = inputs.real_rate - equilibrium
+
+    delta = (
+        coefficients.inflation_change_coefficient_value * inputs.pi_change
+        + coefficients.output_gap_change_coefficient_value * inputs.output_gap_change
+        + coefficients.rate_change_persistence_coefficient_value * inputs.i_prev_change
+        + coefficients.adjustment_coefficient_value * ecr
+    )
+    rate = inputs.i_prev + delta
+
+    return PolicyRuleResult(
+        model_name="ecb_restricted_cointegration_rule",
+        rule_variant="ecb_restricted_cointegration",
+        country="eu",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The ECB's estimated restricted cointegration rule prescribes a "
+            f"policy rate of {rate:.2f}% ({delta:+.2f}pp from {inputs.i_prev:.2f}%)"
+        ),
+        context=(
+            f"The restricted long-run equilibrium (real rate against long rate "
+            f"and gap, unit inflation coefficient) is {equilibrium:.2f}%, so the "
+            f"previous real rate {inputs.real_rate:.2f}% sat {ecr:+.2f}pp from "
+            f"it; the error-correction term contributes "
+            f"{coefficients.adjustment_coefficient_value * ecr:+.3f}pp. The "
+            f"restricted coefficients are re-estimated: long rate "
+            f"{coefficients.restricted_long_rate_coefficient_value:g} and gap "
+            f"{coefficients.restricted_output_gap_coefficient_value:g}, NOT the "
+            f"unrestricted "
+            f"{coefficients.long_rate_coefficient_value:g}/"
+            f"{coefficients.output_gap_coefficient_value:g}."
+        ),
+        inputs_used=[
+            "i_prev",
+            "i_prev_change",
+            "long_rate",
+            "real_rate",
+            "pi_change",
+            "output_gap",
+            "output_gap_change",
+        ],
+        warnings=[
+            "The restriction imposes a UNIT inflation coefficient, which the "
+            "paper does not reject (p = 0.78) but also does not establish as "
+            "true. The unrestricted rule is estimated alongside precisely "
+            "because the restriction is a hypothesis; a reader who sees only "
+            "this rule sees a maintained assumption presented as a coefficient.",
+            "The rule is written in the REAL short rate, so it inherits the "
+            "measurement of inflation used to form it. A HICP-based real rate "
+            "is assumed; a different deflator would move the level the rule "
+            "corrects toward.",
+            "The long rate is a regressor here too, with the same term-premium "
+            "contamination the unrestricted rule's warning states: movements in "
+            "the 10-year yield that are not about inflation enter the rule.",
+            "The sample is 1988-2002, ending before every major euro-area shock "
+            "since; the coefficients are a historical estimate.",
+        ],
+        unit="percent",
+        direction=(
+            f"{'tightening' if delta > 0 else 'easing' if delta < 0 else 'holding'} "
+            f"relative to the previous euro-area policy rate of {inputs.i_prev:.2f}%"
+        ),
+        assumptions=[
+            "The inflation coefficient is imposed at unity (the restriction), "
+            "and the long-rate and output-gap coefficients are the RE-ESTIMATED "
+            "values 0.771 / 0.437, not the unrestricted 0.827 / 0.358.",
+            "The rule is written in the REAL short rate and its change terms; "
+            "the caller supplies the real rate rather than this function "
+            "computing it, so the deflator choice is visible at the call site.",
+            "The restricted vector has no separate inflation level regressor; "
+            "inflation enters through the real rate and its change.",
+        ],
+        data_provenance=[
+            "long_rate — the euro-area 10-year yield (eu_long_rate_10y). The structural regressor.",
+            "real_rate — the euro-area real short rate, formed by the caller "
+            "from the policy rate and HICP inflation",
+            "coefficients — config leaves "
+            "policy.eu.error_correction.restricted_long_rate_coefficient and "
+            ".restricted_output_gap_coefficient (the re-estimated values) plus "
+            "the shared short-run and adjustment coefficients, ECB WP 258, "
+            "Tables 4 and 6",
+        ],
+        limitations=[
+            "The restriction is a maintained hypothesis the paper fails to "
+            "reject, not a fact it establishes; the unrestricted rule is the "
+            "companion that does not impose it.",
+            "It prescribes a CHANGE, not a level, and cannot detect an incorrect level.",
+            "The cointegrating vector was estimated on a short sample; the "
+            "paper cautions against over-interpreting the asymptotics.",
+        ],
+        decision_relevance=(
+            "Part of the 'eu' model-implied policy path (Section 16.2 Q6). It "
+            "is the euro-area leg that states the stance in REAL terms, so its "
+            "divergence from the unrestricted rule is informative: it isolates "
+            "how much of the prescription comes from the unit-inflation "
+            "restriction rather than from the estimated inflation coefficient."
+        ),
+        decision_prohibition=[
+            "MUST NOT be presented as the euro area's estimated rule without "
+            "noting the restriction. The unit inflation coefficient is imposed, "
+            "not estimated, and a reader who cannot see that is reading a "
+            "hypothesis as a finding.",
+            "MUST NOT be read as a level. It is a change from the previous rate.",
+            "MUST NOT be compared directly against the Fed's or BoE's rules. "
+            "Different functional form, different regressors, different economy.",
         ],
     )
 

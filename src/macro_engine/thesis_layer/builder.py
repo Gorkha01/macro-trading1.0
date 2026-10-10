@@ -136,6 +136,9 @@ from macro_engine.models.policy_rules import (
     BoeContemporaneousInputs,
     BoeFirstDifferenceInputs,
     BoeForwardLookingInputs,
+    EcbContemporaneousInputs,
+    EcbErrorCorrectionInputs,
+    EcbRestrictedCointegrationInputs,
     FirstDifferenceInputs,
     MarketPricingGap,
     PolicyRuleResult,
@@ -146,6 +149,9 @@ from macro_engine.models.policy_rules import (
     boe_forward_looking_taylor_rule,
     canonical_policy_gap,
     derive_market_implied_policy_path,
+    ecb_contemporaneous_taylor_rule,
+    ecb_error_correction_rule,
+    ecb_restricted_cointegration_rule,
     first_difference_rule,
     policy_rule_ensemble,
     taylor_rule,
@@ -393,6 +399,31 @@ class BoeRuleInputs:
     first_difference: BoeFirstDifferenceInputs
 
 
+@dataclass(frozen=True)
+class EuRuleInputs:
+    """The three ECB rule-input records, as one bundle (Section 22.3).
+
+    Why a bundle rather than loose fields on ``ThesisInputs``
+    ---------------------------------------------------------
+    The same reason ``BoeRuleInputs`` is one. The euro area's three rules each
+    take a DISTINCT record: the level rule reads HICP and the output gap; the
+    unrestricted error-correction rule reads the LONG rate, the inflation level
+    and its change, the gap level and its change, the policy rate and its
+    change; the restricted cointegration rule reads the real rate and drops the
+    inflation level entirely. There is no way to express that as one or two
+    records without one standing in for a different regressor set — the
+    inert/wrong-input shape the two Fed records exist to avoid.
+
+    The bundle lives HERE rather than in ``api_layer`` because the builder is
+    the consumer and the dependency runs ``api_layer -> thesis_layer``, so a
+    bundle declared a layer up could not be imported by its own consumer.
+    """
+
+    contemporaneous: EcbContemporaneousInputs
+    error_correction: EcbErrorCorrectionInputs
+    restricted_cointegration: EcbRestrictedCointegrationInputs
+
+
 #: The three policy rules, in §7.3's order. Named so the two functions that
 #: unpack the tuple cannot disagree about the order.
 RuleTrio = tuple[PolicyRuleResult, PolicyRuleResult, PolicyRuleResult]
@@ -407,6 +438,7 @@ def build_policy_gap(
     futures_curve: FedFundsFuturesCurve | None = None,
     country: str = "us",
     boe_inputs: BoeRuleInputs | None = None,
+    eu_inputs: EuRuleInputs | None = None,
 ) -> tuple[MarketPricingGap, RuleTrio, ModelResult, ModelResult]:
     """Q3-Q5: the three rules, their dispersion, and the canonical gap.
 
@@ -448,11 +480,12 @@ def build_policy_gap(
     contamination warnings are the futures function's, not the proxy's.
     """
     # -- Q3-Q5's three rules, DISPATCHED BY COUNTRY (Section 22.3). The Fed's
-    #    trio and the BoE's trio are different functions reading different input
-    #    records; a country's thesis must run its OWN central bank's rules or the
-    #    gap is meaningless. The dispatch is explicit (not a try/except or a
-    #    getattr) so a country with no rule set is a loud refusal, and so a new
-    #    country cannot silently fall through to the Fed's rules.
+    #    trio, the BoE's trio and the euro area's trio are different functions
+    #    reading different input records; a country's thesis must run its OWN
+    #    central bank's rules or the gap is meaningless. The dispatch is explicit
+    #    (not a try/except or a getattr) so a country with no rule set is a loud
+    #    refusal, and so a new country cannot silently fall through to the Fed's
+    #    rules.
     if country == "gb":
         if boe_inputs is None:
             raise TypeError(
@@ -468,20 +501,57 @@ def build_policy_gap(
                 "(Section 22.3); passing both would let the wrong central bank's "
                 "rules run silently."
             )
+        if eu_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='gb') was given eu_inputs; a thesis "
+                "carries ONE country's records (Section 22.3)."
+            )
         taylor = boe_contemporaneous_taylor_rule(boe_inputs.contemporaneous)
         balanced = boe_forward_looking_taylor_rule(boe_inputs.forward_looking)
         first_diff = boe_first_difference_rule(boe_inputs.first_difference)
+    elif country == "eu":
+        if eu_inputs is None:
+            raise TypeError(
+                "build_policy_gap(country='eu') requires eu_inputs; the euro "
+                "area's three rules take three distinct input records — the "
+                "level rule reads HICP and the gap, the error-correction rule "
+                "reads the LONG rate and the changes, and the restricted rule "
+                "reads the REAL rate — and none can be derived from the Fed's or "
+                "the BoE's. A eu thesis with no ECB inputs has no policy leg "
+                "(Section 22.3)."
+            )
+        if taylor_inputs is not None or first_difference_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='eu') was given the Fed's rule inputs "
+                "as well as the ECB's. A thesis carries ONE country's records "
+                "(Section 22.3); passing both would let the wrong central bank's "
+                "rules run silently."
+            )
+        if boe_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='eu') was given boe_inputs; a thesis "
+                "carries ONE country's records (Section 22.3)."
+            )
+        # The LEVEL leg is the euro area's own estimated I(0) rule; the CHANGE
+        # legs are the unrestricted and restricted cointegration rules. The
+        # trio is therefore formed from one level rule and TWO change rules —
+        # the euro area's own estimated structure, not a relabel of the Fed's
+        # or the BoE's (each of which is two level rules and one change rule).
+        taylor = ecb_contemporaneous_taylor_rule(eu_inputs.contemporaneous)
+        balanced = ecb_error_correction_rule(eu_inputs.error_correction)
+        first_diff = ecb_restricted_cointegration_rule(eu_inputs.restricted_cointegration)
     elif country == "us":
         if taylor_inputs is None or first_difference_inputs is None:
             raise TypeError(
                 "build_policy_gap(country='us') requires taylor_inputs and "
                 "first_difference_inputs; the Fed's rules cannot be derived from "
-                "the BoE's records (Section 22.3)."
+                "the BoE's or the ECB's records (Section 22.3)."
             )
-        if boe_inputs is not None:
+        if boe_inputs is not None or eu_inputs is not None:
             raise TypeError(
-                "build_policy_gap(country='us') was given boe_inputs; a thesis "
-                "carries ONE country's records (Section 22.3)."
+                "build_policy_gap(country='us') was given boe_inputs or "
+                "eu_inputs; a thesis carries ONE country's records (Section "
+                "22.3)."
             )
         taylor = taylor_rule(taylor_inputs)
         balanced = balanced_approach_rule(taylor_inputs)
@@ -489,8 +559,8 @@ def build_policy_gap(
     else:
         raise ValueError(
             f"build_policy_gap has no rule set for country {country!r}; "
-            f"implemented: ['gb', 'us'] (Section 22.3). A country without its own "
-            f"central-bank rules must not borrow another's."
+            f"implemented: ['eu', 'gb', 'us'] (Section 22.3). A country without "
+            f"its own central-bank rules must not borrow another's."
         )
 
     ensemble = policy_rule_ensemble(taylor, balanced, first_diff)
@@ -857,6 +927,7 @@ def build_us_macro_thesis(
     universe: ProductionUniverse,
     country: str = "us",
     boe_inputs: BoeRuleInputs | None = None,
+    eu_inputs: EuRuleInputs | None = None,
     curve_short_tenor: str | None = None,
     curve_long_tenor: str | None = None,
     short_yield: float,
@@ -992,6 +1063,7 @@ def build_us_macro_thesis(
         futures_curve=futures_curve,
         country=country,
         boe_inputs=boe_inputs,
+        eu_inputs=eu_inputs,
     )
 
     # -- Q6. THE SIGNIFICANCE TEST reads the published gap's own verdict, not a

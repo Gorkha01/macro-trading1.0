@@ -1386,6 +1386,28 @@ class RegistrySeries(BaseModel):
             "sees the exact number the fetcher will apply."
         ),
     )
+    extra_params: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Additional provider query parameters this entry's ROUTE requires beyond "
+            "`symbol`, merged into the scalar fetch's params. `None` (the default) means "
+            "the route needs only `symbol` — which is the case for every FRED entry, and "
+            "is why ~70 entries are expressible without this field at all. "
+            "Measured 2026-10-10 adding the euro-area legs: the scalar fetcher builds "
+            "`params={'symbol': entry.symbol, 'start_date': start}` and CANNOT express a "
+            "route whose query also needs a country. `economy.indicators` (provider "
+            "`econdb`) requires `country=EU` — the euro-area unemployment series "
+            "(`URATE`) is unreachable on any symbol-only route (measured: every FRED "
+            "variant stops in <=2023 while Germany's does not, so the gap is real, not a "
+            "spelling problem). "
+            "This is a DECLARED surface rather than a code special-case because the "
+            "alternative is a provider name appearing in `snapshot_builder`, which "
+            "Section 21.1 forbids: the registry is the only source of routing. Values are "
+            "merged as-is and MUST NOT include `symbol` or `start_date`, which the fetcher "
+            "supplies itself — a duplicate key here would silently shadow the real series "
+            "or the real window, so both are rejected at load rather than at fetch time."
+        ),
+    )
     window_filter_supported: bool = Field(
         default=True,
         description=(
@@ -1565,6 +1587,42 @@ class RegistrySeries(BaseModel):
                 raise ValueError(
                     f"plausible_range {self.plausible_range} is not an increasing interval."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _extra_params_must_not_shadow_the_fetcher(self) -> RegistrySeries:
+        """Refuse an ``extra_params`` key the fetcher supplies itself.
+
+        The scalar fetch builds ``{"symbol": entry.symbol, "start_date": start}``
+        and then merges ``extra_params`` over it. A duplicate key therefore does
+        not add a parameter — it REPLACES one. Both collisions are silent and
+        consequential:
+
+        * ``symbol`` — the entry would resolve to a *different series* than the
+          one its ``description``, ``verified_value`` and ``plausible_range``
+          describe. The verification evidence would attest to a route that is no
+          longer the one fetched, which is precisely the "recorded claim that is
+          never re-measured" defect class (D-043).
+        * ``start_date`` — the caller's window would be overridden by a literal
+          in the registry, so a bounded read would silently become an unbounded
+          one (or a fixed one), and the O-7 forward-dated guard's input would no
+          longer be what its caller asked for.
+
+        Rejecting at load rather than merging defensively keeps ``extra_params``
+        a genuinely additive surface: every key in it is a parameter the route
+        needs and the fetcher does not know about.
+        """
+        if self.extra_params is None:
+            return self
+        reserved = {"symbol", "start_date"} & set(self.extra_params)
+        if reserved:
+            raise ValueError(
+                f"registry entry '{self.symbol or self.tenors or '?'}' declares "
+                f"extra_params keys {sorted(reserved)}, which the fetcher supplies "
+                "itself. A duplicate would REPLACE the real value rather than add "
+                "a parameter — a shadowed symbol changes which series is read "
+                "while every recorded evidence field still describes the old one."
+            )
         return self
 
     @model_validator(mode="after")
@@ -2249,6 +2307,179 @@ class GbPolicySettings(BaseModel):
         return raw
 
 
+class EuContemporaneousRuleCoefficients(BaseModel):
+    """The ECB's traditional I(0) level-rule coefficients (country "eu").
+
+    Section 22.3 requires a country's reaction function to be **genuinely
+    distinct** from the Fed's, not a relabel. These are the euro area's OWN
+    estimated coefficients from ECB Working Paper No 258 (Sept 2003), Table 2 —
+    k_pi = 2.733 and k_y = 1.443, both substantially larger than Taylor (1993)'s
+    1.5 / 0.5, a difference the paper's own joint Wald test rejects at p = 0.04.
+    Importing the Fed's 0.5 / 0.5 here would therefore be a substitution the
+    primary source itself rules out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inflation_coefficient: CalibratedValue
+    output_gap_coefficient: CalibratedValue
+
+    @property
+    def inflation_coefficient_value(self) -> float:
+        return float(self.inflation_coefficient.value)
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+
+class EuErrorCorrectionCoefficients(BaseModel):
+    """The ECB's cointegration (I(1)) error-correction rule coefficients.
+
+    This is the leg that makes the euro area's reaction function structurally
+    unlike any of the Fed's rules, and the distinction is enforced here rather
+    than asserted: the rule is written in CHANGES, and it carries the **long
+    rate** as a long-run regressor — the 10-year rate acting as a proxy for the
+    public's perception of the long-run inflation objective. No Fed rule reads
+    the long bond as a stance proxy.
+
+    The coefficients are from ECB Working Paper No 258 (Sept 2003), Table 4
+    (the cointegrating vector) and Table 6 (the error-correction feedback). The
+    **unrestricted** error-correction form is implemented, using the estimated
+    b_pi = 0.900 rather than the value 1.0 the paper separately imposes (which it
+    fails to reject at p = 0.78) — the estimated value is what the paper reports.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    long_rate_coefficient: CalibratedValue
+    inflation_coefficient: CalibratedValue
+    output_gap_coefficient: CalibratedValue
+    adjustment_coefficient: CalibratedValue
+    inflation_change_coefficient: CalibratedValue
+    output_gap_change_coefficient: CalibratedValue
+    rate_change_persistence_coefficient: CalibratedValue
+    #: The RESTRICTED cointegrating vector's re-estimated coefficients (WP 258,
+    #: equation (5)). Separate leaves because imposing b_pi = 1 re-estimates
+    #: ``l`` and ``y`` (0.771 / 0.437 against 0.827 / 0.358); sharing the
+    #: unrestricted leaves would silently model a different vector than the one
+    #: the paper reports for the restricted form.
+    restricted_long_rate_coefficient: CalibratedValue
+    restricted_output_gap_coefficient: CalibratedValue
+
+    @property
+    def long_rate_coefficient_value(self) -> float:
+        return float(self.long_rate_coefficient.value)
+
+    @property
+    def inflation_coefficient_value(self) -> float:
+        return float(self.inflation_coefficient.value)
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+    @property
+    def adjustment_coefficient_value(self) -> float:
+        """The error-correction speed of adjustment. Must be NEGATIVE.
+
+        A positive deviation of the level from its long-run equilibrium must
+        produce an OFFsetting NEGATIVE move in the change; a non-negative value
+        would make the rule diverge from equilibrium rather than converge to it.
+        The range is validated here rather than trusted, because a sign flip is
+        invisible in a returned number and would change the rule's behaviour
+        from stabilising to destabilising.
+        """
+        raw = float(self.adjustment_coefficient.value)
+        if raw >= 0.0:
+            raise ValueError(
+                f"policy.eu.error_correction.adjustment_coefficient must be "
+                f"negative (an error-correction term pulls the level back toward "
+                f"equilibrium); got {raw!r}. A non-negative value makes the rule "
+                f"diverge from equilibrium, and the sign is not visible in the "
+                f"prescribed rate."
+            )
+        return raw
+
+    @property
+    def inflation_change_coefficient_value(self) -> float:
+        return float(self.inflation_change_coefficient.value)
+
+    @property
+    def output_gap_change_coefficient_value(self) -> float:
+        return float(self.output_gap_change_coefficient.value)
+
+    @property
+    def rate_change_persistence_coefficient_value(self) -> float:
+        return float(self.rate_change_persistence_coefficient.value)
+
+    @property
+    def restricted_long_rate_coefficient_value(self) -> float:
+        return float(self.restricted_long_rate_coefficient.value)
+
+    @property
+    def restricted_output_gap_coefficient_value(self) -> float:
+        return float(self.restricted_output_gap_coefficient.value)
+
+
+class EuPolicySettings(BaseModel):
+    """Section 22.3 — the ECB's reaction function coefficients (country "eu").
+
+    Everything the three ``ecb_*`` rule functions read, so no coefficient is
+    written into an expression (LAW 1). The values are the euro area's OWN
+    estimated coefficients from ECB Working Paper No 258 (September 2003,
+    "Interest rate reaction functions and the Taylor rule in the euro area") —
+    cited per leaf in ``settings.yaml`` — rather than a Fed or BoE Taylor rule
+    with an "EU" label, which is exactly the substitution Section 22.3 forbids.
+
+    ``i_star`` is stated as a leaf AND decomposed into ``pi_target`` +
+    ``real_rate_assumption``; the mover test asserts the three agree. Unlike the
+    BoE's 1% real-rate assumption, the euro-area default real rate is 0.0,
+    because the ECB's own estimate of the real-rate intercept is insignificantly
+    different from zero (WP 258, Table 2) — the honest euro-area convention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pi_target: CalibratedValue
+    i_star: CalibratedValue
+    real_rate_assumption: CalibratedValue
+    smoothing: CalibratedValue
+    contemporaneous: EuContemporaneousRuleCoefficients
+    error_correction: EuErrorCorrectionCoefficients
+
+    @property
+    def pi_target_value(self) -> float:
+        return float(self.pi_target.value)
+
+    @property
+    def i_star_value(self) -> float:
+        return float(self.i_star.value)
+
+    @property
+    def real_rate_assumption_value(self) -> float:
+        return float(self.real_rate_assumption.value)
+
+    @property
+    def smoothing_value(self) -> float:
+        """The estimated persistence coefficient. Must be in ``[0, 1)``.
+
+        Same range and same reason as the BoE's: a value of exactly 1 would make
+        the level rule inert (the rate never moves) and a value outside
+        ``[0, 1)`` would make the smoothing term explode. It is read into the
+        level rule, so a bad value is a bad prescription.
+        """
+        raw = float(self.smoothing.value)
+        if not 0.0 <= raw < 1.0:
+            raise ValueError(
+                f"policy.eu.smoothing must be in [0, 1); got {raw!r}. The euro "
+                f"area's level rule interpolates between the previous rate and "
+                f"the raw prescription with this weight, so 1 makes it inert and "
+                f"a value outside [0, 1) makes it explode."
+            )
+        return raw
+
+
 class PolicyEnsembleThresholds(BaseModel):
     """Dispersion bands that decide whether the rules agree or conflict."""
 
@@ -2336,6 +2567,12 @@ class PolicySettings(BaseModel):
     #: so that a reader comparing the two cannot miss that they are DIFFERENT
     #: functions with different targets, horizons and components.
     gb: GbPolicySettings
+    #: Section 22.3 — the ECB's own reaction-function coefficients. Beside the
+    #: Fed's and the BoE's for the same reason: the euro area's estimated rule
+    #: carries the LONG rate as a regressor and is estimated in error-correction
+    #: (change) form, so a reader comparing the three must see they are
+    #: different functions, not one function with three labels.
+    eu: EuPolicySettings
 
     @property
     def pi_target_value(self) -> float:

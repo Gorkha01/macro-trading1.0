@@ -1938,6 +1938,266 @@ series:
     verified_observation_date: 2026-01-01
     plausible_range: [0.0, 25.0]
 
+  # ---------------------------------------------------------------------------
+  # Euro area (country code "eu") — Section 22.3's second multi-country
+  # increment. European Central Bank.
+  #
+  # The `eu_` prefix is load-bearing for the same reason `gb_` is: the registry
+  # is a FLAT namespace, so an unprefixed name would collide with a US or UK
+  # series and silently serve another country's data to a euro thesis.
+  #
+  # WHY THIS BLOCK LOOKS DIFFERENT FROM `gb_`. The euro area is not a country
+  # with a national statistics office; it is a CURRENCY UNION of 20 states. Two
+  # consequences are visible in the provenance recorded below and are NOT
+  # incidental:
+  #
+  #   1. **No single route serves every leg.** The ECB's own policy rates are on
+  #      FRED; HICP is on FRED (as an index) and on the OECD route (as a rate);
+  #      unemployment is on `econdb` ONLY. Measured 2026-10-10: every FRED
+  #      euro-area unemployment variant stops in <=2023 (`LRHUTTTTEZM156S` ->
+  #      2023-01, `LRHUTTTTEZQ156S` -> 2022-10) while Germany's equivalent
+  #      (`LRHUTTTTDEM156S`) is current — so the gap is real, not a bad symbol.
+  #      Two entries below therefore carry `extra_params`, the route-parameter
+  #      surface added with this increment.
+  #   2. **The same quantity arrives at two different SCALES on two routes.**
+  #      The OECD HICP rate is a FRACTION (0.019 = 1.9%) and econdb's euro 10y
+  #      is a FRACTION (0.03748 = 3.748%), while every FRED rate is a PERCENT.
+  #      Both were measured, not assumed. Each entry declares its `units` and
+  #      `source_units` so the fetcher CONVERTS rather than a reader guessing.
+  #
+  # Section 22.3's warning applies to this block as much as to `gb_`: these are
+  # the DATA leg only. A euro reaction function that is a relabelled Fed Taylor
+  # rule is explicitly rejected by the spec — see `models/policy_rules.py`'s
+  # `ecb_*` rules, which encode a currency union's structure rather than
+  # substituting HICP into a single-country rule.
+  # ---------------------------------------------------------------------------
+
+  eu_hicp_index:
+    provider: fred
+    snapshot_field: eu_hicp_index
+    symbol: CP0000EZ19M086NEST
+    description: >
+      Euro-area HICP (all items, harmonised), as an INDEX (2015 = 100). Not a
+      rate — the RATE is derived from this by the models layer, see the note on
+      `models/policy_rules.py`'s euro rules. Probed 2026-10-10: 357
+      observations, 1996-12-01 .. 2026-08-01, latest 103.66.
+      The index is CURRENT where every direct euro-area HICP *rate* route is
+      stale (the OECD route's latest is 2025-12-01), which is why the rate is
+      derived here rather than fetched. The derivation was checked against that
+      direct rate over 337 overlapping months: max discrepancy 0.076pp, i.e.
+      the two are the same measure and the residual is the published rate's own
+      rounding to three decimals. Deriving a rate from an index is a MODELLING
+      step and therefore lives in the models layer, not here — the registry's job
+      is to name a real series, and this is one.
+    frequency: monthly
+    units: index_2015_100
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 103.66
+    verified_observation_date: 2026-08-01
+    plausible_range: [50.0, 200.0]
+
+  eu_ecb_deposit_rate:
+    provider: fred
+    snapshot_field: eu_ecb_deposit_rate
+    symbol: ECBDFR
+    description: >
+      ECB deposit facility rate (%), DAILY. The rate the Governing Council has
+      actually used as its policy instrument since 2014 — the euro area's
+      effective policy rate, and the euro analogue of the Fed's IORB and the
+      BoE's Bank Rate. Probed 2026-10-10: 10144 observations, latest
+      2026-10-09 = 2.50. Distinct from `eu_ecb_main_refi_rate` below: the ECB
+      runs a two-tier policy-rate system and the two rates are NOT
+      interchangeable, so both are carried and which one a rule reads is
+      declared rather than assumed.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 2.5
+    verified_observation_date: 2026-10-09
+    plausible_range: [-1.0, 25.0]
+    decision_note: >
+      The deposit rate is the euro area's EFFECTIVE policy rate, and the euro
+      area's two policy rates differ (2.50 vs 2.65), so a rule that read
+      "the ECB rate" without naming which would be ambiguous. The euro rules
+      read this one — see `models/policy_rules.py` — and the reason is that the
+      deposit rate is the rate that has actually cleared the money market since
+      the ECB moved to a floor system.
+
+  eu_ecb_main_refi_rate:
+    provider: fred
+    snapshot_field: eu_ecb_main_refi_rate
+    symbol: ECBMRRFR
+    description: >
+      ECB main refinancing operations rate (%), DAILY. The rate charged on the
+      ECB's regular liquidity-providing operations — the euro area's
+      conventional policy rate and the headline figure the press reports.
+      Probed 2026-10-10: 7113 observations, latest 2026-10-09 = 2.65.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 2.65
+    verified_observation_date: 2026-10-09
+    plausible_range: [-1.0, 25.0]
+
+  eu_estr:
+    provider: fred
+    snapshot_field: eu_estr
+    symbol: ECBESTRVOLWGTTRMDMNRT
+    description: >
+      ESTR — the euro short-term rate (%), DAILY. The euro area's risk-free
+      overnight benchmark, administered by the ECB: the euro analogue of SOFR
+      and of SONIA, and the rate euro-area financial contracts reference now
+      that EONIA is retired. Probed 2026-10-10: 1799 observations, latest
+      2026-10-08 = 2.439. Carried SEPARATELY from the deposit rate because one
+      is a policy rate an administered rule may read and the other is a market
+      rate — conflating them would put the market's effective rate into a rule
+      calibrated on the policy rate.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 2.439
+    verified_observation_date: 2026-10-08
+    plausible_range: [-1.0, 25.0]
+
+  eu_unemployment_rate:
+    provider: econdb
+    endpoint: economy.indicators
+    snapshot_field: eu_unemployment_rate
+    symbol: URATE
+    extra_params:
+      country: EU
+      # REQUIRED BY THIS PROVIDER, measured 2026-10-10: `economy.indicators`
+      # via `econdb` REJECTS a request with no `frequency` ("Invalid value
+      # 'None' for 'frequency' (provider: 'econdb'). Must be one of: ['annual',
+      # 'quarter', 'month']"). The registry's own `frequency: monthly` leaf
+      # below is IRRELEVANT to the provider call — it is this engine's metadata
+      # about the series, not a query parameter. Without this key the fetch
+      # fails, silently falls through to the `imf` provider, and the IMF parser
+      # rejects the symbol `URATE` ("Expected 'dataflow::identifier'") — a
+      # mis-attributed error that reads like a bad symbol rather than a missing
+      # parameter. Declared here because routing belongs in the registry (21.1).
+      frequency: month
+    description: >
+      Euro-area unemployment rate (%), MONTHLY. Probed 2026-10-10:
+      `economy.indicators`, provider `econdb`, symbol `URATE`, country `EU` ->
+      130 observations, latest 2026-08-01 = 6.1. CURRENT.
+      This leg is on NO other route. Measured 2026-10-10: every FRED euro-area
+      unemployment variant stops in <=2023 (`LRHUTTTTEZM156S` -> 2023-01,
+      `LRHUTTTTEZM156N` -> 2023-01, `LRHUTTTTEZQ156S`/`N` -> 2022-10); the
+      20-country FRED symbols (`LRHUTTTTEZ20M156S`, `UNRTEA20`) do not exist;
+      `economy.unemployment` (OECD) returns NoRecordsFound for every accepted
+      euro-area spelling. That the route is healthy is not assumed — Germany's
+      `LRHUTTTTDEM156S` returns 427 observations through 2026-07 on the same
+      FRED route, so the euro gap is a genuine coverage gap.
+      `country: EU` (not `EA`) is declared because both are ACCEPTED and only
+      one is CURRENT: `EA` stops at 2021-07. Coverage was checked, not just
+      acceptance — the D-137 error class is exactly a verdict from acceptance.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 6.1
+    verified_observation_date: 2026-08-01
+    plausible_range: [1.0, 30.0]
+    decision_note: >
+      The only euro-area leg requiring a route parameter beyond `symbol` — this
+      entry is the reason `extra_params` exists on RegistrySeries. See that
+      field's docstring. The parameter is DECLARED in the registry rather than
+      special-cased in the fetcher because Section 21.1 makes the registry the
+      only source of routing; a provider name or a country literal in
+      `snapshot_builder` would put routing in two places.
+
+  eu_gdp_real_level:
+    provider: fred
+    snapshot_field: eu_gdp_real_level
+    symbol: CLVMNACSCAB1GQEA19
+    description: >
+      Euro-area (EA-19) real GDP, chain-linked volumes, as a LEVEL in millions
+      of euro, SA. Probed 2026-10-10: 126 observations, latest 2026-04-01 =
+      2,913,099.7. A LEVEL, not a growth rate — the euro area's real GDP is
+      published as an index/level on every reachable route (measured: FRED
+      `CLVMNACSCAB1GQEA19` = 2,913,099.7 and econdb `RGDP` = 3,649,040, both
+      current through 2026-Q2; the OECD `economy.gdp.real` route 404s for
+      `euro_area`), while the euro-area GDP GROWTH series that do exist
+      (`NAEXKP01EZQ657S`) STOP in 2023-01. Growth is therefore DERIVED from this
+      level by the models layer, exactly as the euro HICP rate is derived from
+      the HICP index.
+    frequency: quarterly
+    units: millions_eur_chained
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 2913099.7
+    verified_observation_date: 2026-04-01
+    plausible_range: [1000000.0, 6000000.0]
+
+  eu_short_rate_3m:
+    provider: fred
+    snapshot_field: eu_short_rate_3m
+    symbol: IR3TIB01EZM156N
+    description: >
+      Euro-area 3-month interbank rate (%), MONTHLY — the SHORT end of the euro
+      curve and thus the series the market-implied policy path is derived from,
+      the euro analogue of the US `short_yield` and the UK `gb_short_rate_3m`.
+      Probed 2026-10-10: 385 observations, latest 2026-01-01 = 2.028.
+      NOTE the latest observation is earlier than the policy rates' (which are
+      daily and current to 2026-10-09): a monthly interbank average publishes
+      on a lag, and that lag is recorded rather than hidden.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 2.0277272727
+    verified_observation_date: 2026-01-01
+    plausible_range: [-1.0, 25.0]
+
+  eu_long_rate_10y:
+    provider: econdb
+    endpoint: economy.indicators
+    snapshot_field: eu_long_rate_10y
+    symbol: Y10YD
+    extra_params:
+      country: EU
+      # REQUIRED BY THIS PROVIDER — see the note on eu_unemployment_rate above.
+      # Without it the fetch fails and falls through to `imf`, whose parser
+      # rejects `Y10YD`. Declared here because routing belongs in the registry.
+      frequency: month
+    source_units: decimal
+    description: >
+      Euro-area 10-year government bond yield — the LONG end of the euro curve.
+      Probed 2026-10-10: `economy.indicators`, provider `econdb`, symbol
+      `Y10YD`, country `EU` -> 129 observations, 2015-11-01 .. 2026-07-01,
+      latest 0.03748. CURRENT — more current than the FRED euro-area long rate
+      (`IRLTLT01EZM156N`, latest 2026-01-01) by six months.
+      THE SCALE IS A FRACTION, and it was MEASURED rather than assumed: over
+      123 overlapping months, `Y10YD * 100` tracks the FRED euro-area 10y to
+      within 0.51pp (typically ~0.29pp) while `Y10YD * 1` is off by up to
+      3.68pp. The residual ~0.29pp is a genuine measurement difference, not a
+      scale error: the two routes report different baskets (econdb's is an
+      EU-aggregate long-term rate, FRED's the EA-19 government bond benchmark),
+      so they are the same quantity measured two ways and this entry declares
+      which one it is. `source_units: decimal` makes the fetcher MULTIPLY BY
+      100, so the engine always sees percent and the 100x error a route swap
+      would otherwise introduce is structurally prevented (D-086).
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 3.748
+    verified_observation_date: 2026-07-01
+    plausible_range: [-1.0, 30.0]
+    decision_note: >
+      Two routes serve the euro 10y at two SCALES and two different latest
+      dates. This entry takes the current, fraction-scaled econdb route and
+      declares the scale; the FRED route is recorded in the description as the
+      cross-check that established it. Neither is "the" euro 10y — they measure
+      slightly different baskets — so a consumer needing the FRED series must
+      name it rather than assume equivalence.
+
+
 # ---------------------------------------------------------------------------
 # BLOCKED — Section 21.4 Loophole Ledger. These have no reachable source.
 # The registry records them so that an attempt to use them fails loudly and

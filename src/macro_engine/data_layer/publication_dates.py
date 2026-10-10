@@ -16,12 +16,22 @@ on the record itself.
 **Measured live 2026-09-20: 42 of 42 then-resolvable registry symbols returned a
 ``last_updated``, 0 transport errors.** That is the coverage claim, and it is a
 count, not an impression. The denominator is dated on purpose and it has since
-moved twice: re-measured 2026-10-05, the registry declared **59** series of
-which **50** resolved through this route; re-measured 2026-10-10 (Section 22.3's
-multi-country increment added seven ``gb_*`` UK series), it declares **66** series
-of which **57** resolve through this route. So 42/42 describes the 2026-09-20
-registry rather than today's. The ROUTE is unchanged — the registry grew, and
-each expansion is a count re-measured rather than a number trusted.
+moved three times: re-measured 2026-10-05, the registry declared **59** series
+of which **50** resolved through this route; re-measured 2026-10-10 (Section
+22.3's multi-country increment added seven ``gb_*`` UK series), it declared
+**66** series of which **57** resolved; re-measured the same day for the second
+multi-country increment (eight ``eu_*`` euro-area series), it declares
+**74** series of which **63** resolve through this route. So 42/42 describes the
+2026-09-20 registry rather than today's. The ROUTE is unchanged — the registry
+grew, and each expansion is a count re-measured rather than a number trusted.
+
+The euro increment moved the two numbers by DIFFERENT amounts (66 -> 74 declared,
+57 -> 63 resolved) and the reason is worth keeping: six of the eight new series
+are FRED and resolve here, while ``eu_unemployment_rate`` and
+``eu_long_rate_10y`` are ``econdb`` and do not — the euro area's labour and long
+rate legs are on no FRED route at all. A reader who assumed "a new country adds
+its series to both counts" would have predicted 65 and been wrong; the counts are
+measured, not extrapolated.
 
 What ``last_updated`` is, and is not
 ------------------------------------
@@ -120,22 +130,21 @@ def _resolve_series_symbols() -> dict[str, str]:
       exists for them. Skipping them at the source removes the wasted calls and
       the misleading warnings; their release timing correctly stays UNKNOWN,
       because no FRED publication stamp exists for them anyway. (The 7 is
-      unchanged as of 2026-10-10; the DECLARED denominator moved 59 -> 66 while
-      the RESOLVED count stayed 57, because the seven added ``gb_*`` series are
-      FRED and DO resolve through this route — they replaced nothing, so the
-      resolvable set grew 50 -> 57 at the same moment the declared set grew
-      59 -> 66. All seven remaining non-fred entries are ``not_a_snapshot_field``,
-      so the skip set did not grow when Section 22.3's ``gb_*`` series were
-      added.)
+      unchanged as of the euro-area increment; the DECLARED denominator moved
+      66 -> 74 while the RESOLVED count moved 57 -> 63, because six of the eight
+      added ``eu_*`` series are FRED and resolve through this route while
+      ``eu_unemployment_rate`` and ``eu_long_rate_10y`` are ``econdb`` and do
+      not. Both of those DO populate snapshot fields, so the skip set did not
+      grow — it stayed 7, exactly as it did when Section 22.3's ``gb_*`` series
+      were added.)
 
     ``status`` is **deliberately not consulted here**. An earlier version of this
     docstring claimed ``blocked``/``unverified`` entries were "skipped too"; they
-    are not, and they do not need to be. Measured (re-measured 2026-10-10): the
-    registry declares **66** series and **every carried entry is
-    ``status: verified``** —
+    are not, and they do not need to be. Measured (re-measured 2026-10-10, after
+    the euro-area increment): the registry declares **74** series and **every
+    carried entry is ``status: verified``** —
     ``grep -oE "status: [a-z_]+" config/series_registry.yaml`` returns exactly one
-    value, 66 times.
-
+    value, 74 times.
     Note the SHAPE of that grep, because the earlier revision got it wrong: a
     bare ``grep -c "unverified"`` returns **3** and ``grep -c "blocked"`` returns
     **13**, since both words also appear in the registry's own status legend

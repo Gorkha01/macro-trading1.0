@@ -10,6 +10,48 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-148 — the euro area (ECB) increment: country `eu`, the second multi-country and third modelled country (2026-10-10)
+
+The `eu` (euro area) increment completing §22.3's three-workstream bar for the **second**
+multi-country after `gb` (`us` was built in Phases 0–4, so `eu` is the third modelled country): its
+own verified data, its own genuinely distinct reaction function, its
+own instrument set — wired end to end so a `eu` snapshot produces a euro-area thesis. Enabled as the
+**20-country aggregate**, not per member state.
+
+- **Added** the euro-area data workstream (`config/series_registry.yaml`, WS1): `eu_hicp_index`,
+  `eu_ecb_main_refi_rate`, `eu_ecb_deposit_rate`, `eu_estr`, `eu_unemployment_rate`,
+  `eu_gdp_real_level`, `eu_short_rate_3m`, `eu_long_rate_10y`. The HICP **rate** stops in 2025-12 on
+  the available route, so the rules' inflation input is DERIVED from the current index via the shared
+  `_yoy_percent` (overlap-checked against the published rate over 337 common months, max |diff|
+  0.076pp).
+- **Added** the ECB reaction function (`models/policy_rules.py`, WS2) — three rules from **ECB Working
+  Paper No 258 (Sept 2003)**, read directly via `pypdf`: `ecb_contemporaneous_taylor_rule` (the I(0)
+  level rule, coefficients 2.733 / 1.443, smoothing 0.884), `ecb_error_correction_rule` (the
+  unrestricted cointegrating vector 0.827 / 0.900 / 0.358, adjustment −0.189) and
+  `ecb_restricted_cointegration_rule` (the restricted vector 0.771 / 0.437, unit inflation
+  coefficient). **The long rate is a regressor** (proxying the public's long-run inflation
+  perception) and the form is **error-correction (change)** — the two structural markers that make
+  this NOT a relabelled Fed or BoE rule.
+- **Added** the euro-area instrument set (`thesis_layer/schemas.py` + `config/settings.yaml`'s
+  `instrument_selection.country_routes.eu`, WS3): a `_EU_PLAN` universe (Bunds/BTPs/OATs/Bonos/SPGBs,
+  Bund futures, BTP-Bund/OAT-Bund spreads, ESTR futures, Euro-area OIS, Euro Stoxx 50) plus an `eu`
+  routing table naming `ESTR futures` for the policy-path leg — an instrument the us and gb universes
+  both refuse.
+- **Fixed** a `data_layer/openbb_client.py` defect found while live-probing: `_fetch_via_package` and
+  `_fetch_records_via_package` did **not forward `provider`**, so OpenBB validated kwargs against the
+  wrong provider's parameter model (the econdb route raised on the IMF parser). Both now forward it.
+- **Fixed** two real **unit** defects in the eu derivation (`api_layer/orchestration.py`), both found
+  only by reading the LIVE thesis output: `output_gap_change` was the change in the GDP **level**
+  (order 10^4) rather than the change in the **gap** (pp), and `pi_change` was the change in the HICP
+  **index** (~+0.44) rather than the change in the YoY **rate**. The first drove the error-correction
+  prescription to ~4885% and the dispersion to ~4882pp; both are now derived from the canonical
+  quantities (`qoq_rates` / `_yoy_percent`) and pinned by tests built at realistic GDP magnitude (a
+  synthetic series near 100 cannot distinguish the defect — the first fixture did not, and the
+  mutation survived).
+- **Verified** end to end against the LIVE routes: the `eu` thesis runs, the three ECB rules return
+  3.02% / 4.04% / 3.69% (dispersion 102bp, `UNCERTAIN`), the market pricing gap is
+  `raw_gap = +1.662` (`is_meaningful=True`), and the trade idea selects **`ESTR futures`**.
+
 ### D-129 — the fresh Tier-5 re-audit's two defects fixed (2026-09-29)
 
 The **go-ahead** following the fresh, independent Tier-5 re-audit

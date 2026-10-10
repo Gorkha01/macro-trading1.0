@@ -16,7 +16,7 @@ it calls *done* was checked to have a real body — not a `NotImplementedError`.
 | Are Phases 0–4 done? | **Yes.** All 101 functions named in AGENTS.md §21.3 Tier 1–5 exist in `src/`. |
 | Is Tier 5 (the spec's "stubs only") stubbed? | **No — 23 of 23 Tier 5 functions have real bodies.** |
 | How many `extensions/` modules are stubbed? | **6** — each gated on an uninstalled §4 package. |
-| How many genuine *capability* gaps remain? | **2** — multi-country (**partially closed: `gb` done 2026-10-10, §2.4**), and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included.** |
+| How many genuine *capability* gaps remain? | **2** — multi-country (**partially closed: `gb` and the euro area `eu` done 2026-10-10, §2.4; `de`/`jp` remain**), and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included.** |
 | Why are they not implemented? | Mostly AGENTS.md §4 (*"no dependency before its phase"*); two are **data-availability** blocks, not code gaps. |
 
 **Correction on the record:** AGENTS.md §21.3 heads Tier 5 *"Phase 5+ (stubs only until their
@@ -218,30 +218,34 @@ assumed the same correlation response would be one scenario written four times:
 | `ltcm_1998` | 1998 — the correlation-breakdown episode | −0.8 |
 
 
-### 2.4 Multi-country (`de`, `jp`, `gb`) — **`gb` implemented end-to-end 2026-10-10; `de`/`jp` remain**
+### 2.4 Multi-country (`de`, `jp`, `gb`, `eu`) — **`gb` and the euro area (`eu`) implemented end-to-end 2026-10-10; `de`/`jp` remain**
 
-> **RE-MEASURED 2026-10-10.** The row below that read "not implemented (confirmed)" was true when
-> written and is no longer: the **first multi-country increment (gb)** landed as three §22.3
-> workstreams and was wired through the API. This section is the doc that *tracks* the gap, so it is
-> re-measured in full rather than having the one stale row edited (the §2.2 pair-defect lesson).
+> **RE-MEASURED 2026-10-10 (twice).** The row below that read "not implemented (confirmed)" was true
+> when written and is no longer: the **first multi-country increment (gb)** landed as three §22.3
+> workstreams and was wired through the API. Later the same day the **second (the euro area, `eu`)**
+> landed the same way. This section is the doc that *tracks* the gap, so it is re-measured in full
+> rather than having the one stale row edited (the §2.2 pair-defect lesson, restated in D-148).
 
 | Check | Result |
 |---|---|
-| `config/settings.yaml` → `country.implemented` | **`["us", "gb"]`** (`:102`). `gb` was added when its own data sources, its own reaction function and its own instrument set all existed. `de`/`jp` are still absent — adding one requires the same three things, not a label change. |
-| `country.enabled` | `["us"]` — still US-first; `enabled` gates the *snapshot build*, `implemented` gates the *derivation*. `gb` is implemented and buildable; the `enabled` list is a separate, deliberate choice. `_no_false_genericity_claim` rejects `enabled - implemented`. |
-| What exists for other countries | **For `gb`: a full pipeline.** (1) Seven verified `gb_*` series in the registry (`gb_cpi_headline`, `gb_cpi_core`, `gb_unemployment_rate`, `gb_gdp_growth_qoq`, `gb_bank_rate`, `gb_gilt_10y_yield`, `gb_short_rate_3m`); (2) the Bank of England's **three published rules** (`boe_contemporaneous_taylor_rule`, `boe_first_difference_rule`, `boe_forward_looking_taylor_rule`, `models/policy_rules.py`) — genuinely distinct, not a relabelled Fed rule; (3) a country-aware `ProductionUniverse` carrying the UK plan (gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100); (4) `snapshot_to_thesis_inputs` dispatching to `_gb_thesis_inputs`, so `/thesis/gb` runs. **For `de`/`jp`: guards only.** `gdp_nowcast.output_gap_from_snapshot` and `regime.check_trilemma_tension` remain US-only (`NotImplementedError`), and `_gb_thesis_inputs` sets `regime=None` — the gb path never reaches them, which is correct, not a gap. |
+| `config/settings.yaml` → `country.implemented` | **`["us", "gb", "eu"]`**. `gb` and `eu` were each added when their own data sources, their own reaction function and their own instrument set all existed. `de`/`jp` are still absent — adding one requires the same three things, not a label change. |
+| `country.enabled` | **`["us", "gb", "eu"]`** — `enabled` gates the *snapshot build*, `implemented` gates the *derivation*. Both lists now carry `eu`; they were emptied of the false "US-only" claim when each country's pipeline landed. `_no_false_genericity_claim` rejects `enabled - implemented`. |
+| What exists for other countries | **For `gb`: a full pipeline.** (1) Seven verified `gb_*` series in the registry (`gb_cpi_headline`, `gb_cpi_core`, `gb_unemployment_rate`, `gb_gdp_growth_qoq`, `gb_bank_rate`, `gb_gilt_10y_yield`, `gb_short_rate_3m`); (2) the Bank of England's **three published rules** (`boe_contemporaneous_taylor_rule`, `boe_first_difference_rule`, `boe_forward_looking_taylor_rule`, `models/policy_rules.py`) — genuinely distinct, not a relabelled Fed rule; (3) a country-aware `ProductionUniverse` carrying the UK plan (gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100); (4) `snapshot_to_thesis_inputs` dispatching to `_gb_thesis_inputs`, so `/thesis/gb` runs. **For `eu`: a full pipeline, as of D-148.** (1) Eight verified `eu_*` series (HICP index, ECB main-refi and deposit rates, ESTR, euro-area unemployment, real GDP, 3m and 10y rates); (2) the ECB's **three WP-258 rules** (`ecb_contemporaneous_taylor_rule`, `ecb_error_correction_rule`, `ecb_restricted_cointegration_rule`) whose **long rate is a regressor** and whose form is **error-correction** — structurally unlike Fed and BoE, so not a relabelled rule; (3) a `ProductionUniverse(country="eu")` carrying the euro-area plan (Bunds/BTPs/OATs/Bonos/SPGBs, Eurex Bund/BTP futures, ESTR futures, Euro Stoxx 50); (4) `snapshot_to_thesis_inputs` dispatching to `_eu_thesis_inputs`, so `/thesis/eu` runs. **For `de`/`jp`: guards only.** `gdp_nowcast.output_gap_from_snapshot` and `regime.check_trilemma_tension` remain US-only (`NotImplementedError`), and `_gb_thesis_inputs` sets `regime=None` — neither the gb nor the eu path reaches them, which is correct, not a gap. |
 | What is genuinely *data-ready* for other countries | The three FX-reserve fixtures (`fx_reserves_japan`, `fx_reserves_uk`, `fx_reserves_china`) remain **fixtures** for the 1992/1997 case studies (D-048) — a different act from supporting those countries. |
-| A cross-country *trade* | `instrument_selection.py` still defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis. **Still correct:** a cross-country RV trade needs *two* fully-built country systems, and only `us`/`gb` have one each — so the block is now a statement about coverage, not about the pattern. |
+| A cross-country *trade* | `instrument_selection.py` still defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis. **Still correct but now a coverage statement, not a pattern statement:** a cross-country RV trade needs *two* fully-built country systems and the FX bridge converted between them; with `us`, `gb` and `eu` each complete and `fx_spot` live, the remaining block is that the cross-country *reasoning* layer itself is not built, not that fewer than two countries exist. |
 
-**Status: PARTIALLY CLOSED — the pattern is proven for one country, the coverage is not.** §22.3
+**Status: PARTIALLY CLOSED — the pattern is proven for TWO countries, the coverage is not.** §22.3
 (Finding #3) retracted any claim of multi-country generality, and that retraction still holds: the
-system is *not* country-generic, it has **two** countries with a shared, now-tested dispatch. What
-the gb increment earned is the *pattern* — three workstreams per country, wired end-to-end, with
-mutation proofs on the dispatch. What it did **not** earn is a claim that `de` or `jp` are
-straightforward: the ECB's 20-country compromise, the BoJ's deflation-scar bias and the PBoC's
-non-Western reaction function each need *different logic*, and the UK's own increment already
-required three disclosed stand-ins (no published output-gap series, no JOLTS/claims/payrolls, no
-BoE projection path) that a less comparable country would need more of.
+system is *not* country-generic, it has **three** countries with a shared, now-tested dispatch. What
+the `gb` and `eu` increments earned is the *pattern* — three workstreams per country, wired
+end-to-end, with mutation proofs on the dispatch — and, in `eu`'s case, the proof that a **second
+genuinely different reaction-function shape** fits the same dispatch (a level rule plus **two** change
+rules, and a long rate as a regressor). What they did **not** earn is a claim that `de` or `jp` are
+straightforward: the BoJ's deflation-scar + YCC and the PBoC's non-Western reaction function each need
+*different logic* again, and the UK's own increment already required three disclosed stand-ins (no
+published output-gap series, no JOLTS/claims/payrolls, no BoE projection path) — the euro area needed
+its own (no published output-gap series, no euro-area JOLTS, a HICP *rate* that stops in 2025-12 so
+the rule input is derived from the index and overlap-checked).
 
 
 **Status: OPEN, and correctly so.** AGENTS.md §22.3 (Finding #3) explicitly retracted any claim of
@@ -273,13 +277,13 @@ gb runs the BoE's *published* Annex 1 rules, not a Taylor rule with a British ac
 
 **Measured against the bar (2026-10-10):**
 
-| Layer | US | UK (`gb`) | `de` / `jp` | Cross-country |
-|---|---|---|---|---|
-| 1 · Data | ✅ | ✅ 7 `gb_*` series | ❌ | — |
-| 2 · Reaction function | ✅ Fed trio | ✅ 3 BoE rules | ❌ | — |
-| 3 · Instruments | ✅ | ✅ gilt / short-sterling / SONIA / FTSE | ❌ | — |
-| **FX (the bridge)** | ✅ **`fx_spot` fetched since 2026-10-10** (spot; forwards still blocked) | — | — | ⚠️ convertible |
-| 4 · Cross-country reasoning | — | — | — | ❌ **`BLOCKED_MULTI_COUNTRY_NOT_BUILT`** |
+| Layer | US | UK (`gb`) | Euro area (`eu`) | `de` / `jp` | Cross-country |
+|---|---|---|---|---|---|
+| 1 · Data | ✅ | ✅ 7 `gb_*` series | ✅ 8 `eu_*` series | ❌ | — |
+| 2 · Reaction function | ✅ Fed trio | ✅ 3 BoE rules | ✅ 3 ECB WP-258 rules (level + **two** error-correction; long rate a regressor) | ❌ | — |
+| 3 · Instruments | ✅ | ✅ gilt / short-sterling / SONIA / FTSE | ✅ Bund/BTP/OAT curve, ESTR futures, Euro Stoxx 50 | ❌ | — |
+| **FX (the bridge)** | ✅ **`fx_spot` fetched since 2026-10-10** (spot; forwards still blocked) | — | — | — | ⚠️ convertible |
+| 4 · Cross-country reasoning | — | — | — | — | ❌ **`BLOCKED_MULTI_COUNTRY_NOT_BUILT`** |
 
 **The three things genuinely missing for the engine the operator described** (Fed-vs-ECB,
 US-vs-EU inflation, USD-vs-EUR), in dependency order:
@@ -292,20 +296,23 @@ US-vs-EU inflation, USD-vs-EUR), in dependency order:
    exists on this installation (D-108), so `cip_check`'s live check stays unavailable. See §2.5 item 3
    for the corrected record — the field was unwired AND the *spot* data was thought absent; only the
    first was true.
-2. **A second country next to `gb`.** Europe (ECB) is the obvious pair: it makes *Fed vs ECB* and
-   *Bund vs UST* expressible. It is a full three-workstream increment of its own, and harder than gb
-   (the ECB has no single labour market and a 20-country inflation aggregate).
+2. ~~**A second country next to `gb`.**~~ **CLOSED 2026-10-10 — the euro area (`eu`), D-148.** The
+   ECB arm is a full three-workstream increment, and it proved the harder case: the euro area has no
+   single labour market, a 20-country inflation aggregate and a two-rate policy system, and its
+   reaction function is **structurally** different from the Fed's and the BoE's (error-correction
+   with the long rate as a regressor), not a re-parameterisation. `/thesis/eu` runs end-to-end.
 3. **Cross-country reasoning itself.** `CROSS_COUNTRY_DIVERGENCE` is refused
    (`BLOCKED_MULTI_COUNTRY_NOT_BUILT`) — correctly, because it needs *two* fully-built country
-   systems and only `us`/`gb` have one each. When two exist, the block becomes a green light rather
-   than a wall.
+   systems **and** the FX bridge between them. Both conditions are now met for `us`↔`gb`/`eu`; what
+   remains is the reasoning layer itself, so the block is now the last leg of the dependency chain
+   rather than a wall with no bridge under it.
 
-**What the repo CAN honestly say today:** *"Two countries are modelled end-to-end on their own data,
-their own central-bank rules and their own instruments; an FX spot layer now converts between
-currencies, so a cross-country comparison is expressible in principle — but a second non-US country
-for the *rates* comparison (Europe) is not yet built, so the cross-country reasoning layer is still
-refused."* That is a real, defensible statement — and it is a long way short of the multi-country
-engine described in this subsection.
+**What the repo CAN honestly say today:** *"Three countries — `us`, `gb` and the euro area `eu` — are
+modelled end-to-end on their own data, their own central-bank rules and their own instruments, with
+two genuinely different reaction-function shapes proving the dispatch general; an FX spot layer
+converts between currencies; the cross-country reasoning layer itself is the one capability still
+refused."* That is a real, defensible statement — and it is finally within one increment of the
+multi-country engine described in this subsection.
 
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**
@@ -453,7 +460,7 @@ files, which `git log --all` can still find).
 | Item | Location | Why it is empty |
 |---|---|---|
 | `bayesian.likelihoods.table: {}` | `config/settings.yaml:5301` | Populating it needs historical evidence-vs-outcome data (Phase 5+). Empty means `bayesian_update()` **refuses to run** rather than defaulting to a 0.5/0.5 likelihood ratio that would silently render the update a no-op. `config.py:4784` enforces this. |
-| `country.implemented: ["us", "gb"]` | `config/settings.yaml:102` | §22.3 — the US-only-through-Phase-4 gate. **`gb` was added 2026-10-10** when the first multi-country increment landed end-to-end (see §2.4); `de`, `jp` remain Tier 5+. |
+| `country.implemented: ["us", "gb", "eu"]` | `config/settings.yaml` | §22.3 — the US-only-through-Phase-4 gate. **`gb` was added 2026-10-10** when the first multi-country increment landed end-to-end, and **`eu` later the same day** (D-148) when the euro area did (see §2.4); `de`, `jp` remain Tier 5+. |
 | `r_star_estimate: 0.5` | `config/settings.yaml:1594` | Placeholder until the Kalman-filtered r* (Phase 5+). |
 
 ---
@@ -536,7 +543,7 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | `extensions/scheduler.py` | Deferred | `apscheduler` |
 | ~~GARCH conditional volatility~~ | **CLOSED 2026-10-09 — shipped** (§2.2) | `arch` added; `models/volatility.py` created |
 | ~~`extensions/scenario_engine.py` + `scenarios/*.yaml`~~ | **CLOSED 2026-10-09 — shipped** (§2.3.1); corrected 2026-10-10 | file exists at the spec path, 0 `NotImplementedError`, 4 `scenarios/*.yaml` |
-| Multi-country — **`gb`** | **CLOSED 2026-10-10 for `gb`** — the first multi-country increment (§2.4), wired end-to-end, 4 mutation proofs on the dispatch | `de`/`jp` still need their own series set + reaction function + instrument set (§22.3: three tasks per country) |
+| Multi-country — **`gb` and `eu`** | **CLOSED 2026-10-10 for `gb` and the euro area `eu`** — the first two multi-country increments (§2.4), wired end-to-end, 4 mutation proofs on the gb dispatch and 7 on the eu rules + units | `de`/`jp` still need their own series set + reaction function + instrument set (§22.3: three tasks per country) |
 | Multi-country — **`de`, `jp`** | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | **FX spot (`fx_spot`, the layer-3→4 bridge)** | **CLOSED 2026-10-10 — fetched** | `data_layer/fx_client.py` + `snapshot_builder._fetch_fx_spot_map` + `models/fx_conversion.py`; `fx_spot` left `declared_not_wired`. Spot only — the forward is the row above |
@@ -547,7 +554,8 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
 
-**Two genuine capability gaps remain: multi-country (`de`/`jp`; `gb` closed 2026-10-10), and
+**Two genuine capability gaps remain: multi-country (`de`/`jp`; `gb` and the euro area `eu` closed
+2026-10-10), and
 FX-forward coverage** (a data block, not a plan). **The FX SPOT layer closed 2026-10-10** — it was
 recorded as a data block and re-measured as an unwired field (the sixth FALSE BLOCK). Three closures
 now landed 2026-10-09/10, and this table said four until 2026-10-10 — GARCH (§2.2) and the

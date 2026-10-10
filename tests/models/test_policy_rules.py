@@ -1342,5 +1342,648 @@ def test_the_boe_rules_refuse_a_non_finite_input() -> None:
             cls(**{**kwargs, field: math.nan})
 
 
+# ---------------------------------------------------------------------------
+# Section 22.3 — the European Central Bank reaction function (country "eu")
+#
+# Every expected value below is derived BY HAND from the ECB's own published
+# estimation -- ECB Working Paper No 258 (September 2003), "Interest rate
+# reaction functions and the Taylor rule in the euro area" -- whose Tables 2, 4
+# and 6 were read directly (pypdf), not restated from memory. The config leaves
+# are asserted against the primary source FIRST, because the whole section's
+# point is that the euro-area arm is NOT the Fed rule (nor the BoE's) with a
+# different label: Section 22.3's "genuinely distinct" bar.
+#
+# The structural markers pinned here, none of which the Fed or BoE arms carry:
+#   * the euro area's OWN coefficients (2.733 / 1.443, against Taylor's 1.5 /
+#     0.5, which the paper itself REJECTS at p = 0.04);
+#   * the LONG RATE as a regressor, proxying the public's long-run inflation
+#     perception -- the un-fakeable structural feature;
+#   * an ERROR-CORRECTION (change) form, because the euro-area level
+#     specification is unstable (unit roots);
+#   * a NEGATIVE adjustment coefficient (-0.189), validated at the config leaf.
+# ---------------------------------------------------------------------------
+def test_the_ecb_coefficients_match_the_published_wp258_primary_source() -> None:
+    """The config leaves ARE ECB WP 258's published calibration, verified by value.
+
+    This is the test that makes the rest of the section meaningful. Section 22.3
+    rejects a relabelled Fed rule; the only way that claim is checkable is if the
+    coefficients are pinned to the primary source rather than to whatever is in
+    the file. Each value below is transcribed from ECB Working Paper No 258
+    (September 2003): Table 2 (the I(0) level rule), Table 4 (the cointegrating
+    vectors) and Table 6 (the error-correction equations) -- read directly, not
+    restated from memory.
+
+    If any of these fails, the rule is no longer the ECB's euro-area rule and
+    every downstream "genuinely distinct" claim is false -- so this test comes
+    first and asserts EVERY leaf the three rules read.
+    """
+    from macro_engine.config import get_settings
+
+    eu = get_settings().policy.eu
+
+    # Target and neutral rate. The 2.0% HICP target is the ECB's 2021 strategy
+    # (symmetric, medium-term); i* = 2.0 is the illustrative neutral rate. The
+    # ECO's real-rate assumption is ZERO, deliberately unlike the Fed's 0.5 or
+    # the BoE's 1.0: the euro area's own real-rate estimate is insignificantly
+    # different from zero (WP 258 reports a 95% interval spanning [-0.85, 5.48]),
+    # so pinning a positive real rate would overstate the identified neutral.
+    assert eu.pi_target_value == pytest.approx(2.0)
+    assert eu.real_rate_assumption_value == pytest.approx(0.0)
+    assert eu.i_star_value == pytest.approx(2.0)
+    assert eu.i_star_value == pytest.approx(eu.pi_target_value + eu.real_rate_assumption_value), (
+        "i* must equal the target plus the (zero) euro-area real-rate assumption"
+    )
+    assert eu.real_rate_assumption_value != pytest.approx(1.0), (
+        "the euro-area real-rate assumption is 0.0, NOT the BoE's 1.0 — a shared "
+        "positive value would be the relabelling Section 22.3 rejects"
+    )
+
+    # The euro area's own smoothing, fit on the lagged euro-area short rate.
+    assert eu.smoothing_value == pytest.approx(0.884)
+
+    # Contemporaneous level rule: the euro area's OWN coefficients. These are
+    # nearly twice (inflation) and nearly three times (output gap) Taylor's, and
+    # the paper's joint Wald test REJECTS 1.5 / 0.5 at p = 0.04.
+    assert eu.contemporaneous.inflation_coefficient_value == pytest.approx(2.733)
+    assert eu.contemporaneous.output_gap_coefficient_value == pytest.approx(1.443)
+    assert eu.contemporaneous.inflation_coefficient_value != pytest.approx(1.5)
+    assert eu.contemporaneous.output_gap_coefficient_value != pytest.approx(0.5)
+
+    # Error-correction: the cointegrating vector (Table 4, unrestricted) and the
+    # short-run coefficients and adjustment speed (Table 6).
+    ec = eu.error_correction
+    assert ec.long_rate_coefficient_value == pytest.approx(0.827)
+    assert ec.inflation_coefficient_value == pytest.approx(0.900)
+    assert ec.output_gap_coefficient_value == pytest.approx(0.358)
+    assert ec.adjustment_coefficient_value == pytest.approx(-0.189)
+    assert ec.inflation_change_coefficient_value == pytest.approx(0.628)
+    assert ec.output_gap_change_coefficient_value == pytest.approx(0.266)
+    assert ec.rate_change_persistence_coefficient_value == pytest.approx(0.370)
+
+    # The RESTRICTED vector (Table 4, restricted; b_pi = 1 imposed, p = 0.78):
+    # the long-rate and output-gap coefficients are RE-ESTIMATED, not the
+    # unrestricted ones -- 0.771 / 0.437 against 0.827 / 0.358.
+    assert ec.restricted_long_rate_coefficient_value == pytest.approx(0.771)
+    assert ec.restricted_output_gap_coefficient_value == pytest.approx(0.437)
+    assert ec.restricted_long_rate_coefficient_value != pytest.approx(
+        ec.long_rate_coefficient_value
+    ), (
+        "the restriction RE-ESTIMATES the remaining coefficients; if the "
+        "restricted long-rate coefficient equalled the unrestricted one, the "
+        "two rules would be one rule written twice"
+    )
+
+
+def test_the_ecb_adjustment_coefficient_must_be_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``c_e = -0.189`` is validated at the leaf, not clamped in the function.
+
+    The error-correction term must pull the rate TOWARD equilibrium, which
+    requires a negative coefficient: a positive deviation (i_prev above
+    equilibrium) must produce a NEGATIVE change. The sign is a fact about the
+    published estimate, and the honest place to enforce it is the config leaf —
+    so a flip is caught loudly rather than masked by an ``abs()`` in the rule.
+
+    The validator is exercised by flipping the LIVE leaf (`policy.eu.
+    error_correction.adjustment_coefficient`) to a positive value and calling the
+    validator property, which raises. The property's own message says why: the
+    sign is not visible in the prescribed rate, which is precisely why it needs
+    a check of its own rather than being inferable downstream.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        EcbErrorCorrectionInputs,
+        ecb_error_correction_rule,
+    )
+
+    ec = get_settings().policy.eu.error_correction
+    original = ec.adjustment_coefficient
+
+    class _Positive:
+        value = 0.189
+
+    monkeypatch.setattr(ec, "adjustment_coefficient", _Positive())
+    with pytest.raises(ValueError, match=r"must be negative"):
+        _ = ec.adjustment_coefficient_value
+    # And the rule itself propagates the refusal: it cannot prescribe a change
+    # from a destabilising coefficient.
+    with pytest.raises(ValueError, match=r"must be negative"):
+        ecb_error_correction_rule(
+            EcbErrorCorrectionInputs(
+                i_prev=2.65,
+                i_prev_change=0.0,
+                long_rate=3.748,
+                pi_current=2.0,
+                pi_change=0.0,
+                output_gap=0.0,
+                output_gap_change=0.0,
+            )
+        )
+    monkeypatch.setattr(ec, "adjustment_coefficient", original)
+
+
+def test_the_ecb_contemporaneous_rule_matches_the_hand_calculation() -> None:
+    """``i = 0.884·i_prev + 0.116·(2 + 2.733·(π - 2) + 1.443·y)``, by hand.
+
+    Two hand values, both from the published formula with config read:
+
+    * **At neutral** (π = 2.0, y = 0, i_prev = 2.65): raw = 2.0, and
+      0.884·2.65 + 0.116·2.0 = 2.3426 + 0.232 = **2.5746 → 2.57**. This pins the
+      "deviations from target" convention: at target-inflation and a closed gap
+      the rule settles at i*, so a rule reading LEVELS would return something
+      near 5-7% here and fail — which is the point.
+    * **Off neutral** (i_prev = 3.0, π = 4.0, y = 1.0):
+      raw = 2 + 2.733·2 + 1.443·1 = 2 + 5.466 + 1.443 = **8.909**;
+      i = 0.884·3.0 + 0.116·8.909 = 2.652 + 1.033444 = **3.685444 → 3.69**.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        ecb_contemporaneous_taylor_rule,
+    )
+
+    at_neutral = ecb_contemporaneous_taylor_rule(
+        EcbContemporaneousInputs(i_prev=2.65, pi_current=2.0, output_gap=0.0)
+    )
+    assert at_neutral.value == pytest.approx(2.57)
+
+    off_neutral = ecb_contemporaneous_taylor_rule(
+        EcbContemporaneousInputs(i_prev=3.0, pi_current=4.0, output_gap=1.0)
+    )
+    hand = 0.884 * 3.0 + 0.116 * (2.0 + 2.733 * (4.0 - 2.0) + 1.443 * 1.0)
+    assert off_neutral.value == pytest.approx(round(hand, 2))
+    assert off_neutral.value == pytest.approx(3.69)
+
+
+def test_the_ecb_contemporaneous_rule_is_not_a_relabelled_fed_rule() -> None:
+    """A 1pp inflation gap moves the euro-area prescription MORE than the Fed's.
+
+    The euro area's estimated inflation response is 2.733, against Taylor's 1.5
+    and the BoE's 1.5. Holding everything else equal and moving the inflation gap
+    by the same 1pp, the euro-area prescription must move by more than a rule
+    using 1.5 would — that IS the estimated response the rule exists to apply,
+    and a rule that used 1.5 (or 0.5) would still return *a* number while no
+    longer being the euro area's rule.
+
+    Hand arithmetic, i_prev = i* = 2.0, y = 0, inflation gap 0 → 1pp:
+      euro area: raw = 2 + 2.733 = 4.733 → i = 0.884·2 + 0.116·4.733 = 1.768 +
+                 0.549028 = 2.317028 → 2.32
+      Taylor   : raw = 2 + 1.5   = 3.5   → i = 1.768 + 0.116·3.5 = 1.768 + 0.406
+                 = 2.174 → 2.17
+    """
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        ecb_contemporaneous_taylor_rule,
+    )
+
+    def run(*, pi: float) -> float:
+        return abs(
+            ecb_contemporaneous_taylor_rule(
+                EcbContemporaneousInputs(i_prev=2.0, pi_current=pi, output_gap=0.0)
+            ).value_float()
+            - 2.0
+        )
+
+    ecb_move = run(pi=3.0)  # 1pp above the 2% target
+    taylor_move = abs((0.884 * 2.0 + 0.116 * (2.0 + 1.5 * 1.0)) - 2.0)
+
+    assert ecb_move == pytest.approx(0.32, abs=0.005)
+    assert ecb_move > taylor_move, (
+        "the euro area's estimated inflation response (2.733) must move the "
+        "prescription more than Taylor's 1.5 — a rule that did not would be a "
+        "relabelled Fed rule (Section 22.3)"
+    )
+
+
+def test_the_ecb_error_correction_rule_matches_the_hand_calculation() -> None:
+    """``Δi = 0.628·Δπ + 0.266·Δy + 0.370·Δi_prev + (-0.189)·(i_prev - eqm)``, by hand.
+
+    The equilibrium the rule corrects toward is
+    ``eqm = π* + 0.827·l + 0.900·π + 0.358·y`` (the unrestricted cointegrating
+    vector with the constant anchored at the target).
+
+    Hand, i_prev = 2.65, all change terms 0, l = 3.748, π = 2.0, y = 0:
+      eqm = 2 + 0.827·3.748 + 0.900·2.0 + 0 = 2 + 3.099596 + 1.8 = **6.899596**
+      ecr = 2.65 - 6.899596 = **-4.249596**
+      Δi  = 0.628·0 + 0.266·0 + 0.370·0 + (-0.189)·(-4.249596)
+          = 0 + 0 + 0 + 0.803174 = **0.803174**
+      i   = 2.65 + 0.803174 = **3.453174 → 3.45**.
+
+    The LONG RATE is what produces this: it enters the equilibrium with a large
+    coefficient, so even at target inflation the rule prescribes a large
+    increase — the euro area's short rate is below what its own long rate implies
+    its long-run stance is. That is the structural feature §22.3 requires, not a
+    decorative input.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbErrorCorrectionInputs,
+        ecb_error_correction_rule,
+    )
+
+    result = ecb_error_correction_rule(
+        EcbErrorCorrectionInputs(
+            i_prev=2.65,
+            i_prev_change=0.0,
+            long_rate=3.748,
+            pi_current=2.0,
+            pi_change=0.0,
+            output_gap=0.0,
+            output_gap_change=0.0,
+        )
+    )
+    eqm = 2.0 + 0.827 * 3.748 + 0.900 * 2.0 + 0.358 * 0.0
+    ecr = 2.65 - eqm
+    hand = 2.65 + (-0.189) * ecr
+    assert result.value == pytest.approx(round(hand, 2))
+    assert result.value == pytest.approx(3.45)
+
+
+def test_the_long_rate_moves_the_ecb_error_correction_rule_and_no_fed_rule() -> None:
+    """The long rate is the STRUCTURAL regressor — moving it moves the rule.
+
+    This is the cleanest "genuinely distinct" assertion available: the euro-area
+    error-correction rule reads the 10-year rate, so changing it changes the
+    prescription; and the input record is where that is enforced, because the
+    OTHER two ECB rules (and every Fed rule) have no ``long_rate`` field at all,
+    so a caller cannot even pass one.
+
+    Hand: i_prev = 2.65, π = 2.0, y = 0, changes 0, l = 3.0 vs l = 4.0:
+      l = 3.0: eqm = 2 + 0.827·3.0 + 0.900·2.0 = 6.281 → ecr = -3.631
+               → Δi = 0.686259 → i = 3.336259 → 3.34
+      l = 4.0: eqm = 2 + 3.308 + 1.8 = 7.108 → ecr = -4.458 → Δi = 0.842562
+               → i = 3.492562 → 3.49
+    The two differ: the long rate is load-bearing.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        EcbErrorCorrectionInputs,
+        EcbRestrictedCointegrationInputs,
+        ecb_contemporaneous_taylor_rule,
+        ecb_error_correction_rule,
+        ecb_restricted_cointegration_rule,
+    )
+
+    def ec_at(long_rate: float) -> float:
+        return ecb_error_correction_rule(
+            EcbErrorCorrectionInputs(
+                i_prev=2.65,
+                i_prev_change=0.0,
+                long_rate=long_rate,
+                pi_current=2.0,
+                pi_change=0.0,
+                output_gap=0.0,
+                output_gap_change=0.0,
+            )
+        ).value_float()
+
+    assert ec_at(3.0) == pytest.approx(3.34)
+    assert ec_at(4.0) == pytest.approx(3.49)
+    assert ec_at(3.0) != pytest.approx(ec_at(4.0)), (
+        "the long rate is the euro area's structural regressor; if moving it "
+        "left the prescription unchanged the input would be decorative and the "
+        "rule would be a level-only Fed rule with euro-area series"
+    )
+
+    # The input records themselves enforce the asymmetry: neither the level rule
+    # nor the restricted rule accepts a long_rate, so the term cannot be smuggled
+    # into them. (The restricted rule DOES read the long rate in its equilibrium
+    # but not as a short-run dynamic; the point here is the level rule.)
+    level = EcbContemporaneousInputs(i_prev=2.0, pi_current=2.0, output_gap=0.0)
+    assert not hasattr(level, "long_rate"), (
+        "the level rule must not accept a long rate — the two regressor sets are "
+        "what make the functions structurally distinct rather than one list twice"
+    )
+    # Both cointegration rules are constructible and independent.
+    ecb_contemporaneous_taylor_rule(level)
+    ecb_restricted_cointegration_rule(
+        EcbRestrictedCointegrationInputs(
+            i_prev=2.65,
+            i_prev_change=0.0,
+            long_rate=3.748,
+            real_rate=-0.2,
+            pi_change=0.0,
+            output_gap=0.0,
+            output_gap_change=0.0,
+        )
+    )
+
+
+def test_the_ecb_restricted_cointegration_rule_matches_the_hand_calculation() -> None:
+    """``Δi = ... + (-0.189)·(real_rate_prev - 0.771·l - 0.437·y)``, by hand.
+
+    The restricted equilibrium is the REAL rate against the long rate and the
+    gap, with a unit inflation coefficient imposed:
+    ``eqm = 0.771·l + 0.437·y`` — the RE-ESTIMATED coefficients.
+
+    Hand, i_prev = 2.65, real_rate = -0.2, l = 3.748, y = 0, all changes 0:
+      eqm = 0.771·3.748 = **2.889708**
+      ecr = -0.2 - 2.889708 = **-3.089708**
+      Δi  = (-0.189)·(-3.089708) = **0.583955** → i = 2.65 + 0.583955
+          = **3.233955 → 3.23**.
+
+    A rule using the UNRESTRICTED long-rate coefficient (0.827) would give
+    eqm = 3.099596, ecr = -3.299596, Δi = 0.623624, i = 3.27 — a different
+    answer, which is why the restricted form is its own function with its own
+    leaf rather than a flag on the unrestricted one.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbRestrictedCointegrationInputs,
+        ecb_restricted_cointegration_rule,
+    )
+
+    result = ecb_restricted_cointegration_rule(
+        EcbRestrictedCointegrationInputs(
+            i_prev=2.65,
+            i_prev_change=0.0,
+            long_rate=3.748,
+            real_rate=-0.2,
+            pi_change=0.0,
+            output_gap=0.0,
+            output_gap_change=0.0,
+        )
+    )
+    eqm = 0.771 * 3.748
+    hand = 2.65 + (-0.189) * (-0.2 - eqm)
+    assert result.value == pytest.approx(round(hand, 2))
+    assert result.value == pytest.approx(3.23)
+
+    # The restricted coefficients genuinely differ from the unrestricted ones, so
+    # the answer above is not reproducible with the unrestricted leaf.
+    unrestricted_eqm = 0.827 * 3.748
+    wrong = 2.65 + (-0.189) * (-0.2 - unrestricted_eqm)
+    assert result.value != pytest.approx(round(wrong, 2)), (
+        "the restricted rule must use the RE-ESTIMATED 0.771, not the "
+        "unrestricted 0.827 — otherwise the two estimands are conflated"
+    )
+
+
+def test_the_ecb_rules_are_labelled_eu_not_us_and_carry_distinct_variants() -> None:
+    """``country="eu"`` and a distinct ``rule_variant`` on every rule.
+
+    Section 22.3's whole demand is that a country is not a label. The mirror is
+    the risk here: a rule that returned ``country="us"`` (as the shipped Fed and
+    — until this increment — every country's rules did) or a variant tag shared
+    with the Fed's or BoE's would be indistinguishable downstream, and every
+    consumer that branches on ``rule_variant`` would silently treat an ECB
+    prescription as a Fed or BoE one.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        EcbErrorCorrectionInputs,
+        EcbRestrictedCointegrationInputs,
+        ecb_contemporaneous_taylor_rule,
+        ecb_error_correction_rule,
+        ecb_restricted_cointegration_rule,
+    )
+
+    trio = (
+        ecb_contemporaneous_taylor_rule(
+            EcbContemporaneousInputs(i_prev=2.0, pi_current=2.0, output_gap=0.0)
+        ),
+        ecb_error_correction_rule(
+            EcbErrorCorrectionInputs(
+                i_prev=2.0,
+                i_prev_change=0.0,
+                long_rate=3.748,
+                pi_current=2.0,
+                pi_change=0.0,
+                output_gap=0.0,
+                output_gap_change=0.0,
+            )
+        ),
+        ecb_restricted_cointegration_rule(
+            EcbRestrictedCointegrationInputs(
+                i_prev=2.0,
+                i_prev_change=0.0,
+                long_rate=3.748,
+                real_rate=-0.2,
+                pi_change=0.0,
+                output_gap=0.0,
+                output_gap_change=0.0,
+            )
+        ),
+    )
+
+    assert {r.country for r in trio} == {"eu"}
+    assert [r.rule_variant for r in trio] == [
+        "ecb_contemporaneous_taylor",
+        "ecb_error_correction",
+        "ecb_restricted_cointegration",
+    ]
+    assert all(r.rule_variant.startswith("ecb_") for r in trio), (
+        "every ECB variant tag must be distinguishable from the Fed's and BoE's by prefix"
+    )
+    # The euro-area cointegration rules carry no unobservable-neutral-rate
+    # penalty; the level rule does. The split is the earned one.
+    assert trio[0].confidence < trio[1].confidence, (
+        "the level rule depends on the unobservable i* and must be penalised "
+        "relative to the error-correction rule, which needs no i*"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("ecb_inflation_coefficient", ("contemporaneous", "inflation_coefficient", 1.5)),
+        ("ecb_output_gap_coefficient", ("contemporaneous", "output_gap_coefficient", 0.5)),
+        ("ecb_smoothing", ("smoothing", None, 0.5)),
+        ("ecb_i_star", ("i_star", None, 5.0)),
+    ],
+)
+def test_every_ecb_contemporaneous_coefficient_leaf_is_a_real_mover(
+    label: str, change: tuple[str, str | None, float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each config leaf the level rule reads must CHANGE the output (LAW 1's mover proof).
+
+    A coefficient read into a variable and then not used is the exact failure
+    the mover proof exists to catch: the leaf looks calibrated and is inert. For
+    each leaf this substitutes a different value, re-runs the rule, and asserts
+    the prescription moved — so a leaf that was silently ignored fails here.
+
+    ``ecb_i_star`` is included deliberately: it is the rule's level anchor and
+    the test proves it is genuinely consumed rather than decorative. The list is
+    every leaf the CONTEMPORANEOUS rule reads; ``ecb_pi_target`` is deliberately
+    NOT here — see ``test_the_ecb_pi_target_is_read_by_the_level_rule`` for why
+    it is a mover here (unlike the BoE's, whose gaps already embed the target).
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        ecb_contemporaneous_taylor_rule,
+    )
+
+    inputs = EcbContemporaneousInputs(i_prev=3.0, pi_current=4.0, output_gap=1.0)
+    baseline = ecb_contemporaneous_taylor_rule(inputs).value
+
+    eu = get_settings().policy.eu
+    section, leaf, replacement = change
+    target = eu if leaf is None else getattr(eu, section)
+    leaf_name = leaf if leaf is not None else section
+    original = getattr(target, leaf_name)
+
+    class _Patched:
+        value = replacement
+
+    monkeypatch.setattr(target, leaf_name, _Patched())
+    moved = ecb_contemporaneous_taylor_rule(inputs).value
+
+    assert moved != pytest.approx(baseline), (
+        f"moving the config leaf policy.eu.{leaf_name} (for {label}) did not "
+        f"change the prescription — the leaf is INERT, which is LAW 1's "
+        f"hardcoding failure in the opposite direction: a calibrated-looking "
+        f"value that nothing reads"
+    )
+    monkeypatch.setattr(target, leaf_name, original)
+
+
+def test_the_ecb_pi_target_is_read_by_the_level_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ECB level rule reads ``pi_target`` EXPLICITLY — unlike the BoE's.
+
+    This is a genuine structural difference between the two central banks'
+    published formulas, asserted rather than assumed. The BoE's contemporaneous
+    rule is written on gaps that already embed the target, so moving ``pi_target``
+    cannot move it (pinned by
+    ``test_the_boe_pi_target_is_absent_from_the_contemporaneous_rule``). The ECB
+    level rule is written on the LEVEL of inflation against the target,
+    ``(π - π*)``, so ``pi_target`` IS a term and moving it MUST move the
+    prescription. A test that assumed the BoE's behaviour here would wrongly
+    demand the ECB rule ignore a leaf it genuinely reads.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        ecb_contemporaneous_taylor_rule,
+    )
+
+    inputs = EcbContemporaneousInputs(i_prev=3.0, pi_current=4.0, output_gap=1.0)
+    baseline = ecb_contemporaneous_taylor_rule(inputs).value
+
+    eu = get_settings().policy.eu
+    original = eu.pi_target
+
+    class _Patched:
+        value = 3.0
+
+    monkeypatch.setattr(eu, "pi_target", _Patched())
+    moved = ecb_contemporaneous_taylor_rule(inputs).value
+
+    assert moved != pytest.approx(baseline), (
+        "the ECB level rule subtracts the target explicitly, (pi - pi*); if "
+        "moving pi_target left the prescription unchanged the term is not read"
+    )
+    monkeypatch.setattr(eu, "pi_target", original)
+
+
+def test_every_ecb_error_correction_coefficient_leaf_is_a_real_mover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each error-correction leaf the rule reads must CHANGE the output.
+
+    The counterpart of the contemporaneous mover proof, for the eight leaves the
+    error-correction rule reads: the three cointegrating coefficients, the four
+    short-run / adjustment coefficients, and the persistence term. A leaf that
+    were inert here would be a calibrated-looking zero-usage value — the §22.3
+    "structural" regressor that does not actually enter the arithmetic.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        EcbErrorCorrectionInputs,
+        ecb_error_correction_rule,
+    )
+
+    inputs = EcbErrorCorrectionInputs(
+        i_prev=2.65,
+        i_prev_change=0.2,
+        long_rate=3.748,
+        pi_current=2.5,
+        pi_change=-0.3,
+        output_gap=0.5,
+        output_gap_change=0.1,
+    )
+    baseline = ecb_error_correction_rule(inputs).value
+
+    eu = get_settings().policy.eu
+    ec = eu.error_correction
+    # A per-leaf replacement, because `adjustment_coefficient` is sign-validated
+    # (must be < 0): a positive probe value would trip the validator rather than
+    # test the mover property, so it gets a different NEGATIVE value.
+    leaves: dict[str, float] = {
+        "long_rate_coefficient": 1.5,
+        "inflation_coefficient": 1.5,
+        "output_gap_coefficient": 1.5,
+        "adjustment_coefficient": -0.7,  # negative, like the published leaf
+        "inflation_change_coefficient": 1.5,
+        "output_gap_change_coefficient": 1.5,
+        "rate_change_persistence_coefficient": 1.5,
+    }
+    for leaf_name, replacement in leaves.items():
+        original = getattr(ec, leaf_name)
+
+        class _Patched:
+            value = replacement
+
+        monkeypatch.setattr(ec, leaf_name, _Patched())
+        moved = ecb_error_correction_rule(inputs).value
+        monkeypatch.setattr(ec, leaf_name, original)
+
+        assert moved != pytest.approx(baseline), (
+            f"moving policy.eu.error_correction.{leaf_name} did not change the "
+            f"error-correction prescription — the leaf is inert"
+        )
+
+
+def test_the_ecb_rules_refuse_a_non_finite_input() -> None:
+    """The D-078 finiteness guard applies to the ECB input groups too.
+
+    Each new input class inherits ``_FiniteInputs``. A ``nan`` in any field would
+    propagate into the prescription and then into the euro-area policy gap, where
+    every comparison against it silently returns ``False`` — the exact "reports a
+    verdict from a number it could not compute" failure D-078 closed for the Fed
+    rules. Asserted per class so a future input group added without the base is
+    caught.
+    """
+    import math
+
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        EcbErrorCorrectionInputs,
+        EcbRestrictedCointegrationInputs,
+    )
+
+    for cls, kwargs, field in (
+        (
+            EcbContemporaneousInputs,
+            {"i_prev": 2.0, "pi_current": 2.0},
+            "output_gap",
+        ),
+        (
+            EcbErrorCorrectionInputs,
+            {
+                "i_prev": 2.0,
+                "i_prev_change": 0.0,
+                "long_rate": 3.7,
+                "pi_change": 0.0,
+                "output_gap": 0.0,
+                "output_gap_change": 0.0,
+            },
+            "pi_current",
+        ),
+        (
+            EcbRestrictedCointegrationInputs,
+            {
+                "i_prev": 2.0,
+                "i_prev_change": 0.0,
+                "long_rate": 3.7,
+                "pi_change": 0.0,
+                "output_gap": 0.0,
+                "output_gap_change": 0.0,
+            },
+            "real_rate",
+        ),
+    ):
+        with pytest.raises(ValueError, match=r"non-finite"):
+            cls(**{**kwargs, field: math.nan})
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

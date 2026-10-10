@@ -253,7 +253,7 @@ class ProductionUniverse(BaseModel):
         default="us",
         description=(
             "ISO-3166 alpha-2 lowercase. Selects the instrument plan (Section "
-            "22.3). 'us' through Phase 4; 'gb' added by the first multi-country "
+            "22.3). 'us' through Phase 4; 'gb' and 'eu' added by the multi-country "
             "increment. An unknown code is rejected at construction rather than "
             "silently falling back to the US plan — a fallback would serve US "
             "instruments to another country's thesis, the exact relabel Section "
@@ -313,6 +313,35 @@ class ProductionUniverse(BaseModel):
         ),
         "fx": ("G10 FX spot", "G10 FX forwards"),
         "equity": ("FTSE 100 index futures",),
+    }
+    #: The euro-area plan. Every rates/equity entry names an instrument that
+    #: trades in the euro area and has no US or UK equivalent: **Bunds** are the
+    #: euro area's benchmark (not USTs, not gilts), the **Bund future** and
+    #: **BTP/SPGB/OAT/Bonos** futures are the contract complex, **ESTR** (the
+    #: ECB's euro short-term rate) is the risk-free reference — the euro-area
+    #: analogue of SOFR and SONIA and distinct from both — and the **Euro
+    #: Stoxx 50 / DAX** are the euro-area equity benchmarks. Section 22.3's test
+    #: is whether this list would read as wrong if the label said "us" or "gb";
+    #: it would.
+    #:
+    #: NON-NEGOTIABLE, and the reason the list is not the UK plan relabelled:
+    #: the euro area has ONE monetary policy but TWENTY sovereign issuers, so
+    #: its rates market is not a single-country gilt/UST market — it is a
+    #: benchmark (Bund) plus an intra-area spread complex (BTP-Bund, OAT-Bund,
+    #: etc.). The keyword set below therefore includes the spread vocabulary
+    #: ("bund", "btp", "oat", "bonos", "spgb", "spread") that neither the US nor
+    #: the UK set carries, and the instrument list names both the benchmark and
+    #: the spread instruments.
+    _EU_PLAN: dict[str, tuple[str, ...]] = {
+        "rates": (
+            "Euro-area government bonds (Bunds, OATs, BTPs, Bonos, SPGBs)",
+            "Bund futures (Euro-Bund, Euro-Bobl, Euro-Schatz)",
+            "Euro-area spread instruments (BTP-Bund, OAT-Bund)",
+            "ESTR futures and swaps",
+            "Euro-area OIS swaps",
+        ),
+        "fx": ("G10 FX spot", "G10 FX forwards"),
+        "equity": ("Euro Stoxx 50 index futures", "DAX index futures"),
     }
     #: Country code -> plan. A code absent here is rejected by the validator.
     _PLANS: dict[str, dict[str, tuple[str, ...]]] = {}
@@ -428,6 +457,75 @@ class ProductionUniverse(BaseModel):
         "uk equity",
         "london equity",
     )
+    #: The euro-area rates vocabulary. Kept SEPARATE from the US and UK sets and
+    #: selected by country, so a eu thesis cannot be admitted on the strength of
+    #: a US or UK keyword. Note what is deliberately ABSENT: ``ust``,
+    #: ``treasury``, ``sofr``, ``tips``, ``tnote`` (US) and ``gilt``, ``sonia``,
+    #: ``short sterling``, ``linker`` (UK). A eu universe that accepted "UST
+    #: futures" or "gilts" would be the relabel Section 22.3 rejects. What is
+    #: PRESENT and euro-area-specific is the sovereign-spread vocabulary
+    #: (``bund``, ``btp``, ``oat``, ``bonos``, ``spgb``, ``euro-bund``, ``bobl``,
+    #: ``schatz``, ``estr``) — the euro area's defining rates structure, which
+    #: neither single-sovereign market has.
+    _EU_RATES_KEYWORDS: tuple[str, ...] = (
+        "bund",
+        "bunds",
+        "euro-bund",
+        "euro bobl",
+        "bobl",
+        "schatz",
+        "btp",
+        "btps",
+        "oat",
+        "oats",
+        "bonos",
+        "spgb",
+        "spgbs",
+        "euro-area government",
+        "euro area government",
+        "eurozone",
+        "euro-area bond",
+        "euro area bond",
+        "estr",
+        "euro short-term rate",
+        "euribor",
+        # Sovereign-spread vocabulary: the euro area's defining rates feature,
+        # absent from both the US and UK sets because neither has an intra-area
+        # credit structure.
+        "btp-bund",
+        "oat-bund",
+        "bonos-bund",
+        "spread",
+        "periphery",
+        # Curve-shape vocabulary is market-neutral and shared, so a
+        # duration-weighted steepener is recognised in every plan.
+        "steepener",
+        "flattener",
+        "steepening",
+        "flattening",
+        "duration-weighted",
+        "butterfly",
+        "curve",
+        "swap",
+        "ois",
+    )
+    #: The euro-area equity vocabulary. The US-only (``s&p``, ``spx``,
+    #: ``nasdaq``, ``russell``) and UK-only (``ftse``) words are deliberately
+    #: ABSENT, so a eu thesis naming the S&P 500 or the FTSE 100 is rejected.
+    _EU_EQUITY_KEYWORDS: tuple[str, ...] = (
+        "equity index",
+        "equity indices",
+        "index futures",
+        "euro stoxx",
+        "eurostoxx",
+        "stoxx",
+        "dax",
+        "cac",
+        "ibex",
+        "ftse mib",
+        "euro-area equity",
+        "euro area equity",
+    )
     # Bare exchange tickers, matched only as a standalone token or as the token
     # immediately preceding "futures"/"options". These are unambiguous enough
     # to admit, but too short to match as loose substrings ("es" appears inside
@@ -486,7 +584,7 @@ class ProductionUniverse(BaseModel):
         is also what ``CountrySettings._no_false_genericity_claim`` enforces one
         layer up.
         """
-        plans = {"us": self._US_PLAN, "gb": self._GB_PLAN}
+        plans = {"us": self._US_PLAN, "gb": self._GB_PLAN, "eu": self._EU_PLAN}
         if self.country not in plans:
             raise ValueError(
                 f"ProductionUniverse.country={self.country!r} has no instrument "
@@ -511,18 +609,27 @@ class ProductionUniverse(BaseModel):
     def _rates_keywords(self) -> tuple[str, ...]:
         """The rates vocabulary for THIS country's plan.
 
-        The US and UK sets are disjoint in their market-specific terms (no
-        ``ust``/``sofr`` in the UK set; no ``gilt``/``sonia`` in the US set), so
-        a country's thesis cannot be admitted by another country's instrument
-        vocabulary. The shared curve-shape words are the deliberate exception —
-        a steepener is a steepener in either market.
+        The US, UK and euro-area sets are disjoint in their market-specific
+        terms (no ``ust``/``sofr`` in the UK or EU sets; no ``gilt``/``sonia``
+        in the US or EU sets; no ``bund``/``btp``/``estr`` in the US or UK
+        sets), so a country's thesis cannot be admitted by another country's
+        instrument vocabulary. The shared curve-shape words are the deliberate
+        exception — a steepener is a steepener in every market.
         """
-        return self._GB_RATES_KEYWORDS if self.country == "gb" else self._RATES_KEYWORDS
+        if self.country == "gb":
+            return self._GB_RATES_KEYWORDS
+        if self.country == "eu":
+            return self._EU_RATES_KEYWORDS
+        return self._RATES_KEYWORDS
 
     @property
     def _equity_keywords(self) -> tuple[str, ...]:
         """The equity vocabulary for THIS country's plan (see above)."""
-        return self._GB_EQUITY_KEYWORDS if self.country == "gb" else self._EQUITY_KEYWORDS
+        if self.country == "gb":
+            return self._GB_EQUITY_KEYWORDS
+        if self.country == "eu":
+            return self._EU_EQUITY_KEYWORDS
+        return self._EQUITY_KEYWORDS
 
     def permits(self, instrument: str) -> bool:
         """Whether an instrument string names something in the universe.
@@ -603,6 +710,24 @@ class ProductionUniverse(BaseModel):
         "z": "equity",
     }
 
+    #: The euro-area bare-ticker vocabulary. Eurex contract roots: ``FGBL``
+    #: (Euro-Bund), ``FGBM`` (Euro-Bobl), ``FGBS`` (Euro-Schatz), ``FBTP``
+    #: (Euro-BTP), ``FOAT`` (Euro-OAT) for rates; ``FESX`` (Euro Stoxx 50) and
+    #: ``FDAX`` (DAX) for equity. These are FOUR-character Eurex roots, not the
+    #: US two-letter roots — so there is no ``es``/``tu``/``ty`` collision to
+    #: guard against, and the table is kept deliberately disjoint from the US
+    #: one. Absent by construction: every US root, so a eu universe cannot be
+    #: entered by ``ES futures`` or ``TU futures`` (the relabel §22.3 rejects).
+    _EU_BARE_TICKERS: dict[str, str] = {
+        "fgbl": "rates",
+        "fgbm": "rates",
+        "fgbs": "rates",
+        "fbtp": "rates",
+        "foat": "rates",
+        "fesx": "equity",
+        "fdax": "equity",
+    }
+
     def _bare_ticker_category(self, needle: str) -> str | None:
         """Match a bare futures ticker as a standalone token.
 
@@ -613,17 +738,24 @@ class ProductionUniverse(BaseModel):
 
         **Country-aware (§22.3).** The ticker table is selected by ``country``,
         because the roots are market-specific: ``us`` is both the US long-bond
-        root and the country code, so a gb universe must not read the US table
-        (it would admit "US futures" into a UK thesis). Bare single letters are
-        kept only where they are the actual exchange root AND are not a
-        substring risk — the two-token form ("gl futures") is the shape a desk
-        uses, so the single-letter form is admitted only alongside a contract
-        noun.
+        root and the country code, so a gb or eu universe must not read the US
+        table (it would admit "US futures" into a UK or euro thesis). The euro
+        table is disjoint from the US one by construction — Eurex four-letter
+        roots against US two-letter roots — so neither can enter the other.
+        Bare single letters are kept only where they are the actual exchange
+        root AND are not a substring risk — the two-token form ("gl futures") is
+        the shape a desk uses, so the single-letter form is admitted only
+        alongside a contract noun.
         """
         tokens = [t.strip(",;:()[]") for t in needle.split()]
         if not tokens:
             return None
-        table = self._GB_BARE_TICKERS if self.country == "gb" else self._BARE_TICKERS
+        if self.country == "gb":
+            table = self._GB_BARE_TICKERS
+        elif self.country == "eu":
+            table = self._EU_BARE_TICKERS
+        else:
+            table = self._BARE_TICKERS
         contract_nouns = {"futures", "future", "options", "option", "contract", "contracts"}
         if len(tokens) == 1 and tokens[0] in table:
             return table[tokens[0]]

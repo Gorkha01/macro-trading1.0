@@ -361,3 +361,103 @@ def test_all_four_route_templates_come_from_config() -> None:
     for _name, route in s.routes.items():
         assert "instrument_template" in route
         assert "universe_category" in route
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — country-aware routing (the WS3 instrument set per country)
+#
+# `routes_for(country)` overlays a country's overrides onto the base (US) table.
+# The claim each country's table must satisfy is two-sided: every template it
+# names must be PERMITTED by that country's own ProductionUniverse, and the
+# country's policy-path template must NOT be the base table's — otherwise the
+# country is the US relabelled, which is exactly what §22.3 rejects.
+# ---------------------------------------------------------------------------
+def _country_universe(country: str) -> ProductionUniverse:
+    return ProductionUniverse(country=country)
+
+
+def test_every_country_route_names_an_instrument_its_own_universe_permits() -> None:
+    """(§22.3) each country's templates survive ITS OWN universe's matcher.
+
+    This is the config-vs-universe contract: a route table that named an
+    instrument outside the country's plan would be caught at call time by
+    ``select_instrument``'s own guard, but making it a config-level test means a
+    bad template fails review rather than a live run.
+
+    The curve route's template carries ``{short}``/``{long}``/``{direction_word}``
+    placeholders, so it is formatted with the configured default legs before the
+    membership check — the string a caller would actually receive.
+    """
+    settings = get_settings().instrument_selection
+    for country in ("us", "gb", "eu"):
+        universe = _country_universe(country)
+        routes = settings.routes_for(country)
+        # The base table must carry all four routes; a country overlay may add
+        # nothing, but a missing base route is a routing-table gap.
+        assert set(routes) == {
+            "policy_path_gap",
+            "curve_shape_gap",
+            "inflation_expectations_gap",
+            "equity_macro",
+        }, f"{country} is missing a route: {sorted(routes)}"
+        for name, route in routes.items():
+            instrument = route["instrument_template"]
+            if name == "curve_shape_gap":
+                instrument = instrument.format(
+                    short=settings.default_short_tenor,
+                    long=settings.default_long_tenor,
+                    direction_word="steepener",
+                )
+            assert universe.category_for(instrument) == route["universe_category"], (
+                f"{country}.{name} names {instrument!r}, which its universe "
+                f"classifies {universe.category_for(instrument)!r} but the route "
+                f"declares {route['universe_category']!r}"
+            )
+            assert universe.permits(instrument), (
+                f"{country}.{name} names {instrument!r}, which its own universe "
+                f"refuses — this is the §22.12 boundary failure"
+            )
+
+
+def test_each_countrys_policy_path_template_is_not_the_base_tables() -> None:
+    """(§22.3) gb and eu do NOT route ``policy_path_gap`` to the US instrument.
+
+    The anti-relabel test at the ROUTE level. The base table's policy-path
+    template names a UST; a country that inherited it unchanged would serve the
+    US instrument to a non-US thesis. Measured, each of gb/eu overrides it with
+    its own policy-expectations contract (short sterling / ESTR).
+    """
+    settings = get_settings().instrument_selection
+    base = settings.routes_for("us")["policy_path_gap"]["instrument_template"]
+    assert base == "UST 2yr note futures"
+
+    for country, expected in (
+        ("gb", "Short-sterling futures (SONIA 3m)"),
+        ("eu", "ESTR futures"),
+    ):
+        overridden = settings.routes_for(country)["policy_path_gap"]["instrument_template"]
+        assert overridden == expected, (
+            f"{country}'s policy-path template is {overridden!r}, expected "
+            f"{expected!r} — an inherited US template is the §22.3 relabel"
+        )
+        assert overridden != base
+
+
+def test_the_eu_policy_path_instrument_is_refused_by_the_us_and_gb_universes() -> None:
+    """(§22.3) ESTR is the euro area's, and no other country's.
+
+    The load-bearing isolation for the eu routes: the policy-path instrument the
+    eu table names must be admissible ONLY in the eu universe. Measured, ``ESTR``
+    appears in no US or UK keyword set, so both refuse it.
+
+    The curve and equity templates are deliberately NOT asserted this way,
+    because their discriminating words (``steepener``, ``index futures``) are the
+    SHARED shape vocabulary — a known and documented design decision, not a leak.
+    The ROUTE TABLE is what keeps a eu template out of a us/gb thesis.
+    """
+    eu = _country_universe("eu")
+    us = _country_universe("us")
+    gb = _country_universe("gb")
+    assert eu.category_for("ESTR futures") == "rates"
+    assert us.category_for("ESTR futures") is None
+    assert gb.category_for("ESTR futures") is None

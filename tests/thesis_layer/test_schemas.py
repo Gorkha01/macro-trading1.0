@@ -579,3 +579,130 @@ def test_the_equity_keyword_vocabulary_is_country_aware() -> None:
     assert "ftse" not in us._equity_keywords
     assert "nasdaq" in us._equity_keywords
     assert "nasdaq" not in gb._equity_keywords
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — the euro-area universe (country "eu")
+#
+# The third country, and the one whose instrument structure is genuinely unlike
+# the other two: the euro area has no single sovereign, so its defining rates
+# feature is the SOVEREIGN SPREAD (BTP-Bund, OAT-Bund) that neither the US nor
+# the UK has. The tests below pin, in both directions, that a eu universe admits
+# its own vocabulary and refuses the US's and the UK's.
+# ---------------------------------------------------------------------------
+
+
+def test_the_eu_universe_lists_euro_instruments_not_us_or_uk_ones() -> None:
+    """(§22.3) ``country='eu'`` names Bunds / BTPs / ESTR / Euro Stoxx.
+
+    The literal lists are asserted, not just "differs from us": a plan that
+    differed by omission (empty) would pass a naive inequality and fail the
+    point, which is that the euro area has its OWN tradable set.
+
+    The euro-area-specific token is ``btp``/``bund``/``estr`` — and the SOVEREIGN
+    SPREAD vocabulary (``btp-bund``) is the euro area's defining feature, absent
+    from both the US and the UK because neither has an intra-area credit
+    structure.
+    """
+    eu = ProductionUniverse(country="eu")
+    joined = " ".join(eu.all_instruments).lower()
+    for token in ("bund", "btp", "oat", "estr", "stoxx", "spread"):
+        assert token in joined, f"the eu plan omits {token!r}: {eu.all_instruments}"
+    # ...and no US or UK instrument leaks into the euro-area plan.
+    for token in ("ust", "sofr", "fed funds", "tips", "s&p", "nasdaq", "gilt", "sonia"):
+        assert token not in joined, f"the eu plan relabels another market's instrument: {token!r}"
+
+
+def test_the_eu_and_us_and_gb_plans_admit_their_own_and_refuse_each_others() -> None:
+    """(§22.3) three-way: eu refuses UST/gilt, us refuses ESTR/BTP, gb refuses ESTR/BTP.
+
+    This is the anti-relabel test extended to the third country. A universe that
+    admitted another market's instruments would let a eu thesis name a UST or a
+    gilt (serving US or UK data to a euro trade), and vice versa.
+
+    The cases are the **disjoint** ones only, measured rather than assumed. ESTR
+    is the sharpest: it is the euro area's policy rate and appears in NO other
+    plan, so a eu universe must admit it and the us/gb universes must refuse it.
+    The shared shape words (``swap``, ``ois``, ``index futures``) are deliberately
+    common, so a string built only on them is admitted by all three — the
+    discriminating vocabulary is where the anti-relabel claim lives.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    eu = ProductionUniverse(country="eu")
+
+    # Each admits its own, on its DISJOINT vocabulary.
+    assert eu.category_for("ESTR futures") == "rates"
+    assert eu.category_for("BTP-Bund spread") == "rates"
+    assert eu.category_for("Euro Stoxx 50 index futures") == "equity"
+    assert us.category_for("UST futures") == "rates"
+    assert gb.category_for("10yr gilt futures") == "rates"
+
+    # Each refuses the other two markets' disjoint vocabulary.
+    assert eu.category_for("UST futures") is None
+    assert eu.category_for("SOFR futures") is None
+    assert eu.category_for("10yr gilt futures") is None
+    assert eu.category_for("short sterling futures") is None
+    assert us.category_for("ESTR futures") is None
+    assert gb.category_for("ESTR futures") is None
+
+
+def test_the_eu_bare_ticker_table_is_country_aware() -> None:
+    """(§22.3, mutation-killed) a Eurex root is not a US or UK ticker.
+
+    The bare-ticker roots are market-specific and must be selected by country:
+    ``FGBL`` is the Eurex Euro-Bund root and ``TU`` the US 2yr-note root. A eu
+    universe that read the US table would admit ``"ES futures"``/``"TU futures"``
+    into a euro thesis (the exact §22.3 relabel); a us universe that read the
+    eu table would admit ``"FGBL futures"``.
+
+    Asserted through the public matcher with a shape carrying NO generic keyword
+    (so the ticker is the only admissible path).
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    eu = ProductionUniverse(country="eu")
+    assert eu.category_for("FGBL futures") == "rates"
+    assert eu.category_for("FBTP futures") == "rates"
+    assert eu.category_for("FESX futures") == "equity"
+    assert us.category_for("FGBL futures") is None
+    assert gb.category_for("FGBL futures") is None
+    assert eu.category_for("ES futures") is None
+    assert eu.category_for("TU futures") is None
+
+
+def test_the_eu_plan_is_internally_consistent() -> None:
+    """(§22.3) the eu plan permits every instrument it declares.
+
+    The registry-driven companion: iterating the PLANS means a future country
+    cannot be added with lists its own matcher would reject.
+    """
+    universe = ProductionUniverse(country="eu")
+    assert universe.all_instruments, "eu declared no instruments"
+    for instrument in universe.all_instruments:
+        assert universe.permits(instrument), f"eu rejects its own {instrument!r}"
+
+
+def test_the_three_plans_share_only_fx() -> None:
+    """(§22.3) ``fx`` is shared by design; ``rates`` and ``equity`` are not.
+
+    The asymmetry is the section's point: a category that genuinely differs must
+    not be faked by relabelling. G10 FX is one market, so its instruments are the
+    same tradeable objects for every country; rates and equity are not.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    eu = ProductionUniverse(country="eu")
+    assert us.fx == gb.fx == eu.fx, "G10 FX is one market and must be shared"
+    assert us.rates != eu.rates, "the eu rates set differs from the US one"
+    assert gb.rates != eu.rates, "the eu rates set differs from the UK one"
+    assert us.equity != eu.equity, "the eu equity set differs"
+
+
+def test_every_country_plan_is_internally_consistent_across_three_countries() -> None:
+    """(§22.3) each of the THREE plans permits every instrument it declares."""
+    for country in ("us", "gb", "eu"):
+        universe = ProductionUniverse(country=country)
+        assert universe.all_instruments, f"{country} declared no instruments"
+        for instrument in universe.all_instruments:
+            assert universe.permits(instrument), f"{country} rejects its own {instrument!r}"
