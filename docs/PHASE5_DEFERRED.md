@@ -281,6 +281,13 @@ FALSE BLOCK). This does **not** overturn item 1 — the three probes above are s
 evidence of absence. Re-probing on a schedule (item 1's §2.5.1 action) should search the inventory for
 the *economic concept*, not only the instrument's usual name.
 
+**⚠️ And a second caution, about the probe PROCESS rather than its search term.** Writing a probe is
+not enough; the probe must CALL the source, not enumerate it. The §22.5 probe originally printed
+route NAMES and a statement of what would be needed, which reads as a finding and is not one — so the
+first probe agreed with the wrong conclusion instead of overturning it (§5.1). **Two independent
+defects, one in the search term and one in the method, both pointed the same wrong way.** A probe's
+deliverable is a verdict derived from a call; anything else is a restated hypothesis.
+
 **Why these are not "Phase 5+ deferrals" like the others.** The shock engine is deferred
 because a *dependency* is withheld — as GARCH was until 2026-10-09, when its gate opened and it
 shipped (§2.2). Item 1 is blocked because **no source on this installation returns
@@ -548,6 +555,17 @@ uv run python tools/probe_fed_funds_futures.py
 # → SOURCE DEFECT: 6 of the 16 expirations carry a price near 47-48 → ~52% implied rate,
 #   deterministic across three calls (min 47.64, max 96.12 every time)
 ```
+
+**A second, independent defect: the probe itself had to be fixed to reach that verdict.** The first
+version of `tools/probe_fed_funds_futures.py` walked the route registry, printed route-shaped
+strings, and closed with *"VERDICT CRITERIA: … requires a futures settlement or a CME-probability
+route"* — a statement of what WOULD be needed, phrased like a conclusion it had not reached. It could
+not tell *"the route exists and returns a curve"* from *"no such route exists"*, and its verdict
+nudged a reader toward the second. **That is the same class as the mis-recorded finding above: a
+route NAME is a hypothesis, and only a CALL tests it.** The probe now has a section D that invokes
+the route with the symbol and derives the verdict from what returns, and the double defect is pinned
+by tests in `tests/data_layer/test_fed_funds_futures_client.py` (the guard is itself AST-based
+because a string match survived a `for route in []:` mutation — see that test's docstring).
 
 The read is now implemented and tested — `data_layer/fed_funds_futures_client.py` (the data leg) and
 `models/policy_rules.futures_implied_policy_path` (the model leg), with the six ~52% rows **rejected

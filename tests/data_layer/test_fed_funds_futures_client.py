@@ -562,5 +562,154 @@ def test_the_route_constant_matches_the_probed_route() -> None:
     assert FUTURES_ROUTE_ENDPOINT == "derivatives.futures.curve"
 
 
+# ---------------------------------------------------------------------------
+# The PROBE's method — a regression guard on the discovery step itself
+# ---------------------------------------------------------------------------
+def test_the_probe_calls_the_route_and_does_not_only_enumerate_it() -> None:
+    """The probe must test the route, not just print its name.
+
+    **This is a regression guard on a real defect in this project's own
+    tooling.** The first version of `tools/probe_fed_funds_futures.py` walked the
+    OpenBB route registry and printed route-shaped strings. That cannot
+    distinguish "the route exists and returns a usable curve" from "no such
+    route exists", and its verdict block pushed the reader toward the second —
+    which is how a whole session recorded §22.5 as *"needs data"* while the data
+    sat behind a route whose name contains `futur`, a token the D-108 inventory
+    grep never searched for.
+
+    A route NAME is a hypothesis; only a CALL tests it. Asserted on the source so
+    a future "simplification" back to enumeration-only fails a test rather than
+    review — the same idiom as the AST checks above.
+    """
+    import ast
+    import pathlib
+
+    probe_path = (
+        pathlib.Path(__file__).resolve().parents[2] / "tools" / "probe_fed_funds_futures.py"
+    )
+    source = probe_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert "probe_futures_route" in defined, (
+        "the probe must define a function that CALLS a futures route; "
+        "enumerating route names is not a probe"
+    )
+    # It must actually invoke the route through the walked attribute node, and
+    # it must pass the symbol — a call without a symbol cannot resolve a curve.
+    call_section = source.split("def probe_futures_route", 1)[1]
+    assert "node(symbol=symbol" in call_section, (
+        "probe_futures_route must CALL the route with the symbol, not merely "
+        "resolve it to an attribute"
+    )
+    # The live call must be REACHABLE from main(), or it never runs when a human
+    # invokes the probe. Checked on the AST, NOT by grepping for the call text:
+    # a string match survives `for route in []:` — i.e. a loop that never
+    # executes still leaves the call in the source. That was measured as a
+    # SURVIVOR of this very assertion before it was rewritten.
+    main_def = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main"
+    )
+    called_in_main = {
+        node.func.id
+        for node in ast.walk(main_def)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "probe_futures_route" in called_in_main, (
+        "probe_futures_route is defined but main() does not CALL it; the probe "
+        "would print route names and stop — the original defect"
+    )
+    # And the loop it sits in must iterate a non-empty set of routes.
+    iterated = [
+        node.iter
+        for node in ast.walk(main_def)
+        if isinstance(node, ast.For)
+        and any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id == "probe_futures_route"
+            for c in ast.walk(node)
+        )
+    ]
+    assert iterated, "probe_futures_route must be called from inside a for-loop over the routes"
+    for iterable in iterated:
+        assert not (isinstance(iterable, ast.List) and not iterable.elts), (
+            "the route loop iterates an EMPTY list, so the live call never runs; "
+            "this is the enumerate-only defect with the call left in place"
+        )
+
+
+def test_the_probe_reports_the_corruption_it_exists_to_find() -> None:
+    """The probe's verdict must warn about the measured corruption.
+
+    The probe found the six ~52% rows; its verdict text must SAY so, because a
+    reader who runs the probe and sees a plausible near rate could otherwise
+    trust the curve. The warning is part of the deliverable, not decoration.
+    """
+    import pathlib
+
+    probe_path = (
+        pathlib.Path(__file__).resolve().parents[2] / "tools" / "probe_fed_funds_futures.py"
+    )
+    source = probe_path.read_text(encoding="utf-8")
+    assert "CHECK THE ROWS ABOVE FOR CORRUPTION" in source
+    assert "52%" in source or "52.11" in source
+    assert "never clamp" in source
+
+
+def test_the_probe_does_not_print_its_verdict_as_a_bare_threshold_statement() -> None:
+    """A verdict must be a CONCLUSION from the call, not a restated criterion.
+
+    The old final block printed "VERDICT CRITERIA: … requires a futures
+    settlement or a CME-probability route" — a statement of what WOULD be needed,
+    with no finding. It read like a conclusion and was not one, which is the
+    "field describing a computation that did not happen" class: worse than
+    silence, because it is read as evidence.
+
+    **Scoped to the PRINTED output, not the whole file.** The phrase legitimately
+    appears in the module docstring, which quotes the old block to explain why
+    section D exists — documentation about a defect is not the defect. Checking
+    the raw text would forbid describing the bug, so the assertion reads the
+    STRING LITERALS the probe can print.
+    """
+    import ast
+    import pathlib
+
+    probe_path = (
+        pathlib.Path(__file__).resolve().parents[2] / "tools" / "probe_fed_funds_futures.py"
+    )
+    source = probe_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    # Exclude the DOCSTRING NODES by identity, not by value: the module docstring
+    # quotes the verdict text, so a value-based exclusion would drop the real
+    # print literals that carry the same string (measured — that version failed).
+    doc_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.FunctionDef | ast.ClassDef):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                doc_ids.add(id(body[0].value))
+
+    printed = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in doc_ids
+    ]
+    assert not any("VERDICT CRITERIA" in text for text in printed), (
+        "the probe prints a VERDICT CRITERIA restatement; it must print a "
+        "VERDICT derived from the live call"
+    )
+    assert any("VERDICT: a FUTURES-shaped route EXISTS" in text for text in printed)
+    assert any("VERDICT: NO futures route returned data" in text for text in printed)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

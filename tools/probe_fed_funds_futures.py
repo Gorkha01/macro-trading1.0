@@ -14,6 +14,27 @@ block (D-108). This probe answers the conditional question **before** any code i
 written, per §21.0 rule 3 (*no input may be invented*) and the re-probe
 discipline recorded in `docs/PHASE5_DEFERRED.md` §2.5.
 
+⚠️ **What the FIRST version of this probe got wrong — and why section D exists.**
+It walked the OpenBB route registry and printed route-shaped strings, then closed
+with *"VERDICT CRITERIA: … requires a futures settlement or a CME-probability
+route"*. That is a statement of what WOULD be needed, not a finding, and it reads
+like a conclusion. It cannot distinguish *"the route exists and returns a usable
+curve"* from *"no such route exists"* — and a whole session duly recorded §22.5 as
+*"needs data"* while the data sat behind `derivatives.futures.curve`, a route
+whose NAME contains `futur`, a token the D-108 inventory grep never searched for.
+
+**A route name is a hypothesis; only a CALL tests it.** Section D therefore
+invokes the route with the symbol and prints what comes back, and the verdict is
+derived from that call rather than restated. Pinned by
+`tests/data_layer/test_fed_funds_futures_client.py::
+test_the_probe_calls_the_route_and_does_not_only_enumerate_it`.
+
+**Measured verdict 2026-10-10: the source EXISTS.** `ZQ` on
+`derivatives.futures.curve` returns a 16-point term structure whose front
+contract implies 3.88% — EQUAL to the measured `DFF`/`EFFR` and inside the
+`DFEDTARL`/`DFEDTARU` range. ⚠️ 6 of those 16 rows are CORRUPT (price ~47-48 →
+~52% implied, deterministic across calls); the loader REJECTS and names them.
+
 It is READ-ONLY and DISCOVERY-ONLY: it writes no config, changes no `status:`
 field, and substitutes no series.
 
@@ -66,6 +87,116 @@ FUTURES_ROUTE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("CME", r"\bcme\b"),
     ("swap / OIS", r"\bswap\b|\bois\b"),
 )
+
+#: The 30-Day Fed Funds futures root symbol, probed LIVE below. This is the
+#: contract that settles to `100 - <the month's average effective rate>`, so its
+#: price inverts directly into a market-implied policy rate.
+#:
+#: Probed with the BARE code `ZQ`: `ZQ=F` was measured to 404 on the CURVE route
+#: although it resolves on the HISTORICAL route, so the bare code is what the
+#: curve loader must send.
+PROBE_FUTURES_SYMBOL = "ZQ"
+PROBE_FUTURES_PROVIDER = "yfinance"
+
+#: The routes worth CALLING (not merely enumerating). `curve` returns the term
+#: structure in one shot; `historical` returns one contract's time series and is
+#: probed to show the *settlement-price* path rather than the curve.
+PROBE_FUTURES_ROUTES: tuple[str, ...] = (
+    "derivatives.futures.curve",
+    "derivatives.futures.historical",
+)
+
+
+def probe_futures_route(route: str, symbol: str) -> dict[str, Any]:
+    """CALL a futures route and report what it actually returns.
+
+    **Why this exists — and why enumerating route NAMES is not enough.** The
+    first version of this probe only walked the registry and printed
+    route-shaped strings. That CANNOT distinguish *"the route exists and returns
+    a usable curve"* from *"no route of this shape exists"*, and its verdict
+    block nudged the reader toward the second — which is how a whole session
+    recorded §22.5 as *"needs data"* while the data sat behind a route whose
+    name contains `futur`, a token the inventory grep never searched for.
+
+    A route NAME is a hypothesis. This function tests it. The distinction is the
+    same one the project draws everywhere else: `ls` the artifact a claim names
+    rather than trusting the claim.
+    """
+    try:
+        from openbb import obb
+    except Exception as exc:
+        return {"error": f"openbb unreachable: {type(exc).__name__}: {exc}"}
+
+    # The route string "derivatives.futures.curve" resolves through obb's
+    # attribute tree; walk it rather than eval so a rename fails loudly here.
+    node: Any = obb
+    try:
+        for part in route.split("."):
+            node = getattr(node, part)
+    except AttributeError as exc:
+        return {"error": f"route not present on obb: {exc}"}
+
+    try:
+        result = node(symbol=symbol, provider=PROBE_FUTURES_PROVIDER)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+    records = getattr(result, "results", None)
+    if records is None:
+        return {"error": "the call returned no `.results` attribute"}
+
+    rows: list[dict[str, Any]] = []
+    for item in records:
+        if hasattr(item, "model_dump"):
+            rows.append(item.model_dump())
+        elif isinstance(item, dict):
+            rows.append(item)
+        else:
+            rows.append({"repr": repr(item)})
+
+    return {"rows": rows, "count": len(rows)}
+
+
+def _summarise_futures_rows(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int = 20,
+) -> list[str]:
+    """One line per row, showing the horizon and the implied rate when derivable.
+
+    Kept deliberately dumb: it prints the RAW columns so a reader can see the
+    source's own field names, and computes `100 - price` only as an annotation.
+    A probe that pre-digests the data hides the defect it exists to find.
+
+    ``limit`` truncates the tail and SAYS SO — a probe that silently prints 250
+    rows of one shape buries the 16 that matter. Rows whose price is not
+    numeric are counted rather than repeated, because `historical` returns
+    ``date``/``close`` rather than ``expiration``/``price`` and printing 251
+    copies of "price not numeric" is noise, not evidence.
+    """
+    lines: list[str] = []
+    non_numeric = 0
+    for row in rows[:limit]:
+        expiration = row.get("expiration", "?")
+        price = row.get("price", "?")
+        try:
+            implied = f"  -> implied {100.0 - float(price):.2f}%"
+        except (TypeError, ValueError):
+            # `historical` has a different column set. Name the columns ONCE so
+            # the reader can adapt, instead of repeating a blank line per row.
+            non_numeric += 1
+            implied = f"  -> price not numeric (columns: {sorted(row)[:6]})"
+        lines.append(f"    {expiration}  price={price}{implied}")
+    if non_numeric == len(rows[:limit]) and non_numeric:
+        # Collapse the whole block: this route is not the curve route.
+        return [
+            f"    (this route returns no `expiration`/`price` columns; "
+            f"first row's keys: {sorted(rows[0])[:8]})",
+            f"    {len(rows)} row(s) total, 0 with a usable price — NOT the curve route.",
+        ]
+    if len(rows) > limit:
+        lines.append(f"    ... and {len(rows) - limit} more row(s)")
+    return lines
 
 
 def probe_series(symbol: str, note: str) -> dict[str, Any]:
@@ -203,11 +334,50 @@ def main() -> int:
     if len(routes) > 40:
         print(f"  ... and {len(routes) - 40} more")
 
+    # --- D. THE DECISIVE SECTION. Enumerating a route name proves nothing; call
+    #        it. This is the step the first version of this probe was missing,
+    #        and its absence is why §22.5 was mis-recorded as "needs data".
+    print(f"\n--- D. LIVE CALL: {PROBE_FUTURES_SYMBOL} on the futures routes ---")
+    usable = 0
+    for route in PROBE_FUTURES_ROUTES:
+        outcome = probe_futures_route(route, PROBE_FUTURES_SYMBOL)
+        if "error" in outcome:
+            print(f"  {route:<32} ERROR  {outcome['error'][:100]}")
+            continue
+        rows = outcome["rows"]
+        print(f"  {route:<32} OK  {outcome['count']} row(s)")
+        for line in _summarise_futures_rows(rows):
+            print(line)
+        if rows:
+            usable += 1
+
     print("\n" + "=" * 78)
-    print("VERDICT CRITERIA: a Fed-funds-futures-implied DISTRIBUTION requires a")
-    print("futures settlement or a CME-probability route. Group B alone gives")
-    print("expectations of INFLATION or of administered rates -- none of which is")
-    print("'the market's probability distribution over future POLICY RATES'.")
+    if usable:
+        print("VERDICT: a FUTURES-shaped route EXISTS and RETURNS DATA for")
+        print(f"  {PROBE_FUTURES_SYMBOL} via {PROBE_FUTURES_PROVIDER}.")
+        print("")
+        print("  A 30-Day Fed Funds future settles to")
+        print("  `100 - <the contract month's average effective funds rate>`, so")
+        print("  `implied_rate = 100 - price` IS a market-implied policy rate.")
+        print("  §22.5 is therefore BUILDABLE on this install — the block was a")
+        print("  MISSED SOURCE, not missing data. Cross-check: the front contract's")
+        print("  implied rate must EQUAL the measured DFF/EFFR and sit inside the")
+        print("  DFEDTARL/DFEDTARU target range; if it does not, the symbol is")
+        print("  wrong or the contract is not the one this probe assumes.")
+        print("")
+        print("  ⚠️ CHECK THE ROWS ABOVE FOR CORRUPTION before trusting the curve.")
+        print("  Measured 2026-10-10: 6 of 16 expirations returned a price near")
+        print("  47-48 (a ~52% implied policy rate) instead of 95-96 — deterministic")
+        print("  across three calls, i.e. source corruption, not a market view. A")
+        print("  consumer must REJECT such rows (never clamp them) and disclose the")
+        print("  count. The loader in data_layer/fed_funds_futures_client.py does.")
+    else:
+        print("VERDICT: NO futures route returned data for")
+        print(f"  {PROBE_FUTURES_SYMBOL}. §22.5 is NOT buildable on this install,")
+        print("  and the block is a genuine data block (like the FX-forward one).")
+        print("  Group A/B alone are NOT a substitute: they give expectations of")
+        print("  INFLATION or administered rates, which are not the market's")
+        print("  distribution over future POLICY RATES.")
     print("=" * 78)
     return 0
 
