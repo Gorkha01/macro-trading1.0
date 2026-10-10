@@ -161,11 +161,18 @@ block + `CrossCountrySettings`, the `_select_cross_country_instrument` branch in
    comparability as an input and refuse an un-attested cross-currency pair.
 4. **`BLOCKED_MULTI_COUNTRY_NOT_BUILT` is retained but narrowed** (as §3/WS3 predicted): it now fires
    only on a malformed divergence record, never for "no second country exists".
-5. **The two-snapshot orchestration is NOT wired.** The design assumed a "cross-country snapshot
-   carrying both countries' fields" (§3/WS1); the shipped layer instead takes the two countries' derived
-   levels as an **input record**, so the model is reachable through the builder without a new snapshot
-   shape. The API-level path (fetch both, drive from one request) remains an increment of its own —
-   `docs/PHASE5_DEFERRED.md` §2.4.2.
+5. **The two-snapshot orchestration — SHIPPED 2026-10-10 (D-153).** The design assumed a "cross-country
+   snapshot carrying both countries' fields" (§3/WS1); the shipped layer instead takes the two
+   countries' derived levels as an **input record**, so the model was reachable through the builder
+   without a new snapshot shape. **The API-level path is now built**: `cross_country_thesis_inputs`
+   (`api_layer/orchestration.py`) takes **two ordinary country snapshots**, derives each leg through
+   that country's own derivation, and drives the divergence from one call — `docs/PHASE5_DEFERRED.md`
+   §2.4.2. It is a **separate entry point**, not a nullable second argument on
+   `snapshot_to_thesis_inputs`: the one-snapshot dispatch is one-snapshot by construction, and a
+   nullable argument would let a caller pass one snapshot twice and get a zero-by-construction
+   difference. Two leg-reader defects were fixed in the same increment (a US policy-rate field that
+   disagreed with `_policy_rate`'s `iorb`-first preference; an index level published as a rate) — both
+   recorded in the CHANGELOG's D-153 entry.
 
 **The classifier trap measured during implementation:** `ProductionUniverse.category_for` is
 keyword-based, so `"US 10y vs EU 10y"` classifies as `None` (refused) while `"UST 10y vs Bund 10y"`

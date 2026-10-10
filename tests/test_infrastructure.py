@@ -47,9 +47,13 @@ from macro_engine.config import CalibratedValue, Settings, get_settings
 #: name, or a list of confidence levels. Pinned as a set so a NEW one fails the
 #: numeric sweep rather than quietly joining the exception.
 #:
-#: MEASURED 2026-10-06: 19 of the 339 ``CalibratedValue`` leaves are non-numeric,
-#: which is why the cited invariant is stated here as *"every NUMERIC envelope is
-#: scalar-readable"* rather than the stronger claim the docstrings make.
+#: MEASURED 2026-10-10: **24 of the 407** ``CalibratedValue`` leaves are
+#: non-numeric, which is why the cited invariant is stated here as *"every NUMERIC
+#: envelope is scalar-readable"* rather than the stronger claim the docstrings
+#: make. (Both numbers DRIFT as leaves are added — the count is a measurement, not
+#: an invariant, and re-measuring is one command:
+#: ``_envelope_leaves()`` and a ``scalar()`` loop. The earlier "19 of 339" was
+#: itself stale by the time it was read.)
 _NON_NUMERIC_ENVELOPES = frozenset(
     {
         "openbb.local_api_base_url",
@@ -87,6 +91,15 @@ _NON_NUMERIC_ENVELOPES = frozenset(
         # `risk.var_confidence_levels` is listed: an envelope carrying structure,
         # not a drifted number.
         "fx_futures.cme_roots_value",
+        # The cross-country shared-tenor leaf added with the two-snapshot join.
+        # A TENOR LABEL ("10y") — the same shape as
+        # `api.short_yield_tenor_value` and
+        # `instrument_selection.curve_default_long_tenor`, not a number that
+        # drifted. (`cross_country.leg_labels` and `leg_currency_codes` are NOT in
+        # this set: they are plain `dict[str, Any]` fields, not `CalibratedValue`
+        # envelopes, so the envelope walk never visits them — measured, not
+        # assumed.)
+        "cross_country.shared_tenor_value",
     }
 )
 

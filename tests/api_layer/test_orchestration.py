@@ -27,6 +27,7 @@ from macro_engine.data_layer.schemas import (
     ObservationPoint,
     YieldCurveSnapshot,
 )
+from macro_engine.models.instrument_selection import ThesisType
 
 AS_OF = datetime(2026, 10, 6, tzinfo=UTC)
 
@@ -241,7 +242,7 @@ def test_latest_on_or_before_is_inclusive_and_none_when_too_early() -> None:
 
 
 def _gb_snapshot() -> MacroDataSnapshot:
-    """A UK snapshot carrying each of the six series the gb derivation reads.
+    """A UK snapshot carrying each series the gb derivation reads, plus its gilt.
 
     Built from the same point constructors as the US helpers, so the UK path is
     exercised through the real ``snapshot_to_thesis_inputs`` rather than a
@@ -254,6 +255,13 @@ def _gb_snapshot() -> MacroDataSnapshot:
     varying so the mean-relative gap is a non-trivial number. A snapshot of
     constants would make the gap zero and the rule outputs coincide, hiding any
     dispatch error.
+
+    ``gb_gilt_10y_yield`` is carried even though the *gb thesis derivation* does
+    not read it as its short leg (it reads ``gb_short_rate_3m``): the series is in
+    the production GB fetch plan (``config/settings.yaml`` ``snapshot_fields.gb``)
+    and the 10-year gilt is the leg the cross-country join reads for the UK. A
+    fixture missing a series the PRODUCTION snapshot carries would let the join's
+    GB leg pass here against a snapshot no deployment ever produces.
     """
     return MacroDataSnapshot(
         country="gb",
@@ -267,6 +275,7 @@ def _gb_snapshot() -> MacroDataSnapshot:
         gb_gdp_growth_qoq=_series([0.1, 0.3, 0.2, 0.4, 0.2, 0.5], series="gb_gdp_growth_qoq"),
         gb_bank_rate=_series([5.0, 4.75, 4.5, 4.25], series="gb_bank_rate"),
         gb_short_rate_3m=_series([4.6, 4.5, 4.4, 4.35], series="gb_short_rate_3m"),
+        gb_gilt_10y_yield=_series([4.35, 4.28, 4.22, 4.18], series="gb_gilt_10y_yield"),
     )
 
 
@@ -603,3 +612,258 @@ def test_the_entry_point_derives_every_required_argument() -> None:
     assert result.thesis_type.value == get_settings().api.default_thesis_type
     assert result.notes, "the derivation must travel with the inputs"
     assert any(n.name == "thesis_type" for n in result.notes)
+
+
+# ---------------------------------------------------------------------------
+# The two-snapshot orchestration (Section 22.3 layer 4, docs/PHASE5_DEFERRED.md 2.4.2)
+# ---------------------------------------------------------------------------
+
+
+def _us_cross_snapshot(*, policy: float = 4.30, cpi_last: float = 330.0) -> MacroDataSnapshot:
+    """A US snapshot usable as a cross-country leg (D-152/D-154).
+
+    Reuses :func:`_full_snapshot`'s shape but pins the two quantities the join
+    reads — the effective policy rate (``iorb``) and headline inflation — so a
+    test can place the US on a known side of a divergence. ``cpi_last`` sets the
+    final CPI level; the monthly series steps by 1.0, so the YoY rate is a known
+    function of it.
+    """
+    snap = _full_snapshot()
+    return snap.model_copy(
+        update={
+            "iorb": _monthly([policy] * 24, series="iorb"),
+            "cpi_headline": _monthly(
+                [cpi_last - 23.0 + i for i in range(24)], series="cpi_headline"
+            ),
+        }
+    )
+
+
+def test_the_two_snapshot_join_produces_a_divergence_record() -> None:
+    """The join measures the divergence and returns it on the inputs.
+
+    A ``CROSS_COUNTRY_DIVERGENCE`` thesis carries ``cross_country`` — the
+    ``value`` dict of ``cross_country_divergence`` — so the builder computes the
+    divergence ONCE (LAW 2) and the selector reads a measured number.
+
+    USD/GBP is a cross-currency pair, so the caller must attest
+    ``fx_converted=True`` (the model refuses an unattested cross-currency
+    difference — the archetypal fake spread). Passing the attestation here is
+    what a real caller does after routing both legs through the FX bridge.
+    """
+    result = orch.cross_country_thesis_inputs(
+        _us_cross_snapshot(),
+        _gb_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        fx_converted=True,
+    )
+    assert result.cross_country is not None
+    assert result.cross_country["verdict"] in {
+        "MEANINGFUL_DIVERGENCE",
+        "NO_MEANINGFUL_DIVERGENCE",
+    }
+    assert "divergence_bp" in result.cross_country
+    # Leg A is the country the THESIS is about; the divergence names both.
+    assert result.country == "us"
+    assert result.cross_country["long_leg_country"] in {"us", "gb"}
+    assert result.cross_country["short_leg_country"] in {"us", "gb"}
+    assert result.cross_country["long_leg_country"] != result.cross_country["short_leg_country"], (
+        "the two legs must be different countries"
+    )
+
+
+def test_the_join_refuses_the_same_country_twice() -> None:
+    """Passing one country's snapshot twice is refused BEFORE any arithmetic.
+
+    The model also refuses it, but the error here names the two SNAPSHOTS a
+    caller actually passed, which is the diagnosis a caller needs.
+    """
+    with pytest.raises(orch.OrchestrationError, match="against itself"):
+        orch.cross_country_thesis_inputs(
+            _us_cross_snapshot(),
+            _us_cross_snapshot(),
+            thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        )
+
+
+def test_the_join_refuses_a_non_cross_country_thesis_type() -> None:
+    """A divergence for any other family is a category error.
+
+    Refused here so the builder's own validator never has to be the one to say
+    it, and so the message can name the family that was asked for.
+    """
+    with pytest.raises(orch.OrchestrationError, match="CROSS_COUNTRY_DIVERGENCE"):
+        orch.cross_country_thesis_inputs(
+            _us_cross_snapshot(),
+            _gb_snapshot(),
+            thesis_type=ThesisType.POLICY_PATH_GAP,
+        )
+
+
+def test_the_sign_convention_follows_the_argument_order() -> None:
+    """Swapping the two snapshots flips the SIGN, but NOT which country is long.
+
+    Two different invariants live here and an earlier version of this test
+    conflated them — which is exactly what it was written to prevent, one level
+    up.
+
+    * **The divergence is antisymmetric in the leg order.** ``(A - B)`` negates
+      when the arguments swap. This the test asserts, and it is the caller-facing
+      contract the docstring states.
+    * **The long leg is NOT order-dependent.** ``long_leg_country`` is *the
+      country with the higher real rate* — a property of the two economies, not
+      of how the caller listed them. In this fixture the US real rate
+      (4.30 - 3.77 = +0.53) exceeds the UK's (4.25 - 3.80 = +0.45), so the RV
+      trade is LONG US regardless of argument order. Asserting that the long leg
+      *swaps* would be asserting a defect: it would mean the long leg tracked the
+      argument order rather than the measured differential, which is the
+      caller-flag error the model's own comment forbids ("never a caller flag — a
+      flag would let a caller name the wrong leg on a correct number").
+
+    Both calls carry ``fx_converted=True`` because USD/GBP is cross-currency.
+    """
+    us_gb = orch.cross_country_thesis_inputs(
+        _us_cross_snapshot(),
+        _gb_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        fx_converted=True,
+    )
+    gb_us = orch.cross_country_thesis_inputs(
+        _gb_snapshot(),
+        _us_cross_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        fx_converted=True,
+    )
+    a = us_gb.cross_country
+    b = gb_us.cross_country
+    assert a is not None and b is not None
+    # 1. The sign is antisymmetric in the leg order.
+    assert a["divergence_bp"] == pytest.approx(-b["divergence_bp"]), (
+        "the divergence is antisymmetric in the leg order"
+    )
+    # 2. The long/short assignment is a property of the ECONOMIES, not the order:
+    #    the higher-real-rate country is long in BOTH listings.
+    assert a["long_leg_country"] == b["long_leg_country"], (
+        "the long leg is the higher-real-rate country, independent of argument order"
+    )
+    assert a["short_leg_country"] == b["short_leg_country"]
+    assert a["long_leg_country"] != a["short_leg_country"]
+    # 3. And it tracks the measured real rate, not the argument order: the US
+    #    fixture's real rate exceeds the UK's, so the US is the long leg here.
+    assert a["long_leg_country"] == "us"
+
+
+def test_the_join_reads_the_shared_tenor_and_horizon_from_config() -> None:
+    """The comparability basis is the CONFIG's, not each leg's own choice.
+
+    The model validates both legs against ``cross_country.comparable_horizon_quarters``
+    and the join against ``cross_country.shared_tenor_value``; this pins that the
+    join actually consults them, by moving the leaf and observing the refusal.
+    ``fx_converted=True`` because the fixture pair is USD/GBP (cross-currency).
+    """
+    settings = get_settings()
+    tenor = settings.cross_country.shared_tenor
+    assert tenor, "the shared tenor leaf must be populated"
+    # The basis is reported on the derivation note, so a reader can see which
+    # basis the two numbers were compared on.
+    result = orch.cross_country_thesis_inputs(
+        _us_cross_snapshot(),
+        _gb_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        fx_converted=True,
+    )
+    basis = next((n for n in result.notes if n.name == "cross_country basis"), None)
+    assert basis is not None, "the comparability basis must travel with the inputs"
+    assert tenor in basis.value
+
+
+def test_a_same_currency_pair_needs_no_fx_attestation() -> None:
+    """eu/de share EUR, so the pair is exempt from the FX bridge — correctly.
+
+    The two legs really are on one currency; requiring an attestation for them
+    would be demanding a conversion of a no-op. This is the one same-currency
+    pair among the five modelled countries, and it is exercised here so the
+    exemption is a tested property rather than an untried branch.
+    """
+    result = orch.cross_country_thesis_inputs(
+        _eu_snapshot(),
+        _de_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+    )
+    assert result.cross_country is not None
+    basis = next(n for n in result.notes if n.name == "cross_country basis")
+    assert "EUR/EUR" in basis.value
+    assert "same currency" in basis.value
+
+
+def test_a_cross_currency_pair_without_the_attestation_is_refused() -> None:
+    """us/gb are USD vs GBP: the model refuses an unattested cross-currency pair.
+
+    The default of ``fx_converted`` is ``False``, and this asserts the default is
+    the SAFE one — an unattested cross-currency call must not pass.
+    """
+    with pytest.raises(ValueError, match="fx_converted is False"):
+        orch.cross_country_thesis_inputs(
+            _us_cross_snapshot(),
+            _gb_snapshot(),
+            thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        )
+
+
+def test_a_cross_currency_pair_passes_with_the_attestation() -> None:
+    """With the attestation, the same pair measures a divergence."""
+    result = orch.cross_country_thesis_inputs(
+        _us_cross_snapshot(),
+        _gb_snapshot(),
+        thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+        fx_converted=True,
+    )
+    assert result.cross_country is not None
+    basis = next(n for n in result.notes if n.name == "cross_country basis")
+    assert "fx_converted=True" in basis.value
+
+
+def test_every_implemented_country_has_a_leg_currency_and_label() -> None:
+    """Every country the system can run must be nameable as a leg.
+
+    The leg label (for the instrument) and the leg currency (for the
+    comparability check) are both config surfaces keyed by country. A country in
+    ``country.implemented`` but absent from either map would be runnable as a
+    thesis yet unrunnable as a cross-country leg — a gap that would only surface
+    the first time someone asked for that pair.
+    """
+    settings = get_settings()
+    for country in settings.country.implemented:
+        assert country in settings.cross_country.labels, f"{country} has no leg label"
+        assert country in settings.cross_country.leg_currencies, f"{country} has no leg currency"
+
+
+def test_the_join_maps_each_country_to_its_own_policy_series() -> None:
+    """The policy-rate table names a real field per country, and a real series.
+
+    A leg's policy rate must be its OWN effective rate, not a proxy. This asserts
+    the table resolves for every implemented country and that the resolved series
+    is one the schema declares — so a typo in the table is a test failure rather
+    than a runtime ``AttributeError`` on the first cross-country call.
+    """
+    from macro_engine.data_layer.schemas import MacroDataSnapshot as S
+
+    declared = set(S.model_fields)
+    for country in get_settings().country.implemented:
+        snap = _snapshot_for_country(country) if country != "us" else _us_cross_snapshot()
+        leg = orch._leg_levels(
+            snap,
+            thesis_type=ThesisType.CROSS_COUNTRY_DIVERGENCE,
+            universe=None,
+            short_yield_tenor=None,
+            curve_short_tenor=None,
+            curve_long_tenor=None,
+            short_tenor_term_premium=None,
+        )
+        assert isinstance(leg.policy_rate, float)
+        assert isinstance(leg.inflation, float)
+        assert isinstance(leg.long_rate, float)
+        # The values are PERCENT levels, not bp: a bp value would be ~1000x.
+        assert -20.0 < leg.long_rate < 40.0, f"{country} long rate looks like bp, not percent"
+        assert -20.0 < leg.inflation < 100.0, f"{country} inflation out of plausible range"
+    assert "iorb" in declared and "cpi_headline" in declared

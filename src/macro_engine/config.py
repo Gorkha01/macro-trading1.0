@@ -435,7 +435,9 @@ class CrossCountrySettings(BaseModel):
 
     meaningful_divergence_bp: CalibratedValue
     comparable_horizon_quarters: CalibratedValue
+    shared_tenor_value: CalibratedValue
     leg_labels: dict[str, Any]
+    leg_currency_codes: dict[str, Any]
     instrument_template: str
     rationale: str
 
@@ -477,6 +479,43 @@ class CrossCountrySettings(BaseModel):
                 f"{sorted(labels)}."
             )
         return labels[code]
+
+    @property
+    def shared_tenor(self) -> str:
+        """The desk tenor BOTH legs of a divergence must be measured on.
+
+        A ``mechanical_rule`` leaf rather than a literal in the orchestration,
+        for the same reason ``comparable_horizon`` is one: the comparability
+        basis is stated once and both legs are validated against it, so a caller
+        cannot pick a different tenor per side. The value names the 10-year
+        point, which is the tenor the cross-market RV instrument is built on.
+        """
+        return str(self.shared_tenor_value.value).strip()
+
+    def leg_currency_for(self, country: str) -> str:
+        """The ISO-4217 currency ``country``'s leg is denominated in, or raise.
+
+        Raised rather than defaulted: an unknown currency would let the model's
+        same/cross-currency validator reach a wrong verdict, and a wrong verdict
+        there is exactly the "fake spread" the validator exists to refuse.
+        """
+        code = country.strip().lower()
+        currencies = self.leg_currencies
+        if code not in currencies:
+            raise ValueError(
+                f"no cross_country.leg_currencies entry for country {code!r}, so "
+                f"the currency basis of its leg cannot be checked. Configured: "
+                f"{sorted(currencies)}."
+            )
+        return currencies[code]
+
+    @property
+    def leg_currencies(self) -> dict[str, str]:
+        """Country -> ISO-4217 currency code for that country's 10y leg."""
+        raw = self.leg_currency_codes.get("currencies", {})
+        if not isinstance(raw, dict):
+            raise ValueError("cross_country.leg_currencies.currencies must be a mapping.")
+        return {str(k).strip().lower(): str(v).strip().upper() for k, v in raw.items()}
 
 
 class ScenarioDistributionSettings(BaseModel):

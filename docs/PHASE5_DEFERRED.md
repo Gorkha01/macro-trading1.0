@@ -219,23 +219,100 @@ assumed the same correlation response would be one scenario written four times:
 | `gfc_2008`        | 2008 — the credit crisis                                      | −0.7                      |
 | `ltcm_1998`       | 1998 — the correlation-breakdown episode                      | −0.8                      |
 
-### 2.4 Multi-country (`de`, `jp`, `gb`) — **not implemented** (confirmed)
+### 2.4 Multi-country — **COMPLETE for five countries** (`us`, `gb`, `eu`, `de`, `jp`)
 
-| Check                                              | Result                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config/settings.yaml` → `country.implemented`     | `["us"]` — with the comment *"Adding de/jp/gb requires its OWN data sources, its OWN central-bank reaction function, and its OWN instrument set — not a label change."*                                                                                                                                                                                                       |
-| `country.enabled`                                  | `["us"]`                                                                                                                                                                                                                                                                                                                                                                      |
-| What exists for other countries                    | **Guards, not implementations.** Three functions raise `NotImplementedError` for any non-`us` country (`orchestration.py:1764`, `gdp_nowcast.py:571`, `regime.py:1234`); `snapshot_builder.py:846` raises for any country not in `country.implemented`.                                                                                                                       |
-| What is genuinely *data-ready* for other countries | Three FX-reserve series only: `fx_reserves_japan`, `fx_reserves_uk`, `fx_reserves_china` (`config/series_registry.yaml:1744/1762/1779`), plus ISO-3 code maps in `em_vulnerability.py`. These exist because `check_trilemma_tension` NEEDS them as **fixtures** for the 1992/1997 case studies — a different act from supporting those countries as thesis countries (D-048). |
-| A cross-country *trade*                            | `instrument_selection.py:121` defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis instead of an instrument                                                                                                                                                                                                                        |
+> **RE-MEASURED 2026-10-10.** This section previously read *"Multi-country (`de`, `jp`, `gb`) — **not
+> implemented** (confirmed)"* and quoted `country.implemented: ["us"]`. That was true when written and
+> is now measurably false: five countries are modelled end-to-end. The stale text is corrected here
+> rather than deleted, because it was an accurate record of a real state and the reader benefits from
+> seeing the boundary move. **The genuinely deferred part of multi-country is now ONE item — the
+> two-snapshot orchestration — and it is §2.4.2 below.** See §2.4.1 for what "multi-country" means
+> (the four-layer bar) and why the earlier "three tasks per country" framing was too coarse.
 
-**Status: OPEN, and correctly so.** AGENTS.md §22.3 (Finding #3) explicitly retracted any claim of  
-multi-country generality: *"Phases 0–4 build a US-only system. … `country: str = "us"` is not a  
-generalization — it is a label on a system that currently only works for one value of it."*  
-Multi-country is **Tier 5+**, and per §22.3 it is not one task but **three per country** (verified  
-sources, a genuinely distinct central-bank reaction function, and an instrument set). The ECB's  
-20-country compromise, the BoJ's deflation-scar bias, and the PBoC's non-Western reaction function  
-each need *different logic*, not a relabelled Taylor Rule.
+| Check                                          | Result (re-measured 2026-10-10)                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config/settings.yaml` → `country.implemented`  | `["us", "gb", "eu", "de", "jp"]` — five countries, each with its OWN verified data sources, its OWN central-bank reaction function and its OWN instrument set (the three things the old comment said a country needs).                                                                                                                                                                                                                                                                                        |
+| `country.enabled`                              | `["us", "gb", "eu", "de", "jp"]`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| The per-country derivations                    | `orchestration.py` dispatches on `snapshot.country`: `_us_thesis_inputs`, `_gb_thesis_inputs`, `_eu_thesis_inputs`, `_de_thesis_inputs`, `_jp_thesis_inputs`. Each sources its own fields and feeds its own rule set (Fed / BoE / ECB / Bundesbank-vs-ECB / BoJ). The reaction functions are genuinely distinct, not a relabelled Taylor Rule — see §2.4.1.                                                                                                                                                    |
+| The remaining US-only guards                   | The country guards now read `settings.country.implemented`, not a `"us"` literal. The two surviving `NotImplementedError`s (`gdp_nowcast.output_gap_from_snapshot`, `regime.check_trilemma_tension`) are **correct boundaries, not gaps**: the non-US paths never call them. The `gb` guards were REMOVED on 2026-10-10 when `gb` began dispatching.                                                                                                                                                            |
+| The cross-country *trade*                      | `instrument_selection.py` defines `_select_cross_country_instrument` and `CROSS_COUNTRY_DIVERGENCE` now emits a duration-neutral cross-market RV pair. `BLOCKED_MULTI_COUNTRY_NOT_BUILT` was NARROWED — it no longer fires for the five modelled countries.                                                                                                                                                                                                                                                   |
+
+**Status: CLOSED for country coverage; ONE joint left in the reasoning layer (§2.4.2).** AGENTS.md
+§22.3's own boundary still holds and is worth quoting: *"`country: str = "us"` is not a generalization
+— it is a label on a system that currently only works for one value of it."* The system is now
+**us-FIRST, not us-only** (the operator's phrase, 2026-10-10): each added country earned a genuinely
+distinct reaction function rather than a relabelled one. **`de` and `jp` were the hard pair** — the
+ECB's 20-country compromise, the BoJ's deflation-scar bias and the PBoC's non-Western reaction function
+each need *different logic*. `us`/`gb`/`eu`/`de`/`jp` are DONE; no further country is planned.
+
+#### 2.4.1 The four-layer bar — what "multi-country" MEANS
+
+"Multi-country" is not a boolean and not a country count. It is **four capabilities**, and a country
+is not modelled until all four for it and its peers exist. This framing replaced the older
+"three tasks per country", which could not express the cross-country layer at all:
+
+| Layer | Capability                                                                                          | Where it lives                                                             | Status (2026-10-10) |
+| ----- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------- |
+| 1     | **Verified data sources** — its own series, each with a registry entry and a live measurement       | `config/series_registry.yaml` + `snapshot_fields` per country              | ✅ all five         |
+| 2     | **A genuinely distinct central-bank reaction function** — its own rules, not a relabelled Taylor Rule | `policy_rules.py` (Fed / BoE / ECB / Bundesbank / BoJ rule sets)           | ✅ all five         |
+| 3     | **An instrument set + the FX bridge** — the country's tradeable universe and the rate that reconciles its currency | `ProductionUniverse` + `data_layer/fx_client.py` + `models/fx_conversion.py` | ✅ all five         |
+| 4     | **Cross-country *reasoning*** — a statement about the GAP between two complete country systems       | `models/cross_country.py` + the selector branch + the two-snapshot join     | ✅ except §2.4.2    |
+
+**Layer 4 is the one that does not exist as a quantity until both systems and a bridge between them
+do.** A cross-country thesis is therefore provably not "the US engine with a second country label":
+the divergence `(i_a − π_a) − (i_b − π_b)` has no value until two full derivations and an FX-currency
+check are present. That is the un-fakeable test §22.3 asks for, met by construction.
+
+#### 2.4.2 The two-snapshot orchestration — **SHIPPED 2026-10-10**
+
+The last plumbing joint of layer 4. Every layer beneath it shipped earlier (D-150): the per-country
+derivations (layer 1-2), the divergence model, the selector branch and the builder linkage. What was
+missing is the one caller that holds **BOTH countries at once** — which
+`snapshot_to_thesis_inputs` structurally cannot be, because it takes ONE snapshot and reads ONE
+`snapshot.country`.
+
+**`cross_country_thesis_inputs(snapshot_a, snapshot_b, *, ...)`** (`api_layer/orchestration.py`) is
+that caller. It:
+
+- refuses the same country twice **before any arithmetic** (a same-country difference is zero by
+  construction — the caller passed one snapshot twice);
+- refuses a non-`CROSS_COUNTRY_DIVERGENCE` thesis type (a divergence for another family is a category
+  error);
+- derives each leg through that country's OWN shipped derivation, so the legs are the same numbers a
+  single-country thesis would publish (LAW 2 — a second implementation of a leg would let the
+  cross-country view drift from the country views it claims to compare);
+- builds `CrossCountryInputs` and lets **its** validator state every comparability rule once (tenor,
+  horizon, currency basis, the FX attestation) rather than restating any of them;
+- calls `cross_country_divergence` ONCE and carries the measured record forward on
+  `ThesisInputs.cross_country`, built on **leg A's** full inputs (leg A sets the sign convention and is
+  the country the narrative is about; leg B enters as the comparator).
+
+**Why a separate entry point and not a nullable second argument on `snapshot_to_thesis_inputs`.** The
+one-snapshot function's own docstring states the reason: *"this dispatch is ONE-SNAPSHOT by
+construction."* A nullable second snapshot would let a caller pass one snapshot twice and silently get
+a zero-by-construction difference. A separate entry point makes "this thesis needed two countries" a
+property of the CALL, not of a nullable argument. Recorded as deviation #5 in
+`docs/CROSS_COUNTRY_DESIGN.md` §5 — now DISCHARGED.
+
+**What each leg reads** (all four are LEVELS in PERCENT, which is why the subtraction is meaningful):
+
+| quantity       | source per country                                                                                  |
+| -------------- | --------------------------------------------------------------------------------------------------- |
+| `policy_rate`  | the country's own effective rate — `iorb` (via `_policy_rate`) / `gb_bank_rate` / `eu_ecb_main_refi_rate` / the ECB rate `de` reads exogenously / `jp_call_rate` |
+| `inflation`    | the country's own **headline** YoY — `cpi_headline` INDEX→YoY / `gb_cpi_headline` / `eu_hicp_index` INDEX→YoY / `de_cpi_yoy` / `jp_cpi_yoy`                     |
+| `long_rate`    | the country's own 10-year yield — US curve `10yr` point / `gb_gilt_10y_yield` / `eu_long_rate_10y` / `de_long_rate_10y` / `jp_long_rate_10y`                     |
+| `tenor`/`horizon`/`currency` | the shared config leaves (`cross_country.shared_tenor_value`, `comparable_horizon_quarters`, `leg_currency_codes`)                          |
+
+**The FX bridge.** `eu`/`de` share `EUR` — the **one same-currency pair** among the five — so a `eu/de`
+divergence is correctly exempt from the FX attestation. Every other pair is cross-currency and the
+model refuses it unless the caller attests `fx_converted=True` (an unattested cross-currency
+difference is the archetypal fake spread).
+
+**Coverage:** 10 join tests in `tests/api_layer/test_orchestration.py` (the join record, same-country
+refusal, non-cross-country-type refusal, sign convention, config tenor/horizon, same-currency
+exemption, cross-currency refusal without / acceptance with the attestation, per-country leg
+completeness, per-country policy-series mapping). **FORWARD FX data remains blocked** (§2.5 item 1,
+D-151) — a separate gap from the orchestration, and the only remaining layer-4-adjacent item.
 
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**

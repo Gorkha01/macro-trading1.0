@@ -111,6 +111,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from math import isfinite
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -118,6 +119,10 @@ from macro_engine.config import get_settings
 from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
 from macro_engine.models.as_of import observation_as_of
 from macro_engine.models.contracts import ModelResult
+from macro_engine.models.cross_country import (
+    CrossCountryInputs,
+    cross_country_divergence,
+)
 from macro_engine.models.gdp_nowcast import (
     GdpGdiInputs,
     OutputGapInputs,
@@ -297,6 +302,20 @@ class ThesisInputs:
     #: because §16.2's ``EconomyReads`` is exactly three reads and this is the
     #: second policy *lever*, not a fourth economy read (D-085).
     balance_sheet: ModelResult | None = None
+    #: The cross-country divergence record, for a ``CROSS_COUNTRY_DIVERGENCE``
+    #: thesis (Section 22.3 layer 4). A **dict** — the ``value`` of
+    #: ``models/cross_country.cross_country_divergence`` — rather than the
+    #: ``CrossCountryInputs`` record the model consumes, because this dataclass
+    #: carries *derived* quantities and the divergence is one of them. ``None``
+    #: for every single-country thesis, and the selector's own validator refuses
+    #: a ``CROSS_COUNTRY_DIVERGENCE`` thesis that arrives without one.
+    #:
+    #: It is produced ONLY by :func:`cross_country_thesis_inputs` — the
+    #: two-snapshot entry point — and never by the one-snapshot
+    #: ``snapshot_to_thesis_inputs``, which structurally cannot see a second
+    #: country. A one-snapshot call that sets this field would be a caller
+    #: fabricating a divergence it never measured.
+    cross_country: dict[str, Any] | None = None
     notes: tuple[DerivationNote, ...] = ()
     #: Every warning raised while deriving, so the thesis can carry them.
     #: Collected here rather than dropped because a warning about an input is
@@ -2151,6 +2170,517 @@ def snapshot_to_thesis_inputs(
         f"no derivation in snapshot_to_thesis_inputs (Section 22.3). Add one — a "
         f"config flag alone does not make a country runnable."
     )
+
+
+def cross_country_thesis_inputs(
+    snapshot_a: MacroDataSnapshot,
+    snapshot_b: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+    fx_converted: bool = False,
+) -> ThesisInputs:
+    """Derive a ``CROSS_COUNTRY_DIVERGENCE`` thesis from TWO country snapshots.
+
+    This is the **two-snapshot orchestration** — the last plumbing joint of the
+    four-layer multi-country bar (Section 22.3 layer 4; ``docs/PHASE5_DEFERRED.md``
+    §2.4.2). Every layer below it shipped earlier: the per-country derivations
+    (``us``/``gb``/``eu``/``de``/``jp``), the divergence model
+    (``models.cross_country.cross_country_divergence``), the selector branch
+    (``instrument_selection._select_cross_country_instrument``) and the builder
+    linkage (``build_us_macro_thesis(cross_country=...)``). What was missing is
+    the one caller that holds BOTH countries at once — which
+    ``snapshot_to_thesis_inputs`` structurally cannot be, because it takes one
+    snapshot and one ``snapshot.country``.
+
+    Why a separate function and not a branch in ``snapshot_to_thesis_inputs``
+    -------------------------------------------------------------------------
+    The one-snapshot entry point's own docstring states the reason (measured
+    2026-10-10, D-150): *"this dispatch is ONE-SNAPSHOT by construction."* Adding
+    a second snapshot parameter to it would make the single-country path carry a
+    field it never uses, and — worse — would let a caller pass one snapshot twice
+    and silently get a same-country comparison whose difference is zero by
+    construction. A separate entry point makes "this thesis needed two countries"
+    a property of the CALL, not of a nullable argument.
+
+    WS1 — where the two legs come from (no new fetch machinery)
+    -----------------------------------------------------------
+    The precedent is the ``de`` path, which already carries euro-area comparator
+    fields (``eu_ecb_main_refi_rate``, ``eu_hicp_index``, ``eu_unemployment_rate``,
+    ``eu_gdp_real_level``) inside ONE German snapshot — a country snapshot may
+    hold a counterpart's fields. This function does the same thing one level up:
+    it takes **two ordinary country snapshots**, each carrying its own fields, and
+    joins their derived levels. Nothing new is fetched; every series already has a
+    registry entry and a per-country ``snapshot_fields`` list.
+
+    WS2 — what is joined, per leg (all four are LEVELS, same unit)
+    -------------------------------------------------------------
+    ==================  ===============================================
+    quantity            source
+    ==================  ===============================================
+    ``policy_rate_*``   the country's own effective policy rate — the
+                        SAME reading its own reaction function consumes
+                        (``iorb`` / ``gb_bank_rate`` /
+                        ``eu_ecb_main_refi_rate`` / the euro rate the
+                        ``de`` rules read exogenously / ``jp_call_rate``)
+    ``inflation_*``     the country's own **headline** inflation, YoY %
+    ``long_rate_*``     the country's own 10-year government yield
+    ``tenor_*``         the shared desk tenor ("10y") read from config
+    ``horizon_*``       ``cross_country.comparable_horizon_quarters``
+    ``currency_*``      from ``cross_country.leg_currencies`` (config)
+    ==================  ===============================================
+
+    All four quantities are **percent levels**, which is why the model's
+    subtraction is meaningful and why nothing here is converted as an *amount* —
+    see ``models/fx_conversion``'s distinction, and ``CrossCountryInputs``'s
+    ``fx_converted`` attestation, which is a parameter here rather than an
+    inference: only the caller knows whether the pair was reconciled.
+
+    What this function refuses
+    --------------------------
+    * **The same country twice** — before any arithmetic (the model also refuses
+      it, but the error here names the two SNAPSHOTS a caller actually passed).
+    * **A country with no configured leg label** — delegated to the model's
+      ``label_for``, which raises rather than emitting a placeholder.
+    * **A leg whose required series is absent** — through the shared ``_require``
+      / ``_realised`` helpers, so the message names the field.
+    * **A non-``CROSS_COUNTRY_DIVERGENCE`` thesis type** — a divergence supplied
+      for any other family is a category error, refused here so the builder's
+      validator never has to be the one to say it.
+
+    Parameters
+    ----------
+    snapshot_a, snapshot_b:
+        Two ordinary country snapshots. Their order sets the SIGN CONVENTION:
+        a positive ``divergence_bp`` means country A's real stance is tighter,
+        and the RV trade goes long the higher-real-rate country — derived from
+        the measured sign, never a caller flag (``cross_country_divergence``).
+    fx_converted:
+        The caller's attestation that a cross-currency pair was reconciled
+        through the FX bridge. Defaults to ``False``; the model refuses a
+        cross-currency pair whose attestation is missing, which is the correct
+        default — an unattested call must not pass.
+    (the remaining parameters are the one-snapshot function's, forwarded to the
+    two per-country derivations; their meaning lives on those helpers.)
+    """
+    settings = get_settings()
+    country_a = snapshot_a.country.strip().lower()
+    country_b = snapshot_b.country.strip().lower()
+
+    if country_a == country_b:
+        raise OrchestrationError(
+            f"a cross-country thesis was asked for {country_a!r} against itself. "
+            f"Comparing a country to itself is a no-op whose difference is zero by "
+            f"construction; the caller passed the same country's snapshot twice.",
+            fields=("country",),
+        )
+
+    resolved_type = thesis_type or ThesisType(settings.api.default_thesis_type)
+    if resolved_type is not ThesisType.CROSS_COUNTRY_DIVERGENCE:
+        raise OrchestrationError(
+            f"cross_country_thesis_inputs produces a "
+            f"CROSS_COUNTRY_DIVERGENCE thesis, but it was asked for "
+            f"{resolved_type.value!r}. A divergence measured for a different "
+            f"family is a category error: the spread the model measures is the "
+            f"quantity a cross-market RV thesis expresses, and no other family "
+            f"reads it.",
+            fields=("thesis_type",),
+        )
+
+    # Each leg is derived by ITS OWN country's shipped derivation, so the numbers
+    # are the same ones a single-country thesis for that country would publish.
+    # Re-deriving them here would be a second implementation of every leg (LAW 2)
+    # and would let the cross-country view drift from the country views it claims
+    # to compare.
+    inputs_a = _leg_levels(
+        snapshot_a,
+        thesis_type=resolved_type,
+        universe=universe,
+        short_yield_tenor=short_yield_tenor,
+        curve_short_tenor=curve_short_tenor,
+        curve_long_tenor=curve_long_tenor,
+        short_tenor_term_premium=short_tenor_term_premium,
+    )
+    inputs_b = _leg_levels(
+        snapshot_b,
+        thesis_type=resolved_type,
+        universe=universe,
+        short_yield_tenor=short_yield_tenor,
+        curve_short_tenor=curve_short_tenor,
+        curve_long_tenor=curve_long_tenor,
+        short_tenor_term_premium=short_tenor_term_premium,
+    )
+
+    cc_settings = settings.cross_country
+    tenor = cc_settings.shared_tenor
+    horizon = cc_settings.comparable_horizon
+    currency_a = cc_settings.leg_currency_for(country_a)
+    currency_b = cc_settings.leg_currency_for(country_b)
+    same_currency = currency_a == currency_b
+
+    # The legs are returned as CrossCountryInputs through the model's own
+    # validator, so every comparability refusal (tenor, horizon, currency basis,
+    # the FX attestation, country-vs-itself) is stated ONCE, in the model, and
+    # this function does not restate any of it. Building the record and letting
+    # its validator speak is DRY: a second copy of the rules here would be a
+    # copy that can drift from the one the model enforces.
+    cross_country_inputs = CrossCountryInputs(
+        country_a=country_a,
+        country_b=country_b,
+        policy_rate_a=inputs_a.policy_rate,
+        policy_rate_b=inputs_b.policy_rate,
+        inflation_a=inputs_a.inflation,
+        inflation_b=inputs_b.inflation,
+        long_rate_a=inputs_a.long_rate,
+        long_rate_b=inputs_b.long_rate,
+        tenor_a=tenor,
+        tenor_b=tenor,
+        horizon_quarters_a=horizon,
+        horizon_quarters_b=horizon,
+        currency_a=currency_a,
+        currency_b=currency_b,
+        same_currency_basis=same_currency,
+        fx_converted=fx_converted,
+    )
+
+    # The divergence is measured ONCE, here, and the value travels to the builder
+    # (which does not recompute it — see build_us_macro_thesis's own note). The
+    # model raises rather than defaults at every refusal, so a bad pair never
+    # reaches the thesis.
+    measured = cross_country_divergence(cross_country_inputs)
+
+    # `cross_country_divergence` publishes a DICT by contract (its ``value`` is the
+    # divergence record); narrow it here rather than blind-casting, so a future
+    # change that made it return a bare float fails loudly HERE instead of putting a
+    # mis-typed ``cross_country`` on the inputs. Same discipline the builder uses at
+    # its own call site — the model's contract, enforced at both consumers.
+    measured_value = measured.value
+    if not isinstance(measured_value, dict):
+        raise OrchestrationError(
+            f"cross_country_divergence returned a {type(measured_value).__name__} "
+            f"where the model's contract (models/cross_country.py) is to publish a "
+            f"dict. The join cannot carry a non-dict divergence forward.",
+            fields=("country",),
+        )
+
+    # The thesis is built on leg A's own inputs (its reads, its rule inputs, its
+    # short yield). That is not an arbitrary choice: the thesis's *narrative* is
+    # about country A's stance, and country B enters as the comparator whose
+    # differential is measured. Reversing the two snapshots flips the sign of the
+    # divergence (and therefore which leg is long), which is exactly why the
+    # caller-facing parameter ORDER is documented above rather than left implicit.
+    #
+    # Leg A's FULL record is what the thesis is built on (not just its three
+    # levels), which is why `_LegLevels` carries `inputs` rather than only the
+    # numbers — the joined thesis inherits leg A's reads, rule inputs, short yield,
+    # notes and warnings verbatim, so the cross-country view cannot describe a
+    # different economy than the single-country view it claims to extend.
+    leg_a = inputs_a.inputs
+    notes = (
+        *leg_a.notes,
+        DerivationNote(
+            name="cross_country pair",
+            value=f"{country_a.upper()} vs {country_b.upper()}",
+            source=(
+                f"two complete country snapshots ({snapshot_a.country!r} and "
+                f"{snapshot_b.country!r}) joined by cross_country_thesis_inputs. "
+                f"Leg A sets the sign convention: a positive divergence means "
+                f"{country_a.upper()} is the tighter real stance."
+            ),
+            window=snapshot_a.as_of.date().isoformat(),
+        ),
+        DerivationNote(
+            name="cross_country basis",
+            value=(
+                f"{tenor}, {horizon:g} quarters, "
+                f"{currency_a}/{currency_b}"
+                + (" (same currency)" if same_currency else f", fx_converted={fx_converted}")
+            ),
+            source=(
+                "cross_country.leg_labels / comparable_horizon_quarters / "
+                "leg_currencies — config leaves. The shared tenor and horizon are "
+                "the comparability basis the model validates both legs against."
+            ),
+            window=None,
+        ),
+    )
+
+    return ThesisInputs(
+        reads=leg_a.reads,
+        taylor_inputs=leg_a.taylor_inputs,
+        first_difference_inputs=leg_a.first_difference_inputs,
+        short_yield=leg_a.short_yield,
+        thesis_type=resolved_type,
+        universe=leg_a.universe,
+        country=country_a,
+        boe_inputs=leg_a.boe_inputs,
+        eu_inputs=leg_a.eu_inputs,
+        de_inputs=leg_a.de_inputs,
+        jp_inputs=leg_a.jp_inputs,
+        regime=leg_a.regime,
+        cross_country=measured_value,
+        notes=notes,
+        warnings=(
+            *leg_a.warnings,
+            *(
+                # The model's own warnings ARE the disclosure; surfacing the
+                # comparator's here would double-count them on a thesis that
+                # already carries the model's list through the builder.
+                ()
+            ),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _LegLevels:
+    """One country's contribution to a divergence: its computed levels AND inputs.
+
+    Carries three things, and the third is what an earlier version of this class
+    omitted — to its cost:
+
+    * the three comparable **levels** the divergence reads (policy rate, headline
+      inflation YoY, 10-year yield), each in **PERCENT**, the unit
+      ``CrossCountryInputs`` documents, so the join cannot mix a percent with a bp;
+    * the country's full :class:`ThesisInputs`, kept because leg A is not merely a
+      contributor of numbers — the joined thesis is BUILT on leg A's record (its
+      ``reads``, its rule inputs, its short yield, its notes and warnings). Without
+      this field the join had to reach for attributes the minimal carrier did not
+      have (``AttributeError: '_LegLevels' object has no attribute 'notes'``), which
+      is the signal that the "minimal carrier" was too minimal: the join genuinely
+      needs the whole of leg A.
+
+    Private because it is an implementation detail of the join, not a published
+    contract.
+    """
+
+    policy_rate: float
+    inflation: float
+    long_rate: float
+    inputs: ThesisInputs
+
+
+def _leg_levels(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None,
+    universe: ProductionUniverse | None,
+    short_yield_tenor: str | None,
+    curve_short_tenor: str | None,
+    curve_long_tenor: str | None,
+    short_tenor_term_premium: float | None,
+) -> _LegLevels:
+    """Read the three comparable levels off ONE country's own derivation.
+
+    Documents the join contract in one place: a leg is (policy rate, headline
+    inflation, 10-year yield), each in percent, each read from the country's own
+    snapshot through its own field names. ``de`` is the one country whose policy
+    rate is not its own — it reads the euro-area main refinancing rate
+    exogenously — and that is preserved here rather than special-cased, because
+    the ``de`` derivation already does it.
+
+    The country's own derivation is run ONCE (through ``snapshot_to_thesis_inputs``)
+    and its record is returned beside the levels, so a leg is never derived twice
+    and the two views cannot disagree.
+    """
+    inputs = snapshot_to_thesis_inputs(
+        snapshot,
+        thesis_type=thesis_type,
+        universe=universe,
+        short_yield_tenor=short_yield_tenor,
+        curve_short_tenor=curve_short_tenor,
+        curve_long_tenor=curve_long_tenor,
+        short_tenor_term_premium=short_tenor_term_premium,
+    )
+    return _LegLevels(
+        policy_rate=_leg_policy_rate(snapshot, inputs),
+        inflation=_leg_inflation(snapshot),
+        long_rate=_leg_long_rate(snapshot),
+        inputs=inputs,
+    )
+
+
+def _leg_policy_rate(snapshot: MacroDataSnapshot, inputs: ThesisInputs) -> float:
+    """The country's effective policy rate, in percent, from its own fields.
+
+    **The US leg is not read from a field name here — it is read by calling
+    ``_policy_rate``**, the exact helper ``_us_thesis_inputs`` puts into its own
+    ``i_prev``. That is deliberate and it is the LAW 2 fix for a real defect: an
+    earlier version of this function declared ``"us": "fed_funds_rate"``, but the
+    US derivation reads ``iorb`` FIRST (``_policy_rate``'s documented preference
+    order ``iorb > fed_funds_rate > sofr``). The two therefore disagreed about
+    the country's own policy rate — a divergence leg measured against a *different
+    number* than the single-country thesis it claims to compare. Naming the field
+    a second time here is exactly the duplication that let them drift, so the US
+    branch delegates instead.
+
+    The four non-US countries are named in ONE table rather than branched at each
+    use, so a new country adds a line rather than a new ``if``. Each entry is the
+    field that country's OWN derivation reads as its policy rate — ``de`` reads
+    the euro-area rate because Germany has no central bank of its own, which is
+    the same choice its own reaction function makes, stated rather than implied.
+
+    A country whose policy series is absent is REFUSED rather than substituted
+    with its short yield: a short yield is a MARKET rate, and comparing a market
+    rate against another country's policy rate would difference two different
+    quantities while looking like a number.
+    """
+    country = snapshot.country.strip().lower()
+    if country == "us":
+        # Delegated, not tabled: `_policy_rate` is the single canonical reading of
+        # the US effective policy rate (it owns the iorb > fed_funds_rate > sofr
+        # preference order). Re-listing "iorb" here would be a second copy of that
+        # choice, which is how the fed_funds_rate defect arose.
+        rate, _described = _policy_rate(snapshot, as_of=snapshot.as_of)
+        return rate
+    fields = {
+        "gb": "gb_bank_rate",
+        "eu": "eu_ecb_main_refi_rate",
+        "de": "eu_ecb_main_refi_rate",
+        "jp": "jp_call_rate",
+    }
+    field = fields.get(country)
+    if field is None:
+        raise OrchestrationError(
+            f"no policy-rate field is declared for country "
+            f"{snapshot.country!r}, so this country cannot contribute a leg to a "
+            f"cross-country divergence. Add it to _leg_policy_rate's table.",
+            fields=("country",),
+        )
+    points = _realised(getattr(snapshot, field), as_of=snapshot.as_of, field=field)
+    rate, _described = _latest_percent(points, field=field)
+    return rate
+
+
+def _leg_inflation(snapshot: MacroDataSnapshot) -> float:
+    """The country's HEADLINE inflation, as a year-over-year **percent RATE**.
+
+    Two things must both be true of this number, and the earlier version of this
+    function got the first wrong — a real defect, caught by the join's own tests:
+
+    1. **It must be a RATE, not an index level.** ``us``'s ``cpi_headline`` is
+       FRED CPIAUCSL, a price INDEX near 330; feeding it through
+       ``_latest_percent`` published "US inflation = 330.0%" — a factor-of-~100
+       error that no downstream check catches, because 330.0 is finite and the
+       model only forbids non-finite legs. A country whose snapshot carries an
+       INDEX derives the rate through ``_yoy_percent`` — the SAME canonical
+       derivation its own reaction function and regime leg use — rather than
+       reading the level and calling it a rate.
+    2. **Both legs must be the SAME measure.** ``CrossCountryInputs`` documents
+       "headline vs headline, not core on one side" but cannot see which measure
+       it was handed, so the choice is fixed once, here. Every entry below is the
+       country's own HEADLINE consumer-price measure — never a core measure — so
+       the subtraction is headline-vs-headline even though the five countries
+       publish it under five different series.
+
+    The measure per country, stated rather than implied (this is the disclosure
+    the model's docstring asks for, and the reason ``measure`` appears on the
+    returned note's sibling in the joined thesis):
+
+    ========  ============================  ==================
+    country    series                        form
+    ========  ============================  ==================
+    ``us``    ``cpi_headline`` (CPIAUCSL)   INDEX → ``_yoy_percent``
+    ``gb``    ``gb_cpi_headline``           published YoY rate
+    ``eu``    ``eu_hicp_index``             INDEX → ``_yoy_percent``
+    ``de``    ``de_cpi_yoy``                published YoY rate
+    ``jp``    ``jp_cpi_yoy``                published YoY rate
+    ========  ============================  ==================
+
+    ``jp``'s series is CPI all-items-less-fresh-food — the BoJ's own target
+    measure, and the headline the snapshot carries for Japan; it is used as-is
+    rather than re-labelled, because deriving a different measure here would make
+    the leg disagree with the Japanese reaction function it is supposed to be
+    comparable to.
+    """
+    country = snapshot.country.strip().lower()
+
+    # Countries whose headline is carried as an INDEX derive the YoY rate through
+    # the shared helper; countries whose headline is published as a rate read it
+    # directly. One table, two forms — a new country adds a line, not an `if`.
+    indexed = {
+        "us": "cpi_headline",
+        "eu": "eu_hicp_index",
+    }
+    direct = {
+        "gb": "gb_cpi_headline",
+        "de": "de_cpi_yoy",
+        "jp": "jp_cpi_yoy",
+    }
+
+    if country in indexed:
+        field = indexed[country]
+        points = _realised(getattr(snapshot, field), as_of=snapshot.as_of, field=field)
+        rate, _described = _yoy_percent(points, field=field)
+        return rate
+
+    direct_field = direct.get(country)
+    if direct_field is None:
+        raise OrchestrationError(
+            f"no headline-inflation series is declared for country {country!r}. Add "
+            f"it to _leg_inflation: the ``indexed`` table if the snapshot carries a "
+            f"price INDEX (the YoY rate is then derived), or the ``direct`` table "
+            f"if it carries a published YoY RATE.",
+            fields=("country",),
+        )
+    points = _realised(getattr(snapshot, direct_field), as_of=snapshot.as_of, field=direct_field)
+    rate, _described = _latest_percent(points, field=direct_field)
+    return rate
+
+
+def _leg_long_rate(snapshot: MacroDataSnapshot) -> float:
+    """The country's 10-year government yield, in percent.
+
+    The field the shared tenor names. ``us`` is the 10-year point of the curve
+    the snapshot carries; the four non-US countries each carry a single
+    ``*_long_rate_10y`` series. Read here so the join has one place that knows
+    which field holds a 10y on each country.
+    """
+    country = snapshot.country.strip().lower()
+    direct = {
+        "gb": "gb_gilt_10y_yield",
+        "eu": "eu_long_rate_10y",
+        "de": "de_long_rate_10y",
+        "jp": "jp_long_rate_10y",
+    }
+    if country == "us":
+        # The 10-year point of the curve the US snapshot carries. Read in two
+        # steps because the config speaks `10y` while the curve is keyed `10yr`
+        # — the vocabulary split `_config_tenor_for` exists to bridge (and whose
+        # absence used to raise `KeyError: short tenor '2y' is not in the
+        # supplied curve`). The tenor is the shared config leaf, so the join and
+        # the model cannot disagree about which point "10y" names.
+        curve = snapshot.yield_curve
+        if curve is None:
+            raise OrchestrationError(
+                "the US snapshot carries no yield curve, so its 10-year leg — and "
+                "hence the cross-country divergence — cannot be read.",
+                fields=("yield_curve",),
+            )
+        tenor = _config_tenor_for(get_settings().cross_country.shared_tenor, curve.tenors)
+        if tenor is None:
+            raise OrchestrationError(
+                f"the cross_country.shared_tenor leaf "
+                f"({get_settings().cross_country.shared_tenor!r}) names no tenor "
+                f"present in the snapshot's curve ({sorted(curve.tenors)}). A wrong "
+                f"tenor is a wrong number, not a missing one, so this abstains.",
+                fields=("yield_curve",),
+            )
+        return _short_yield_from_curve(snapshot, field=tenor)[0]
+    field = direct.get(country)
+    if field is None:
+        raise OrchestrationError(
+            f"no 10-year yield field is declared for country {country!r}. Add it "
+            f"to _leg_long_rate's table.",
+            fields=("country",),
+        )
+    points = _realised(getattr(snapshot, field), as_of=snapshot.as_of, field=field)
+    rate, _described = _latest_percent(points, field=field)
+    return rate
 
 
 def _gb_thesis_inputs(

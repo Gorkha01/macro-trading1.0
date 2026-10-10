@@ -6115,7 +6115,10 @@ Three outcome families, in this order of precedence:
    `_select_cross_country_instrument` names the pair. The sentinel is **retained but narrowed** — it
    now fires only on a MALFORMED divergence record, never for "no second country exists". A
    single-country `gb`/`eu`/`de`/`jp` thesis **is** admitted end-to-end and selects that country's
-   instruments. (The two-snapshot *orchestration* remains unwired — `docs/PHASE5_DEFERRED.md` §2.4.2.)
+   instruments. **The two-snapshot orchestration SHIPPED 2026-10-10**
+   (`cross_country_thesis_inputs` — `docs/PHASE5_DEFERRED.md` §2.4.2): the API layer can now drive a
+   `CROSS_COUNTRY_DIVERGENCE` request from two country snapshots, so layer 4 of the four-layer bar is
+   complete except for FX-**forward** data (§2.5 item 1, D-151).
 2. **Sentinel** — a route in the configured table whose entry names a
    non-production universe (credit, EM, commodity) returns
    `ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`. §22.12's rule.

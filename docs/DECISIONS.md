@@ -24150,3 +24150,113 @@ config-surface change) but it was never re-checked against the cost of doing it.
 shape as the D-043 false-block class one layer over: **an obstacle recorded once, then read
 afterwards like a measured constraint.** The remedy is the same — re-measure before deferring for
 the second time.
+
+---
+
+## D-153
+
+**D-153 — the two-snapshot cross-country orchestration: layer 4's last joint, and the two leg-reader
+defects writing it exposed (2026-10-10)**
+
+### 1. The disposition
+
+The Phase 5+ ledger recorded the remaining multi-country work as *"Cross-country reasoning — per-country
+coverage is done (`implemented: ["us","gb","eu","de","jp"]`); only the reasoning layer itself."*
+Measured first (the D-150 discipline — re-measure every claim like any other), that turned out to be
+**one joint narrower** than the sentence implies: the divergence model
+(`models/cross_country.py`), the selector branch (`_select_cross_country_instrument`), the config block
+(`cross_country.*`), the builder linkage (`build_us_macro_thesis(cross_country=...)`), **15 tests** and
+a **17-mutation sweep** all already ship. The genuine gap is the **two-snapshot orchestration**
+(§2.4.2): the API layer cannot drive a `CROSS_COUNTRY_DIVERGENCE` request, because
+`snapshot_to_thesis_inputs` is **one-snapshot by construction** — it takes one snapshot and reads one
+`snapshot.country`, so it structurally cannot see a second country.
+
+This decision ships it: `cross_country_thesis_inputs(snapshot_a, snapshot_b, *, ...)`.
+
+### 2. Why a separate entry point, not a nullable second argument
+
+The one-snapshot function's own docstring already states the reason: *"this dispatch is ONE-SNAPSHOT by
+construction."* Adding a nullable `snapshot_b` to it would (a) make the single-country path carry a field
+it never uses and (b) — worse — let a caller pass **one snapshot twice** and silently receive a
+same-country comparison whose difference is **zero by construction**, which reads as "no divergence"
+rather than as a caller error. A separate entry point makes "this thesis needed two countries" a
+property of the **call**, not of a nullable argument, and lets the join refuse the same country twice
+**before any arithmetic**.
+
+### 3. The two real defects writing the leg readers exposed
+
+Both are the same class, and it is the class this project keeps finding: **a second implementation of a
+fact that already has a canonical one, silently disagreeing with it.** The leg readers were written to
+name each country's series in one table; two of the names were wrong.
+
+**Defect A — `_leg_policy_rate` named a field the US derivation does not read first.**
+The first draft declared `"us": "fed_funds_rate"`. But `_us_thesis_inputs` reads its own `i_prev` from
+**`_policy_rate`**, whose documented preference order is **`iorb > fed_funds_rate > sofr`**. So the
+cross-country leg would have measured the US against a *different policy rate* than the single-country
+thesis it claims to compare — the two views would disagree on the country's own stance, which is exactly
+what the join exists to prevent. **Fix (LAW 2): the US branch DELEGATES to `_policy_rate`** rather than
+re-listing a field name. Naming the field a second time here was the duplication that let them drift;
+calling the canonical helper makes drift unrepresentable.
+
+**Defect B — `_leg_inflation` published a price INDEX where the model requires a RATE.**
+`us`'s `cpi_headline` is FRED **CPIAUCSL — an index near 330**, and the first draft fed it through
+`_latest_percent` and published *"US inflation = 330.0%"*. `CrossCountryInputs` documents
+`inflation_*` as **year-over-year PERCENT** and requires **the same measure on both sides**, but it
+cannot see which measure it was handed — and 330.0 is finite, so **no downstream check catches it**. The
+model's real-rate differential would have been computed from a nonsense inflation term. **Fix**: the
+leg derives the YoY rate through the shared `_yoy_percent` helper for every country whose snapshot
+carries an INDEX (`us` `cpi_headline`, `eu` `eu_hicp_index`) and reads the published rate for those that
+carry one (`gb` `gb_cpi_headline`, `de` `de_cpi_yoy`, `jp` `jp_cpi_yoy`). Headline on both sides, every
+side — the choice fixed once, in one table.
+
+**A third defect was in the TEST, not the code, and it is the same class one level up.** The
+sign-convention test asserted that the long leg *swaps* when the two snapshots are reversed. Measurement
+showed the opposite: `long_leg_country` is **the higher-real-rate country** — a property of the two
+economies, not of how the caller listed them. The **sign** flips with the argument order; the **long
+leg does not**. The fixture's US real rate (4.30 − 3.77 = +0.53) exceeds the UK's (4.25 − 3.80 = +0.45),
+so the RV trade is LONG US in both listings. Asserting that the long leg swaps would have been asserting
+a defect — precisely the caller-flag error the model's own comment forbids. Corrected, with the reasoning
+recorded in the test.
+
+### 4. What was added
+
+* `cross_country_thesis_inputs` — the two-snapshot join (`api_layer/orchestration.py`).
+* `ThesisInputs.cross_country: dict[str, Any] | None` — produced ONLY by the join, never by the
+  one-snapshot entry point.
+* `_LegLevels` — three PERCENT levels **plus** the country's full `ThesisInputs`, so the joined thesis
+  is built on leg A's record verbatim (an earlier "minimal carrier" omitting `inputs` raised
+  `AttributeError: '_LegLevels' object has no attribute 'notes'` — the signal that the carrier was too
+  minimal: the join genuinely needs the whole of leg A).
+* `_leg_policy_rate` / `_leg_inflation` / `_leg_long_rate` — the per-country leg readers.
+* Two config leaves: `cross_country.shared_tenor_value` (`"10y"`) and `cross_country.leg_currency_codes`
+  (`eu`/`de` share `EUR` — the one same-currency pair, correctly exempt from the FX attestation).
+* 10 tests; `cross_country.shared_tenor_value` added to `_NON_NUMERIC_ENVELOPES` (re-measured: **24 of
+  407**, was "19 of 339").
+
+### 5. What this does NOT close
+
+* **FX-*forward* data remains blocked** (D-151, `PHASE5_DEFERRED.md` §2.5 item 1). The FX **spot** bridge
+  is live (D-137's sixth false block); forwards are a recorded data block to re-probe. This is a
+  *separate* gap from the orchestration — the join needs only spot-comparable levels, which it has.
+* **The selector names the cross-market RV pair but does not size it** (`construct_cross_market_rv` is
+  Module 15.3's, deliberately — §3 deviation 1 of the design doc). That is a separation, not a gap.
+* **A `/thesis/{a}/vs/{b}` route** is not added — the join is a function the API layer *can* call, and
+  the route is a thin layer over it. Adding the route is a choice, not a missing capability; the join is
+  where the two-country arithmetic and every refusal live.
+
+### 6. The generalisable lesson
+
+**The leg reader is a second consumer of the country's own derivation, and the moment it names a series
+by string rather than calling the derivation's canonical reader, it can drift.** Two of the three leg
+readers here named a series and got it wrong in the same way (a US policy-rate field that was not
+`_policy_rate`'s first choice; a US inflation index mistaken for a rate). The remedy is the project's
+standing one: **when a quantity already has a canonical reader, call it — do not re-name the series.**
+The US policy-rate leg does exactly that now (`_policy_rate`). The inflation leg cannot fully, because
+the model wants a *headline* measure and the US rule reads *core PCE* — but it derives from the headline
+index through the same `_yoy_percent` the rule uses, so the two share the *derivation* even where they
+differ in *measure*, and the measure is disclosed rather than implied.
+
+And the meta-lesson, which is the seventh instance of the same pattern: **the ledger's own summary
+("only the reasoning layer itself") was a claim, not a measurement.** It took one read of the model, the
+selector, the config and the sweep to find that the reasoning layer was 95% shipped and the remaining 5%
+was one function. Re-measuring the summary is now standard before starting.

@@ -3779,6 +3779,18 @@ cross_country:
       STATED ONCE and both legs are validated against it rather than each
       picking its own. 4 quarters is one year, the conventional macro horizon.
 
+  shared_tenor_value:
+    value: "10y"
+    calibration_status: mechanical_rule
+    note: >
+      The desk tenor BOTH legs of a cross-country divergence must be measured
+      on. The companion to comparable_horizon_quarters: that leaf fixes the
+      HORIZON (how far out the rate was measured), this one fixes the TENOR
+      (which point of the curve). Both are required for comparability, and both
+      are stated once here so the orchestration validates each leg against the
+      config rather than letting each side pick its own. "10y" is the tenor the
+      cross-market RV instrument is built on and the one leg_labels names.
+
   leg_labels:
     calibration_status: mechanical_rule
     note: >
@@ -3797,6 +3809,25 @@ cross_country:
       eu: "Bund 10y"
       de: "Bund 10y"
       jp: "JGB 10y"
+
+  leg_currency_codes:
+    calibration_status: mechanical_rule
+    note: >
+      Country -> the ISO-4217 currency that country's 10y leg is denominated in.
+      Read by the two-snapshot orchestration so the model's same/cross-currency
+      validator receives a CODE rather than a guess: an unknown currency would
+      let that validator reach a wrong verdict, and a wrong verdict there is
+      exactly the "fake spread" (two differently-denominated numbers subtracted)
+      it exists to refuse. eu and de share EUR, which is the one same-currency
+      pair among the five modelled countries -- a eu/de divergence is therefore
+      exempt from the FX attestation, correctly, because the two legs really are
+      on one currency.
+    currencies:
+      us: "USD"
+      gb: "GBP"
+      eu: "EUR"
+      de: "EUR"
+      jp: "JPY"
 
   # The pair template. `{long}`/`{short}` are the leg labels above. The
   # leading "UST" token is load-bearing, exactly as for curve_shape_gap: it

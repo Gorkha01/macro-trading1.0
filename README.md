@@ -89,9 +89,10 @@ branch names a **duration-neutral cross-market RV pair** (long the higher-real-r
 other) from config `leg_labels`/`instrument_template`, or refuses with a sentinel inside the noise
 band. `build_us_macro_thesis(cross_country=...)` computes the divergence once and threads it. The
 `BLOCKED_MULTI_COUNTRY_NOT_BUILT` sentinel is retained but **narrowed** to "malformed divergence
-record". The remaining boundary is documented honestly: the two-snapshot **orchestration** (fetching
-both countries' data from one request) is an API-layer increment not yet wired
-(`docs/PHASE5_DEFERRED.md` §2.4.2).
+record". **The two-snapshot orchestration SHIPPED 2026-10-10** — `cross_country_thesis_inputs` is the
+API-layer caller that holds both countries at once (`docs/PHASE5_DEFERRED.md` §2.4.2), so layer 4 of
+the four-layer bar is complete. **The one remaining boundary in this area is FX-*forward* data** (the
+spot bridge is live; forwards are a recorded data block — §2.5 item 1, D-151).
 
 No function may claim country-genericity it has not earned.
 

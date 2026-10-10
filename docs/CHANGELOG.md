@@ -10,6 +10,53 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-153 — the two-snapshot cross-country orchestration: layer 4's last joint SHIPPED (2026-10-10)
+
+The increment the Phase 5+ ledger called *"only the reasoning layer itself"* turned out, on
+measurement (D-150), to be **one** joint narrower than that: the model, the selector branch, the config
+block, the builder linkage, 15 tests and a 17-mutation sweep already existed. The genuine gap was the
+**two-snapshot orchestration** — the API layer could not drive a `CROSS_COUNTRY_DIVERGENCE` request,
+because `snapshot_to_thesis_inputs` is **one-snapshot by construction**. This closes it.
+
+- **Added** `cross_country_thesis_inputs(snapshot_a, snapshot_b, *, ...)` (`api_layer/orchestration.py`)
+  — the caller that holds BOTH countries at once. It refuses the same country twice before any
+  arithmetic, refuses a non-`CROSS_COUNTRY_DIVERGENCE` type, derives each leg through that country's
+  OWN derivation (LAW 2), builds `CrossCountryInputs` and lets **its** validator state every
+  comparability rule once, calls `cross_country_divergence` ONCE, and carries the measured record
+  forward on `ThesisInputs.cross_country`, built on leg A's full inputs.
+- **Added** `ThesisInputs.cross_country: dict[str, Any] | None` (produced ONLY by the two-snapshot
+  entry point) and the `_LegLevels` carrier (three percent levels **plus** the country's full
+  `ThesisInputs`, so the joined thesis inherits leg A verbatim rather than recomputing it).
+- **Added** the per-country leg reader helpers `_leg_policy_rate` / `_leg_inflation` / `_leg_long_rate`.
+  **Two real defects were found and fixed while writing them**, both the same class — *the leg reader
+  disagreed with the country's own derivation about which series holds a quantity:*
+  1. **`_leg_policy_rate` declared `"us": "fed_funds_rate"`, but the US derivation reads `iorb` first**
+     (`_policy_rate`'s preference order). The leg would have measured the US against a *different*
+     policy rate than the single-country thesis it claims to compare. **Fixed by DELEGATING**: the US
+     branch now calls `_policy_rate` — the canonical reading — rather than re-listing a field name.
+  2. **`_leg_inflation` fed a price INDEX where the model requires a RATE.** `us`'s `cpi_headline` is
+     FRED CPIAUCSL (an index near 330), so the leg published *"US inflation = 330.0%"* — a
+     factor-of-~100 error no downstream check catches (330.0 is finite). **Fixed**: countries whose
+     snapshot carries an index (`us`, `eu`) derive the YoY rate through the shared `_yoy_percent`
+     helper; countries that publish a rate (`gb`, `de`, `jp`) read it directly.
+- **Added** two `cross_country` config leaves (`config/settings.yaml`): `shared_tenor_value` (the desk
+  tenor, `"10y"`) and `leg_currency_codes` (country → ISO-4217, where `eu`/`de` share `EUR` — the one
+  same-currency pair, correctly exempt from the FX attestation).
+- **Added** 10 tests (`tests/api_layer/test_orchestration.py`): the join record, same-country refusal,
+  non-cross-country-type refusal, the sign convention, config tenor/horizon, the same-currency
+  exemption, cross-currency refusal without / acceptance with the attestation, per-country leg
+  completeness, and per-country policy-series mapping. **One of these tests had a wrong invariant** —
+  it asserted the long leg *swaps* with the argument order; measurement showed the long leg is the
+  higher-real-rate country, **independent of order** (the sign flips, the long leg does not). Corrected,
+  with the reasoning recorded in the test.
+- **Fixed** a stale `_NON_NUMERIC_ENVELOPES` count and added `cross_country.shared_tenor_value`
+  (`tests/test_infrastructure.py`); the count is now re-measured (**24 of 407**, was "19 of 339").
+- **Docs:** `docs/PHASE5_DEFERRED.md` §2.4 re-measured and its **missing §2.4.1/§2.4.2 written** (the
+  four-layer bar, and the delivered two-snapshot orchestration — both were cited by 8 files and did not
+  exist), plus `README.md`, `docs/PROGRESS.md`, `docs/OPEN_ISSUES.md`, `docs/BUILD_STATE.md`.
+- **Gates:** 2002 passed / 5 deselected · ruff · ruff format (192) · mypy (192). `AGENTS.md`
+  byte-identical.
+
 ### D-152 — F-TSC-007: the orphaned duplicate config leaf DELETED (2026-10-10)
 
 The last open *deletion-shaped* ledger item. F-TSC-004 pointed the scenario-sum gate at the leaf its
