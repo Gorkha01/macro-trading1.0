@@ -2236,6 +2236,56 @@ instrument_selection:
           duration/sector selection logic is what a future refinement would use
           to choose AMONG ES/NQ/RTY; this route asserts the universe boundary.
 
+  # Section 22.3 -- per-country instrument routes. Keyed by ISO alpha-2; each
+  # entry OVERRIDES the same thesis-type's route in `thesis_type_routes` above
+  # for that country only. A country whose instruments are the base table's
+  # needs no entry; a country whose instruments differ MUST supply one, or the
+  # base (US) template will be emitted into that country's universe and FAIL its
+  # own membership check -- which is the loud, correct failure, not a bug (see
+  # the check at instrument_selection.py's `observed_category is None` raise).
+  country_routes:
+    calibration_status: mechanical_rule
+    note: >
+      ThesisType -> the country's OWN instrument template. Every template here
+      names an instrument that exists in that country's ProductionUniverse plan
+      and NOT in the US one, so a country cannot be served the base table's
+      instruments silently. gb is the first entry (the BoE's UK market).
+    routes:
+      gb:
+        policy_path_gap:
+          instrument_template: "Short-sterling futures (SONIA 3m)"
+          universe_category: rates
+          rationale: >
+            The UK policy-path instrument. Short-sterling futures settle on the
+            SONIA-compounded 3-month rate, which is the UK's policy-expectations
+            point -- the direct analogue of the US SOFR/fed-funds futures this
+            route names for the base table. NOT a gilt: a gilt carries duration
+            and term premium, whereas the policy-path view is about the near
+            path, so naming a gilt here would import a risk the view does not.
+        curve_shape_gap:
+          instrument_template: "Duration-weighted {short}/{long} gilt {direction_word}"
+          universe_category: rates
+          rationale: >
+            The UK slope instrument. The leading "gilt" is load-bearing for the
+            same reason the base template's "UST" is: without it the string names
+            no instrument the gb universe recognises. The legs are substituted at
+            call time from the caller's tenors, so the emitted string is a
+            keyword-approved gb rates instrument.
+        inflation_expectations_gap:
+          instrument_template: "Duration-matched index-linked gilt long / nominal gilt short"
+          universe_category: rates
+          rationale: >
+            The UK breakeven instrument. Index-linked gilts are the UK analogue of
+            TIPS, so this is the gilt-market breakeven trade -- "nominal gilt"
+            rather than "nominal UST", which the gb universe would reject.
+        equity_macro:
+          instrument_template: "FTSE 100 index futures"
+          universe_category: equity
+          rationale: >
+            The UK broad-index instrument, named VERBATIM as a member of
+            ProductionUniverse(country="gb").equity so membership is literal, not
+            keyword-only.
+
   curve_default_short_tenor:
     value: "2y"
     calibration_status: institutional_convention

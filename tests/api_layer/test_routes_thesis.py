@@ -204,6 +204,138 @@ async def test_the_warning_lists_are_deduplicated_in_order(
 
 
 # ---------------------------------------------------------------------------
+# (§22.3) the /thesis/gb route runs end to end, with only the SNAPSHOT stubbed
+# ---------------------------------------------------------------------------
+
+
+def _gb_raw_snapshot() -> object:
+    """A UK snapshot with the six series the gb derivation reads."""
+    from datetime import date, timedelta
+
+    from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
+
+    def series(values: list[float], name: str, *, step: int = 30) -> list[ObservationPoint]:
+        start = date(2024, 1, 1)
+        return [
+            ObservationPoint(
+                observation_date=start + timedelta(days=i * step), value=v, series_id=name
+            )
+            for i, v in enumerate(values)
+        ]
+
+    def monthly(values: list[float], name: str) -> list[ObservationPoint]:
+        from datetime import date as _date
+
+        out = []
+        y, m = 2024, 1
+        for v in values:
+            out.append(ObservationPoint(observation_date=_date(y, m, 1), value=v, series_id=name))
+            m += 1
+            if m > 12:
+                m, y = 1, y + 1
+        return out
+
+    return MacroDataSnapshot(
+        country="gb",
+        as_of=AS_OF,
+        data_quality_flags=[],
+        gb_cpi_headline=monthly([3.4, 3.6, 3.5, 3.7, 3.6, 3.8], "gb_cpi_headline"),
+        gb_cpi_core=monthly([3.1, 3.2, 3.2, 3.3, 3.3, 3.4], "gb_cpi_core"),
+        gb_unemployment_rate=monthly([4.2, 4.3, 4.3, 4.4, 4.4, 4.4], "gb_unemployment_rate"),
+        gb_gdp_growth_qoq=series([0.1, 0.3, 0.2, 0.4, 0.2, 0.5], "gb_gdp_growth_qoq"),
+        gb_bank_rate=series([5.0, 4.75, 4.5, 4.25], "gb_bank_rate"),
+        gb_short_rate_3m=series([4.6, 4.5, 4.4, 4.35], "gb_short_rate_3m"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_gb_route_runs_the_real_derivation_and_selects_a_uk_instrument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(§22.3) ``/thesis/gb`` executes; only the snapshot fetch is stubbed.
+
+    The other route tests stub ``snapshot_to_thesis_inputs`` AND
+    ``build_us_macro_thesis`` — correct for what they test (the failure mapping),
+    wrong for this one. The end-to-end wiring is the thing under test here, so
+    the REAL orchestration and the REAL builder run; only ``get_snapshot`` is
+    replaced, because a build needs a network. If the country dispatch, the BoE
+    rule bundle, or the UK instrument plan were missing or miswired, this fails
+    where a doubly-stubbed test would have passed.
+
+    The snapshot's divergence is deliberately small, so the thesis STANDS DOWN at
+    Q6 (the gap is inside the rules' own dispersion). That is not a defect to be
+    tuned away: it is §17.4 working, and it is the *harder* path to assert — a
+    stand-down still has to carry the right country, the BoE rules, and the UK
+    disclosures, none of which a DRAFT-only test would exercise. The window is
+    WATCH, so no trade is fabricated, which is itself the correct outcome.
+    """
+    provenance = _provenance().model_copy(update={"country": "gb"})
+    monkeypatch.setattr(
+        rt, "get_snapshot", lambda country, force_refresh=False: (_gb_raw_snapshot(), provenance)
+    )
+    response = await rt.get_thesis("gb", None, False)
+
+    thesis = response.thesis
+    # The derivation ran and labelled the thesis gb — the id prefix and the field
+    # both, since an id is what an operator pages by.
+    assert thesis.country == "gb"
+    assert thesis.thesis_id.startswith("gb-")
+    # §22.3: the policy view ran the THREE BoE rules, not the Fed's pair.
+    assert {"taylor", "balanced", "first_difference"} <= set(thesis.policy_view)
+    assert thesis.policy_view["agreement"] == "CONVERGED"
+    # Q6's gate is the reason for the stand-down, named on the record.
+    assert thesis.status is ThesisStatus.WATCH
+    assert any("Q6" in w for w in thesis.warnings)
+    # The disclosed UK-specific stand-ins travelled to the caller.
+    joined = " ".join(response.warnings)
+    assert "UK PROJECTION STAND-IN" in joined
+    assert "UK LABOR READ" in joined
+
+
+@pytest.mark.asyncio
+async def test_the_gb_route_selects_a_uk_instrument_when_the_gap_clears_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(§22.3) The UK instrument plan is reached on the tradable path.
+
+    The test above lands on the Q6 stand-down. This one forces the SAME wiring
+    down the live path by widening the model/market divergence — a lower 3-month
+    rate so the market's implied path sits well below the BoE rules — so the
+    instrument-selection half of the gb wiring (the UK plan, not the US template)
+    is actually exercised. Without this, the only assertion on "a UK instrument
+    is selected" would be the one the stand-down path never reaches.
+    """
+    from datetime import date, timedelta
+
+    from macro_engine.data_layer.schemas import MacroDataSnapshot, ObservationPoint
+
+    raw = _gb_raw_snapshot()
+    assert isinstance(raw, MacroDataSnapshot)
+    # A much lower market short rate -> a wide, one-sided policy-path gap.
+    raw.gb_short_rate_3m = [
+        ObservationPoint(
+            observation_date=date(2024, 1, 1) + timedelta(days=i * 30),
+            value=v,
+            series_id="gb_short_rate_3m",
+        )
+        for i, v in enumerate([1.0, 1.0, 1.0, 1.0])
+    ]
+    provenance = _provenance().model_copy(update={"country": "gb"})
+    monkeypatch.setattr(rt, "get_snapshot", lambda country, force_refresh=False: (raw, provenance))
+    response = await rt.get_thesis("gb", None, False)
+
+    thesis = response.thesis
+    assert thesis.country == "gb"
+    # The gap cleared the floor: a trade exists, and it is a UK instrument.
+    assert thesis.status is not ThesisStatus.WATCH
+    assert thesis.trade_idea is not None
+    instrument = thesis.trade_idea.instrument.lower()
+    assert "gilt" in instrument or "sterling" in instrument, (
+        f"a gb thesis selected a non-UK instrument: {thesis.trade_idea.instrument!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # the failure mapping, through the route
 # ---------------------------------------------------------------------------
 

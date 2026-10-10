@@ -140,10 +140,10 @@ def _http_status_for(exc: Exception, *, country: str) -> HTTPException:
         return HTTPException(
             status_code=501,
             detail=(
-                f"country '{country}' is not implemented. Section 22.3: the system is "
-                f"US-only through Phase 4, and this is not a label to re-point — a "
-                f"different country needs its own series set, its own central-bank "
-                f"reaction function and its own instrument universe. "
+                f"country '{country}' is not implemented. Section 22.3: multi-country "
+                f"support was Tier 5 — Phase 5+ — and requires, for EACH country, its "
+                f"own verified data sources, its own central-bank reaction function "
+                f"and its own instrument universe. This is not a label to re-point. "
                 f"Original: {exc}"
             ),
         )
@@ -214,6 +214,8 @@ async def get_thesis(
             inputs.first_difference_inputs,
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
+            country=inputs.country,
+            boe_inputs=inputs.boe_inputs,
             short_yield=inputs.short_yield,
             regime=inputs.regime,
         )

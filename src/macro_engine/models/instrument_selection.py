@@ -453,6 +453,8 @@ def _sentinel_result(
 def select_instrument(
     inputs: InstrumentSelectionInputs,
     universe: InstrumentUniverse,
+    *,
+    country: str = "us",
 ) -> ModelResult:
     """Pick the production instrument that expresses ``inputs``, or say why not.
 
@@ -495,7 +497,10 @@ def select_instrument(
     """
     as_of = utc_now()
     settings = get_settings().instrument_selection
-    routes = settings.routes
+    # Country-aware routing (Section 22.3): a gb thesis reads the UK route set,
+    # so its policy-path gap names a gilt rather than a UST. The base table is
+    # the US one; `routes_for` overlays a country's overrides onto it.
+    routes = settings.routes_for(country)
 
     if inputs.thesis_type in (ThesisType.CROSS_COUNTRY_DIVERGENCE,):
         return _sentinel_result(

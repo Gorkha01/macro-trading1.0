@@ -37,6 +37,7 @@ from macro_engine.thesis_layer import builder
 from macro_engine.thesis_layer.builder import (
     THESIS_ID_PREFIX,
     THESIS_TIMEFRAME_PHASE_1,
+    BoeRuleInputs,
     EconomyReads,
     build_policy_gap,
     new_thesis_id,
@@ -167,6 +168,144 @@ def test_the_thesis_id_is_date_first_and_reproducible_from_as_of() -> None:
     assert a.startswith(f"{THESIS_ID_PREFIX}-2026-10-06-")
     assert len(a.rsplit("-", 1)[-1]) == 8
     assert a != b  # the suffix is random, so two theses are distinguishable
+
+
+def test_the_thesis_id_prefix_is_the_country_not_a_literal() -> None:
+    """(§22.3) A gb thesis must not carry a ``us-`` id.
+
+    The id is the first thing an operator greps, so a UK thesis labelled
+    ``us-...`` would be the single most misleading field on the record. The
+    prefix is the ``country`` argument, defaulting to ``THESIS_ID_PREFIX`` for
+    the US case so there is one source for the "us" spelling.
+    """
+    us = new_thesis_id(as_of=_AS_OF)
+    gb = new_thesis_id(as_of=_AS_OF, country="gb")
+    assert us.startswith("us-")
+    assert gb.startswith("gb-")
+    # The default and the explicit "us" are the same thing.
+    assert us.startswith(f"{THESIS_ID_PREFIX}-")
+    assert new_thesis_id(as_of=_AS_OF, country="us").startswith("us-")
+
+
+# ---------------------------------------------------------------------------
+# (§22.3) build_policy_gap dispatches to the right central bank's rules
+# ---------------------------------------------------------------------------
+
+
+def _boe_inputs() -> BoeRuleInputs:
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        BoeFirstDifferenceInputs,
+        BoeForwardLookingInputs,
+    )
+
+    return BoeRuleInputs(
+        contemporaneous=BoeContemporaneousInputs(
+            i_prev=4.25,
+            pi_energy_gap_pp=2.0,
+            pi_non_energy_gap_pp=1.4,
+            output_gap=0.1,
+        ),
+        forward_looking=BoeForwardLookingInputs(
+            i_prev=4.25, projected_inflation_pp=3.7, projected_output_gap=0.1
+        ),
+        first_difference=BoeFirstDifferenceInputs(
+            i_prev=4.25, projected_inflation_pp=3.7, projected_gdp_growth=0.3
+        ),
+    )
+
+
+def test_a_gb_policy_gap_runs_the_boe_rules_not_the_fed_trio() -> None:
+    """(§22.3) ``country='gb'`` reads ``boe_inputs`` and the BoE's three rules.
+
+    The discriminating check is the *names* of the three rule results: the BoE's
+    trio and the Fed's trio are different functions with different model names,
+    so a dispatch that fell through to the Fed's rules would produce the Fed's
+    names on a gb thesis. ``build_policy_gap`` returns ``(gap, rules, ensemble,
+    market_path)`` and the second element is the same length (three) for both
+    countries — so the length alone would NOT catch a mis-dispatch, which is
+    exactly why this asserts on the identities.
+    """
+    _gap, rules, _ensemble, _market = build_policy_gap(
+        None,
+        None,
+        country="gb",
+        boe_inputs=_boe_inputs(),
+        short_yield=4.35,
+        short_tenor_term_premium=None,
+    )
+    names = {r.model_name for r in rules}
+    # EXACT names, not substrings: the BoE's names SUFFIX the Fed's, so
+    # "boe_contemporaneous_taylor_rule" CONTAINS "taylor_rule" and a substring
+    # check would report a false mis-dispatch. The Fed's three rule names, as
+    # the us branch produces them, are exactly these — a gb thesis must match
+    # none of them.
+    fed_names = {"taylor_rule", "balanced_approach_rule", "first_difference_rule"}
+    assert names & fed_names == set(), f"a gb thesis ran the Fed's rules: {names & fed_names}"
+    # The BoE's three rules are all present, and they are the BoE's.
+    assert len(names) == 3
+    assert all(n.startswith("boe_") for n in names), names
+
+
+def test_a_gb_policy_gap_without_boe_inputs_is_refused() -> None:
+    """(§22.3) A gb thesis with no BoE inputs has no policy leg — refuse, don't guess."""
+    with pytest.raises(TypeError, match="requires boe_inputs"):
+        build_policy_gap(
+            None,
+            None,
+            country="gb",
+            boe_inputs=None,
+            short_yield=4.35,
+            short_tenor_term_premium=None,
+        )
+
+
+def test_a_gb_policy_gap_given_the_feds_records_is_refused() -> None:
+    """(§22.3) ONE country's records per thesis — passing both is refused, not ignored.
+
+    This is D-037's inert-input class at the country level: if the Fed's records
+    were accepted alongside the BoE's, a caller would believe they mattered.
+    """
+    with pytest.raises(TypeError, match="requires boe_inputs"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="gb",
+            boe_inputs=None,
+            short_yield=4.35,
+            short_tenor_term_premium=None,
+        )
+
+
+def test_a_us_policy_gap_given_the_boe_records_is_refused() -> None:
+    """(§22.3) The other direction: a us thesis may not carry the BoE's records."""
+    with pytest.raises(TypeError, match="was given boe_inputs"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="us",
+            boe_inputs=_boe_inputs(),
+            short_yield=4.35,
+            short_tenor_term_premium=None,
+        )
+
+
+def test_a_country_with_no_rule_set_is_refused_not_borrowed() -> None:
+    """(§22.3) An unimplemented country must not quietly run the Fed's rules.
+
+    The dispatch is explicit rather than a ``getattr``/try-except fallback
+    precisely so this is a loud refusal: a country without its own central-bank
+    rules has no policy leg, and borrowing another's would be the relabeled-Fed
+    failure §22.3 exists to prevent.
+    """
+    with pytest.raises(ValueError, match="no rule set for country"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="jp",
+            short_yield=4.35,
+            short_tenor_term_premium=None,
+        )
 
 
 # ---------------------------------------------------------------------------

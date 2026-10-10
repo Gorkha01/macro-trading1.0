@@ -66,6 +66,7 @@ from macro_engine.api_layer.orchestration import (
     snapshot_to_thesis_inputs,
 )
 from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError, get_snapshot
+from macro_engine.config import get_settings
 from macro_engine.data_layer.fed_funds_futures_client import (
     FedFundsFuturesCurve,
     FuturesCurveError,
@@ -360,6 +361,8 @@ async def _reasoning_frames(country: str) -> AsyncGenerator[str, None]:
             inputs.first_difference_inputs,
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
+            country=inputs.country,
+            boe_inputs=inputs.boe_inputs,
             short_yield=inputs.short_yield,
             futures_curve=futures_curve,
             regime=inputs.regime,
@@ -413,14 +416,20 @@ async def stream_thesis_reasoning(country: str) -> StreamingResponse:
     country gets a 501 rather than a 200 whose body contains one error event. A
     client that has already opened a stream and is parsing frames cannot be told
     "you asked for the wrong thing" — by then it has committed to reading events.
+
+    The check reads ``settings.country.implemented`` (the same list the snapshot
+    builder and ``snapshot_to_thesis_inputs`` gate on) rather than a literal
+    ``"us"``, so a country that has earned the label — gb, added by the first
+    multi-country increment — streams, while de/jp still refuse here.
     """
-    if country != "us":
+    if country not in get_settings().country.implemented:
         raise HTTPException(
             status_code=501,
             detail=(
-                f"country '{country}' is not implemented (Section 22.3); the system is "
-                f"US-only through Phase 4. Validated before the stream opens so the "
-                f"caller gets a status code rather than an error frame."
+                f"country '{country}' is not implemented (Section 22.3); implemented: "
+                f"{sorted(get_settings().country.implemented)}. Validated before the "
+                f"stream opens so the caller gets a status code rather than an error "
+                f"frame."
             ),
         )
     return StreamingResponse(

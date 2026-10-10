@@ -120,7 +120,9 @@ from macro_engine.models.as_of import observation_as_of
 from macro_engine.models.contracts import ModelResult
 from macro_engine.models.gdp_nowcast import (
     GdpGdiInputs,
+    OutputGapInputs,
     gdp_gdi_divergence,
+    output_gap,
     output_gap_from_snapshot,
 )
 from macro_engine.models.instrument_selection import ThesisType
@@ -132,6 +134,9 @@ from macro_engine.models.labor_synthesis import (
 )
 from macro_engine.models.policy_rules import (
     BalanceSheetInputs,
+    BoeContemporaneousInputs,
+    BoeFirstDifferenceInputs,
+    BoeForwardLookingInputs,
     FirstDifferenceInputs,
     TaylorRuleInputs,
     qe_qt_stance,
@@ -143,7 +148,7 @@ from macro_engine.models.yield_curve import (
     breakeven_inflation,
     curve_slope,
 )
-from macro_engine.thesis_layer.builder import EconomyReads
+from macro_engine.thesis_layer.builder import BoeRuleInputs, EconomyReads
 from macro_engine.thesis_layer.schemas import ProductionUniverse
 
 #: The balance-sheet change window, in WEEKLY observations (thirteen weeks ~ one
@@ -216,11 +221,23 @@ class ThesisInputs:
     """
 
     reads: EconomyReads
-    taylor_inputs: TaylorRuleInputs
-    first_difference_inputs: FirstDifferenceInputs
+    #: The Fed's two rule-input records. **Required for a US thesis and must be
+    #: ``None`` for a gb one** — see ``boe_inputs``. Both are optional at the
+    #: type level because a ``ThesisInputs`` carries one country's records, and
+    #: the country field plus ``_exactly_one_countrys_rule_inputs`` enforces the
+    #: mutual exclusion.
+    taylor_inputs: TaylorRuleInputs | None
+    first_difference_inputs: FirstDifferenceInputs | None
     short_yield: float
     thesis_type: ThesisType
     universe: ProductionUniverse
+    #: The country these inputs were derived for (Section 22.3). Defaults to
+    #: "us" so every existing construction is unchanged; the builder dispatches
+    #: its policy-rule selection on it.
+    country: str = "us"
+    #: The BoE's three rule-input records. Required for a gb thesis, ``None``
+    #: for a US one. See :class:`BoeRuleInputs`.
+    boe_inputs: BoeRuleInputs | None = None
     #: Section 16.2 Q1's **fourth** read: the regime classification. ``None``
     #: means the classifier was not run, and the builder then publishes
     #: ``regime.state = None`` with its ``NOT_COMPUTED`` note (D-043/D-045) —
@@ -1705,7 +1722,7 @@ def _nairu_from_config() -> tuple[float, str]:
 # ---------------------------------------------------------------------------
 
 
-def snapshot_to_thesis_inputs(
+def _us_thesis_inputs(
     snapshot: MacroDataSnapshot,
     *,
     thesis_type: ThesisType | None = None,
@@ -1715,8 +1732,13 @@ def snapshot_to_thesis_inputs(
     curve_long_tenor: str | None = None,
     short_tenor_term_premium: float | None = None,
 ) -> ThesisInputs:
-    """Derive every ``build_us_macro_thesis`` argument from ``snapshot``.
+    """Derive every ``build_us_macro_thesis`` argument from a US ``snapshot``.
 
+    The **US** half of ``snapshot_to_thesis_inputs``'s country dispatch (Section
+    22.3). Split out so the UK derivation is a sibling rather than a nest of
+    ``if country == ...`` inside this body, and so the US path stays byte-for-byte
+    what every existing test pins. The caller (``snapshot_to_thesis_inputs``)
+    owns the country guard; this function may assume ``snapshot.country == "us"``.
     Parameters
     ----------
     snapshot:
@@ -1760,14 +1782,6 @@ def snapshot_to_thesis_inputs(
         **This is a refusal, not a default** — the API maps it to 502, and
         Section 16.3 forbids mapping it onto ``WATCH``.
     """
-    if snapshot.country != "us":
-        raise NotImplementedError(
-            f"the API layer is implemented for country 'us' only; got "
-            f"'{snapshot.country}' (Section 22.3 / Finding #3). This is not a "
-            f"label to re-point: a different country needs its own series set, "
-            f"its own reaction function and its own instrument universe."
-        )
-
     settings = get_settings()
     as_of = snapshot.as_of
 
@@ -1984,6 +1998,8 @@ def snapshot_to_thesis_inputs(
         short_yield=short_yield,
         thesis_type=resolved_type,
         universe=resolved_universe,
+        country="us",
+        boe_inputs=None,
         regime=regime,
         national_accounts=national_accounts,
         curve=tuple(curve_results),
@@ -1991,6 +2007,423 @@ def snapshot_to_thesis_inputs(
         notes=tuple(notes),
         warnings=tuple(warnings),
     )
+
+
+def snapshot_to_thesis_inputs(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+) -> ThesisInputs:
+    """Derive every ``build_us_macro_thesis`` argument from ``snapshot``.
+
+    Country dispatch (Section 22.3)
+    ------------------------------
+    This is the public entry point and the ONE place the country guard lives. It
+    reads ``settings.country.implemented`` — the same list the snapshot builder
+    gates on — so "the country is implemented" is a single fact rather than two
+    free to disagree. A country absent from that list is refused outright (de/jp);
+    a listed country dispatches to its own derivation.
+
+    The dispatch is an explicit ``if/elif/else`` rather than a dict lookup or a
+    ``getattr`` on a name built from the country code: a country with no
+    derivation must produce a loud refusal, and a name-based dispatch would turn
+    a missing implementation into an ``AttributeError`` that reads like a typo.
+
+    Parameters
+    ----------
+    snapshot:
+        The assembled snapshot. Its ``country`` selects the derivation; an
+        unimplemented country is refused rather than defaulted.
+    (remaining parameters are documented on the country-specific helpers, which
+    is where their meaning lives; this function only forwards them.)
+    """
+    settings = get_settings()
+    if snapshot.country not in settings.country.implemented:
+        # Section 22.3 / Finding #3. Previously `if snapshot.country != "us"`.
+        # The check is now the `implemented` list rather than a literal, so the
+        # first multi-country increment (gb) — which added its own series set,
+        # reaction function and instrument universe — is admitted while de/jp
+        # are still refused. The refusal is unchanged in KIND; only the set of
+        # countries that have earned the label has grown.
+        raise NotImplementedError(
+            f"the API layer is implemented for {sorted(settings.country.implemented)} "
+            f"only; got '{snapshot.country}' (Section 22.3 / Finding #3). This is "
+            f"not a label to re-point: a different country needs its own series "
+            f"set, its own reaction function and its own instrument universe."
+        )
+
+    if snapshot.country == "us":
+        return _us_thesis_inputs(
+            snapshot,
+            thesis_type=thesis_type,
+            universe=universe,
+            short_yield_tenor=short_yield_tenor,
+            curve_short_tenor=curve_short_tenor,
+            curve_long_tenor=curve_long_tenor,
+            short_tenor_term_premium=short_tenor_term_premium,
+        )
+    if snapshot.country == "gb":
+        return _gb_thesis_inputs(
+            snapshot,
+            thesis_type=thesis_type,
+            universe=universe,
+            short_yield_tenor=short_yield_tenor,
+            curve_short_tenor=curve_short_tenor,
+            curve_long_tenor=curve_long_tenor,
+            short_tenor_term_premium=short_tenor_term_premium,
+        )
+    raise NotImplementedError(
+        f"country '{snapshot.country}' is listed in country.implemented but has "
+        f"no derivation in snapshot_to_thesis_inputs (Section 22.3). Add one — a "
+        f"config flag alone does not make a country runnable."
+    )
+
+
+def _gb_thesis_inputs(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+) -> ThesisInputs:
+    """Derive the UK thesis inputs from a ``gb`` snapshot (Section 22.3).
+
+    The UK half of the country dispatch. It mirrors ``_us_thesis_inputs``'s
+    contract — three reads, the policy-rule inputs, the short yield, the same
+    notes/warnings discipline — but sources every quantity from the ``gb_*``
+    fields and feeds the **Bank of England's** three rules rather than the Fed's.
+
+    What is genuinely different, and why it is not a relabel
+    --------------------------------------------------------
+    1. **The inflation measure.** The BoE's target is 2% CPI (symmetric), not
+       core PCE. The contemporaneous Taylor-type rule splits CPI into ENERGY and
+       NON-ENERGY components, so the two ``gb_cpi_headline`` and ``gb_cpi_core``
+       series map onto exactly those two regressors. ``gb_cpi_core`` is the
+       non-energy component; the energy component is derived as
+       ``headline - core`` — the arithmetic the BoE's own decomposition implies,
+       derived here rather than fetched a second time so the two cannot disagree.
+    2. **The output gap.** The UK has no OECD output-gap series on the FRED route
+       (probed: ``GBROUTPUTQUR`` does not exist). The BoE's rules read an output
+       gap, which is therefore ESTIMATED from the activity series the snapshot
+       carries (``gb_gdp_growth_qoq`` against its own trend) and the estimate is
+       **disclosed as an estimate** in the notes, not passed off as a
+       measurement. This is the honest handling of "the spec's rule needs a
+       quantity the country does not publish".
+    3. **The rule set.** The three inputs feed ``boe_contemporaneous_taylor_rule``,
+       ``boe_forward_looking_taylor_rule`` and ``boe_first_difference_rule`` via
+       the ``boe_inputs`` bundle — the Fed's ``taylor_inputs`` are ``None``,
+       which ``build_policy_gap`` refuses to accept alongside the BoE's.
+
+    The policy rate (``i_prev``) is ``gb_bank_rate`` — the Bank Rate, the UK's
+    ``iorb`` analogue.
+    """
+    settings = get_settings()
+    as_of = snapshot.as_of
+
+    resolved_type = thesis_type or ThesisType(settings.api.default_thesis_type)
+    resolved_universe = universe if universe is not None else ProductionUniverse(country="gb")
+
+    notes: list[DerivationNote] = []
+    warnings: list[str] = []
+
+    # -- Q1's three reads, from the UK series.
+    # Inflation: the BoE's two CPI components, as deviations from the 2% target.
+    pi_target = float(settings.policy.gb.pi_target.value)
+    headline_points = _realised(snapshot.gb_cpi_headline, as_of=as_of, field="gb_cpi_headline")
+    core_points = _realised(snapshot.gb_cpi_core, as_of=as_of, field="gb_cpi_core")
+    headline, headline_described = _latest_percent(headline_points, field="gb_cpi_headline")
+    core, core_described = _latest_percent(core_points, field="gb_cpi_core")
+    # Energy = headline - core, the BoE's own decomposition. Derived, never a
+    # second fetch, so the three numbers are consistent by construction.
+    energy = headline - core
+    notes.append(
+        DerivationNote(
+            name="pi_energy_gap_pp / pi_non_energy_gap_pp",
+            value=f"energy={energy - pi_target:+.4f} core={core - pi_target:+.4f}",
+            source=(
+                "gb_cpi_headline and gb_cpi_core, each minus the 2% target "
+                "(policy.gb.pi_target) — the BoE's contemporaneous rule reads "
+                "DEVIATIONS FROM STEADY STATE, so these are gaps, not levels"
+            ),
+            window=f"headline {headline_described}; core {core_described}",
+        )
+    )
+
+    inflation = inflation_breadth_score(
+        InflationSubMeasures(
+            cpi_headline_mom=energy,
+            cpi_core_mom=core,
+            pce_core_mom=core,
+        )
+    )
+    # The UK has no PCE; `inflation_breadth_score` takes three m/m measures. It is
+    # fed the two UK CPI components and, for the third slot, core again — recorded
+    # explicitly rather than silently, because the score is a breadth read and
+    # a duplicated leg changes what "breadth" means.
+    warnings.append(
+        "UK INFLATION BREADTH: the score's three m/m measures are the UK headline, "
+        "the UK core, and the UK core repeated (the UK publishes no PCE). Breadth "
+        "is therefore over two measures, not three — read the score accordingly."
+    )
+
+    # Labor: the UK activity read. Published as a read (the EconomyReads slot)
+    # but the score is neutral by construction, so the genuine number is the
+    # note below.
+    unemployment_points = _realised(
+        snapshot.gb_unemployment_rate, as_of=as_of, field="gb_unemployment_rate"
+    )
+    unemployment, unemployment_described = _latest_percent(
+        unemployment_points, field="gb_unemployment_rate"
+    )
+    labor = labor_tightness_score(
+        LaborInputs(
+            initial_claims_4wk_avg_change_pct=0.0,
+            jolts_openings_yoy_pct=0.0,
+            jolts_quits_level_percentile=0.0,
+            nfp_3m_avg=get_settings().labor.neutral_nfp_pace,
+        )
+    )
+    warnings.append(
+        "UK LABOR READ: the UK publishes no JOLTS, initial-claims or payrolls "
+        "series on this route, so every labor-tightness block is at its neutral "
+        "point and the score is ~0 by construction — it says nothing about UK "
+        "labor tightness. The genuine UK read (gb_unemployment_rate) is carried "
+        "in the notes; the score is published only so the reads record keeps its "
+        "three-read shape, and it must not be read as a tightness measure."
+    )
+    notes.append(
+        DerivationNote(
+            name="gb_unemployment_rate",
+            value=f"{unemployment:g}",
+            source="gb_unemployment_rate (UK harmonised unemployment, %), latest realised point",
+            window=unemployment_described,
+        )
+    )
+
+    # Growth: the output gap is ESTIMATED (the UK has no published gap series).
+    gdp_points = _realised(snapshot.gb_gdp_growth_qoq, as_of=as_of, field="gb_gdp_growth_qoq")
+    gdp_growth, gdp_described = _latest_percent(gdp_points, field="gb_gdp_growth_qoq")
+    # A simple, disclosed trend estimate: the gap is the current quarterly growth
+    # minus the series' own mean over the realised window. This is deliberately
+    # the SIMPLEST defensible estimate and is labelled as one; a production UK
+    # gap would come from a production-function or HP-filter estimate, which is
+    # a later increment. The point here is that the rule gets a gap and the
+    # thesis says where it came from.
+    mean_growth = sum(p.value for p in gdp_points) / len(gdp_points)
+    gb_output_gap = gdp_growth - mean_growth
+    notes.append(
+        DerivationNote(
+            name="output_gap (gb, ESTIMATED)",
+            value=f"{gb_output_gap:+.4f}",
+            source=(
+                "ESTIMATE: latest gb_gdp_growth_qoq minus its own mean over the "
+                f"realised window (mean {mean_growth:+.4f}) — the UK has no "
+                "published output-gap series on this route (probed: GBROUTPUTQUR "
+                "does not exist), so the BoE rules' gap input is estimated, not "
+                "measured"
+            ),
+            window=gdp_described,
+        )
+    )
+    growth = output_gap(
+        OutputGapInputs(
+            # The UK output-gap ESTIMATE, routed through the real model so the
+            # provenance (potential GDP is unobservable -> confidence 0.5) is the
+            # model's, not invented here. `actual/potential` are normalised to
+            # encode the estimated gap in percent: potential := 1.0, actual :=
+            # 1.0 + gap/100, so `100*(actual-potential)/potential == gap`. The
+            # normalisation is disclosed in the note above rather than passed off
+            # as a level pair.
+            actual_gdp=1.0 + gb_output_gap / 100.0,
+            potential_gdp=1.0,
+        )
+    )
+
+    reads = EconomyReads(growth=growth, inflation=inflation, labor=labor)
+
+    # -- Q3/Q4's market read: the short yield from the UK's 3-month rate. The UK
+    #    snapshot carries two scattered points, not a full curve, so the shared
+    #    curve helper (which needs the 11-tenor `yield_curve`) cannot serve it.
+    short_yield, short_described = _gb_short_yield(snapshot, as_of=as_of)
+    notes.append(
+        DerivationNote(
+            name="short_yield",
+            value=f"{short_yield:g}",
+            source=(
+                "gb_short_rate_3m, in percent (never basis points) — the UK "
+                "snapshot carries no 11-tenor curve, so the short end is the "
+                "3-month rate rather than a curve tenor"
+            ),
+            window=short_described,
+        )
+    )
+
+    # -- Q5's rule inputs: the THREE BoE records.
+    policy_rate, policy_described = _gb_policy_rate(snapshot, as_of=as_of)
+    notes.append(
+        DerivationNote(
+            name="i_prev",
+            value=f"{policy_rate:g}",
+            source="Bank Rate (gb_bank_rate), the UK policy rate",
+            window=policy_described,
+        )
+    )
+    forward_points = _realised(snapshot.gb_cpi_headline, as_of=as_of, field="gb_cpi_headline")
+    forward_inflation, forward_described = _latest_percent(forward_points, field="gb_cpi_headline")
+    # The BoE's forward-looking rules read a PROJECTION. The snapshot carries
+    # realised prints, not a projection path, so the current headline is used as
+    # a flat-projection stand-in and the stand-in is DISCLOSED. A real projection
+    # needs the BoE's own forecast data, which is a later increment.
+    warnings.append(
+        "UK PROJECTION STAND-IN: the BoE's forward-looking rules read "
+        "five-quarter-ahead and three-quarter-ahead projections, which this "
+        "snapshot does not carry. The current headline inflation is used as a "
+        "FLAT projection, so the two forward-looking rules move only with the "
+        "current print. Disclosed rather than left to read as a real forecast."
+    )
+    notes.append(
+        DerivationNote(
+            name="projected_inflation_pp (gb, STAND-IN)",
+            value=f"{forward_inflation:g}",
+            source="gb_cpi_headline latest realised point, used as a flat projection",
+            window=forward_described,
+        )
+    )
+
+    boe_inputs = BoeRuleInputs(
+        contemporaneous=BoeContemporaneousInputs(
+            i_prev=policy_rate,
+            pi_energy_gap_pp=energy - pi_target,
+            pi_non_energy_gap_pp=core - pi_target,
+            output_gap=gb_output_gap,
+        ),
+        forward_looking=BoeForwardLookingInputs(
+            i_prev=policy_rate,
+            projected_inflation_pp=forward_inflation,
+            projected_output_gap=gb_output_gap,
+        ),
+        first_difference=BoeFirstDifferenceInputs(
+            i_prev=policy_rate,
+            projected_inflation_pp=forward_inflation,
+            projected_gdp_growth=gdp_growth,
+        ),
+    )
+
+    if resolved_type is ThesisType.CURVE_SHAPE_GAP:
+        notes.append(
+            DerivationNote(
+                name="curve legs",
+                value=f"{curve_short_tenor} -> {curve_long_tenor}",
+                source="forwarded from the caller; a curve expression names its own legs",
+                window=None,
+            )
+        )
+    elif curve_short_tenor is not None or curve_long_tenor is not None:
+        warnings.append(
+            "CURVE LEGS IGNORED: curve_short_tenor/curve_long_tenor were supplied "
+            f"but the thesis type is {resolved_type.value}, so nothing reads them "
+            "(D-037's inert-input class)."
+        )
+
+    notes.append(
+        DerivationNote(
+            name="thesis_type",
+            value=resolved_type.value,
+            source=(
+                "assumed from api.default_thesis_type"
+                if thesis_type is None
+                else "supplied by the caller"
+            ),
+            window=None,
+        )
+    )
+    if short_tenor_term_premium is not None:
+        notes.append(
+            DerivationNote(
+                name="short_tenor_term_premium",
+                value=f"{short_tenor_term_premium:g}",
+                source="supplied by the caller",
+                window=None,
+            )
+        )
+
+    return ThesisInputs(
+        reads=reads,
+        taylor_inputs=None,
+        first_difference_inputs=None,
+        short_yield=short_yield,
+        thesis_type=resolved_type,
+        universe=resolved_universe,
+        country="gb",
+        boe_inputs=boe_inputs,
+        regime=None,
+        national_accounts=None,
+        curve=(),
+        balance_sheet=None,
+        notes=tuple(notes),
+        warnings=tuple(warnings),
+    )
+
+
+def _gb_policy_rate(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:
+    """``i_prev`` for the UK: the Bank Rate. The UK's ``iorb`` analogue.
+
+    A named helper rather than an inline read so the one series choice is
+    documented once. ``gb_bank_rate`` carries the BoE policy rate (and SONIA,
+    its effective-rate analogue, is a SEPARATE series used for the market read);
+    conflating them would put the effective rate into a rule calibrated on the
+    policy rate.
+    """
+    points = _realised(snapshot.gb_bank_rate, as_of=as_of, field="gb_bank_rate")
+    value, described = _latest_percent(points, field="gb_bank_rate")
+    return value, described
+
+
+def _gb_short_yield(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:
+    """The UK market short yield, in percent — the market-implied path's input.
+
+    The UK snapshot carries **two scattered points** (``gb_gilt_10y_yield`` and
+    ``gb_short_rate_3m``), not an 11-tenor ``YieldCurveSnapshot``, so the shared
+    ``_short_yield_from_curve`` cannot serve it. The short end — the point that
+    prices near-term policy expectations — is the 3-month rate.
+
+    The same plausibility bound is applied, read from the SAME config leaf the
+    curve helper reads, so the bp-vs-percent guard is not re-typed here (LAW 2).
+    A UK gilt curve with a full tenor set is a later data increment; until then
+    the two-point read is what the snapshot supports, and it is disclosed.
+    """
+    points = _realised(snapshot.gb_short_rate_3m, as_of=as_of, field="gb_short_rate_3m")
+    value, described = _latest_percent(points, field="gb_short_rate_3m")
+    max_yield = get_settings().validation.max_yield
+    if not 0.0 < value < max_yield:
+        raise OrchestrationError(
+            f"the UK 3-month rate is {value}, outside the plausible bond range "
+            f"(Section 5.4's max_plausible_yield_pct is {max_yield:g}). A value in "
+            f"basis points would read as a percent and inflate every downstream gap.",
+            fields=("gb_short_rate_3m",),
+        )
+    return value, f"gb_short_rate_3m = {value:g}% ({described})"
+
+
+def _latest_percent(points: Sequence[ObservationPoint], *, field: str) -> tuple[float, str]:
+    """The most recent realised observation's value, as a percent float.
+
+    The UK series are already quoted in percent (a registry ``units: percent``
+    convention), so this is a ``points[-1]`` read with the window described —
+    NOT a yoy/mom transform. The US path needs those transforms because it reads
+    levels and constructs rates; the UK series arrive as rates.
+    """
+    latest = points[-1]
+    described = f"{field}: latest realised {latest.observation_date.isoformat()} = {latest.value:g}"
+    return float(latest.value), described
 
 
 def _r_star_from_config() -> tuple[float, str]:

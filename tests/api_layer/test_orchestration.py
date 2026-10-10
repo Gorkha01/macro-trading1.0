@@ -240,10 +240,64 @@ def test_latest_on_or_before_is_inclusive_and_none_when_too_early() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_non_us_snapshot_is_refused() -> None:
+def _gb_snapshot() -> MacroDataSnapshot:
+    """A UK snapshot carrying each of the six series the gb derivation reads.
+
+    Built from the same point constructors as the US helpers, so the UK path is
+    exercised through the real ``snapshot_to_thesis_inputs`` rather than a
+    hand-written ``ThesisInputs`` — the point of the end-to-end wiring is that
+    the derivation runs, not that a record can be constructed.
+
+    The values are deliberately plausible rather than arbitrary: headline CPI
+    a little above the 2% target, core below headline (so the derived energy leg
+    is positive), Bank Rate near the short rate, and quarterly GDP growth
+    varying so the mean-relative gap is a non-trivial number. A snapshot of
+    constants would make the gap zero and the rule outputs coincide, hiding any
+    dispatch error.
+    """
+    return MacroDataSnapshot(
+        country="gb",
+        as_of=AS_OF,
+        data_quality_flags=[],
+        gb_cpi_headline=_monthly([3.4, 3.6, 3.5, 3.7, 3.6, 3.8], series="gb_cpi_headline"),
+        gb_cpi_core=_monthly([3.1, 3.2, 3.2, 3.3, 3.3, 3.4], series="gb_cpi_core"),
+        gb_unemployment_rate=_monthly(
+            [4.2, 4.3, 4.3, 4.4, 4.4, 4.4], series="gb_unemployment_rate"
+        ),
+        gb_gdp_growth_qoq=_series([0.1, 0.3, 0.2, 0.4, 0.2, 0.5], series="gb_gdp_growth_qoq"),
+        gb_bank_rate=_series([5.0, 4.75, 4.5, 4.25], series="gb_bank_rate"),
+        gb_short_rate_3m=_series([4.6, 4.5, 4.4, 4.35], series="gb_short_rate_3m"),
+    )
+
+
+def test_an_unimplemented_country_snapshot_is_refused() -> None:
+    """(§22.3) de is refused; the refusal names the implemented set.
+
+    The guard no longer reads a literal ``"us"`` — it reads
+    ``country.implemented``, so the first multi-country increment (gb) is
+    admitted while de/jp are still refused. The assertion is on the BEHAVIOUR
+    (``de`` raises) and on the message naming the implemented set, not on the
+    old "us only" literal, which would have made this test the thing that
+    blocked gb rather than the thing that guards the boundary.
+    """
     snapshot = MacroDataSnapshot(country="de", as_of=AS_OF, data_quality_flags=[])
-    with pytest.raises(NotImplementedError, match="implemented for country 'us' only"):
+    with pytest.raises(NotImplementedError, match="implemented for"):
         orch.snapshot_to_thesis_inputs(snapshot)
+
+
+def test_an_implemented_country_snapshot_is_admitted() -> None:
+    """(§22.3) gb is NOT refused by the country guard any more.
+
+    The counterpart to the test above: a country in ``country.implemented``
+    reaches its own derivation. If this fails with the guard's
+    ``NotImplementedError``, the config and the guard have drifted apart.
+    """
+    snapshot = _gb_snapshot()
+    inputs = orch.snapshot_to_thesis_inputs(snapshot)
+    assert inputs.country == "gb"
+    assert inputs.boe_inputs is not None
+    assert inputs.taylor_inputs is None
+    assert inputs.first_difference_inputs is None
 
 
 def test_curve_legs_on_a_non_curve_thesis_are_reported_not_dropped() -> None:

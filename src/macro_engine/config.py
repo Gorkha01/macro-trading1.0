@@ -626,6 +626,15 @@ class InstrumentSelectionSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     thesis_type_routes: dict[str, Any]
+    #: Per-country route OVERRIDES (Section 22.3). Keyed by ISO alpha-2; each
+    #: value is a mapping of thesis-type -> ``{instrument_template, ...}`` that
+    #: REPLACES the corresponding entry in the US routing table for that country.
+    #: A country absent here uses the base table unchanged, which is the honest
+    #: default: a country whose instruments ARE the base table's does not need an
+    #: entry, while a country whose instruments differ (the UK's gilts are not
+    #: USTs) must supply one or the US template will fail the country's own
+    #: universe check — which is exactly the loud failure Section 22.3 wants.
+    country_routes: dict[str, Any] = {}
     curve_default_short_tenor: CalibratedValue
     curve_default_long_tenor: CalibratedValue
     curve_minimum_leg_gap_years: CalibratedValue
@@ -635,7 +644,7 @@ class InstrumentSelectionSettings(BaseModel):
 
     @property
     def routes(self) -> dict[str, dict[str, str]]:
-        """The routing table, with the envelope's own metadata stripped out.
+        """The US/base routing table, with the envelope's own metadata stripped out.
 
         ``thesis_type_routes`` is a ``mechanical_rule`` envelope carrying a
         ``calibration_status`` and a ``note`` beside its ``routes`` mapping.
@@ -649,6 +658,37 @@ class InstrumentSelectionSettings(BaseModel):
                 "mapping — the routing table cannot be read."
             )
         return {str(key): dict(value) for key, value in raw.items()}
+
+    def routes_for(self, country: str) -> dict[str, dict[str, str]]:
+        """The routing table for ``country``, base overlaid with its overrides.
+
+        Overlay rather than replace: a country that overrides only
+        ``policy_path_gap`` inherits the base table's other routes, so a new
+        country supplies exactly the entries whose instruments genuinely differ
+        and cannot accidentally drop a route it never meant to touch.
+
+        A country with no overrides gets the base table — the US behaviour,
+        unchanged. This is why adding the parameter is backwards-compatible.
+        """
+        base = self.routes
+        # ``country_routes`` is the same ``mechanical_rule`` envelope shape as
+        # ``thesis_type_routes`` (a status + note beside a ``routes`` mapping),
+        # so the per-country plans live under its own ``routes`` key.
+        envelope = self.country_routes.get("routes")
+        if not isinstance(envelope, dict):
+            return base
+        overrides = envelope.get(country)
+        if not overrides:
+            return base
+        if not isinstance(overrides, dict):
+            raise ValueError(
+                f"instrument_selection.country_routes.routes.{country} must be a "
+                f"mapping of thesis-type -> route, got {type(overrides).__name__}."
+            )
+        merged = dict(base)
+        for key, value in overrides.items():
+            merged[str(key)] = dict(value)
+        return merged
 
     @property
     def default_short_tenor(self) -> str:

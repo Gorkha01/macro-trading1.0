@@ -246,6 +246,8 @@ async def query(
             inputs.first_difference_inputs,
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
+            country=inputs.country,
+            boe_inputs=inputs.boe_inputs,
             short_yield=inputs.short_yield,
             regime=inputs.regime,
         )

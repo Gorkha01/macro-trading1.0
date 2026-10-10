@@ -16,7 +16,7 @@ it calls *done* was checked to have a real body — not a `NotImplementedError`.
 | Are Phases 0–4 done? | **Yes.** All 101 functions named in AGENTS.md §21.3 Tier 1–5 exist in `src/`. |
 | Is Tier 5 (the spec's "stubs only") stubbed? | **No — 23 of 23 Tier 5 functions have real bodies.** |
 | How many `extensions/` modules are stubbed? | **6** — each gated on an uninstalled §4 package. |
-| How many genuine *capability* gaps remain? | **2** — multi-country, and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included.** |
+| How many genuine *capability* gaps remain? | **2** — multi-country (**partially closed: `gb` done 2026-10-10, §2.4**), and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included.** |
 | Why are they not implemented? | Mostly AGENTS.md §4 (*"no dependency before its phase"*); two are **data-availability** blocks, not code gaps. |
 
 **Correction on the record:** AGENTS.md §21.3 heads Tier 5 *"Phase 5+ (stubs only until their
@@ -218,15 +218,31 @@ assumed the same correlation response would be one scenario written four times:
 | `ltcm_1998` | 1998 — the correlation-breakdown episode | −0.8 |
 
 
-### 2.4 Multi-country (`de`, `jp`, `gb`) — **not implemented** (confirmed)
+### 2.4 Multi-country (`de`, `jp`, `gb`) — **`gb` implemented end-to-end 2026-10-10; `de`/`jp` remain**
+
+> **RE-MEASURED 2026-10-10.** The row below that read "not implemented (confirmed)" was true when
+> written and is no longer: the **first multi-country increment (gb)** landed as three §22.3
+> workstreams and was wired through the API. This section is the doc that *tracks* the gap, so it is
+> re-measured in full rather than having the one stale row edited (the §2.2 pair-defect lesson).
 
 | Check | Result |
 |---|---|
-| `config/settings.yaml` → `country.implemented` | `["us"]` — with the comment *"Adding de/jp/gb requires its OWN data sources, its OWN central-bank reaction function, and its OWN instrument set — not a label change."* |
-| `country.enabled` | `["us"]` |
-| What exists for other countries | **Guards, not implementations.** Three functions raise `NotImplementedError` for any non-`us` country (`orchestration.py:1764`, `gdp_nowcast.py:571`, `regime.py:1234`); `snapshot_builder.py:846` raises for any country not in `country.implemented`. |
-| What is genuinely *data-ready* for other countries | Three FX-reserve series only: `fx_reserves_japan`, `fx_reserves_uk`, `fx_reserves_china` (`config/series_registry.yaml:1744/1762/1779`), plus ISO-3 code maps in `em_vulnerability.py`. These exist because `check_trilemma_tension` NEEDS them as **fixtures** for the 1992/1997 case studies — a different act from supporting those countries as thesis countries (D-048). |
-| A cross-country *trade* | `instrument_selection.py:121` defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis instead of an instrument |
+| `config/settings.yaml` → `country.implemented` | **`["us", "gb"]`** (`:102`). `gb` was added when its own data sources, its own reaction function and its own instrument set all existed. `de`/`jp` are still absent — adding one requires the same three things, not a label change. |
+| `country.enabled` | `["us"]` — still US-first; `enabled` gates the *snapshot build*, `implemented` gates the *derivation*. `gb` is implemented and buildable; the `enabled` list is a separate, deliberate choice. `_no_false_genericity_claim` rejects `enabled - implemented`. |
+| What exists for other countries | **For `gb`: a full pipeline.** (1) Seven verified `gb_*` series in the registry (`gb_cpi_headline`, `gb_cpi_core`, `gb_unemployment_rate`, `gb_gdp_growth_qoq`, `gb_bank_rate`, `gb_gilt_10y_yield`, `gb_short_rate_3m`); (2) the Bank of England's **three published rules** (`boe_contemporaneous_taylor_rule`, `boe_first_difference_rule`, `boe_forward_looking_taylor_rule`, `models/policy_rules.py`) — genuinely distinct, not a relabelled Fed rule; (3) a country-aware `ProductionUniverse` carrying the UK plan (gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100); (4) `snapshot_to_thesis_inputs` dispatching to `_gb_thesis_inputs`, so `/thesis/gb` runs. **For `de`/`jp`: guards only.** `gdp_nowcast.output_gap_from_snapshot` and `regime.check_trilemma_tension` remain US-only (`NotImplementedError`), and `_gb_thesis_inputs` sets `regime=None` — the gb path never reaches them, which is correct, not a gap. |
+| What is genuinely *data-ready* for other countries | The three FX-reserve fixtures (`fx_reserves_japan`, `fx_reserves_uk`, `fx_reserves_china`) remain **fixtures** for the 1992/1997 case studies (D-048) — a different act from supporting those countries. |
+| A cross-country *trade* | `instrument_selection.py` still defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis. **Still correct:** a cross-country RV trade needs *two* fully-built country systems, and only `us`/`gb` have one each — so the block is now a statement about coverage, not about the pattern. |
+
+**Status: PARTIALLY CLOSED — the pattern is proven for one country, the coverage is not.** §22.3
+(Finding #3) retracted any claim of multi-country generality, and that retraction still holds: the
+system is *not* country-generic, it has **two** countries with a shared, now-tested dispatch. What
+the gb increment earned is the *pattern* — three workstreams per country, wired end-to-end, with
+mutation proofs on the dispatch. What it did **not** earn is a claim that `de` or `jp` are
+straightforward: the ECB's 20-country compromise, the BoJ's deflation-scar bias and the PBoC's
+non-Western reaction function each need *different logic*, and the UK's own increment already
+required three disclosed stand-ins (no published output-gap series, no JOLTS/claims/payrolls, no
+BoE projection path) that a less comparable country would need more of.
+
 
 **Status: OPEN, and correctly so.** AGENTS.md §22.3 (Finding #3) explicitly retracted any claim of
 multi-country generality: *"Phases 0–4 build a US-only system. … `country: str = "us"` is not a
@@ -368,7 +384,7 @@ files, which `git log --all` can still find).
 | Item | Location | Why it is empty |
 |---|---|---|
 | `bayesian.likelihoods.table: {}` | `config/settings.yaml:5301` | Populating it needs historical evidence-vs-outcome data (Phase 5+). Empty means `bayesian_update()` **refuses to run** rather than defaulting to a 0.5/0.5 likelihood ratio that would silently render the update a no-op. `config.py:4784` enforces this. |
-| `country.implemented: ["us"]` | `config/settings.yaml:88` | §22.3 — US-only through Phase 4. `multi_country` (`de`, `jp`, `gb`) is Tier 5+. |
+| `country.implemented: ["us", "gb"]` | `config/settings.yaml:102` | §22.3 — the US-only-through-Phase-4 gate. **`gb` was added 2026-10-10** when the first multi-country increment landed end-to-end (see §2.4); `de`, `jp` remain Tier 5+. |
 | `r_star_estimate: 0.5` | `config/settings.yaml:1594` | Placeholder until the Kalman-filtered r* (Phase 5+). |
 
 ---
@@ -451,7 +467,8 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | `extensions/scheduler.py` | Deferred | `apscheduler` |
 | ~~GARCH conditional volatility~~ | **CLOSED 2026-10-09 — shipped** (§2.2) | `arch` added; `models/volatility.py` created |
 | ~~`extensions/scenario_engine.py` + `scenarios/*.yaml`~~ | **CLOSED 2026-10-09 — shipped** (§2.3.1); corrected 2026-10-10 | file exists at the spec path, 0 `NotImplementedError`, 4 `scenarios/*.yaml` |
-| Multi-country (`de`, `jp`, `gb`) | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
+| Multi-country — **`gb`** | **CLOSED 2026-10-10 for `gb`** — the first multi-country increment (§2.4), wired end-to-end, 4 mutation proofs on the dispatch | `de`/`jp` still need their own series set + reaction function + instrument set (§22.3: three tasks per country) |
+| Multi-country — **`de`, `jp`** | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | `fx_spot` / `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them |
 | 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden |
@@ -460,9 +477,11 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
 
-**Two genuine capability gaps remain: multi-country, and FX-forward coverage** (a data block, not a
-plan). Two closures landed 2026-10-09 and this table said four until 2026-10-10 — GARCH (§2.2) and the
-crisis-shock engine (§2.3.1) were both built, and the count was not decremented.
+**Two genuine capability gaps remain: multi-country (`de`/`jp`; `gb` closed 2026-10-10), and
+FX-forward coverage** (a data block, not a plan). Two closures landed 2026-10-09 and this table said
+four until 2026-10-10 — GARCH (§2.2) and the crisis-shock engine (§2.3.1) were both built, and the
+count was not decremented. The multi-country row was likewise left whole until 2026-10-10, when the
+`gb` increment closed one of its three countries.
 Everything else the spec defers is either an `extensions/` backend gated on an uninstalled package,
 a Loophole-Ledger data block, or a documentation path that drifted from the code.
 

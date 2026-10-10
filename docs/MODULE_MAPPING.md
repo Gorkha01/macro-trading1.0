@@ -697,6 +697,21 @@ architectural payoff was making the lower layer *ask* the upper layer instead of
 copying it — and the second-order payoff was that the asking immediately
 indicted the answerer.
 
+> **AMENDED 2026-10-10 — a country has now earned the label.** D-058 refused a
+> non-`us` country outright; that refusal was correct *at the time* but is no
+> longer how the router behaves. `select_instrument` gained a `country`
+> parameter and reads `settings.routes_for(country)`, which overlays a country's
+> route overrides onto the base (US) table — so a `gb` thesis names a **gilt**
+> where a `us` thesis names a UST. The confirming measurement is the one this
+> section predicts: routing the SAME gb inputs through the `us` route set makes
+> `ProductionUniverse` **refuse** the US instrument (`"UST 2yr note futures"` is
+> outside the gb plan), which is §22.3 working — a *label* cannot be switched
+> without switching the universe, because the universe is what does the
+> refusing. `ProductionUniverse` is now country-aware (a `country` field and
+> per-country plans), and `BLOCKED_MULTI_COUNTRY_NOT_BUILT` now means "a
+> cross-market RV trade needs *two* built countries" rather than "no country but
+> `us` exists" — see §2.4 of `docs/PHASE5_DEFERRED.md`.
+
 **Shipped D-059.** `construct_duration_weighted_curve_trade` met the same
 standard, and the standard caught something different. §15.1b's only defence
 against a wrong duration is a published residual with a warning attached —

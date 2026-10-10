@@ -23,9 +23,9 @@ The authoritative specification is [`AGENTS.md`](./AGENTS.md).
 
 ## Scope, stated honestly
 
-**Phases 0–4 build a US-only system.** `country: str = "us"` is not a
-generalization — it is a label on a system that currently works for exactly one
-value of it. Multi-country support (`de`, `jp`, `gb`) is Phase 5+, and requires
+**Phases 0–4 build a US-only system; the first multi-country increment (`gb`) landed 2026-10-10.**
+`country: str = "us"` is not a generalization — it is a label on a system that, through Phase 4,
+worked for exactly one value of it. Multi-country support (`de`, `jp`, `gb`) is Phase 5+, and requires
 for *each* new country:
 
 - its own verified data sources,
@@ -34,6 +34,16 @@ for *each* new country:
   reaction function each need genuinely distinct logic — none is "the Fed's
   Taylor Rule with a different country label"),
 - its own instrument set.
+
+**`gb` has now earned all three** (`country.implemented: ["us", "gb"]`): seven verified `gb_*`
+series, the Bank of England's three *published* rules (contemporaneous, forward-looking,
+first-difference — genuinely distinct, not a relabelled Fed rule), and a UK `ProductionUniverse`
+(gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100). `snapshot_to_thesis_inputs`
+dispatches on country, so `/thesis/gb` runs end to end and selects UK instruments. The gb derivation
+carries three **disclosed stand-ins** (no published UK output-gap series, no JOLTS/claims/payrolls, no
+BoE projection path) — disclosed rather than passed off as measurements. **`de` and `jp` remain
+unimplemented**, and the increment proves the *pattern* (three workstreams per country, wired and
+mutation-proved), not that a less comparable country is straightforward.
 
 No function may claim country-genericity it has not earned.
 
@@ -57,7 +67,8 @@ No function may claim country-genericity it has not earned.
 >
 > **Phase 5 is under way by explicit operator instruction**, one function per increment, each
 > to production standard and each independently verified. With the §21.3 list complete, the
-> standing obligations are the **multi-country theses** — and the **22 Tier-5 functions wired but
+> standing obligations are the **multi-country theses** (the first, `gb`, landed 2026-10-10 —
+> see *Scope, stated honestly* above) — and the **22 Tier-5 functions wired but
 > not yet called from the thesis pipeline**. See
 > `docs/PROGRESS.md` for the live state and `docs/DECISIONS.md` for the per-increment evidence.
 

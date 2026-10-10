@@ -6107,9 +6107,11 @@ and never trades.
 
 Three outcome families, in this order of precedence:
 
-1. **Blocked** — a multi-country thesis (`country != "us"`) returns
-   `BLOCKED_MULTI_COUNTRY_NOT_BUILT`. §22.3 is explicit that Phases 0–4 are
-   US-only and that `country="us"` is a *label*, not a generalization.
+1. **Blocked** — a `CROSS_COUNTRY_DIVERGENCE` thesis returns
+   `BLOCKED_MULTI_COUNTRY_NOT_BUILT`: a cross-*market* RV trade needs **two** fully-built
+   country rates systems, and only `us`/`gb` have one each (§22.3, §22.3.1). This is a
+   statement about *coverage*, not about the country label: a single-country `gb` thesis
+   **is** now admitted end-to-end (2026-10-10) and selects UK instruments.
 2. **Sentinel** — a route in the configured table whose entry names a
    non-production universe (credit, EM, commodity) returns
    `ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`. §22.12's rule.

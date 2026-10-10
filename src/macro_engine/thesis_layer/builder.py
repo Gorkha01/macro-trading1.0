@@ -133,11 +133,17 @@ from macro_engine.models.instrument_selection import (
     select_instrument,
 )
 from macro_engine.models.policy_rules import (
+    BoeContemporaneousInputs,
+    BoeFirstDifferenceInputs,
+    BoeForwardLookingInputs,
     FirstDifferenceInputs,
     MarketPricingGap,
     PolicyRuleResult,
     TaylorRuleInputs,
     balanced_approach_rule,
+    boe_contemporaneous_taylor_rule,
+    boe_first_difference_rule,
+    boe_forward_looking_taylor_rule,
     canonical_policy_gap,
     derive_market_implied_policy_path,
     first_difference_rule,
@@ -224,12 +230,17 @@ SIZING_LOGIC_PHASE_1 = (
 #: defect and makes the gap single-sourced; it does NOT invent the convention.
 THESIS_TIMEFRAME_PHASE_1 = "6-12 months"
 
-#: The thesis-id prefix, so an id is legible in a log without a lookup.
+#: The default thesis-id prefix, so an id is legible in a log without a lookup.
+#: **Superseded as the actual prefix** by the ``country`` argument to
+#: :func:`new_thesis_id` (§22.3): a UK thesis must not carry a ``us-`` prefix or
+#: the one field an operator greps by would mislabel every non-US thesis. Kept
+#: as the documented DEFAULT for the ``country="us"`` case, not as the prefix
+#: itself, so there is one source for the "us" spelling rather than two.
 THESIS_ID_PREFIX = "us"
 
 
-def new_thesis_id(*, as_of: datetime) -> str:
-    """A fresh thesis id: ``us-YYYY-MM-DD-<8 hex>``.
+def new_thesis_id(*, as_of: datetime, country: str = THESIS_ID_PREFIX) -> str:
+    """A fresh thesis id: ``<country>-YYYY-MM-DD-<8 hex>``.
 
     §16.2 writes ``thesis_id=generate_id()`` and §7.3's example shows
     ``"us-2026-03-a1"``. **No ``generate_id`` exists anywhere in the tree**
@@ -246,8 +257,14 @@ def new_thesis_id(*, as_of: datetime) -> str:
     ``as_of`` is the thesis's own stamp rather than wall-clock, so the id is
     reproducible from the same inputs — which is what makes a re-run
     comparable rather than merely different.
+
+    ``country`` (§22.3) is the id's first segment. It is a **country code**, not
+    the literal ``"us"``: a gb thesis whose id began ``us-`` would be the single
+    most misleading field on the record, because the id is what an operator
+    pages by. The caller passes the same ``country`` the thesis itself carries,
+    so the two cannot drift.
     """
-    return f"{THESIS_ID_PREFIX}-{as_of:%Y-%m-%d}-{uuid.uuid4().hex[:8]}"
+    return f"{country}-{as_of:%Y-%m-%d}-{uuid.uuid4().hex[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -349,18 +366,47 @@ class EconomyReads:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class BoeRuleInputs:
+    """The three Bank of England rule-input records, as one bundle (Section 22.3).
+
+    Why a bundle rather than three loose fields on ``ThesisInputs``
+    --------------------------------------------------------------
+    The US path carries ``taylor_inputs`` and ``first_difference_inputs`` — TWO
+    records, because the Fed's *balanced-approach* rule reuses the contemporaneous
+    Taylor record. The BoE's three published rules (Annex 1, Nov 2025 MPR) each
+    take a DISTINCT record: the contemporaneous Taylor-type rule reads energy and
+    non-energy CPI **deviations**; the forward-looking Taylor-type rule reads a
+    five-quarter-ahead inflation LEVEL and output gap; the first-difference rule
+    reads a three-quarter-ahead inflation level and a GDP **growth rate**. There
+    is no way to express that as two records without one standing in for two
+    different regressor sets — the inert/wrong-input shape the two Fed records
+    exist to avoid.
+
+    The bundle lives HERE rather than in ``api_layer`` because the builder is the
+    consumer and the dependency runs ``api_layer -> thesis_layer``, so a bundle
+    declared a layer up could not be imported by its own consumer.
+    """
+
+    contemporaneous: BoeContemporaneousInputs
+    forward_looking: BoeForwardLookingInputs
+    first_difference: BoeFirstDifferenceInputs
+
+
 #: The three policy rules, in §7.3's order. Named so the two functions that
 #: unpack the tuple cannot disagree about the order.
 RuleTrio = tuple[PolicyRuleResult, PolicyRuleResult, PolicyRuleResult]
 
 
 def build_policy_gap(
-    taylor_inputs: TaylorRuleInputs,
-    first_difference_inputs: FirstDifferenceInputs,
+    taylor_inputs: TaylorRuleInputs | None,
+    first_difference_inputs: FirstDifferenceInputs | None,
     *,
     short_yield: float,
     short_tenor_term_premium: float | None,
     futures_curve: FedFundsFuturesCurve | None = None,
+    country: str = "us",
+    boe_inputs: BoeRuleInputs | None = None,
 ) -> tuple[MarketPricingGap, RuleTrio, ModelResult, ModelResult]:
     """Q3-Q5: the three rules, their dispersion, and the canonical gap.
 
@@ -401,12 +447,53 @@ def build_policy_gap(
     and the returned ``market_path`` is then the futures result, so the
     contamination warnings are the futures function's, not the proxy's.
     """
-    taylor = taylor_rule(taylor_inputs)
-    balanced = balanced_approach_rule(taylor_inputs)
-    first_diff = first_difference_rule(first_difference_inputs)
+    # -- Q3-Q5's three rules, DISPATCHED BY COUNTRY (Section 22.3). The Fed's
+    #    trio and the BoE's trio are different functions reading different input
+    #    records; a country's thesis must run its OWN central bank's rules or the
+    #    gap is meaningless. The dispatch is explicit (not a try/except or a
+    #    getattr) so a country with no rule set is a loud refusal, and so a new
+    #    country cannot silently fall through to the Fed's rules.
+    if country == "gb":
+        if boe_inputs is None:
+            raise TypeError(
+                "build_policy_gap(country='gb') requires boe_inputs; the Bank of "
+                "England's three published rules take three distinct input "
+                "records and none of them can be derived from the Fed's. A gb "
+                "thesis with no BoE inputs has no policy leg (Section 22.3)."
+            )
+        if taylor_inputs is not None or first_difference_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='gb') was given the Fed's rule inputs "
+                "as well as the BoE's. A thesis carries ONE country's records "
+                "(Section 22.3); passing both would let the wrong central bank's "
+                "rules run silently."
+            )
+        taylor = boe_contemporaneous_taylor_rule(boe_inputs.contemporaneous)
+        balanced = boe_forward_looking_taylor_rule(boe_inputs.forward_looking)
+        first_diff = boe_first_difference_rule(boe_inputs.first_difference)
+    elif country == "us":
+        if taylor_inputs is None or first_difference_inputs is None:
+            raise TypeError(
+                "build_policy_gap(country='us') requires taylor_inputs and "
+                "first_difference_inputs; the Fed's rules cannot be derived from "
+                "the BoE's records (Section 22.3)."
+            )
+        if boe_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='us') was given boe_inputs; a thesis "
+                "carries ONE country's records (Section 22.3)."
+            )
+        taylor = taylor_rule(taylor_inputs)
+        balanced = balanced_approach_rule(taylor_inputs)
+        first_diff = first_difference_rule(first_difference_inputs)
+    else:
+        raise ValueError(
+            f"build_policy_gap has no rule set for country {country!r}; "
+            f"implemented: ['gb', 'us'] (Section 22.3). A country without its own "
+            f"central-bank rules must not borrow another's."
+        )
 
     ensemble = policy_rule_ensemble(taylor, balanced, first_diff)
-
     market_path = derive_market_implied_policy_path(
         short_yield=short_yield,
         short_tenor_term_premium=short_tenor_term_premium,
@@ -763,11 +850,13 @@ def _q8_decision(assessment: InvalidationAssessment) -> NoTradeDecision:
 
 def build_us_macro_thesis(
     reads: EconomyReads,
-    taylor_inputs: TaylorRuleInputs,
-    first_difference_inputs: FirstDifferenceInputs,
+    taylor_inputs: TaylorRuleInputs | None,
+    first_difference_inputs: FirstDifferenceInputs | None,
     *,
     thesis_type: ThesisType,
     universe: ProductionUniverse,
+    country: str = "us",
+    boe_inputs: BoeRuleInputs | None = None,
     curve_short_tenor: str | None = None,
     curve_long_tenor: str | None = None,
     short_yield: float,
@@ -787,10 +876,19 @@ def build_us_macro_thesis(
         Q1's three economy reads. See ``EconomyReads`` for why this is a
         parameter rather than something this function computes from a snapshot.
     taylor_inputs / first_difference_inputs:
-        Q5's rule inputs. Two records rather than one because
+        Q5's rule inputs for a **US** thesis. Two records rather than one because
         ``first_difference_rule`` reads a **change** and ``TaylorRuleInputs``
         reads **levels**; a single record would have to carry both and let each
         rule ignore half of it (D-037's inert-input class).
+    country:
+        The country whose central-bank rules this thesis runs (Section 22.3).
+        ``"us"`` (default) runs the Fed's trio from ``taylor_inputs`` /
+        ``first_difference_inputs``; ``"gb"`` runs the Bank of England's three
+        published rules from ``boe_inputs``. The two sets are mutually exclusive
+        — passing the other country's records is refused rather than ignored.
+    boe_inputs:
+        The Bank of England's three rule-input records, required when
+        ``country="gb"`` and refused otherwise. See :class:`BoeRuleInputs`.
     thesis_type:
         Which analytical family the thesis expresses (Section 22.3.1's seven).
         **Required, and not derived.** A gap does not name a thesis type: the
@@ -892,6 +990,8 @@ def build_us_macro_thesis(
         short_yield=short_yield,
         short_tenor_term_premium=short_tenor_term_premium,
         futures_curve=futures_curve,
+        country=country,
+        boe_inputs=boe_inputs,
     )
 
     # -- Q6. THE SIGNIFICANCE TEST reads the published gap's own verdict, not a
@@ -903,6 +1003,7 @@ def build_us_macro_thesis(
             reads=reads,
             gap=gap,
             rules=rules,
+            country=country,
             ensemble=ensemble,
             market_path=market_path,
             as_of=stamp,
@@ -923,6 +1024,7 @@ def build_us_macro_thesis(
             reads=reads,
             gap=gap,
             rules=rules,
+            country=country,
             ensemble=ensemble,
             market_path=market_path,
             as_of=stamp,
@@ -942,6 +1044,7 @@ def build_us_macro_thesis(
             reads=reads,
             gap=gap,
             rules=rules,
+            country=country,
             ensemble=ensemble,
             market_path=market_path,
             as_of=stamp,
@@ -964,6 +1067,7 @@ def build_us_macro_thesis(
             curve_long_tenor=curve_long_tenor,
         ),
         universe,
+        country=country,
     )
     instrument = _instrument_from(selection)
 
@@ -1046,8 +1150,8 @@ def build_us_macro_thesis(
     # producer for it to be demoted *from* — that would be manufacturing a
     # lifecycle stage to satisfy a sentence. Recorded as **O-96**.
     thesis = MacroThesis(
-        thesis_id=new_thesis_id(as_of=stamp),
-        country="us",
+        thesis_id=new_thesis_id(as_of=stamp, country=country),
+        country=country,
         created_at=stamp,
         as_of=stamp,
         regime=_regime_view(reads.growth, reads.inflation),
@@ -1085,6 +1189,7 @@ def _render(
     reads: EconomyReads,
     gap: MarketPricingGap,
     rules: RuleTrio,
+    country: str,
     ensemble: ModelResult,
     market_path: ModelResult,
     as_of: datetime,
@@ -1135,6 +1240,11 @@ def _render(
     rendered first, and the collected warnings are then **appended behind** the
     trigger line. Measured: passing ``warnings=`` raises, so the fix is an
     append, not an argument.
+
+    ``country`` (§22.3) is threaded rather than defaulted so a stand-down carries
+    the same country code its live counterpart does — the id prefix and the
+    ``country`` field are both built from it, so a UK stand-down cannot be
+    labelled ``us`` by a forgotten argument.
     """
     collected: list[ModelResult] = [*reads.as_sequence(), ensemble, market_path]
     if convergence_result is not None:
@@ -1154,8 +1264,8 @@ def _render(
     signal_list = list(signals.signals) if signals is not None else []
     thesis = render_no_trade_thesis(
         decision,
-        thesis_id=new_thesis_id(as_of=stamp),
-        country="us",
+        thesis_id=new_thesis_id(as_of=stamp, country=country),
+        country=country,
         created_at=stamp,
         as_of=stamp,
         regime=_regime_view(reads.growth, reads.inflation, regime),
