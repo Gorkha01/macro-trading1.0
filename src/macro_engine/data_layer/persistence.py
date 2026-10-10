@@ -91,6 +91,19 @@ SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "reserve_balances",
     "credit_spread_hy",
     "credit_spread_ig",
+    # Section 22.3 — the UK block. Added 2026-10-10 with the multi-country
+    # increment, and added HERE in the same change rather than after the gate
+    # failed, because the failure this tuple causes is silent: these fields would
+    # be declared, fetched, populated — and erased from every persisted snapshot,
+    # exactly the P-1 defect the note above records. The coverage test's both-way
+    # assertion is what makes the omission a gate failure rather than a data loss.
+    "gb_cpi_headline",
+    "gb_cpi_core",
+    "gb_unemployment_rate",
+    "gb_gdp_growth_qoq",
+    "gb_bank_rate",
+    "gb_gilt_10y_yield",
+    "gb_short_rate_3m",
 )
 
 # Curve-shaped series: stored with field == curve name and the tenor in series_id.

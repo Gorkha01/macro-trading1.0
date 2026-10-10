@@ -333,6 +333,70 @@ class MacroDataSnapshot(BaseModel):
         ),
     )
 
+    # --- United Kingdom (Section 22.3 — country "gb") ----------------------
+    #
+    # A DEDICATED block rather than reusing the US field names. Section 22.3
+    # rejects a country as a relabel, and the sharpest form of the relabel is
+    # exactly the reuse of ``cpi_headline`` for UK CPI: the schema would look
+    # country-generic while every consumer silently read a UK number through a
+    # field documented as FRED's US series. Separate names make the country
+    # explicit at every read site, which is what makes the section's claim
+    # checkable. The registry entries carry the ``gb_`` prefix for the same
+    # reason (the registry is a flat namespace).
+    #
+    # Every field is fetched only when ``snapshot_fields.gb`` names it, so a US
+    # build pays nothing for these being declared.
+    gb_cpi_headline: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "UK CPI, all items, annual rate (%) — FRED CPALTT01GBM659N. The BoE's "
+            "2% CPI target is defined against THIS measure, not PCE and not core: "
+            "a different target measure from the Fed's is the first structural "
+            "difference the gb reaction function encodes."
+        ),
+    )
+    gb_cpi_core: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "UK CPI excluding energy and food, annual rate (%) — FRED "
+            "CPGRLE01GBM659N. An INPUT to the BoE's contemporaneous rule (which "
+            "splits energy from non-energy), not a cross-check."
+        ),
+    )
+    gb_unemployment_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description="UK unemployment rate (%) — FRED LRHUTTTTGBM156S.",
+    )
+    gb_gdp_growth_qoq: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "UK real GDP, quarter-on-quarter growth (%) — FRED NAEXKP01GBQ657S. "
+            "Supplies the demand side of the BoE's rules; note the UK has NO "
+            "reachable OECD output-gap series (probed 2026-10-10: GBROUTPUTQUR "
+            "does not exist), so the gap must be ESTIMATED from this and the "
+            "unemployment rate rather than fetched."
+        ),
+    )
+    gb_bank_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Bank Rate (%) — the BoE's policy rate, tracked via SONIA (FRED "
+            "IUDSOIA), daily. The ``i_prev`` input to all three BoE rules."
+        ),
+    )
+    gb_gilt_10y_yield: list[ObservationPoint] = Field(
+        default_factory=list,
+        description="UK 10-year gilt yield (%) — FRED IRLTLT01GBM156N.",
+    )
+    gb_short_rate_3m: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "UK 3-month interbank rate (%) — FRED IR3TIB01GBM156N. The UK analogue "
+            "of the market leg's short yield, used the same way "
+            "``derive_market_implied_policy_path`` uses the US curve's short tenor."
+        ),
+    )
+
     # --- Cross-asset (Modules 9, 10, 11) ---
     fx_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)
     commodity_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)

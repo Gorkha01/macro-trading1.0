@@ -16,9 +16,12 @@ on the record itself.
 **Measured live 2026-09-20: 42 of 42 then-resolvable registry symbols returned a
 ``last_updated``, 0 transport errors.** That is the coverage claim, and it is a
 count, not an impression. The denominator is dated on purpose and it has since
-moved: re-measured 2026-10-05, the registry declares **59** series of which
-**50** resolve through this route, so 42/42 describes the 2026-09-20 registry
-rather than today's. The ROUTE is unchanged — the registry grew.
+moved twice: re-measured 2026-10-05, the registry declared **59** series of
+which **50** resolved through this route; re-measured 2026-10-10 (Section 22.3's
+multi-country increment added seven ``gb_*`` UK series), it declares **66** series
+of which **57** resolve through this route. So 42/42 describes the 2026-09-20
+registry rather than today's. The ROUTE is unchanged — the registry grew, and
+each expansion is a count re-measured rather than a number trusted.
 
 What ``last_updated`` is, and is not
 ------------------------------------
@@ -117,15 +120,21 @@ def _resolve_series_symbols() -> dict[str, str]:
       exists for them. Skipping them at the source removes the wasted calls and
       the misleading warnings; their release timing correctly stays UNKNOWN,
       because no FRED publication stamp exists for them anyway. (The 7 is
-      unchanged as of 2026-10-05; only the denominator moved, 57 -> 59.)
+      unchanged as of 2026-10-10; the DECLARED denominator moved 59 -> 66 while
+      the RESOLVED count stayed 57, because the seven added ``gb_*`` series are
+      FRED and DO resolve through this route — they replaced nothing, so the
+      resolvable set grew 50 -> 57 at the same moment the declared set grew
+      59 -> 66. All seven remaining non-fred entries are ``not_a_snapshot_field``,
+      so the skip set did not grow when Section 22.3's ``gb_*`` series were
+      added.)
 
     ``status`` is **deliberately not consulted here**. An earlier version of this
     docstring claimed ``blocked``/``unverified`` entries were "skipped too"; they
-    are not, and they do not need to be. Measured (re-measured 2026-10-05): the
-    registry declares **59** series and **every carried entry is
+    are not, and they do not need to be. Measured (re-measured 2026-10-10): the
+    registry declares **66** series and **every carried entry is
     ``status: verified``** —
     ``grep -oE "status: [a-z_]+" config/series_registry.yaml`` returns exactly one
-    value, 59 times.
+    value, 66 times.
 
     Note the SHAPE of that grep, because the earlier revision got it wrong: a
     bare ``grep -c "unverified"`` returns **3** and ``grep -c "blocked"`` returns

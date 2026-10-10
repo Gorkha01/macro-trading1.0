@@ -51,6 +51,9 @@ from macro_engine.models.contracts import (
 
 __all__ = [
     "BalanceSheetInputs",
+    "BoeContemporaneousInputs",
+    "BoeFirstDifferenceInputs",
+    "BoeForwardLookingInputs",
     "FirstDifferenceInputs",
     "MarketPricingGap",
     "PolicyRuleResult",
@@ -59,6 +62,9 @@ __all__ = [
     "StatementTextInputs",
     "TaylorRuleInputs",
     "balanced_approach_rule",
+    "boe_contemporaneous_taylor_rule",
+    "boe_first_difference_rule",
+    "boe_forward_looking_taylor_rule",
     "canonical_policy_gap",
     "derive_market_implied_policy_path",
     "first_difference_rule",
@@ -402,6 +408,565 @@ def first_difference_rule(inputs: FirstDifferenceInputs) -> PolicyRuleResult:
             "inherits the level of the previous rate and cannot detect that the "
             "level itself was wrong, which is exactly the question the "
             "level-based rules answer.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Module 4 — Section 22.3: the Bank of England reaction function.
+#
+# These three functions are the "gb" arm of the multi-country increment. They
+# are NOT the Fed rules with a relabel — Section 22.3 rejects exactly that. Each
+# of the three structural differences below is enforced in the code:
+#
+#   1. A SINGLE 2% CPI target (not a dual mandate, not PCE). The rule reads UK
+#      CPI components, not US ones.
+#   2. The energy / non-energy split in the CONTEMPORANEOUS rule — a
+#      decomposition none of the Fed rules performs.
+#   3. PROJECTION horizons (5 and 3 quarters ahead) on the two forward-looking
+#      rules, where the Fed rules read CONTEMPORANEOUS quantities.
+#
+# The coefficients are the BoE's own, published in Annex 1 of the November 2025
+# Monetary Policy Report (Table A1.A), read from
+# ``settings.policy.gb`` — never written into an expression (LAW 1). The same
+# Annex states each rule in exactly the form implemented below, including the
+# 0.85 interest-rate smoothing, so the implementation is a transcription of the
+# primary source rather than a reconstruction of a textbook rule.
+# ---------------------------------------------------------------------------
+
+
+class BoeContemporaneousInputs(_FiniteInputs):
+    """Inputs for the BoE's contemporaneous Taylor-type rule.
+
+    **``pi_energy`` and ``pi_non_energy`` are DEVIATIONS FROM STEADY STATE, not
+    levels.** The BoE's Annex 1 says so in terms ("*the deviation from steady
+    state of … annual energy inflation … annual inflation of non-energy
+    components …*"), and the consequence is concrete: at the 2% target both are
+    zero and the raw prescription collapses to ``i* = 3%``. A caller that passed
+    LEVELS would add ~2-4pp of spurious tightening at the neutral point, which
+    is why the field names and the docstring both say "gap" rather than relying
+    on the reader's memory of the Annex.
+
+    There is deliberately no single ``pi_current`` field: the whole point of
+    this rule, and its clearest structural difference from the Fed's, is that
+    inflation enters as TWO separately weighted components. Collapsing them
+    before the rule would discard the decomposition the rule exists to apply.
+    """
+
+    i_prev: float = Field(
+        description="Bank Rate in the previous quarter, percent. Observed, not estimated.",
+    )
+    pi_energy_gap_pp: float = Field(
+        description=(
+            "Annual ENERGY CPI inflation, as a deviation from steady state, in "
+            "percentage points. Zero at the target. Weighted 0.375 in the rule — "
+            "the BoE treats energy as largely transitory."
+        ),
+    )
+    pi_non_energy_gap_pp: float = Field(
+        description=(
+            "Annual NON-ENERGY CPI inflation, as a deviation from steady state, "
+            "in percentage points. Zero at the target. Weighted 1.5 in the "
+            "rule — ~4x the energy term."
+        ),
+    )
+    output_gap: float = Field(
+        description="Output gap as percent of potential, current quarter.",
+    )
+
+
+class BoeForwardLookingInputs(_FiniteInputs):
+    """Inputs for the BoE's forward-looking Taylor-type rule.
+
+    Both inputs are **projections**, not observations — the BoE's Annex 1 is
+    explicit that the rule contains "*five-quarter-ahead projections of
+    macroeconomic variables on the right-hand side*". The horizon is read from
+    config (``policy.gb.forward_looking.horizon_quarters``) so it is a property
+    of the rule, not of this input group.
+
+    ``projected_inflation_pp`` is a LEVEL (annual CPI inflation, percent), and
+    the rule forms ``projected_inflation_pp - pi_target`` itself — matching the
+    published expression ``1.5(π_{t+5|t} - π*)``, which subtracts the target in
+    the formula rather than in the input.
+    """
+
+    i_prev: float = Field(
+        description="Bank Rate in the previous quarter, percent.",
+    )
+    projected_inflation_pp: float = Field(
+        description=(
+            "Projected annual CPI inflation at the configured horizon (5 "
+            "quarters by default), percent. A LEVEL: the rule subtracts the "
+            "target itself, as the published formula does."
+        ),
+    )
+    projected_output_gap: float = Field(
+        description="Projected output gap at the same horizon, percent of potential.",
+    )
+
+
+class BoeFirstDifferenceInputs(_FiniteInputs):
+    """Inputs for the BoE's forward-looking first-difference rule.
+
+    Like the Fed's speed-limit rule this is written in CHANGES, so ``i*``
+    cancels. But the regressors differ: the BoE reads a **projected inflation
+    gap** three quarters ahead and **projected GDP growth** — the latter is a
+    growth rate, not a change in the output gap as in the Fed's
+    ``output_gap_change``. Passing an output-gap change here would be a unit
+    substitution the rule's structure would not catch, so the field is named
+    ``projected_gdp_growth`` and documented as a growth rate.
+    """
+
+    i_prev: float = Field(
+        description="Bank Rate in the previous quarter, percent. Observed.",
+    )
+    projected_inflation_pp: float = Field(
+        description=(
+            "Projected annual CPI inflation at the configured horizon (3 "
+            "quarters by default), percent. A LEVEL — the rule subtracts the "
+            "target to form the gap."
+        ),
+    )
+    projected_gdp_growth: float = Field(
+        description=(
+            "Projected QUARTERLY GDP growth at the same horizon, percent. A "
+            "GROWTH RATE, not a change in the output gap — the two are "
+            "different regressors despite the similar rule form."
+        ),
+    )
+
+
+def _boe_stance_word(rate: float, i_star: float) -> str:
+    """``restrictive`` / ``accommodative`` / ``neutral`` — the BoE rates against i*.
+
+    A named function rather than an inline conditional for the same reason
+    ``_gap_direction_sentence`` is one: the threshold is load-bearing and easy to
+    invert, and two of the three BoE rules publish this word, so an inline copy
+    in each would be two places for the same judgement to drift.
+
+    The exact-equality case is separated because "neutral" is a third state, not
+    a rounding of either direction — and the comparison is on equality first so
+    a float that lands exactly on ``i*`` cannot be mislabelled by whichever
+    branch's ``else`` caught it (the D-040 class of defect).
+    """
+    if rate > i_star:
+        return "restrictive"
+    if rate < i_star:
+        return "accommodative"
+    return "neutral"
+
+
+def boe_contemporaneous_taylor_rule(inputs: BoeContemporaneousInputs) -> PolicyRuleResult:
+    """``i_t = 0.85·i_{t-1} + 0.15·(i* + 0.375·π_E + 1.5·π_N + 0.5·y)``
+
+    The Bank of England's contemporaneous Taylor-type rule, transcribed from
+    Table A1.A of the November 2025 Monetary Policy Report (Annex 1). Two
+    structural features make this **not** a relabelled Fed rule (Section 22.3):
+
+    * **The energy / non-energy split.** The BoE responds to the two components
+      of annual CPI inflation separately, weighting non-energy ~4x energy
+      (``1.5`` vs ``0.375``). None of the Fed rules decomposes inflation this
+      way; a single-``pi`` rule would fail to express the Bank's documented view
+      that energy movements are largely transitory.
+    * **Interest-rate smoothing.** Every BoE rule carries the published
+      ``0.85`` persistence term, so the prescription is a *move toward* the raw
+      rule value, not a jump to it. The Fed rules have no such term, and a rule
+      without it would prescribe an instantaneous adjustment the Committee is
+      institutionally documented not to make.
+
+    The ``0.85 / 0.15`` pair is not a coincidence of two independent
+    coefficients: ``0.15 = 1 - 0.85``, and the code writes it that way so the
+    two cannot silently disagree — changing ``smoothing`` in config moves both.
+    A reader who expects an un-smoothed prescription can recover the raw value
+    from the result's ``value["raw_prescription_pct"]``.
+
+    Confidence is ``compute_confidence()``'s, never asserted, and carries
+    ``depends_on_unobservable=True`` because ``i*`` is the BoE's illustrative
+    neutral rate — unobservable by nature, the same Section 21.4 item 13
+    limitation the Fed rules have.
+    """
+    gb = get_settings().policy.gb
+    i_star = gb.i_star_value
+    smoothing = gb.smoothing_value
+    coefficients = gb.contemporaneous
+
+    raw = (
+        i_star
+        + coefficients.energy_cpi_coefficient_value * inputs.pi_energy_gap_pp
+        + coefficients.non_energy_cpi_coefficient_value * inputs.pi_non_energy_gap_pp
+        + coefficients.output_gap_coefficient_value * inputs.output_gap
+    )
+    # Written as `1 - smoothing` rather than a second literal so the two halves
+    # of the published 0.85/0.15 pair are one number in config (LAW 2).
+    rate = smoothing * inputs.i_prev + (1.0 - smoothing) * raw
+
+    return PolicyRuleResult(
+        model_name="boe_contemporaneous_taylor_rule",
+        rule_variant="boe_contemporaneous_taylor",
+        country="gb",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"The Bank of England's contemporaneous Taylor-type rule prescribes "
+            f"Bank Rate of {rate:.2f}% (raw, un-smoothed prescription {raw:.2f}%)"
+        ),
+        context=(
+            f"Smoothing {smoothing:.2f}: 85% of the previous rate "
+            f"({inputs.i_prev:.2f}%) persists and 15% of the gap to the raw "
+            f"prescription is closed each quarter. Energy CPI gap "
+            f"{inputs.pi_energy_gap_pp:+.2f}pp (weight "
+            f"{coefficients.energy_cpi_coefficient_value:g}), non-energy "
+            f"{inputs.pi_non_energy_gap_pp:+.2f}pp (weight "
+            f"{coefficients.non_energy_cpi_coefficient_value:g}), output gap "
+            f"{inputs.output_gap:+.2f}% (weight "
+            f"{coefficients.output_gap_coefficient_value:g})."
+        ),
+        inputs_used=[
+            "i_prev",
+            "pi_energy_gap_pp",
+            "pi_non_energy_gap_pp",
+            "output_gap",
+        ],
+        warnings=[
+            "i* is the BoE's ILLUSTRATIVE neutral rate (2% target + 1% assumed "
+            "real), not an estimate with a confidence interval, and it is "
+            "unobservable (Section 21.4 item 13). Every percentage point of "
+            "error in i* passes through at 0.15 into this quarter's "
+            "prescription, but cumulates to 1:1 in the level the rule "
+            "eventually reaches.",
+            "The energy component is weighted ~4x SMALLER than non-energy "
+            "because the BoE treats energy price movements as largely "
+            "transitory. A reader who reads this as 'the BoE barely responds to "
+            "inflation' has mis-attributed a decomposition: the rule responds "
+            "1.5:1 to the non-energy component, which satisfies the Taylor "
+            "principle, and the energy term is a deliberate exception.",
+            "This is a MODEL-BASED SIMULATION rule, not a description of how "
+            "the MPC sets Bank Rate. The Bank states that 'there is no "
+            "mechanical link between endogenous policy simulations and "
+            "real-world monetary policy decisions'.",
+        ],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="percent",
+        direction=(
+            f"{_boe_stance_word(rate, i_star)} relative to the BoE's illustrative "
+            f"neutral rate of {i_star:.2f}%"
+        ),
+        assumptions=[
+            "pi_energy_gap_pp and pi_non_energy_gap_pp are DEVIATIONS FROM "
+            "STEADY STATE, not levels — at the 2% target both are zero and the "
+            "raw prescription is i* = 3%. The BoE's Annex 1 states them this "
+            "way ('the deviation from steady state of …').",
+            "The rule is smoothed: the published prescription is a weighted "
+            "average of the previous rate and the raw rule value, because the "
+            "Committee is documented not to jump Bank Rate to the rule's "
+            "implied level.",
+            "UK CPI components (gb_cpi_* series), not US measures — the BoE's "
+            "target is 2% CPI, a different measure from the Fed's 2% PCE.",
+        ],
+        data_provenance=[
+            "i_prev — Bank Rate in the previous quarter, percent. The Bank of "
+            "England's policy rate; gb_bank_rate in the registry tracks SONIA, "
+            "the risk-free reference rate.",
+            "pi_energy_gap_pp / pi_non_energy_gap_pp — the two CPI components' "
+            "deviations from steady state, from the gb_cpi_* series",
+            "coefficients — config leaves policy.gb.contemporaneous.*, the "
+            "BoE's published Table A1.A calibration (Nov 2025 MPR, Annex 1)",
+            "i_star — config leaf policy.gb.i_star, the BoE's own convention "
+            "(2% target + 1% illustrative real rate), not fitted here",
+        ],
+        limitations=[
+            "This is a SIMULATION rule. Annex 1 is explicit that the rules are "
+            "'stylised and simplified' and 'do not reflect the full set of "
+            "information and uncertainties with which policymakers are faced'. "
+            "It describes what a mechanical rule WOULD prescribe, not what the "
+            "MPC decided or will decide.",
+            "i* is held CONSTANT at 3% in the Bank's own simulations. A changing "
+            "equilibrium real rate would shift the rule's level, and this "
+            "module cannot detect that — the same unobservability the Fed rules "
+            "inherit.",
+            "The projection inputs (on the forward-looking rules) are model "
+            "FORECASTS from the Bank's COMPASS model. This module does not "
+            "produce them; a caller must supply them, and their error is "
+            "inherited unmeasured.",
+            "The output is a prescribed RATE, not a forecast of what the MPC "
+            "will do at its next meeting.",
+        ],
+        decision_relevance=(
+            "The 'gb' arm of Section 16.2's Q6 gap. Its value, alongside the "
+            "two other BoE rules, defines the UK model-implied policy path that "
+            "a UK thesis compares against the market-implied path — exactly the "
+            "role the Fed rules play for a US thesis."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described as the MPC's reaction function. The Bank "
+            "states there is 'no mechanical link' between these simulations and "
+            "real-world decisions; treating a simulated path as a description "
+            "of policy is the misreading this prohibition exists to prevent.",
+            "MUST NOT be combined with the Fed rules in one ensemble or their "
+            "dispersion read across countries. The three BoE rules share the "
+            "BoE's target and smoothing; mixing them with the Fed's would make "
+            "the dispersion a measure of the currency, not of the model.",
+            "MUST NOT be consumed without the raw prescription visible: the "
+            "smoothed value alone hides how far the rule wants Bank Rate to "
+            "move, which is the quantity a desk compares against the "
+            "market-implied path.",
+        ],
+    )
+
+
+def boe_forward_looking_taylor_rule(inputs: BoeForwardLookingInputs) -> PolicyRuleResult:
+    """``i_t = 0.85·i_{t-1} + 0.15·(i* + 1.5·(π_{t+5|t} - π*) + 0.5·y_{t+5|t})``
+
+    The Bank of England's forward-looking Taylor-type rule, transcribed from
+    Table A1.A of the November 2025 Monetary Policy Report (Annex 1). The
+    structural difference from both the Fed's rules and from the BoE's own
+    contemporaneous rule is the HORIZON: the right-hand side carries
+    **five-quarter-ahead projections** (``pi_{t+5|t}`` and ``y_{t+5|t}``), a
+    fifteen-month lead, so the prescription responds to where the Bank expects
+    inflation and slack to be, not where they are.
+
+    That lead is also the rule's principal weakness, and it is disclosed rather
+    than buried: the inputs are FORECASTS from the Bank's COMPASS model, so the
+    rule inherits the forecast's error in full, plus the smoothing lag on top.
+    The horizon is read from ``policy.gb.forward_looking.horizon_quarters`` so
+    it is inspectable and so a change to it cannot be mistaken for a change to
+    the first-difference rule's (different) three-quarter horizon.
+
+    ``projected_inflation_pp`` is a LEVEL; the rule subtracts ``pi_target``
+    itself, exactly as the published expression ``1.5(π_{t+5|t} - π*)`` does.
+    """
+    gb = get_settings().policy.gb
+    i_star = gb.i_star_value
+    pi_target = gb.pi_target_value
+    smoothing = gb.smoothing_value
+    coefficients = gb.forward_looking
+    horizon = coefficients.horizon_quarters_value
+
+    inflation_gap = inputs.projected_inflation_pp - pi_target
+    raw = (
+        i_star
+        + coefficients.inflation_coefficient_value * inflation_gap
+        + coefficients.output_gap_coefficient_value * inputs.projected_output_gap
+    )
+    rate = smoothing * inputs.i_prev + (1.0 - smoothing) * raw
+
+    return PolicyRuleResult(
+        model_name="boe_forward_looking_taylor_rule",
+        rule_variant="boe_forward_looking_taylor",
+        country="gb",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"The Bank of England's forward-looking Taylor-type rule prescribes "
+            f"Bank Rate of {rate:.2f}% (raw prescription {raw:.2f}%)"
+        ),
+        context=(
+            f"Reads {horizon}-quarter-ahead ({horizon * 3}-month) projections: "
+            f"projected CPI inflation {inputs.projected_inflation_pp:.2f}% "
+            f"against the {pi_target:.1f}% target (gap "
+            f"{inflation_gap:+.2f}pp, weight "
+            f"{coefficients.inflation_coefficient_value:g}), projected output "
+            f"gap {inputs.projected_output_gap:+.2f}% (weight "
+            f"{coefficients.output_gap_coefficient_value:g}); smoothed "
+            f"{smoothing:.2f} from {inputs.i_prev:.2f}%."
+        ),
+        inputs_used=[
+            "i_prev",
+            "projected_inflation_pp",
+            "projected_output_gap",
+        ],
+        warnings=[
+            f"The inflation and output-gap inputs are {horizon}-QUARTER-AHEAD "
+            f"PROJECTIONS, not observations. The rule's output is only as good "
+            f"as the forecast beneath it, and this module does not produce the "
+            f"forecast — it inherits its error unmeasured.",
+            "The prescription is smoothed, so it responds to a projected shock "
+            "with a LAG as well as a lead: the 5-quarter horizon anticipates, "
+            "and the 0.85 smoothing then delays the response. The two effects "
+            "pull in opposite directions and neither is separately visible in "
+            "the output number.",
+            "i* is the BoE's ILLUSTRATIVE neutral rate and is unobservable (Section 21.4 item 13).",
+        ],
+        unit="percent",
+        direction=(
+            f"{_boe_stance_word(rate, i_star)} relative to the BoE's illustrative "
+            f"neutral rate of {i_star:.2f}%"
+        ),
+        assumptions=[
+            f"The projection horizon is {horizon} quarters, read from config "
+            f"(policy.gb.forward_looking.horizon_quarters), matching the Bank's "
+            f"published rule. It is DID NOT default to a shorter horizon for "
+            f"convenience: the horizon IS the rule.",
+            "projected_inflation_pp is a LEVEL and the rule subtracts pi_target "
+            "itself, matching the published expression 1.5(π_{t+5|t} - π*).",
+            "The Bank's own simulations hold i* constant at 3%; a time-varying "
+            "neutral rate would change the level this rule settles at.",
+        ],
+        data_provenance=[
+            "projected_inflation_pp / projected_output_gap — SUPPLIED BY THE "
+            "CALLER, not fetched. The Bank's COMPASS-model projections are not "
+            "wired into this system, so a live run must either supply them from "
+            "a documented source or the rule must not run (Section 21.0 rule 3).",
+            "coefficients — config leaves policy.gb.forward_looking.*, the "
+            "BoE's published Table A1.A calibration (Nov 2025 MPR, Annex 1)",
+            "i_prev — Bank Rate in the previous quarter",
+        ],
+        limitations=[
+            "The 5-quarter lead means the rule can be confidently wrong for "
+            "five quarters before the projection is tested against outcomes. "
+            "That is inherent to forward-looking rules, not a defect of this "
+            "implementation — but it is why the output must never be read as a "
+            "near-term call.",
+            "This is a SIMULATION rule with 'no mechanical link' to real MPC decisions (Annex 1).",
+            "The forecast inputs carry the Bank's COMPASS model structure; a "
+            "different forecasting model would give different prescriptions "
+            "from the same coefficients.",
+        ],
+        decision_relevance=(
+            "Part of the 'gb' model-implied policy path (Section 16.2 Q6). Its "
+            "divergence from the contemporaneous rule is itself informative: a "
+            "wide spread means the projected path disagrees with the current "
+            "reading, which the ensemble reports rather than averages away."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a forecast of Bank Rate. It is a rule's "
+            "prescription GIVEN a forecast; the forecast is the input, not the "
+            "output.",
+            "MUST NOT be run without genuine projection inputs. Substituting "
+            "current-quarter observations for the 5-quarter-ahead projections "
+            "would silently turn this into the contemporaneous rule while it "
+            "still reported itself as forward-looking — a field describing a "
+            "computation that did not happen.",
+            "MUST NOT be compared directly against the Fed rules' outputs. "
+            "Different target, different measure, different horizon; the "
+            "numbers are not on a common basis.",
+        ],
+    )
+
+
+def boe_first_difference_rule(inputs: BoeFirstDifferenceInputs) -> PolicyRuleResult:
+    """``Δi_t = 0.1·(π_{t+3|t} - π*) + 0.1·ΔGDP_{t+3|t}`` → ``i_t = i_{t-1} + Δi_t``
+
+    The Bank of England's forward-looking first-difference rule, transcribed
+    from Table A1.A of the November 2025 Monetary Policy Report (Annex 1). Like
+    the Fed's speed-limit rule it is written in **changes**, so ``i*`` cancels
+    — it needs only the observed previous rate. But three things differ from
+    the Fed's rule of superficially similar form, and all three are structural:
+
+    * the regressors are **three-quarter-ahead PROJECTIONS**, where the Fed
+      rule reads current-quarter quantities;
+    * the demand term is **projected GDP GROWTH**, not a change in the output
+      gap — a different regressor despite the similar rule shape;
+    * the weights are ``0.1 / 0.1``, far smaller than the Fed's ``0.5 / 0.5``,
+      so this rule moves Bank Rate in small increments.
+
+    The horizon is read from ``policy.gb.first_difference.horizon_quarters``
+    (3, deliberately different from the forward-looking Taylor-type rule's 5) so
+    the two cannot be silently equated.
+    """
+    gb = get_settings().policy.gb
+    pi_target = gb.pi_target_value
+    coefficients = gb.first_difference
+    horizon = coefficients.horizon_quarters_value
+
+    inflation_gap = inputs.projected_inflation_pp - pi_target
+    delta = (
+        coefficients.inflation_coefficient_value * inflation_gap
+        + coefficients.gdp_growth_coefficient_value * inputs.projected_gdp_growth
+    )
+    rate = inputs.i_prev + delta
+
+    return PolicyRuleResult(
+        model_name="boe_first_difference_rule",
+        rule_variant="boe_first_difference",
+        country="gb",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The Bank of England's forward-looking first-difference rule "
+            f"prescribes Bank Rate of {rate:.2f}% ({delta:+.2f}pp from "
+            f"{inputs.i_prev:.2f}%)"
+        ),
+        context=(
+            f"Reads {horizon}-quarter-ahead projections: inflation gap "
+            f"{inflation_gap:+.2f}pp (weight "
+            f"{coefficients.inflation_coefficient_value:g}) and projected GDP "
+            f"growth {inputs.projected_gdp_growth:+.2f}% (weight "
+            f"{coefficients.gdp_growth_coefficient_value:g}). No smoothing term "
+            f"and no i* — by construction i* cancels in a difference."
+        ),
+        inputs_used=[
+            "i_prev",
+            "projected_inflation_pp",
+            "projected_gdp_growth",
+        ],
+        warnings=[
+            "By construction this rule prescribes a CHANGE, not a level. It "
+            "inherits the level of the previous rate and cannot detect that the "
+            "level itself is wrong.",
+            "The demand term is projected GDP GROWTH, not a change in the "
+            "output gap. The two are different regressors that a similar rule "
+            "form can make look interchangeable — they are not, and a caller "
+            "supplying an output-gap change here would silently change the "
+            "quantity being modelled.",
+            f"The regressors are {horizon}-quarter-ahead projections and are "
+            f"model FORECASTS, not observations; this module does not produce "
+            f"them.",
+        ],
+        unit="percent",
+        direction=(
+            f"{'tightening' if delta > 0 else 'easing' if delta < 0 else 'holding'} "
+            f"relative to the previous Bank Rate of {inputs.i_prev:.2f}%"
+        ),
+        assumptions=[
+            "The rule's regressors are PROJECTIONS 3 quarters ahead, matching "
+            "the Bank's published rule. As with the forward-looking Taylor-type "
+            "rule, substituting current observations would change the rule's "
+            "identity.",
+            "projected_inflation_pp is a LEVEL and the rule subtracts pi_target "
+            "itself, matching the published expression 0.1(π_{t+3|t} - π*).",
+            "The rule deliberately omits the 0.85 smoothing of the other two "
+            "BoE rules: the Bank's own published first-difference rule has no "
+            "smoothing term, so adding one would be a deviation from the "
+            "primary source.",
+        ],
+        data_provenance=[
+            "projected_inflation_pp / projected_gdp_growth — SUPPLIED BY THE "
+            "CALLER; the Bank's projections are not wired into this system",
+            "coefficients — config leaves policy.gb.first_difference.*, the "
+            "BoE's published Table A1.A calibration (Nov 2025 MPR, Annex 1)",
+            "i_prev — Bank Rate in the previous quarter",
+        ],
+        limitations=[
+            "It cannot detect an incorrect level, only the direction of the "
+            "next move. This is the same limitation the Fed's first-difference "
+            "rule carries and the reason all three rules are reported together "
+            "rather than any one being used alone.",
+            "The rule is unsmoothed, so unlike the other two BoE rules it can "
+            "prescribe large quarter-on-quarter moves if the projections are "
+            "extreme. The small 0.1/0.1 weights damp this, but they do not "
+            "bound it.",
+            "The projections it reads are model FORECASTS; the rule inherits their error in full.",
+        ],
+        decision_relevance=(
+            "Part of the 'gb' model-implied policy path (Section 16.2 Q6). "
+            "Because it needs no i*, it is the cross-check that does not share "
+            "the other two BoE rules' dependence on the unobservable neutral "
+            "rate — the same structural role the Fed's speed-limit rule plays."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a level. It is a change from the previous "
+            "rate; publishing it as a target rate would misstate what the rule "
+            "says.",
+            "MUST NOT be run on an output-gap change in place of projected GDP "
+            "growth. The regressor substitution would not raise an error and "
+            "would silently model a different economy.",
+            "MUST NOT be compared directly against the Fed's first-difference "
+            "rule. Different regressors, different horizon (3 quarters vs "
+            "current), different economy.",
         ],
     )
 

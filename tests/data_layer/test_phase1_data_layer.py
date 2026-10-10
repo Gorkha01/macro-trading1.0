@@ -820,17 +820,58 @@ def test_every_scalar_snapshot_field_is_in_the_bootstrap_fetch_list() -> None:
     ``tips_yields``) whose names are registry-level rather than schema-level, so
     a strict equality would be wrong. What must hold is that no *scalar* schema
     field is unreachable — that is the asymmetry that produced the bug.
-    """
-    from macro_engine.config import get_settings
-    from macro_engine.data_layer.persistence import SCALAR_SERIES_FIELDS
 
-    fetched = set(get_settings().snapshot_fields["us"])
+    **Multi-country (§22.3, updated 2026-10-10).** ``fetched`` is the union over
+    every ``snapshot_fields.<cc>`` plan. Reading only the ``us`` block was
+    correct while ``us`` was the only country; under §22.3 it becomes a blind
+    spot exactly the size of every newly-added country — the seven ``gb_*``
+    scalar fields would be declared in the schema and in persistence, absent
+    from the ``us`` block (correctly — they are UK series), and reported as
+    unreachable by a test that had simply stopped looking. A scalar schema field
+    must be reachable from *some* country plan, which is the claim the union
+    encodes.
+
+    The comparison resolves each fetch entry through the registry before
+    intersecting. This is the second correction the UK leg forced, and it is a
+    genuine one rather than a loosening: ``snapshot_fields`` holds registry
+    KEYS, ``SCALAR_SERIES_FIELDS`` holds schema ATTRIBUTES, and for the US every
+    key happened to equal its attribute (``cpi_headline`` -> ``cpi_headline``),
+    which hid the divergence. The UK's annual-rate series carry a ``_yoy``
+    suffix precisely because ``snapshot_field:`` maps them onto unprefixed
+    schema names (``gb_cpi_headline_yoy`` -> ``gb_cpi_headline``). Intersecting
+    the raw sets therefore reports the two UK CPI fields as unfetched *even
+    though the plan fetches them under their keys* — a false positive that would
+    have been "fixed" by poisoning the fetch list with resolved names, which
+    would break the build instead. Resolving through ``resolve_snapshot_field``
+    asserts what the docstring actually claims: reachability of the schema
+    ATTRIBUTE.
+    """
+    from macro_engine.config import get_registry, get_settings
+    from macro_engine.data_layer.openbb_client import OpenBBFetchError
+    from macro_engine.data_layer.persistence import SCALAR_SERIES_FIELDS
+    from macro_engine.data_layer.snapshot_builder import resolve_snapshot_field
+
+    registry = get_registry()
+    fetched: set[str] = set()
+    for plan in get_settings().snapshot_fields.values():
+        for key in plan:
+            entry = registry.series.get(key)
+            if entry is None:
+                # A curve field named at registry level (treasury_curve /
+                # tips_yields); it is not a scalar attribute, so it cannot
+                # satisfy any member of SCALAR_SERIES_FIELDS.
+                continue
+            try:
+                fetched.add(resolve_snapshot_field(key, entry))
+            except OpenBBFetchError:
+                # A not_a_snapshot_field boundary refusal: no schema attribute.
+                continue
     unfetched = sorted(set(SCALAR_SERIES_FIELDS) - fetched)
 
     assert not unfetched, (
         f"scalar series declared in the schema and in persistence but never "
-        f"fetched by the snapshot builder: {unfetched}. Either add them to "
-        f"snapshot_fields.us in config/settings.yaml or remove them from "
+        f"fetched by ANY snapshot_fields.<cc> plan: {unfetched}. Add each to the "
+        f"country plan it belongs to in config/settings.yaml, or remove it from "
         f"SCALAR_SERIES_FIELDS."
     )
 
@@ -869,6 +910,16 @@ def test_every_snapshot_field_registry_entry_is_actually_fetched() -> None:
     KEY, because that is what the list holds — measured: a version comparing the
     resolved target instead flagged ``treasury_curve`` (key) -> ``yield_curve``
     (schema), which is fetched under its key.
+
+    **Multi-country (§22.3, updated 2026-10-10).** The fetch list is now a
+    *union over every country plan*, not ``snapshot_fields["us"]``. §22.3's
+    increment adds one ``snapshot_fields.<cc>`` block per enabled country; a
+    test that read only the ``us`` block would silently stop covering the seven
+    ``gb_*`` series the moment they were declared, and would keep passing while
+    the UK fields stayed empty forever — the exact P-2 defect class, re-armed by
+    a new country. The union is the correct coverage claim: a verified series
+    that resolves into the shared ``MacroDataSnapshot`` schema is fetched by
+    *some* country plan, so it must appear in *some* block.
     """
     from macro_engine.config import get_registry, get_settings
     from macro_engine.data_layer.openbb_client import OpenBBFetchError
@@ -876,7 +927,8 @@ def test_every_snapshot_field_registry_entry_is_actually_fetched() -> None:
     from macro_engine.data_layer.snapshot_builder import resolve_snapshot_field
 
     registry = get_registry()
-    fetched = set(get_settings().snapshot_fields["us"])
+    snapshot_fields = get_settings().snapshot_fields
+    fetched = {name for plan in snapshot_fields.values() for name in plan}
 
     unaccounted: list[str] = []
     for name, entry in registry.series.items():
@@ -902,11 +954,11 @@ def test_every_snapshot_field_registry_entry_is_actually_fetched() -> None:
     assert not unaccounted, (
         f"these registry entries are `verified`, resolve into a real "
         f"MacroDataSnapshot field, and are NOT `not_a_snapshot_field`, yet are "
-        f"absent from snapshot_fields.us — so no snapshot build will ever "
-        f"populate them and their schema fields stay empty forever: "
-        f"{sorted(unaccounted)}. Either add each to snapshot_fields.us in "
-        f"config/settings.yaml, or declare it `not_a_snapshot_field: true` if it "
-        f"is genuinely provenance-only."
+        f"absent from EVERY snapshot_fields.<cc> country plan — so no snapshot "
+        f"build will ever populate them and their schema fields stay empty "
+        f"forever: {sorted(unaccounted)}. Add each to the country plan it "
+        f"belongs to in config/settings.yaml, or declare it "
+        f"`not_a_snapshot_field: true` if it is genuinely provenance-only."
     )
 
 

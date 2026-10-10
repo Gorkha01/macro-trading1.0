@@ -1795,6 +1795,149 @@ series:
     verified_observation_date: 2026-06-01
     plausible_range: [1000000.0, 6000000.0]
 
+  # ---------------------------------------------------------------------------
+  # United Kingdom (country code "gb") — Section 22.3's multi-country increment.
+  #
+  # The `gb_` prefix is load-bearing: the registry is a FLAT namespace, so an
+  # unprefixed `cpi_headline` would collide with the US series of that name and
+  # silently serve US data to a UK thesis. The prefix makes the country explicit
+  # at every lookup site.
+  #
+  # Every entry below was probed LIVE on 2026-10-10 against provider `fred`
+  # before being marked `verified`, per Section 21.1. The `verified_value` is the
+  # value the probe returned, and `verified_observation_date` the date it
+  # carried — which is NOT necessarily recent (some FRED OECD-bridge UK series
+  # lag by a year or more), and that lag is recorded rather than hidden.
+  #
+  # Section 22.3's warning applies here: these are the DATA leg only. A UK
+  # reaction function that is a relabelled Fed Taylor rule is explicitly
+  # rejected by the spec — see `models/policy_rules.py`'s `boe_*` rules.
+  # ---------------------------------------------------------------------------
+
+  gb_cpi_headline_yoy:
+    provider: fred
+    snapshot_field: gb_cpi_headline
+    symbol: CPALTT01GBM659N
+    description: >
+      UK CPI, all items, annual rate of change (%), monthly. The BoE's target
+      measure: 2% symmetric CPI. Probed 2026-10-10: 831 observations, latest
+      2025-03-01 = 3.400. This is the series the BoE's 2% objective is defined
+      against — the UK does NOT target PCE or core, unlike the Fed's dual
+      mandate, which is the first structural difference the gb reaction function
+      must encode.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 3.4
+    verified_observation_date: 2025-03-01
+    plausible_range: [-5.0, 30.0]
+
+  gb_cpi_core_yoy:
+    provider: fred
+    snapshot_field: gb_cpi_core
+    symbol: CPGRLE01GBM659N
+    description: >
+      UK CPI, all items excluding energy and food, annual rate (%). The BoE's
+      own rules split energy vs NON-ENERGY (see the contemporaneous Taylor-type
+      rule's 0.375/1.5 coefficients), so this is an input to the reaction
+      function rather than a cross-check: it is the non-energy component the BoE
+      weights ~4x the energy component. Probed 2026-10-10: 651 observations,
+      latest 2025-03-01 = 4.200.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 4.2
+    verified_observation_date: 2025-03-01
+    plausible_range: [-5.0, 30.0]
+
+  gb_unemployment_rate:
+    provider: fred
+    snapshot_field: gb_unemployment_rate
+    symbol: LRHUTTTTGBM156S
+    description: >
+      UK unemployment rate (%), monthly, harmonised. Unlike the Fed's dual
+      mandate, the BoE's remit is a SINGLE 2% CPI target; unemployment enters
+      only through the output gap / excess-demand term, never as a co-equal
+      objective. Probed 2026-10-10: 521 observations, latest 2026-05-01 = 4.900.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 4.9
+    verified_observation_date: 2026-05-01
+    plausible_range: [1.0, 20.0]
+
+  gb_gdp_growth_qoq:
+    provider: fred
+    snapshot_field: gb_gdp_growth_qoq
+    symbol: NAEXKP01GBQ657S
+    description: >
+      UK GDP growth, quarter-on-quarter (%), quarterly. Used for the
+      forward-looking first-difference rule's ΔGDP term (the BoE's third
+      published rule). Probed 2026-10-10: 285 observations, latest 2026-04-01 =
+      0.415.
+    frequency: quarterly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 0.415
+    verified_observation_date: 2026-04-01
+    plausible_range: [-20.0, 20.0]
+
+  gb_bank_rate:
+    provider: fred
+    snapshot_field: gb_bank_rate
+    symbol: IUDSOIA
+    description: >
+      UK SONIA (Sterling Overnight Index Average), the BoE's policy-rate
+      analogue. FRED carries it as a DAILY series (probed 2026-10-10: 7521
+      observations, latest 2026-10-07 = 3.733), which is WHY the registry marks
+      it daily: the snapshot must not silently resample it. Section 5.2's rule
+      that the data layer never resamples applies — a model that wants a
+      monthly policy rate resamples explicitly, in the models layer.
+    frequency: daily
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 3.733
+    verified_observation_date: 2026-10-07
+    plausible_range: [0.0, 25.0]
+
+  gb_gilt_10y_yield:
+    provider: fred
+    snapshot_field: gb_gilt_10y_yield
+    symbol: IRLTLT01GBM156N
+    description: >
+      UK 10-year gilt (government bond) yield (%), monthly — the long end of
+      the UK curve. Probed 2026-10-10: 800 observations, latest 2026-08-01 =
+      4.989.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 4.989
+    verified_observation_date: 2026-08-01
+    plausible_range: [0.0, 25.0]
+
+  gb_short_rate_3m:
+    provider: fred
+    snapshot_field: gb_short_rate_3m
+    symbol: IR3TIB01GBM156N
+    description: >
+      UK 3-month interbank rate (%), monthly — the SHORT end, and thus the
+      series the market-implied policy path is derived from (the UK analogue of
+      the US short_yield). Probed 2026-10-10: 829 observations, latest
+      2026-01-01 = 3.710.
+    frequency: monthly
+    units: percent
+    status: verified
+    verified_on: 2026-10-10
+    verified_value: 3.71
+    verified_observation_date: 2026-01-01
+    plausible_range: [0.0, 25.0]
+
 # ---------------------------------------------------------------------------
 # BLOCKED — Section 21.4 Loophole Ledger. These have no reachable source.
 # The registry records them so that an attempt to use them fails loudly and

@@ -2058,6 +2058,157 @@ class PolicyRuleCoefficients(BaseModel):
         return float(self.first_difference_beta.value)
 
 
+class GbContemporaneousRuleCoefficients(BaseModel):
+    """The Bank of England's contemporaneous Taylor-type rule coefficients.
+
+    Section 22.3 requires a country's reaction function to be **genuinely
+    distinct** from the Fed's, not a relabel. The distinction this class carries
+    is the ENERGY / NON-ENERGY split of CPI: the BoE responds to the two
+    components with coefficients differing by a factor of four (0.375 vs 1.5),
+    because it treats energy price movements as largely transitory. None of the
+    ``policy.rules`` Fed coefficients has an analogue to either term.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    energy_cpi_coefficient: CalibratedValue
+    non_energy_cpi_coefficient: CalibratedValue
+    output_gap_coefficient: CalibratedValue
+
+    @property
+    def energy_cpi_coefficient_value(self) -> float:
+        return float(self.energy_cpi_coefficient.value)
+
+    @property
+    def non_energy_cpi_coefficient_value(self) -> float:
+        return float(self.non_energy_cpi_coefficient.value)
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+
+class _GbProjectionBase(BaseModel):
+    """Shared shape for a BoE rule read at a PROJECTION horizon, in quarters.
+
+    ``horizon_quarters`` is a leaf rather than a literal so the horizon a result
+    was produced under is inspectable, and so the two BoE rules' horizons (5 and
+    3) can differ without one silently changing the other.
+
+    The two concrete subclasses below each carry EXACTLY the coefficients their
+    own published rule uses — no optional fields. That is deliberate: the
+    forward-looking Taylor-type rule's right-hand side includes an output-gap
+    term and the first-difference rule's includes a GDP-growth term, and neither
+    includes the other's. A single class with both fields optional would let a
+    caller silently pass a GDP-growth coefficient to a rule that does not read
+    it, or vice versa — the D-037 inert-input shape at the config boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inflation_coefficient: CalibratedValue
+    horizon_quarters: CalibratedValue
+
+    @property
+    def inflation_coefficient_value(self) -> float:
+        return float(self.inflation_coefficient.value)
+
+    @property
+    def horizon_quarters_value(self) -> int:
+        """The projection horizon in QUARTERS. Must be a positive integer.
+
+        A fractional or non-positive horizon would make the published statement
+        "read N quarters ahead" either meaningless or false, and the value is
+        read into user-facing prose and into the result's ``context``.
+        """
+        raw = float(self.horizon_quarters.value)
+        if not raw.is_integer() or raw <= 0:
+            raise ValueError(
+                f"a BoE projection horizon must be a positive whole number of "
+                f"quarters; got {raw!r}. It is published as prose beside the "
+                f"prescription, so a fractional or non-positive value would make "
+                f"that statement false."
+            )
+        return int(raw)
+
+
+class GbForwardLookingTaylorCoefficients(_GbProjectionBase):
+    """The BoE forward-looking Taylor-type rule's two regressors and horizon."""
+
+    output_gap_coefficient: CalibratedValue
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+
+class GbForwardLookingFirstDifferenceCoefficients(_GbProjectionBase):
+    """The BoE forward-looking first-difference rule's two regressors and horizon."""
+
+    gdp_growth_coefficient: CalibratedValue
+
+    @property
+    def gdp_growth_coefficient_value(self) -> float:
+        return float(self.gdp_growth_coefficient.value)
+
+
+class GbPolicySettings(BaseModel):
+    """Section 22.3 — the Bank of England's reaction function coefficients.
+
+    Everything the three ``boe_*`` rule functions read, so no coefficient is
+    written into an expression (LAW 1). The values are the BoE's own published
+    rules from Annex 1 of the November 2025 Monetary Policy Report — a primary
+    source, cited per leaf in ``settings.yaml`` — rather than a generic textbook
+    Taylor rule with a "GB" label, which is exactly the substitution Section
+    22.3 forbids.
+
+    ``i_star`` is stated as a leaf AND decomposed into ``pi_target`` +
+    ``real_rate_assumption``; the mover test asserts the three agree, so the
+    BoE's own convention cannot drift.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pi_target: CalibratedValue
+    i_star: CalibratedValue
+    real_rate_assumption: CalibratedValue
+    smoothing: CalibratedValue
+    contemporaneous: GbContemporaneousRuleCoefficients
+    forward_looking: GbForwardLookingTaylorCoefficients
+    first_difference: GbForwardLookingFirstDifferenceCoefficients
+
+    @property
+    def pi_target_value(self) -> float:
+        return float(self.pi_target.value)
+
+    @property
+    def i_star_value(self) -> float:
+        return float(self.i_star.value)
+
+    @property
+    def real_rate_assumption_value(self) -> float:
+        return float(self.real_rate_assumption.value)
+
+    @property
+    def smoothing_value(self) -> float:
+        """The published persistence coefficient. Must be in ``[0, 1)``.
+
+        A value of exactly 1 would make every rule inert (the rate never moves)
+        and a value outside ``[0, 1)`` would make the smoothing term explode,
+        so the range is validated here rather than trusted. It is read into all
+        three rules, so a bad value is a bad prescription everywhere at once.
+        """
+        raw = float(self.smoothing.value)
+        if not 0.0 <= raw < 1.0:
+            raise ValueError(
+                f"policy.gb.smoothing must be in [0, 1); got {raw!r}. The BoE "
+                f"rules interpolate between the previous rate and the raw "
+                f"prescription with this weight, so 1 makes every rule inert "
+                f"and a value outside [0, 1) makes it explode."
+            )
+        return raw
+
+
 class PolicyEnsembleThresholds(BaseModel):
     """Dispersion bands that decide whether the rules agree or conflict."""
 
@@ -2140,6 +2291,11 @@ class PolicySettings(BaseModel):
     rules: PolicyRuleCoefficients
     ensemble: PolicyEnsembleThresholds
     market_implied: MarketImpliedPolicySettings
+    #: Section 22.3 — the Bank of England's own reaction-function coefficients.
+    #: A sub-block rather than a second module: the rules live beside the Fed's
+    #: so that a reader comparing the two cannot miss that they are DIFFERENT
+    #: functions with different targets, horizons and components.
+    gb: GbPolicySettings
 
     @property
     def pi_target_value(self) -> float:

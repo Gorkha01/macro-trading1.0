@@ -81,11 +81,25 @@ openbb:
     note: Never disable outside a local development override.
 
 country:
-  # Section 22.3 / Finding #3: only "us" is implemented through Phase 4.
-  # Adding de/jp/gb requires its OWN data sources, its OWN central-bank
-  # reaction function, and its OWN instrument set — not a label change.
-  enabled: ["us"]
-  implemented: ["us"]
+  # Section 22.3 / Finding #3: a country is enabled ONLY when it is genuinely
+  # implemented. `_no_false_genericity_claim` rejects `enabled - implemented` at
+  # load, so adding a code here is a claim that all three of Section 22.3's
+  # workstreams are done for it — its OWN verified data sources, its OWN
+  # central-bank reaction function, and its OWN instrument set.
+  #
+  # "gb" (United Kingdom / Bank of England) was added 2026-10-10 after all
+  # three were built and tested. It is NOT a relabelled Fed: the reaction
+  # function is the BoE's own published Annex 1 rule set (energy/non-energy CPI
+  # split, 5-quarter-ahead horizon, published 0.85 smoothing), the series are
+  # the seven prefixed `gb_*` entries in series_registry.yaml, and the
+  # instrument set is the gilt / short-sterling / SONIA block in
+  # `thesis_layer.schemas.ProductionUniverse`.
+  #
+  # de/jp are NOT listed. A country that is not built must not be enabled —
+  # the honest representation of "planned" is a roadmap entry, not a flag that
+  # silently produces a US-shaped thesis with a foreign label.
+  enabled: ["us", "gb"]
+  implemented: ["us", "gb"]
 
 policy:
   r_star:
@@ -197,6 +211,187 @@ policy:
         why Section 22.5 obligates Phase 5+ to replace the proxy. Until it does,
         the horizon must be published beside the gap so a reader can see that
         the two legs are not measured at the same horizon.
+
+  # ---------------------------------------------------------------------------
+  # Section 22.3 — the Bank of England's reaction function (country "gb").
+  #
+  # NOT a relabelled Fed Taylor rule. The coefficients below are the BoE's OWN
+  # published rules, taken from Annex 1 of the November 2025 Monetary Policy
+  # Report — the primary source, not a textbook restatement. The structural
+  # differences the spec demands are all visible here:
+  #
+  #   * a SINGLE 2% CPI target (the Fed has a dual mandate and targets PCE);
+  #   * CPI split into ENERGY vs NON-ENERGY components, weighted ~4:1 — the
+  #     BoE's own decomposition, which none of the Fed rules performs;
+  #   * projections at a 5-QUARTER horizon (a 15-month lead), not a spot rate;
+  #   * an explicitly published 0.85 smoothing constant.
+  #
+  # `i_star` is the BoE's own convention: the 2% target plus an illustrative 1%
+  # real rate. It is a config leaf rather than the number 3.0 in the body so
+  # the convention is auditable and so a change to the target moves it (LAW 1).
+  #
+  # Weights are read from here, never written into the expressions — so the
+  # variant a result was produced under is inspectable after the fact, exactly
+  # as `policy.rules` works for the Fed.
+  # ---------------------------------------------------------------------------
+  gb:
+    # The BoE's nominal anchor. 2% CPI, SYMMETRIC — the Bank is explicit that
+    # undershooting is as much a miss as overshooting, which is a substantive
+    # difference from a Fed-style "average" reading.
+    pi_target:
+      value: 2.0
+      calibration_status: institutional_fact
+      note: >
+        The UK's 2% CPI inflation target — the measure the Monetary Policy
+        Committee is mandated against. Symmetric: the BoE's published
+        convention is that deviations below target are missed equally.
+        Distinct from the Fed's 2% PCE objective: the TARGET MEASURE differs
+        (CPI vs PCE), which is why the gb rules read gb_cpi_* series.
+      source_reference: >-
+        Bank of England Act 1998 (Monetary Policy) — remit; BoE Monetary Policy
+        Report Annex 1 (Nov 2025).
+
+    # The BoE's own neutral-rate convention: target + illustrative real rate.
+    i_star:
+      value: 3.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The BoE's illustrative nominal neutral rate, stated in Annex 1 as the
+        2% target PLUS a 1% illustrative real r*. It is UNOBSERVABLE — the same
+        Section 21.4 item 13 limitation the Fed rules carry — so every rule
+        consuming it records depends_on_unobservable=True and the models
+        publish that their estimate inherits the difficulty. The mover test
+        asserts i_star == pi_target + real_rate_assumption, so the two cannot
+        drift apart silently.
+      source_reference: >-
+        BoE Monetary Policy Report, Annex 1 (Nov 2025) — "…assumes a long-run
+        real interest rate of 1% and the 2% inflation target…".
+
+    # The additive decomposition of i_star, kept as its own leaf so the mover
+    # test can assert i_star equals target + this. A second home for 1.0 would
+    # be a LAW 2 violation; this is the ONE place the real rate is stated.
+    real_rate_assumption:
+      value: 1.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The illustrative long-run real rate the BoE adds to the 2% target to
+        obtain i*=3%. Named separately so the i_star leaf is DERIVED from the
+        target rather than a second independent constant that could silently
+        disagree with it.
+      source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+
+    # The published smoothing constant. The BoE's rules are WRITTEN with
+    # interest-rate smoothing, because the Committee does not jump the rate to
+    # the prescription — it moves toward it. 0.85 means 85% of the previous
+    # rate persists and 15% of the gap is closed each period: a much slower
+    # adjustment than any of the Fed's rules, which have no smoothing term.
+    smoothing:
+      value: 0.85
+      calibration_status: institutional_fact
+      note: >
+        The behavioural persistence coefficient in ALL THREE BoE rules, from
+        Annex 1. It is load-bearing in a way the Fed rules have no analogue
+        for: an un-specified smoothing term would make the contemporaneous
+        rule prescribe an instantaneous jump the Committee is institutionally
+        documented not to make. Must be in [0, 1); a value of 1 would make the
+        rule inert (rate never moves) and is rejected at the model boundary.
+      source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+
+    # Coefficients on the CONTEMPORANEOUS Taylor-type rule. The BoE splits CPI
+    # into the energy and non-energy components and weights them differently —
+    # this is the rule's whole point and the clearest structural difference
+    # from the Fed rules, which respond to a single headline/core measure.
+    contemporaneous:
+      energy_cpi_coefficient:
+        value: 0.375
+        calibration_status: institutional_fact
+        note: >
+          Response to the ENERGY component of CPI inflation (percentage
+          points). ~4x SMALLER than the non-energy coefficient, because the
+          BoE treats energy price movements as largely transitory and does not
+          want the rule chasing them. The Fed rules have no such split — this
+          coefficient has no analogue in `policy.rules`.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      non_energy_cpi_coefficient:
+        value: 1.5
+        calibration_status: institutional_fact
+        note: >
+          Response to the NON-ENERGY component of CPI inflation. The Taylor
+          principle (a nominal response above 1:1 to inflation) is satisfied
+          here — but ONLY by the non-energy term, so the satisfied principle
+          says nothing about the energy term. That asymmetry is explicit in the
+          rule's output warnings rather than left for a reader to notice.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      output_gap_coefficient:
+        value: 0.5
+        calibration_status: institutional_fact
+        note: >
+          Response to the output gap, contemporaneous. Coincidentally equal to
+          Taylor (1993)'s own value, but this is the BoE's published
+          coefficient, not an import.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+
+    # Coefficients on the FORWARD-LOOKING Taylor-type rule. The horizon is the
+    # structural difference: the BoE responds to its 5-quarter-ahead projection,
+    # not to a spot reading, which is the whole reason this is a separate rule
+    # and not a variant of the contemporaneous one.
+    forward_looking:
+      inflation_coefficient:
+        value: 1.5
+        calibration_status: institutional_fact
+        note: >
+          Response to the PROJECTED inflation gap (projected minus target), 5
+          quarters ahead. Above unity in the same sense as the non-energy term.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      output_gap_coefficient:
+        value: 0.5
+        calibration_status: institutional_fact
+        note: >
+          Response to the PROJECTED output gap at the same 5-quarter horizon.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      horizon_quarters:
+        value: 5
+        calibration_status: institutional_fact
+        note: >
+          The projection horizon, in QUARTERS, at which the forward-looking
+          rule reads inflation and the output gap. Fifteen months — long
+          enough that the input is a model FORECAST, not an observation, which
+          is why the model's confidence and limitations say so. A positive
+          integer; validated at read time.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+
+    # Coefficients on the FORWARD-LOOKING FIRST-DIFFERENCE rule. Like the
+    # Fed's speed-limit rule it is written in CHANGES so i* cancels, but it
+    # differs structurally: the BoE reads PROJECTED quantities 3 quarters ahead,
+    # where the Fed's rule reads the current inflation gap and the change in the
+    # current output gap.
+    first_difference:
+      inflation_coefficient:
+        value: 0.1
+        calibration_status: institutional_fact
+        note: >
+          Weight on the PROJECTED inflation gap 3 quarters ahead, applied to
+          the CHANGE in the policy rate. Small relative to the level rules —
+          this rule moves the rate in small increments toward its target.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      gdp_growth_coefficient:
+        value: 0.1
+        calibration_status: institutional_fact
+        note: >
+          Weight on PROJECTED GDP GROWTH 3 quarters ahead. Note the input is
+          growth, not a change in the output gap as in the Fed's
+          first_difference_beta — a genuinely different regressor despite the
+          superficially similar rule form.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
+      horizon_quarters:
+        value: 3
+        calibration_status: institutional_fact
+        note: >
+          The projection horizon, in QUARTERS, for this rule's inputs — three,
+          shorter than the forward-looking Taylor-type rule's five. The two
+          horizons are DIFFERENT (3 vs 5) and are deliberately two leaves, so
+          a change to one cannot silently move the other.
+        source_reference: "BoE Monetary Policy Report, Annex 1 (Nov 2025)."
 
 phillips:
   nairu:
@@ -5766,3 +5961,28 @@ snapshot_fields:
     - tips_yields
     - credit_spread_hy
     - credit_spread_ig
+  # Section 22.3 — the UK fetch plan. Adding "gb" here is what makes the seven
+  # gb_* series reach a snapshot; without it they would be declared in the
+  # registry, present on MacroDataSnapshot, and fetched in NONE — the exact
+  # "declared in five places, fetched in none" defect the `gdi`,
+  # `ppi_stage_*`, `fed_total_assets` and `reserve_balances` notes above record.
+  # The country's own build iterates ONLY this list.
+  gb:
+    # These are registry KEYS, not resolved schema names — the same convention as
+    # the us block above, where `cpi_headline` is equally both. Measured
+    # 2026-10-10 by the registry-driven fetch gate: the first draft listed the
+    # RESOLVED names (`gb_cpi_headline`, `gb_cpi_core`), which are what the
+    # registry's `snapshot_field:` maps TO. build_snapshot does
+    # `get_registry().series.get(field_name)` for each entry here, so a resolved
+    # name finds no series, fetches nothing, and the two UK CPI fields stay
+    # empty forever while the list *looks* complete. The UK keys carry the `_yoy`
+    # suffix precisely because `snapshot_field:` maps them onto the unprefixed
+    # schema attributes; that suffix is why the two conventions diverge here and
+    # do not diverge for the US.
+    - gb_cpi_headline_yoy
+    - gb_cpi_core_yoy
+    - gb_unemployment_rate
+    - gb_gdp_growth_qoq
+    - gb_bank_rate
+    - gb_gilt_10y_yield
+    - gb_short_rate_3m

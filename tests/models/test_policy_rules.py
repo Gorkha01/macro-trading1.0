@@ -839,5 +839,508 @@ def test_the_live_path_supplies_the_curve_through_the_sanctioned_client() -> Non
     assert "requests" not in imported, "the live path must route through OpenBBClient, not requests"
 
 
+# ---------------------------------------------------------------------------
+# Section 22.3 — the Bank of England reaction function (country "gb")
+#
+# Every expected value below is derived BY HAND from the BoE's published rule
+# (Annex 1, November 2025 Monetary Policy Report, Table A1.A) and the config
+# leaves, which are READ and asserted against the primary source first. The
+# point of the section is that these are NOT the Fed rules relabelled, so the
+# tests pin the STRUCTURAL differences — the energy/non-energy split, the
+# smoothing pair, and the two DIFFERENT projection horizons — not merely that
+# the functions return a number.
+# ---------------------------------------------------------------------------
+def test_the_boe_coefficients_match_the_published_annex_1_primary_source() -> None:
+    """The config leaves ARE the BoE's published calibration, verified by value.
+
+    This is the test that makes the rest of the section meaningful. Section 22.3
+    rejects a relabelled Fed rule; the only way that claim is checkable is if the
+    coefficients are pinned to the primary source rather than to whatever is in
+    the file. Each value below is transcribed from Table A1.A of the BoE's
+    November 2025 Monetary Policy Report, Annex 1 — the tables of which were
+    read directly (pypdf), not restated from memory.
+
+    If any of these fails, the rule is no longer the Bank of England's rule and
+    every downstream "genuinely distinct" claim is false — so this test comes
+    first and asserts EVERY leaf the three rules read.
+    """
+    from macro_engine.config import get_settings
+
+    gb = get_settings().policy.gb
+
+    # Target and neutral rate, with the BoE's own decomposition.
+    assert gb.pi_target_value == pytest.approx(2.0)
+    assert gb.real_rate_assumption_value == pytest.approx(1.0)
+    assert gb.i_star_value == pytest.approx(3.0)
+    # i* == target + illustrative real rate — the BoE's stated convention.
+    assert gb.i_star_value == pytest.approx(gb.pi_target_value + gb.real_rate_assumption_value), (
+        "i* must equal the target plus the illustrative real rate, per Annex 1"
+    )
+
+    # The published smoothing constant, on all three rules.
+    assert gb.smoothing_value == pytest.approx(0.85)
+
+    # Contemporaneous: the energy / non-energy asymmetry is the structural marker.
+    assert gb.contemporaneous.energy_cpi_coefficient_value == pytest.approx(0.375)
+    assert gb.contemporaneous.non_energy_cpi_coefficient_value == pytest.approx(1.5)
+    assert gb.contemporaneous.output_gap_coefficient_value == pytest.approx(0.5)
+    assert gb.contemporaneous.non_energy_cpi_coefficient_value > (
+        gb.contemporaneous.energy_cpi_coefficient_value
+    )
+
+    # Forward-looking: 5-quarter horizon, Taylor principle on the inflation term.
+    assert gb.forward_looking.inflation_coefficient_value == pytest.approx(1.5)
+    assert gb.forward_looking.output_gap_coefficient_value == pytest.approx(0.5)
+    assert gb.forward_looking.horizon_quarters_value == 5
+
+    # First-difference: 3-quarter horizon — DIFFERENT from the above, deliberately.
+    assert gb.first_difference.inflation_coefficient_value == pytest.approx(0.1)
+    assert gb.first_difference.gdp_growth_coefficient_value == pytest.approx(0.1)
+    assert gb.first_difference.horizon_quarters_value == 3
+    assert (
+        gb.first_difference.horizon_quarters_value != gb.forward_looking.horizon_quarters_value
+    ), (
+        "the two BoE forward-looking rules use DIFFERENT horizons (3 vs 5); a test "
+        "that let them coincide would stop detecting the conflation"
+    )
+
+
+def test_the_boe_contemporaneous_rule_matches_the_hand_calculation() -> None:
+    """``i = 0.85·i_prev + 0.15·(3 + 0.375·π_E + 1.5·π_N + 0.5·y)``, by hand.
+
+    Two hand values, both from the published formula with config read:
+
+    * **At the neutral point** (both gaps 0, output gap 0, i_prev = 3):
+      raw = 3.0, and 0.85·3 + 0.15·3 = **3.0**. This pins the whole
+      "deviations from steady state" convention — a rule reading LEVELS would
+      return something near 5-6% here and the test would fail, which is the
+      point: the convention is the substance of the rule.
+    * **Off neutral** (i_prev = 4.5, π_E = 2, π_N = 3, y = 1):
+      raw = 3 + 0.375·2 + 1.5·3 + 0.5·1 = 3 + 0.75 + 4.5 + 0.5 = **8.75**;
+      i = 0.85·4.5 + 0.15·8.75 = 3.825 + 1.3125 = **5.1375 → 5.14**.
+    """
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        boe_contemporaneous_taylor_rule,
+    )
+
+    at_neutral = boe_contemporaneous_taylor_rule(
+        BoeContemporaneousInputs(
+            i_prev=3.0, pi_energy_gap_pp=0.0, pi_non_energy_gap_pp=0.0, output_gap=0.0
+        )
+    )
+    assert at_neutral.value == pytest.approx(3.0)
+
+    off_neutral = boe_contemporaneous_taylor_rule(
+        BoeContemporaneousInputs(
+            i_prev=4.5, pi_energy_gap_pp=2.0, pi_non_energy_gap_pp=3.0, output_gap=1.0
+        )
+    )
+    hand = 0.85 * 4.5 + 0.15 * (3.0 + 0.375 * 2.0 + 1.5 * 3.0 + 0.5 * 1.0)
+    assert off_neutral.value == pytest.approx(round(hand, 2))
+    assert off_neutral.value == pytest.approx(5.14)
+
+
+def test_the_boe_contemporaneous_rule_is_not_a_relabelled_fed_rule() -> None:
+    """The energy term moves the prescription LESS than the non-energy term.
+
+    The BoE weights non-energy ~4x energy on purpose. Holding everything else
+    equal and moving each component by the same 1pp, the non-energy move must
+    produce the larger prescription — that IS the decomposition the rule exists
+    to apply, and a rule that weighted them equally (or swapped them) would
+    still return *a* number while no longer being the Bank's rule.
+
+    Hand arithmetic, i_prev = 3, output gap 0, one component raised 1pp:
+      energy  +1: raw = 3 + 0.375 = 3.375 → i = 0.85·3 + 0.15·3.375 = 3.05625 → 3.06
+      non-energy +1: raw = 3 + 1.5   = 4.5   → i = 0.85·3 + 0.15·4.5   = 3.225   → 3.22
+    (The second rounds to 3.22, not 3.23 — 3.225 is a bankian-rounding tie and
+    ``round()`` takes the even digit. The hand value is written as the code
+    rounds it, so the test pins the published coefficient rather than a
+    rounding convention.)
+    """
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        boe_contemporaneous_taylor_rule,
+    )
+
+    def run(*, e: float, n: float) -> float:
+        return boe_contemporaneous_taylor_rule(
+            BoeContemporaneousInputs(
+                i_prev=3.0, pi_energy_gap_pp=e, pi_non_energy_gap_pp=n, output_gap=0.0
+            )
+        ).value_float()
+
+    energy_bump = run(e=1.0, n=0.0)
+    non_energy_bump = run(e=0.0, n=1.0)
+
+    assert energy_bump == pytest.approx(3.06)
+    assert non_energy_bump == pytest.approx(3.22)
+    assert non_energy_bump > energy_bump, (
+        "the non-energy component must dominate — the BoE weights it 4x, and a "
+        "rule that did not would be a relabelled Fed rule (Section 22.3)"
+    )
+
+
+def test_the_boe_forward_looking_rule_matches_the_hand_calculation() -> None:
+    """``i = 0.85·i_prev + 0.15·(3 + 1.5·(π_{t+5} - 2) + 0.5·y_{t+5})``, by hand.
+
+    * **At the target** (projected inflation = 2.0, projected gap = 0, i_prev = 3):
+      raw = 3 + 1.5·0 + 0 = 3.0 → i = **3.0**.
+    * **Off target** (i_prev = 4, projected inflation = 3.0, projected gap = 1):
+      raw = 3 + 1.5·(3 - 2) + 0.5·1 = 3 + 1.5 + 0.5 = **5.0**;
+      i = 0.85·4 + 0.15·5 = 3.4 + 0.75 = **4.15**.
+    """
+    from macro_engine.models.policy_rules import (
+        BoeForwardLookingInputs,
+        boe_forward_looking_taylor_rule,
+    )
+
+    at_target = boe_forward_looking_taylor_rule(
+        BoeForwardLookingInputs(i_prev=3.0, projected_inflation_pp=2.0, projected_output_gap=0.0)
+    )
+    assert at_target.value == pytest.approx(3.0)
+
+    off_target = boe_forward_looking_taylor_rule(
+        BoeForwardLookingInputs(i_prev=4.0, projected_inflation_pp=3.0, projected_output_gap=1.0)
+    )
+    hand = 0.85 * 4.0 + 0.15 * (3.0 + 1.5 * (3.0 - 2.0) + 0.5 * 1.0)
+    assert off_target.value == pytest.approx(round(hand, 2))
+    assert off_target.value == pytest.approx(4.15)
+
+
+def test_the_boe_first_difference_rule_matches_the_hand_calculation() -> None:
+    """``Δi = 0.1·(π_{t+3} - 2) + 0.1·ΔGDP_{t+3}`` → ``i = i_prev + Δi``, by hand.
+
+    Hand: i_prev = 4, projected inflation = 3.0, projected GDP growth = 1.0:
+    Δi = 0.1·(3 - 2) + 0.1·1 = 0.1 + 0.1 = **0.2** → i = **4.20**.
+
+    The rule has NO smoothing term and NO ``i*`` — both by construction of the
+    published expression, so its confidence is NOT penalised for the
+    unobservable neutral rate (the same structural property the Fed's
+    speed-limit rule has). The higher confidence is earned, not asserted.
+    """
+    from macro_engine.models.policy_rules import (
+        BoeFirstDifferenceInputs,
+        FirstDifferenceInputs,
+        boe_first_difference_rule,
+        first_difference_rule,
+    )
+    from macro_engine.models.policy_rules import (
+        BoeFirstDifferenceInputs as _BoeFirstDifferenceInputs,
+    )
+
+    result = boe_first_difference_rule(
+        _BoeFirstDifferenceInputs(i_prev=4.0, projected_inflation_pp=3.0, projected_gdp_growth=1.0)
+    )
+    assert result.value == pytest.approx(4.20)
+    assert BoeFirstDifferenceInputs is _BoeFirstDifferenceInputs
+
+    # The no-unobservable-penalty structure, asserted against the Fed rule's
+    # own confidence — if i* leaked into this rule the two would not coincide.
+    fed = first_difference_rule(
+        FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=1.0)
+    )
+    assert result.confidence == pytest.approx(fed.confidence), (
+        "the BoE first-difference rule has no i* term, so it must carry the same "
+        "(unpenalised) confidence as the Fed's — a lower value would mean an "
+        "unobservable dependency was introduced"
+    )
+
+
+def test_the_boe_rules_are_labelled_gb_not_us() -> None:
+    """``country="gb"`` and the distinct ``rule_variant`` on every rule.
+
+    Section 22.3's whole demand is that a country is not a label. The mirror is
+    the risk here: a rule that returned ``country="us"`` or the Fed's variant
+    tag would be indistinguishable from a Fed rule downstream, and every
+    consumer that branches on ``rule_variant`` would silently treat a BoE
+    prescription as a Fed one.
+    """
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        BoeFirstDifferenceInputs,
+        BoeForwardLookingInputs,
+        boe_contemporaneous_taylor_rule,
+        boe_first_difference_rule,
+        boe_forward_looking_taylor_rule,
+    )
+
+    trio = (
+        boe_contemporaneous_taylor_rule(
+            BoeContemporaneousInputs(
+                i_prev=3.0, pi_energy_gap_pp=0.0, pi_non_energy_gap_pp=0.0, output_gap=0.0
+            )
+        ),
+        boe_forward_looking_taylor_rule(
+            BoeForwardLookingInputs(
+                i_prev=3.0, projected_inflation_pp=2.0, projected_output_gap=0.0
+            )
+        ),
+        boe_first_difference_rule(
+            BoeFirstDifferenceInputs(
+                i_prev=3.0, projected_inflation_pp=2.0, projected_gdp_growth=0.0
+            )
+        ),
+    )
+
+    assert {r.country for r in trio} == {"gb"}
+    assert [r.rule_variant for r in trio] == [
+        "boe_contemporaneous_taylor",
+        "boe_forward_looking_taylor",
+        "boe_first_difference",
+    ]
+    assert all(r.rule_variant.startswith("boe_") for r in trio), (
+        "every BoE variant tag must be distinguishable from the Fed's by prefix"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("energy_cpi_coefficient", ("contemporaneous", "energy_cpi_coefficient", 0.75)),
+        (
+            "non_energy_cpi_coefficient",
+            ("contemporaneous", "non_energy_cpi_coefficient", 3.0),
+        ),
+        ("gb_smoothing", ("smoothing", None, 0.5)),
+        ("gb_i_star", ("i_star", None, 5.0)),
+        ("gb_output_gap_coefficient", ("contemporaneous", "output_gap_coefficient", 1.0)),
+    ],
+)
+def test_every_boe_contemporaneous_coefficient_leaf_is_a_real_mover(
+    label: str, change: tuple[str, str | None, float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each config leaf the rule reads must CHANGE the output (LAW 1's mover proof).
+
+    A coefficient read into a variable and then not used is the exact failure
+    the mover proof exists to catch: the leaf looks calibrated and is inert. For
+    each leaf this substitutes a different value, re-runs the rule, and asserts
+    the prescription moved — so a leaf that was silently ignored fails here.
+
+    ``gb_i_star`` is included deliberately: it is the rule's level anchor and
+    the test proves it is genuinely consumed rather than decorative. The list is
+    every leaf the CONTEMPORANEOUS rule reads. ``gb_pi_target`` is deliberately
+    NOT here — see ``test_the_boe_pi_target_is_absent_from_the_contemporaneous_rule``
+    for why, and why that absence is correct rather than a bug.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        boe_contemporaneous_taylor_rule,
+    )
+
+    inputs = BoeContemporaneousInputs(
+        i_prev=4.5, pi_energy_gap_pp=2.0, pi_non_energy_gap_pp=3.0, output_gap=1.0
+    )
+    baseline = boe_contemporaneous_taylor_rule(inputs).value
+
+    gb = get_settings().policy.gb
+    section, leaf, replacement = change
+    target = gb if leaf is None else getattr(gb, section)
+    leaf_name = leaf if leaf is not None else section
+    original = getattr(target, leaf_name)
+
+    class _Patched:
+        value = replacement
+
+    monkeypatch.setattr(target, leaf_name, _Patched())
+    moved = boe_contemporaneous_taylor_rule(inputs).value
+
+    assert moved != pytest.approx(baseline), (
+        f"moving the config leaf policy.gb.{leaf_name} (for {label}) did not change "
+        f"the prescription — the leaf is INERT, which is LAW 1's hardcoding failure "
+        f"in the opposite direction: a calibrated-looking value that nothing reads"
+    )
+    monkeypatch.setattr(target, leaf_name, original)
+
+
+def test_the_boe_pi_target_is_absent_from_the_contemporaneous_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pi_target`` moves the FORWARD-LOOKING rules but NOT the contemporaneous one.
+
+    **This is a fact about the BoE's published formula, asserted rather than
+    assumed.** The contemporaneous rule's inflation terms are written as
+    "*the deviation from steady state*" of each component — the target is
+    already inside the inputs, so the formula has no explicit ``π*`` and moving
+    the target cannot move the prescription *given the same gaps*.
+
+    That asymmetry is easy to mistake for a bug (a config leaf that "should" be
+    read and is not), and the honest fix is not to bolt a spurious ``π*`` term
+    onto the rule — that would be writing a rule the Bank did not publish. So
+    the test pins BOTH directions:
+
+    * the contemporaneous rule is UNCHANGED by ``pi_target`` — because the
+      target is implicit in the gap inputs, not a term in the expression;
+    * the two forward-looking rules DO change — because their published
+      expressions subtract ``π*`` explicitly (``1.5(π_{t+5|t} - π*)`` and
+      ``0.1(π_{t+3|t} - π*)``).
+
+    A future edit that added a ``π*`` term to the contemporaneous rule would
+    fail the first half; one that dropped it from a forward-looking rule would
+    fail the second. Either way the divergence between the published rules
+    cannot be silently smoothed over.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        BoeFirstDifferenceInputs,
+        BoeForwardLookingInputs,
+        boe_contemporaneous_taylor_rule,
+        boe_first_difference_rule,
+        boe_forward_looking_taylor_rule,
+    )
+
+    gb = get_settings().policy.gb
+    original = gb.pi_target
+
+    contemporaneous_inputs = BoeContemporaneousInputs(
+        i_prev=4.5, pi_energy_gap_pp=2.0, pi_non_energy_gap_pp=3.0, output_gap=1.0
+    )
+    forward_inputs = BoeForwardLookingInputs(
+        i_prev=3.0, projected_inflation_pp=3.0, projected_output_gap=1.0
+    )
+    fd_inputs = BoeFirstDifferenceInputs(
+        i_prev=3.0, projected_inflation_pp=3.0, projected_gdp_growth=1.0
+    )
+
+    before_contemp = boe_contemporaneous_taylor_rule(contemporaneous_inputs).value
+    before_forward = boe_forward_looking_taylor_rule(forward_inputs).value
+    before_fd = boe_first_difference_rule(fd_inputs).value
+
+    class _Patched:
+        value = 4.0
+
+    monkeypatch.setattr(gb, "pi_target", _Patched())
+    try:
+        assert boe_contemporaneous_taylor_rule(contemporaneous_inputs).value == (
+            pytest.approx(before_contemp)
+        ), (
+            "the contemporaneous rule's gaps already embed the target, so its "
+            "published expression has no explicit pi* term — a change here means "
+            "one was added, which is a rule the BoE did not publish"
+        )
+        assert boe_forward_looking_taylor_rule(forward_inputs).value != (
+            pytest.approx(before_forward)
+        ), "the forward-looking Taylor rule subtracts pi* explicitly; it must move"
+        assert boe_first_difference_rule(fd_inputs).value != pytest.approx(before_fd), (
+            "the BoE first-difference rule subtracts pi* explicitly; it must move"
+        )
+    finally:
+        monkeypatch.setattr(gb, "pi_target", original)
+
+
+def test_the_boe_forward_looking_rules_read_their_projection_horizon() -> None:
+    """Moving a projection horizon changes the published prose, not just a number.
+
+    The horizon is carried into the result's ``context`` and its warnings, so a
+    leaf that were read but discarded would leave the prose claiming the old
+    horizon. This asserts the config value reaches the OUTPUT, which a numeric-
+    only assertion would miss (the projection values here are fixed, so the
+    prescription does not move when only the horizon does — that is correct and
+    is exactly why the output prose is the thing to check).
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        BoeForwardLookingInputs,
+        boe_forward_looking_taylor_rule,
+    )
+
+    inputs = BoeForwardLookingInputs(
+        i_prev=3.0, projected_inflation_pp=2.5, projected_output_gap=0.5
+    )
+    default = boe_forward_looking_taylor_rule(inputs)
+    assert "5-quarter-ahead" in default.context or "15-month" in default.context
+
+    gb = get_settings().policy.gb
+    original = gb.forward_looking.horizon_quarters
+
+    class _Patched:
+        value = 8
+
+    gb.forward_looking.__dict__["horizon_quarters"] = _Patched()
+    try:
+        changed = boe_forward_looking_taylor_rule(inputs)
+        assert "8-quarter-ahead" in changed.context or "24-month" in changed.context, (
+            "the projection horizon from config never reached the published "
+            "context — the leaf is read but its effect is discarded"
+        )
+    finally:
+        gb.forward_looking.horizon_quarters = original
+
+
+def test_the_boe_smoothing_pair_is_one_number_not_two() -> None:
+    """``0.85`` and ``0.15`` are ``s`` and ``1-s``, so they cannot disagree.
+
+    The published rule writes ``0.85·i_{t-1} + 0.15·(…)``. If both were separate
+    literals a config change to one would leave the other stale and the two
+    halves would no longer sum to one — a defect invisible in any single output
+    value. This pins the relationship by moving ``smoothing`` and asserting the
+    behaviour: at ``s = 0`` the previous rate is discarded entirely and the
+    output EQUALS the raw prescription, which holds only if the two weights sum
+    to one.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        boe_contemporaneous_taylor_rule,
+    )
+
+    inputs = BoeContemporaneousInputs(
+        i_prev=0.0, pi_energy_gap_pp=0.0, pi_non_energy_gap_pp=0.0, output_gap=0.0
+    )
+    gb = get_settings().policy.gb
+    original = gb.smoothing
+
+    class _Zero:
+        value = 0.0
+
+    gb.__dict__["smoothing"] = _Zero()
+    try:
+        unsmoothed = boe_contemporaneous_taylor_rule(inputs)
+        assert unsmoothed.value == pytest.approx(gb.i_star_value)
+    finally:
+        gb.smoothing = original
+
+
+def test_the_boe_rules_refuse_a_non_finite_input() -> None:
+    """The D-078 finiteness guard applies to the BoE input groups too.
+
+    Each new input class inherits ``FiniteInputs``. A ``nan`` in any of the
+    three would propagate into the prescription and then into the UK policy gap,
+    where every comparison against it silently returns ``False`` — the exact
+    "reports a verdict from a number it could not compute" failure D-078 closed
+    for the Fed rules. Asserted per class so a future input group added without
+    the base is caught.
+    """
+    import math
+
+    from macro_engine.models.policy_rules import (
+        BoeContemporaneousInputs,
+        BoeFirstDifferenceInputs,
+        BoeForwardLookingInputs,
+    )
+
+    for cls, kwargs in (
+        (
+            BoeContemporaneousInputs,
+            {"i_prev": 3.0, "pi_energy_gap_pp": 0.0, "output_gap": 0.0},
+        ),
+        (
+            BoeForwardLookingInputs,
+            {"i_prev": 3.0, "projected_output_gap": 0.0},
+        ),
+        (
+            BoeFirstDifferenceInputs,
+            {"i_prev": 3.0, "projected_gdp_growth": 0.0},
+        ),
+    ):
+        field = (
+            "pi_non_energy_gap_pp" if cls is BoeContemporaneousInputs else "projected_inflation_pp"
+        )
+        with pytest.raises(ValueError, match=r"non-finite"):
+            cls(**{**kwargs, field: math.nan})
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
