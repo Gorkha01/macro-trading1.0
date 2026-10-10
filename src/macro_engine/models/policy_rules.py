@@ -695,76 +695,103 @@ def canonical_policy_gap(
 #: between two lists, so no gate and no checklist owned it.** "Tier 5 = 23/23" is
 #: true and does not mean Phase 5+ is complete.
 #:
-#: **Measured 2026-10-10 — the second reason, and it invalidates the MECHANISM.**
-#: The data source §22.5 assumed might not exist DOES exist: the route
-#: ``derivatives.futures.curve`` with ``symbol="ZQ"`` returns the 30-Day Fed
-#: Funds futures term structure, and ``futures_implied_policy_path`` +
-#: ``fetch_fed_funds_futures_curve`` now read it. But §22.5's stated swap
-#: procedure **cannot be executed**, and that is a defect in the specification
-#: rather than in the work:
+#: **Measured 2026-10-10 — the source EXISTS.** §22.5's data conditional is
+#: satisfied: the route ``derivatives.futures.curve`` with ``symbol="ZQ"``
+#: returns the 30-Day Fed Funds futures term structure. The earlier "needs data"
+#: reading was wrong because the D-108 inventory was grepped for
+#: ``forward|swap|basis`` and never for ``futur``. Read by
+#: ``fetch_fed_funds_futures_curve`` (data leg) and ``futures_implied_policy_path``
+#: (model leg), both built and tested.
 #:
-#:   A futures curve is a **collection of expirations**. The proxy's signature is
-#:   ``(short_yield: float, short_tenor_term_premium: float | None)`` — two
-#:   SCALARS. No body can carry a curve through a two-float signature without
-#:   inventing the curve from the scalars, which is precisely the "input may not
-#:   be invented" prohibition (§21.0 rule 3). So the promised *"body swap, not a
-#:   caller-facing breaking change"* is **not achievable**: the replacement is
-#:   necessarily a signature change at this function AND at its callers.
+#: **The mechanism, corrected 2026-10-10 (second pass).** The first reading of the
+#: signature problem said the replacement was *impossible*. It is not — it is
+#: INCOMPATIBLE WITH A PURE BODY SWAP. The distinction matters:
 #:
-#: The chain that would have to change is scalar-shaped the whole way down:
-#: ``build_policy_gap(short_yield, short_tenor_term_premium)``
-#: (thesis_layer/builder.py) ← ``build_us_macro_thesis(...)`` ←
-#: ``_reasoning_frames(...)`` (api_layer/reasoning_stream.py), whose own docstring
-#: documents a ``TypeError`` guard that fires when this function "changes shape".
-#: Rewiring it is therefore a **caller-facing** change — the opposite of what
-#: §22.5 promised — and it is a decision for the operator, not a quiet refactor.
+#:   * §22.5 promises the replacement is *"a body swap, not a caller-facing
+#:     breaking change"* because *"this function's signature is stable"*. A curve
+#:     is a collection of expirations; the signature carries two SCALARS; so a
+#:     body swap cannot deliver the curve (reconstructing it from two floats would
+#:     violate §21.0 rule 3). **The promised MECHANISM cannot be used.**
+#:   * But the change does not have to be BREAKING. ``short_yield`` is
+#:     keyword-only at both ``derive_market_implied_policy_path`` and its callers,
+#:     so an OPTIONAL ``futures_curve`` parameter with a ``None`` default is a
+#:     strictly ADDITIVE signature extension: every existing call keeps working,
+#:     and the function prefers the futures path when a curve is supplied.
 #:
-#: The obligation is therefore STILL OUTSTANDING, and it is now blocked on a
-#: **specification** defect (the swap mechanism) rather than on missing data or a
-#: missing owner. ``futures_implied_policy_path`` is BUILT and TESTED
-#: (tests/data_layer/test_fed_funds_futures_client.py,
-#: tests/models/test_policy_rules.py) but deliberately **UNWIRED**: nothing calls
-#: it, because wiring it means changing the signature §22.5 promised was stable.
+#: So the obligation is DISCHARGEABLE by an additive change, and this version does
+#: it. The marker below stays ``"outstanding"`` only until the caller chain is
+#: wired end to end (``build_policy_gap`` → ``build_us_macro_thesis`` →
+#: ``_reasoning_frames``): the reader now accepts a curve, but nothing yet
+#: SUPPLIES one on the live path, so the proxy branch still runs in production.
+#: Flipping the marker now would claim a live-path replacement that has not
+#: happened.
 #:
 #: This constant is read by `tests/models/test_policy_rules.py`'s tripwire, which
-#: asserts BOTH that the body is still the Phase 1-4 proxy AND that this marker
-#: still says so — so discharging the obligation FAILS the suite until the
-#: record is updated in the same change. The obligation is closed explicitly or
-#: not at all; it can no longer be absorbed by a quiet refactor.
+#: asserts BOTH that the proxy branch is intact AND that this marker agrees — so
+#: discharging the obligation FAILS the suite until the record is updated in the
+#: same change. The obligation is closed explicitly or not at all.
 PHASE5_REPLACEMENT_OBLIGATION: str = "outstanding"
 
 
 def derive_market_implied_policy_path(
     short_yield: float,
     short_tenor_term_premium: float | None,
+    *,
+    futures_curve: FedFundsFuturesCurve | None = None,
 ) -> ModelResult:
-    """A PROXY for the market-implied policy path, corrected per Section 22.5.
+    """The market-implied policy path: a real futures path, or the 22.5 proxy.
 
-    ``value`` is a ``float``: the expectations component in percent.
+    ``value`` is a ``float``: the market-implied policy rate in percent.
 
-    The raw 2-year yield is not a policy-path estimate — it is a policy-path
-    estimate plus a term premium, and at the front end that premium has been
-    large enough to invert the reading of the same data. Section 22.5's
-    correction: subtract a tenor-matched ACM term premium when one is available.
+    **Two branches, and the futures branch is preferred when a curve is given.**
+    Section 22.5 obligates Phase 5+ to replace the proxy with a real
+    Fed-funds-futures-implied path. That replacement used to be described as a
+    *"body swap"* behind a *"stable signature"*; measured 2026-10-10 the swap is
+    impossible (a curve cannot travel through two float parameters) but the
+    change is strictly additive, so this function takes an OPTIONAL curve:
 
-    The critical clause is the ``None`` branch. With no term premium the
-    function **returns the raw yield unchanged** but attaches an unconditional,
-    unmissable warning and a confidence near the floor. It does not invent a
-    premium, does not substitute a different tenor's premium, and does not
-    quietly return a number that looks the same as the adjusted case. Section
-    22.5 requires the contamination be visible, because a consumer cannot tell
-    from the value alone which branch produced it.
+    * ``futures_curve`` supplied → returns the **near futures-implied rate**
+      (``futures_implied_policy_path``), the market's own expectation for the
+      current period, and does NOT attach the proxy's contamination warnings —
+      because none of them apply. The returned result is the futures function's.
+    * ``futures_curve`` omitted → the Phase 1-4 **proxy**, byte-for-byte as
+      before, with its warnings intact. Every existing caller is unaffected.
 
-    The signature is stable by design so that Phase 5+ can swap the body for a
-    genuine Fed-funds-futures-implied distribution without breaking a caller.
+    Why the preference is inside THIS function rather than a new one: §22.5 names
+    this function as the thing to replace and promises its signature stays
+    stable. A new function beside it (the earlier ``futures_implied_policy_path``)
+    is not a replacement — it is a second implementation, and a caller would have
+    to choose between them. Choosing here keeps ONE entry point, so a caller
+    cannot pick the proxy by accident when a curve is available.
 
-    Both inputs must be FINITE (D-078). The adjustment is a **subtraction**, so
-    a non-finite term premium does not merely propagate — it can **flip the
-    sign**: measured, ``short_tenor_term_premium=inf`` produced ``-inf``, i.e. a
-    market-implied path pointing the opposite way from the raw yield it was
-    supposed to adjust. The caller's type check admits any ``float``, and `nan`
-    and `inf` are floats, so the guard has to be on finiteness.
+    The ``None`` sub-branch of the proxy is unchanged and still critical: with no
+    term premium it **returns the raw yield unchanged** but attaches an
+    unconditional, unmissable warning and a confidence near the floor. It does
+    not invent a premium, does not substitute a different tenor's premium, and
+    does not quietly return a number that looks the same as the adjusted case.
+
+    The signature stays stable by construction: the new parameter is keyword-only
+    with a default, so this is not a caller-facing breaking change.
     """
+    # --- The Section 22.5 replacement, preferred when a curve is available. ---
+    if futures_curve is not None:
+        # `futures_implied_policy_path` raises when the curve has too few
+        # plausible expirations — deliberately NOT caught here. A curve that
+        # cannot support a path is a failure the caller must see, not a reason to
+        # silently fall back to the proxy, which would publish a contaminated
+        # number while pretending the futures source was used.
+        return futures_implied_policy_path(
+            futures_curve,
+            proxy_horizon_months=get_settings().policy.market_implied.proxy_horizon_months_value,
+        )
+
+    # --- The Phase 1-4 proxy, byte-for-byte as before when no curve is given. ---
+    # Both inputs must be FINITE (D-078). The adjustment is a **subtraction**,
+    # so a non-finite term premium does not merely propagate — it can **flip
+    # the sign**: measured, ``short_tenor_term_premium=inf`` produced ``-inf``,
+    # i.e. a market-implied path pointing the opposite way from the raw yield it
+    # was supposed to adjust. The caller's type check admits any ``float``, and
+    # `nan` and `inf` are floats, so the guard has to be on finiteness.
     for name, raw in (
         ("short_yield", short_yield),
         ("short_tenor_term_premium", short_tenor_term_premium),

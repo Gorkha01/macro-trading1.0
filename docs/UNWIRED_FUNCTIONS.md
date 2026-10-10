@@ -67,10 +67,10 @@ that includes routes and private helpers.
 
 |                        | The 23 Tier-5 functions                       | The 6 capability gaps (§4.1) |
 | ---------------------- | --------------------------------------------- | ---------------------------- |
-| Exists in `src/`?      | **Yes** — real bodies                         | **Mostly NO** — one exception since 2026-10-10: the §22.5 reader and model ARE built (§4.2.1) |
-| Tested / live-checked? | **Yes**                                       | n/a — except the §22.5 pair, which is tested |
-| Problem                | it exists and nothing calls it                | it does not exist yet — or, for §22.5, it exists and *cannot* be wired without a spec change |
-| Fix                    | a product decision (changes published output) | **build it**                 |
+| Exists in `src/`?      | **Yes** — real bodies                         | **Mostly NO** — one exception since 2026-10-10: the §22.5 reader, model and builder wiring ARE built (§4.2.1) |
+| Tested / live-checked? | **Yes**                                       | n/a — except the §22.5 path, which is tested |
+| Problem                | it exists and nothing calls it                | it does not exist yet — or, for §22.5, the reader accepts the curve but the live path does not yet *fetch* it |
+| Fix                    | a product decision (changes published output) | **build it** — for §22.5, supply the curve on the live path |
 
 ### Why this is a gap and not a design choice
 
@@ -296,12 +296,14 @@ than deleted.
 | 3 | ~~**Crisis-scenario shock engine**~~                            | **CLOSED 2026-10-09** — engine, simulation half and all four §9.4 scenarios ship | — |
 | 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
 | 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code — EXCEPT the §22.5 path, where a source WAS found (item 6)     |
-| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **NOT DONE — a source EXISTS, but the swap is impossible as specified** | the SPEC's own "stable signature" promise, which is false (see §4.2)                |
+| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **Partially DONE — source EXISTS, reader+model built, the live SUPPLY remains** | supplying a curve on the live path (a `OpenBBClient`-routed fetch), not the spec (see §4.2.1) |
 
-**Corrected 2026-10-10.** Item 6's blocked-on said *"nothing — it is simply unbuilt"*, and the earlier
-version of §4.2 (and of this file's own §5) said the source *"needs data"*. Both were wrong. The data
-exists (item 6's source was found — see §4.2), and the obstacle is the specification's *mechanism*.
-Item 5's *"source availability, not code"* now has one exception and is annotated accordingly.
+**Corrected 2026-10-10 (pass two).** Item 6's blocked-on said *"nothing — it is simply unbuilt"*, and an
+intermediate revision said the source *"needs data"*. Both were wrong. The data exists (item 6's source
+was found — see §4.2.1), and pass one then said the block was the specification's *mechanism* — which was
+also wrong: the promised *mechanism* (a pure body swap) is unusable, but the promised *outcome* is
+achievable **additively**, and the reader + builder chain now do it. What remains is the live-path
+*fetch*. Item 5's *"source availability, not code"* has one exception and is annotated accordingly.
 
 
 ### 4.2 ⚠️ The sixth item — the obligation that fell between two lists
@@ -354,9 +356,10 @@ test — `is_meaningful = abs(gap) > dispersion`, the max-min spread of the thre
 strongest idea in this subsystem. *"Three rules differing by 80bp cannot support a claim about a  
 50bp gap."* A replacement must preserve it.
 
-### 4.2.1 ⚠️ MEASURED 2026-10-10 — the source EXISTS and the swap is IMPOSSIBLE as written
+### 4.2.1 ⚠️ MEASURED 2026-10-10 (two passes) — the source EXISTS; the swap is impossible, the change is not
 
-**Two earlier claims in this document were wrong, and both are corrected here.**
+**Two earlier claims in this document were wrong, and both are corrected here. A third claim — made in
+the first version of this subsection — was ALSO wrong and is corrected in pass two.**
 
 **(a) "It needs data" was false.** The source is `derivatives.futures.curve` with `symbol="ZQ"` and
 `provider="yfinance"`, and it returns the 30-Day Fed Funds futures term structure. It was missed
@@ -372,9 +375,10 @@ uv run python tools/probe_fed_funds_futures.py
 # SOURCE DEFECT: 6 of 16 carry a price near 47-48 → ~52% implied, deterministic (min 47.64, max 96.12)
 ```
 
-**(b) "the signature is stable so that replacement is a body swap" is false — and this is a SPEC
-defect, not a work item.** A futures curve is a **collection of expirations**; the proxy's signature
-carries two **scalars**:
+**(b) A pure BODY SWAP is impossible — but the change is strictly ADDITIVE, and the first pass's
+conclusion "therefore blocked" was wrong.** This distinction is the whole finding, so both halves are
+stated. A futures curve is a **collection of expirations**; the proxy's original signature carried two
+**scalars**:
 
 ```bash
 uv run python -c "
@@ -382,27 +386,35 @@ import inspect
 from macro_engine.models.policy_rules import (
     derive_market_implied_policy_path, futures_implied_policy_path)
 print(list(inspect.signature(derive_market_implied_policy_path).parameters))
-# ['short_yield', 'short_tenor_term_premium']   <- two SCALARS
+# ['short_yield', 'short_tenor_term_premium', 'futures_curve']   <- two scalars + an OPTIONAL curve
 print(list(inspect.signature(futures_implied_policy_path).parameters))
-# ['curve', 'proxy_horizon_months']             <- a CURVE
+# ['curve', 'proxy_horizon_months']                             <- a CURVE
 "
 ```
 
-No body can carry a curve through a two-float signature without reconstructing it from the scalars,
-which §21.0 rule 3 forbids. The scalar shape runs the whole way to the live path —
-`build_policy_gap(short_yield, short_tenor_term_premium)` (`thesis_layer/builder.py:356`) ←
-`build_us_macro_thesis` ← `_reasoning_frames` (`api_layer/reasoning_stream.py`, whose own docstring
-documents a `TypeError` for exactly this "shape change"). Wiring the replacement **is** a
-caller-facing change, which is what §22.5 promised it would not be.
+* **The promised MECHANISM cannot be used.** No body can carry a curve through a two-float signature
+  without reconstructing it from the scalars, which §21.0 rule 3 forbids. So §22.5's *"a body swap"* is
+  unachievable as literally written.
+* **But the change need not be BREAKING.** `futures_curve` is **keyword-only with a `None` default**, so
+  every pre-existing call site keeps working unchanged. §22.5 promised the outcome — *"not a
+  caller-facing breaking change"* — and that outcome **is** achievable; only its stated mechanism is
+  not.
 
-**What WAS built (and is tested), and what was deliberately NOT done:**
+**Pass one mistook "impossible by the promised mechanism" for "impossible".** It read §22.5's *"body
+swap"* as the *only* permitted change and concluded the obligation was blocked on the spec. Measured,
+the replacement is dischargeable by an additive change, and this version does it.
+
+**What is BUILT and TESTED, and what remains:**
 
 | Piece | State |
 |---|---|
 | `data_layer/fed_funds_futures_client.py` | **BUILT.** Reads the curve; the six ~52% rows are **REJECTED and named**, never clamped. Tests: `tests/data_layer/test_fed_funds_futures_client.py` |
 | `models/policy_rules.futures_implied_policy_path` | **BUILT.** Publishes the NEAR rate (not the path mean, which would rebuild the horizon mismatch in reverse) and reports the slope. Tests: `tests/models/test_policy_rules.py` |
-| Wiring into `build_policy_gap` | **NOT DONE, deliberately.** It requires changing the signature §22.5 called stable — an operator decision. Pinned by `test_the_replacement_is_built_and_tested_but_deliberately_unwired`, so an unnoticed wiring FAILS the suite. |
-| `PHASE5_REPLACEMENT_OBLIGATION` | **still `"outstanding"`.** The tripwire now also pins the impossibility, so the record cannot be closed by someone who assumes the build was the missing piece. |
+| The reader's preference | **BUILT.** `derive_market_implied_policy_path(curve=…)` prefers the futures branch and keeps the proxy byte-for-byte when the curve is `None`. The extension is additive, so no caller breaks. Pinned by `test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied`. |
+| The builder chain | **BUILT.** `build_policy_gap(..., futures_curve=…)` and `build_us_macro_thesis(..., futures_curve=…)` thread an optional curve to the market leg. Pinned by `test_build_policy_gap_threads_the_futures_curve_to_the_market_leg`. |
+| **Supplying a curve on the LIVE path** | **NOT DONE — this is the remaining step.** `_reasoning_frames` (`api_layer/`) must **fetch** a curve and pass it down. That is a network read that must route through `OpenBBClient` (D-087.25) and is an explicit operator decision, not a silent default inside a builder. Until it is done, the proxy branch is what production runs. |
+| `PHASE5_REPLACEMENT_OBLIGATION` | **still `"outstanding"`, correctly.** The reader and model accept a curve, but nothing SUPPLIES one live. Flipping the marker now would claim a live-path replacement that has not happened. The tripwire fires the moment the chain is wired without updating the record. |
+
 
 ### 4.3 Status of the three defects — ADDRESSED 2026-10-08
 
@@ -543,12 +555,14 @@ function** — they are capability gaps, and they are the real Phase-5 remainder
 **GARCH and the whole crisis-shock engine closed 2026-10-09** — `docs/PHASE5_DEFERRED.md` §2.2 and
 §2.3.
 
-⚠️ **On §22.5, re-measured 2026-10-10 (§4.2.1): this is NOT "write the code" work.** The reader and
-the model are already built and tested. What remains is a **specification decision**: §22.5 promises a
-body swap behind a stable signature, and that promise is checkably false — the replacement's input is
-a curve (a collection of expirations) and the proxy's signature carries two scalars, so the swap
-cannot be done without a caller-facing signature change. An operator must decide whether to make
-that change; until then the marker stays `"outstanding"` and the record is pinned by tests.
+⚠️ **On §22.5, re-measured 2026-10-10 (pass two) (§4.2.1): the CODE is done; what remains is to SUPPLY
+a curve live.** The reader (`derive_market_implied_policy_path`) now accepts an optional curve and
+prefers the futures branch; `build_policy_gap` and `build_us_macro_thesis` thread it. The extension is
+**additive** (keyword-only, `None` default), so §22.5's promised *outcome* — *"not a caller-facing
+breaking change"* — holds. Only its stated *mechanism* (a pure body swap) does not, and pass one's
+"therefore blocked on the spec" was wrong. The last step is a live **fetch** of the curve on the
+reasoning path (`_reasoning_frames`), which must route through `OpenBBClient` (D-087.25) and is an
+operator decision. Until then the proxy branch runs and the marker stays `"outstanding"`.
 **All the same, read §4.2 first:** the proxy is the reference every thesis's gap is measured against.
 
 ### How to keep this honest

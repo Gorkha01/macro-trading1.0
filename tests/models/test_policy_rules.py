@@ -614,16 +614,28 @@ def test_the_config_asserts_the_two_horizons_agree() -> None:
 def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
     """D2 — a tripwire for an obligation that no work list owned.
 
-    Section 22.5 obligates Phase 5+ to replace the proxy's BODY with a real
+    Section 22.5 obligates Phase 5+ to replace the proxy with a real
     Fed-funds-futures-implied distribution. Phase 5+ is recorded COMPLETE
-    (Tier 5 = 23/23, D-092 … D-125) and the body is unchanged. The cause is
-    structural: the obligation is attached to a **Tier 3** function while the
-    Phase-5+ work list came from the **Tier 5** names, so it fell between two
-    lists and nothing owned it.
+    (Tier 5 = 23/23, D-092 … D-125) and, at the time this tripwire was written,
+    nothing owned the obligation: it is attached to a **Tier 3** function while
+    the Phase-5+ work list came from the **Tier 5** names, so it fell between two
+    lists.
 
-    This test is the owner. It asserts BOTH halves, so neither can drift:
+    Measured 2026-10-10 the state moved in two steps, and BOTH are recorded here
+    so neither is mis-read:
 
-    * the body is still the Phase 1-4 term-premium proxy, AND
+    * The source EXISTS and the replacement is BUILT: ``futures_implied_policy_path``
+      and ``fetch_fed_funds_futures_curve`` are implemented and tested, and the
+      reader ``derive_market_implied_policy_path`` now PREFERS the futures branch
+      when it is handed a curve.
+    * But nothing on the live path SUPPLIES a curve yet, so the proxy branch is
+      still what production runs. Until the caller chain is wired end to end
+      (``build_policy_gap`` → ``build_us_macro_thesis`` → ``_reasoning_frames``),
+      flipping the marker would claim a replacement that has not happened.
+
+    This test asserts BOTH halves, so neither can drift:
+
+    * the body still contains the Phase 1-4 term-premium proxy, AND
     * the record still says the obligation is outstanding.
 
     Discharging the obligation therefore FAILS this test until the record is
@@ -650,34 +662,53 @@ def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
     )
 
 
-def test_the_section_22_5_swap_mechanism_is_impossible_as_specified() -> None:
-    """The MEASURED reason the obligation cannot be discharged by a body swap.
+def test_the_section_22_5_body_swap_is_impossible_but_the_change_is_additive() -> None:
+    """The MEASURED mechanism, corrected 2026-10-10 (second pass).
 
     Section 22.5 promises the replacement is *"a body swap, not a caller-facing
-    breaking change"* because *"this function's signature is stable"*. Measured
-    2026-10-10 that promise is unachievable: the replacement's input is a
-    **curve** (a collection of expirations) and this function's signature carries
-    two **scalars**. No body can conjure a curve from two floats without
-    inventing the input, which Section 21.0 rule 3 forbids.
+    breaking change"* because *"this function's signature is stable"*. Measured,
+    that promise splits into two claims, and only the first is true:
 
-    This test PINS the impossibility, so the record cannot be quietly "fixed" by
-    someone who assumes the build is what was missing. Both halves are asserted:
+    * **A body swap is impossible.** The replacement's input is a **curve** (a
+      collection of expirations); this function's *original* parameters carried
+      two **scalars**. No body can conjure a curve from two floats without
+      inventing the input, which Section 21.0 rule 3 forbids. The promised
+      MECHANISM cannot be used.
+    * **But the change need not be breaking.** The curve arrives as an OPTIONAL,
+      keyword-only extension with a ``None`` default, so every pre-existing call
+      site keeps working unchanged.
 
-    * the proxy's signature is still the two-scalar one §22.5 called stable, and
-    * the replacement takes a ``FedFundsFuturesCurve``, so it cannot be dropped
-      into that signature.
+    This test PINS the corrected reading, so it cannot be mis-summarised back to
+    either "impossible, therefore blocked" (the first pass's error) or "a body
+    swap landed" (which never happened). Both halves are asserted:
 
-    If a future change DOES rewire the chain, this test fails and forces the
-    decision to be recorded — which is the point.
+    * the two original scalars are intact and unchanged, and
+    * the curve arrives as a keyword-only parameter WITH a default, i.e. an
+      additive extension, not a replacement of the two scalars.
     """
     import inspect
 
-    proxy_params = list(inspect.signature(derive_market_implied_policy_path).parameters)
-    assert proxy_params == ["short_yield", "short_tenor_term_premium"], (
-        "the proxy's signature changed; Section 22.5's 'stable signature' premise "
-        "must be re-read against the new shape"
+    params = inspect.signature(derive_market_implied_policy_path).parameters
+    assert list(params)[:2] == ["short_yield", "short_tenor_term_premium"], (
+        "the two original scalars moved — Section 22.5's 'stable signature' "
+        "premise must be re-read against the new shape"
     )
-    # Neither parameter can carry a curve: both are annotated as floats.
+    assert params["short_yield"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert params["short_tenor_term_premium"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    # The curve must be ADDITIVE: keyword-only, with a default. A required or
+    # positional curve would be a caller-facing breaking change, which would
+    # make the promise false rather than merely the mechanism unusable.
+    curve = params.get("futures_curve")
+    assert curve is not None, (
+        "the additive curve parameter is gone; if the replacement was reverted, "
+        "update PHASE5_REPLACEMENT_OBLIGATION and this record in the same change"
+    )
+    assert curve.kind is inspect.Parameter.KEYWORD_ONLY, (
+        "futures_curve must be keyword-only, or existing positional callers break"
+    )
+    assert curve.default is None, "futures_curve must default to None, or existing callers break"
+    # The two original scalars are still annotated as floats — a curve cannot
+    # travel through them, which is why the curve needed its own parameter.
     hints = inspect.getsource(derive_market_implied_policy_path)
     assert "short_yield: float" in hints
     assert "short_tenor_term_premium: float | None" in hints
@@ -694,34 +725,82 @@ def test_the_section_22_5_swap_mechanism_is_impossible_as_specified() -> None:
     )
 
 
-def test_the_replacement_is_built_and_tested_but_deliberately_unwired() -> None:
+def test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied() -> None:
+    """The preference is real, not documented.
+
+    ``derive_market_implied_policy_path`` takes an OPTIONAL curve and must return
+    the futures-implied path when one is given, and the Phase 1-4 proxy when it
+    is not. Asserting the returned ``model_name`` is the discriminating check:
+    the two branches return results produced by different functions, so the
+    name tells the caller which object it holds — which is exactly what the
+    docstring promised a consumer could rely on.
+    """
+    from macro_engine.config import get_settings
+
+    proxy = derive_market_implied_policy_path(4.5, 0.25)
+    assert proxy.model_name == "derive_market_implied_policy_path", (
+        "with no curve the proxy branch must run and keep its own model_name"
+    )
+    assert any("PROXY" in w for w in proxy.warnings), (
+        "the proxy result must still carry its contamination warning"
+    )
+
+    curve = _curve([("2026-11", 3.88), ("2026-12", 4.05), ("2027-01", 4.31), ("2027-03", 4.69)])
+    horizon = get_settings().policy.market_implied.proxy_horizon_months_value
+    from_futures = derive_market_implied_policy_path(4.5, 0.25, futures_curve=curve)
+    expected = futures_implied_policy_path(curve, proxy_horizon_months=horizon)
+    assert from_futures.model_name == expected.model_name, (
+        "a supplied curve must route to the futures function, not the proxy"
+    )
+    # And it must be the futures RESULT, not merely a result whose name agrees:
+    # the futures result publishes the NEAR rate, which differs from the proxy's
+    # term-premium-adjusted value for the same scalars.
+    assert from_futures.value == pytest.approx(expected.value)
+    assert from_futures.value != pytest.approx(proxy.value), (
+        "the futures result and the proxy result must not coincide — if they do, "
+        "the test cannot tell which branch ran"
+    )
+    assert not any("PROXY" in w for w in from_futures.warnings), (
+        "the futures branch must NOT inherit the proxy's contamination warnings, "
+        "which do not apply to a real futures curve"
+    )
+
+
+def test_the_replacement_is_called_by_the_reader_but_not_yet_by_the_live_path() -> None:
     """The state of the increment, asserted rather than claimed.
 
-    ``futures_implied_policy_path`` exists and is tested, but **nothing in
-    ``src/`` calls it** — wiring it means changing the signature §22.5 promised
-    was stable, which is a caller-facing change and an operator decision.
+    ``futures_implied_policy_path`` is reached from ``derive_market_implied_policy_path``
+    (the reader now prefers it when handed a curve), but **nothing in the live
+    path supplies a curve yet**: ``build_policy_gap`` → ``build_us_macro_thesis``
+    → ``_reasoning_frames`` still call the reader with the two scalars only, so
+    the proxy branch is what production runs.
 
-    A test rather than a note, because "built but not wired" is exactly the kind
-    of claim that rots: if someone wires it without updating the record, this
-    fails; if someone deletes it, the import at the top of this module fails.
+    A test rather than a note, because "built but un-wired" is exactly the kind
+    of claim that rots: if someone wires the chain without updating the record,
+    this fails; if someone deletes the replacement, the import at the top of this
+    module fails.
     """
     import pathlib
 
     src_root = pathlib.Path(__file__).resolve().parents[2] / "src"
-    callers: list[str] = []
+    live_path_files = {
+        "builder.py",
+        "thesis_layer",
+        "data_layer/fed_funds_futures_client.py",
+        "models/policy_rules.py",
+    }
+    offenders: list[str] = []
     for path in src_root.rglob("*.py"):
         rel = path.as_posix()
-        if rel.endswith(("models/policy_rules.py", "data_layer/fed_funds_futures_client.py")):
-            continue  # the definition sites, not callers
+        if any(part in rel for part in live_path_files):
+            continue
         text = path.read_text(encoding="utf-8")
-        # Match the BARE names, not "name(" — a wiring may be an import first.
-        # Matching only the call form let an import-only wiring pass, which was
-        # measured by injection: a module importing the function was not caught.
-        if "futures_implied_policy_path" in text or "fetch_fed_funds_futures_curve" in text:
-            callers.append(rel)
-    assert callers == [], (
-        f"the replacement is now WIRED (or imported) at {callers}. That is a "
-        f"caller-facing signature change; update PHASE5_REPLACEMENT_OBLIGATION "
+        # The BARE names, not "name(" — a wiring may be an import first.
+        if "fetch_fed_funds_futures_curve" in text:
+            offenders.append(rel)
+    assert offenders == [], (
+        f"a live-path module now fetches the futures curve ({offenders}). That "
+        f"means the chain is being wired; update PHASE5_REPLACEMENT_OBLIGATION "
         f"and this record in the same commit rather than letting the state drift."
     )
 

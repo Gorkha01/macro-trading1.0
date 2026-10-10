@@ -123,6 +123,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from macro_engine.config import get_settings
+from macro_engine.data_layer.fed_funds_futures_client import FedFundsFuturesCurve
 from macro_engine.models.contracts import ModelResult, utc_now
 from macro_engine.models.convergence import ConvergenceInputs, classify_convergence
 from macro_engine.models.instrument_selection import (
@@ -359,6 +360,7 @@ def build_policy_gap(
     *,
     short_yield: float,
     short_tenor_term_premium: float | None,
+    futures_curve: FedFundsFuturesCurve | None = None,
 ) -> tuple[MarketPricingGap, RuleTrio, ModelResult, ModelResult]:
     """Q3-Q5: the three rules, their dispersion, and the canonical gap.
 
@@ -390,6 +392,14 @@ def build_policy_gap(
     and attaches its own warnings when no term premium is available. Those
     warnings are **not** dropped — they are returned on the ensemble's sibling
     result and reach the thesis through ``collect_all_warnings``.
+
+    ``futures_curve`` is the Section 22.5 replacement path, threaded through from
+    the caller. ``None`` (the default) keeps the Phase 1-4 term-premium proxy, so
+    every existing call is unaffected (the extension is additive). When a curve
+    **is** supplied, ``derive_market_implied_policy_path`` prefers it and
+    publishes the market's own near futures-implied rate instead of the proxy —
+    and the returned ``market_path`` is then the futures result, so the
+    contamination warnings are the futures function's, not the proxy's.
     """
     taylor = taylor_rule(taylor_inputs)
     balanced = balanced_approach_rule(taylor_inputs)
@@ -400,6 +410,7 @@ def build_policy_gap(
     market_path = derive_market_implied_policy_path(
         short_yield=short_yield,
         short_tenor_term_premium=short_tenor_term_premium,
+        futures_curve=futures_curve,
     )
     market_implied = market_path.value
     if not isinstance(market_implied, int | float):
@@ -761,6 +772,7 @@ def build_us_macro_thesis(
     curve_long_tenor: str | None = None,
     short_yield: float,
     short_tenor_term_premium: float | None = None,
+    futures_curve: FedFundsFuturesCurve | None = None,
     as_of: datetime | None = None,
     unattributed: Sequence[UnattributedWarning] = (),
     catalyst_calendar: Sequence[str] | None = None,
@@ -793,6 +805,18 @@ def build_us_macro_thesis(
         Q3/Q4's market read. ``None`` for the premium is the honest input when
         no term-premium model is wired, and ``derive_market_implied_policy_path``
         discloses the contamination on its own result (Section 22.5).
+    futures_curve:
+        Section 22.5's replacement input, forwarded to ``build_policy_gap`` and
+        on to ``derive_market_implied_policy_path``. ``None`` (the default) is
+        the honest input for a caller that has not fetched a curve, and the
+        Phase 1-4 term-premium **proxy** is then what runs — which is the
+        shipped behaviour, so every existing caller is unaffected. When a curve
+        is supplied the market leg becomes the market's own near futures-implied
+        rate, and the proxy's contamination warnings do not apply.
+        The default is ``None`` rather than a fetch so that the **decision to
+        use the futures source is explicit at the call site**, not an implicit
+        network read inside a builder (D-137's declaration-by-design; §21.0
+        rule 3 forbids inventing the curve here).
     unattributed:
         Section 21.4's blocked inputs and Section 5.4's flags, forwarded to
         ``collect_all_warnings``. Forwarded because a blocked input is the
@@ -867,6 +891,7 @@ def build_us_macro_thesis(
         first_difference_inputs,
         short_yield=short_yield,
         short_tenor_term_premium=short_tenor_term_premium,
+        futures_curve=futures_curve,
     )
 
     # -- Q6. THE SIGNIFICANCE TEST reads the published gap's own verdict, not a

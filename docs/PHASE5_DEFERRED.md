@@ -455,7 +455,7 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | `fx_spot` / `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them |
 | 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden |
-| §22.5 Fed-funds-futures-implied policy path | **Built + tested, deliberately UNWIRED** (2026-10-10) | the SOURCE exists; the block is the *signature*, not the data — see §5.1 |
+| §22.5 Fed-funds-futures-implied policy path | **Built + tested; reader & chain wired additively; the live FETCH remains** (2026-10-10) | the SOURCE exists and the code is done; the remaining step is supplying a curve on the live path (an `OpenBBClient`-routed fetch) — see §5.1 |
 | `bayesian.likelihoods.table` (data) | Deferred | historical evidence-vs-outcome data |
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
@@ -541,11 +541,16 @@ Finding IDs in `.review-evidence/module_findings.json`:
 `F-MOD-001` (path divergences, SEV-3, OPEN), `F-MOD-002` (census verified, INFO),
 `F-MOD-003` (scenario shock engine deferred, SEV-3, OPEN — **GARCH half CLOSED 2026-10-09, §2.2**).
 
-### 5.1 §22.5 — the Fed-funds-futures path: the source EXISTS, the obstacle is the SIGNATURE
+### 5.1 §22.5 — the Fed-funds-futures path: the source EXISTS, the mechanism does not, the change is additive
 
-Measured 2026-10-10. **This reverses a previous finding.** An earlier pass recorded §22.5 as
-*"needs data"*, on the strength of a D-108 route inventory that had been grepped for
-`forward|swap|basis` — and **never for `futur`**. The source was there the whole time:
+Measured 2026-10-10, in **two passes**. **Pass two reverses part of pass one.** Pass one recorded the
+obstacle as *"the SIGNATURE"* and concluded the obligation was **blocked on the spec**. Measured again,
+that conclusion was wrong: the promised *mechanism* is unusable, but the promised *outcome* is
+achievable, and the reader and builder chain now do it.
+
+An earlier pass still had recorded §22.5 as *"needs data"*, on the strength of a D-108 route inventory
+that had been grepped for `forward|swap|basis` — and **never for `futur`**. The source was there the
+whole time:
 
 ```bash
 uv run python tools/probe_fed_funds_futures.py
@@ -571,9 +576,9 @@ The read is now implemented and tested — `data_layer/fed_funds_futures_client.
 `models/policy_rules.futures_implied_policy_path` (the model leg), with the six ~52% rows **rejected
 and named**, never clamped.
 
-**Why it is nevertheless NOT wired, and why that is a SPEC defect rather than a work item.** §22.5
-promises the replacement is *"a body swap, not a caller-facing breaking change"* because *"this
-function's signature is stable"*. That premise is false, and it is checkable in one command:
+**The mechanism problem, stated precisely — because pass one overstated it.** §22.5 promises the
+replacement is *"a body swap, not a caller-facing breaking change"* because *"this function's
+signature is stable"*. The premise splits into two claims, and only the first survives:
 
 ```bash
 uv run python -c "
@@ -581,25 +586,34 @@ import inspect
 from macro_engine.models.policy_rules import (
     derive_market_implied_policy_path, futures_implied_policy_path)
 print(list(inspect.signature(derive_market_implied_policy_path).parameters))
-# ['short_yield', 'short_tenor_term_premium']   <- two SCALARS
+# ['short_yield', 'short_tenor_term_premium', 'futures_curve']  <- two scalars + an OPTIONAL curve
 print(list(inspect.signature(futures_implied_policy_path).parameters))
-# ['curve', 'proxy_horizon_months']             <- a CURVE
+# ['curve', 'proxy_horizon_months']                            <- a CURVE
 "
 ```
 
-A curve is a **collection of expirations**. No body can carry one through a two-float signature
-without reconstructing it from the scalars, which §21.0 rule 3 forbids. The scalar shape propagates
-the whole way to the live path — `build_policy_gap(short_yield, short_tenor_term_premium)`
-(`thesis_layer/builder.py:356`) ← `build_us_macro_thesis` ← `_reasoning_frames`
-(`api_layer/reasoning_stream.py`), whose own docstring documents a `TypeError` that fires when the
-proxy "changes shape". Wiring the replacement therefore **IS** a caller-facing change — the exact
-thing §22.5 said it would not be.
+* **A pure body swap is impossible.** A curve is a **collection of expirations**. No body can carry one
+  through a two-float signature without reconstructing it from the scalars, which §21.0 rule 3 forbids.
+  So the *stated mechanism* cannot be used.
+* **But the change need not be breaking.** `futures_curve` is **keyword-only with a `None` default**, so
+  every pre-existing call site is unaffected. §22.5 promised the *outcome* — *"not a caller-facing
+  breaking change"* — and that outcome **is** achievable.
 
-So the obligation is **still outstanding**, now blocked on the specification's own swap mechanism
-rather than on data or ownership. `PHASE5_REPLACEMENT_OBLIGATION` keeps the value `"outstanding"`,
-and `tests/models/test_policy_rules.py` pins the impossibility in two tests
-(`test_the_section_22_5_swap_mechanism_is_impossible_as_specified`,
-`test_the_replacement_is_built_and_tested_but_deliberately_unwired`) so the record cannot be
-quietly "closed" by someone who assumes the build was what was missing. Discharging it requires an
-operator decision about the signature — recorded in AGENTS.md by the operator, not silently here.
+**Pass one mistook "impossible by the promised mechanism" for "impossible".** It read §22.5's *"body
+swap"* as the only permitted change and concluded the block was the spec. What the reader now does:
+`derive_market_implied_policy_path(curve=…)` **prefers** the futures branch and keeps the proxy
+byte-for-byte when the curve is `None`; `build_policy_gap` and `build_us_macro_thesis` thread the
+optional curve. The extension is additive, so the promise's *outcome* holds.
+
+**So the obligation is still outstanding, but for a narrower reason: nothing SUPPLIES a curve on the
+live path yet.** `_reasoning_frames` (`api_layer/`) must **fetch** one and pass it down — a network read
+that must route through `OpenBBClient` (D-087.25) and is an explicit operator decision, not a silent
+default inside a builder. Until that lands, the proxy branch is what production runs, so
+`PHASE5_REPLACEMENT_OBLIGATION` keeps the value `"outstanding"` and flipping it now would be a false
+claim. `tests/models/test_policy_rules.py` pins the state in three tests
+(`test_the_section_22_5_body_swap_is_impossible_but_the_change_is_additive`,
+`test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied`,
+`test_the_replacement_is_called_by_the_reader_but_not_yet_by_the_live_path`) so the record cannot be
+quietly "closed" by someone who assumes the build was what was missing — and the last of the three
+**fails the moment the live chain is wired**, forcing the record to be updated in the same change.
 

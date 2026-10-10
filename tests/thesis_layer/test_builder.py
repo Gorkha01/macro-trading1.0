@@ -197,7 +197,83 @@ def test_build_policy_gap_returns_four_values() -> None:
     assert "(gap, rules, ensemble, market_path)" in doc
 
 
-def test_the_policy_view_shape_is_section_7_3s() -> None:
+def test_build_policy_gap_threads_the_futures_curve_to_the_market_leg() -> None:
+    """Section 22.5: the chain must PREFER the futures path when handed a curve.
+
+    ``build_policy_gap`` threads ``futures_curve`` to
+    ``derive_market_implied_policy_path``. The discriminating check is the
+    returned ``market_path.model_name``: the proxy branch and the futures branch
+    return results produced by different functions, so the name says which one
+    built the market leg — and, with it, whose warnings the thesis will carry.
+
+    Both directions are asserted, because a test that only checks the curve case
+    would pass on a chain that ignored ``futures_curve`` whenever the default
+    (proxy) was also the fallback.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.data_layer.fed_funds_futures_client import (
+        FedFundsFuturesCurve,
+        FuturesExpiration,
+    )
+
+    def _curve() -> FedFundsFuturesCurve:
+        rates = [("2026-11", 3.88), ("2026-12", 4.05), ("2027-01", 4.31), ("2027-03", 4.69)]
+        expirations = tuple(
+            FuturesExpiration(
+                expiration=expiration,
+                price=100.0 - rate,
+                implied_rate_pct=rate,
+                months_ahead=index,
+                raw_price=100.0 - rate,
+            )
+            for index, (expiration, rate) in enumerate(rates)
+        )
+        return FedFundsFuturesCurve(
+            symbol="ZQ",
+            provider="yfinance",
+            settlement_offset=100.0,
+            as_of="2026-10-10",
+            expirations=expirations,
+            rows_returned=len(rates),
+            rows_rejected=0,
+            rows_dropped_past=0,
+            rejected_detail=(),
+            source_retrieved_at="2026-10-10T00:00:00+00:00",
+        )
+
+    taylor = TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0)
+    first_diff = FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2)
+
+    _, _, _, proxy_path = build_policy_gap(
+        taylor,
+        first_diff,
+        short_yield=4.3,
+        short_tenor_term_premium=None,
+    )
+    assert proxy_path.model_name == "derive_market_implied_policy_path", (
+        "with no curve the proxy branch must run"
+    )
+
+    _, _, _, futures_path = build_policy_gap(
+        taylor,
+        first_diff,
+        short_yield=4.3,
+        short_tenor_term_premium=None,
+        futures_curve=_curve(),
+    )
+    assert futures_path.model_name == "futures_implied_policy_path", (
+        "a supplied curve must reach the market leg; the chain dropped it"
+    )
+    # The near rate, not the mean: the identity every consumer relies on.
+    horizon = get_settings().policy.market_implied.proxy_horizon_months_value
+    assert futures_path.value == pytest.approx(3.88), (
+        "the futures leg must publish the NEAR implied rate; a value of 3.88% "
+        f"(horizon={horizon}mo) is what the near expiration implies"
+    )
+    assert futures_path.value != pytest.approx(proxy_path.value), (
+        "the two branches must not coincide, or this test cannot tell them apart"
+    )
+
     _, rules, ensemble, _ = build_policy_gap(
         TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
         FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
