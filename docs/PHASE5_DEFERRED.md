@@ -248,9 +248,59 @@ BoE projection path) that a less comparable country would need more of.
 multi-country generality: *"Phases 0–4 build a US-only system. … `country: str = "us"` is not a
 generalization — it is a label on a system that currently only works for one value of it."*
 Multi-country is **Tier 5+**, and per §22.3 it is not one task but **three per country** (verified
-sources, a genuinely distinct central-bank reaction function, and an instrument set). The ECB's
-20-country compromise, the BoJ's deflation-scar bias, and the PBoC's non-Western reaction function
-each need *different logic*, not a relabelled Taylor Rule.
+sources, a genuinely distinct central-bank reaction function, and an instrument set).
+
+#### 2.4.1 What "multi-country" actually means — the four-layer bar
+
+> **Added 2026-10-10 when the operator asked, in one line: *"What is Multi-country? This one is very
+> important."*** The answer was not in any single place in the repo — §22.3 names the three
+> *per-country* workstreams but never states what the *engine* must become. This subsection is that
+> statement, so the scope is legible rather than inferred.
+
+A true multi-country engine is **not** "the US engine with a country label". It is four capabilities,
+each only real if the one below it is:
+
+| # | Capability | What it requires | Trap if faked |
+|---|---|---|---|
+| **1** | **Country-specific data** | Its own verified series: policy rate, inflation (on ITS target measure), labor, GDP, curve, fiscal calendar — each with provenance and plausibility bounds | A series fetched, never cross-checked against the country's own conventions |
+| **2** | **Country-specific reaction function** | Genuinely distinct logic: ECB's 20-country compromise + 2% HICP, BoJ's deflation-scar + YCC, BoE's energy/non-energy split + 5-quarter horizon | **The Fed's Taylor rule with a foreign label** — the single most common fake |
+| **3** | **Country-specific instruments + FX** | Its own rates system (gilts, JGBs, Bunds), its equity index, and **an FX layer to compare across countries** | Comparing two countries' yields without converting — the comparison is meaningless |
+| **4** | **Cross-country reasoning** | Two countries at 1–3, plus a shared basis (FX-converted, same horizon): *Fed vs ECB*, *US vs EU inflation*, *USD vs EUR* | A "spread" between two numbers measured on different bases |
+
+**Layers 1, 3 and 4 are carry work** (data + plumbing). **Layer 2 is where a system either
+understands a foreign central bank or merely relabels the Fed.** The repo has taken layer 2 seriously:
+gb runs the BoE's *published* Annex 1 rules, not a Taylor rule with a British accent.
+
+**Measured against the bar (2026-10-10):**
+
+| Layer | US | UK (`gb`) | `de` / `jp` | Cross-country |
+|---|---|---|---|---|
+| 1 · Data | ✅ | ✅ 7 `gb_*` series | ❌ | — |
+| 2 · Reaction function | ✅ Fed trio | ✅ 3 BoE rules | ❌ | — |
+| 3 · Instruments | ✅ | ✅ gilt / short-sterling / SONIA / FTSE | ❌ | — |
+| **FX (the bridge)** | ⚠️ `fx_spot` declared, **never fetched** | — | — | ❌ |
+| 4 · Cross-country reasoning | — | — | — | ❌ **`BLOCKED_MULTI_COUNTRY_NOT_BUILT`** |
+
+**The three things genuinely missing for the engine the operator described** (Fed-vs-ECB,
+US-vs-EU inflation, USD-vs-EUR), in dependency order:
+
+1. **An FX layer.** `fx_spot` is a declared-but-unwired schema field (`snapshot_builder.py:889`); no
+   FX forward or cross-currency basis exists at all. **Without this, two countries cannot be compared
+   on a common basis — it is the bridge between layers 3 and 4.** This is the §2.5 data block (D-108:
+   no source on this install, 3 probes).
+2. **A second country next to `gb`.** Europe (ECB) is the obvious pair: it makes *Fed vs ECB* and
+   *Bund vs UST* expressible. It is a full three-workstream increment of its own, and harder than gb
+   (the ECB has no single labour market and a 20-country inflation aggregate).
+3. **Cross-country reasoning itself.** `CROSS_COUNTRY_DIVERGENCE` is refused
+   (`BLOCKED_MULTI_COUNTRY_NOT_BUILT`) — correctly, because it needs *two* fully-built country
+   systems and only `us`/`gb` have one each. When two exist, the block becomes a green light rather
+   than a wall.
+
+**What the repo CAN honestly say today:** *"Two countries are modelled end-to-end on their own data,
+their own central-bank rules and their own instruments; a cross-country comparison is not yet
+expressible because the FX bridge is missing."* That is a real, defensible statement — and it is a
+long way short of the multi-country engine described in this subsection.
+
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**
 
