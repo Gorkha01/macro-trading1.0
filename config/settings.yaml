@@ -6488,6 +6488,70 @@ market_implied_futures:
       weekend plus a holiday; a longer gap means the feed, not the calendar.
 
 # ---------------------------------------------------------------------------
+# FX futures (Section 22.3). The exchange-traded instrument NEAREST an FX
+# forward, and the two constants its fetch needs. It is NOT a forward: a
+# rolling front-month (`=F`) switches contract on a schedule and its price
+# jumps at each switch, so it is published AS a future and never fed to
+# `cip_check` in place of the observed forward that model requires.
+# ---------------------------------------------------------------------------
+fx_futures:
+  provider_value:
+    value: "yfinance"
+    calibration_status: institutional_fact
+    note: >
+      The provider `derivatives.futures.historical` serves on this installation
+      for the CME FX complex. MEASURED 2026-10-10: `provider=yfinance` returns
+      HTTP 200 with tens of rows for each of `6E=F` (EUR), `6J=F` (JPY),
+      `6B=F` (GBP), `6A=F` (AUD), `6C=F` (CAD) and `6S=F` (CHF). The other
+      providers on the route are `deribit` (crypto only) and it is
+      network-refused here. A dated contract (`6EZ26`, `6EM27`) returns HTTP 204
+      (empty) on this route, so only the rolling `=F` series is reachable.
+  cme_roots_value:
+    value:
+      EUR: "6E"
+      JPY: "6J"
+      GBP: "6B"
+      AUD: "6A"
+      CAD: "6C"
+      CHF: "6S"
+      NZD: "6N"
+      MXN: "6M"
+      BRL: "6L"
+    calibration_status: institutional_fact
+    note: >
+      THE CURRENCY -> CME FUTURES ROOT MAP, and it is LOAD-BEARING. The route
+      does NOT accept an FX pair code: measured 2026-10-10, `EURUSD=F` and
+      `USDJPY=F` both return HTTP 204 (empty) while `6E=F` and `6J=F` return
+      HTTP 200 with real rows. So the request must be built from the CME root,
+      which is a per-currency fact (like the quote convention) rather than a
+      policy choice -- hence config DATA, not a code literal (LAW 1).
+      VERIFIED for each root present above: 6E/6J/6B/6A/6C/6S/6N/6M/6L all
+      returned HTTP 200. Roots NOT included (6W/6R/6P/6X/6K/6T/6U/6V/6Y/6H/6I)
+      returned HTTP 204 on the same probe, so they are NOT asserted reachable.
+      A pair whose base currency is absent here resolves to `None` and the
+      client reports it as unregistered rather than guessing a root.
+  large_move_sigma_value:
+    value: 6.0
+    calibration_status: uncalibrated_illustrative
+    note: >
+      How far a one-day return must sit from the series' ROBUST scale (a
+      median-absolute-deviation sigma) before it is REPORTED as a large move, in
+      multiples of that scale. Six is deliberately conservative: under a normal
+      distribution a six-sigma day has probability ~2e-9, so the report lists
+      genuinely extreme days rather than ordinary volatility, at the cost of
+      possibly missing a SMALL contract roll (a small carry differential rolls
+      quietly). The cost is asymmetric on purpose -- a missed large move leaves
+      the series merely quieter, whereas a false flag labels an ordinary day
+      extreme.
+      **A large move is NOT called a roll here.** Measured 2026-10-10: the
+      flagged days on `GBPUSD` were the Sep-2022 gilt crisis and other genuine
+      volatility, NOT a quarterly roll schedule -- so a "roll" label would be a
+      mis-description. The field reports what it measures.
+      NOTE the scale is a scaled MAD, not an ordinary stdev: the series
+      CONTAINS the outlier being hunted, so an ordinary stdev would be inflated
+      by the move itself and would blind the detector.
+
+# ---------------------------------------------------------------------------
 # The HTTP service (Section 8, D-070). Section 8.4 states the security posture
 # as prose — "bind to 127.0.0.1, no authentication, permissive CORS for the
 # local Workspace only" — and prose is the wrong home for a bind address. No

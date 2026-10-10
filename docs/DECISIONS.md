@@ -17864,6 +17864,20 @@ measured here**. Recorded as a `blocked:` entry (`fx_forward_rate`) in
 `config/series_registry.yaml` on the day it was found, per the D-047 lesson
 (an unrecorded block is the one nothing can re-probe).
 
+> **⚠️ CORRECTION — added 2026-10-10 (see D-151).** This paragraph is the
+> ORIGINAL 2026-09-25 record and is left as written (history is not rewritten),
+> but **two of its three claims are wrong when re-measured by CALLING the
+> source.** (i) The route count is now **278 paths / 32 providers**, not 443 —
+> the earlier walk ENUMERATED the spec and this one CALLS it. (ii) The CME FX
+> futures tickers do **not** return `EmptyDataError`; six of them
+> (`6E=F`/`6J=F`/`6B=F`/`6A=F`/`6C=F`/`6S=F`) answer HTTP 200 via
+> `derivatives.futures.historical?provider=yfinance`. **The verdict survives**
+> — what they return is the rolling `=F` **continuous** contract, and a rolling
+> front-month is not a forward — so `fx_forward_rate` stays `blocked:`. But the
+> *stated reason* was wrong, which is why the reason in the registry was
+> rewritten on 2026-10-10. The third claim (FRED H.10 is spot-only) was not
+> re-tested and stands as recorded.
+
 ### The parity identity, and the sign — derived, with a hand-computed case
 
 Take one unit of DOMESTIC currency. The **direct** route lends it at `i_d` and
@@ -23919,4 +23933,142 @@ updated for the narrowed sentinel and the cross-country route.
 thesis_layer/builder.py}`, `config/settings.yaml`,
 `tests/models/{test_cross_country.py,test_instrument_selection.py}`,
 `docs/{DECISIONS.md,CHANGELOG.md,CROSS_COUNTRY_DESIGN.md,PHASE5_DEFERRED.md,PROGRESS.md,MODULE_MAPPING.md}`,
+`README.md`.
+
+---
+
+## D-151 — the FX-forward block re-measured (the SEVENTH false-block check): the verdict survives, the reason did not, and the CME rolling future ships labelled as a future
+
+**Date:** 2026-10-10. **A data-layer increment** (a new client + a registry correction), not a model
+one. `PHASE5_DEFERRED.md` §2.5 item 1 was the one remaining *capability* gap; D-108 (2026-09-25)
+recorded it as a hard block and the registry inherited the record. The task was to re-measure it **by
+CALLING the source** — the rule §5.1's lesson established after the §22.5 probe agreed with a wrong
+conclusion instead of overturning it.
+
+### 1. What the probe found — a SPLIT verdict
+
+`scripts/probe_fx_forward.py` (durable, five legs) returned three findings, and they point in
+different directions. That is the whole content of this decision: the block stands, but two of its
+three supporting claims were false.
+
+* **CONFIRMED — no forward route.** The live `openapi.json` carries **278 paths / 32 providers**, and
+  the entire `currency.*` surface is four routes (`price.historical`, `reference_rates`, `search`,
+  `snapshots`). **None is a forward, a swap, or a cross-currency basis.** (D-108 said 443 routes from
+  an *enumeration*; the CALL-based count is 278. The conclusion is unchanged.)
+* **OVERTURNED — the CME FX futures are NOT dead.** D-108 records the tickers `6E=F`/`6J=F`/`6B=F`
+  as returning `EmptyDataError` through yfinance. **They do not.** Six futures answer HTTP 200 via
+  `derivatives.futures.historical?provider=yfinance` (`6E=F`, `6J=F`, `6B=F`, `6A=F`, `6C=F`, `6S=F`),
+  each returning tens of observed OHLC rows (~1451 observations over the requested window).
+  **What they are is the rolling `=F` CONTINUOUS contract**: a dated contract (`6EZ26`, `6EM27`,
+  `6EH26`) returns **HTTP 204 — empty**, and `derivatives.futures.curve` FX 404s. The provider
+  publishes no expiry and no dated contract is reachable, so the only series this route offers is the
+  silently-rolling front month.
+* **REFUTED — the "missing credentials, not a missing product" hypothesis.** The registry recorded
+  that the two candidate providers fail on a missing *key*, implying a config fix. **Measured:**
+  `fmp` IS installed (69 routes) and `currency.price.historical?provider=fmp` returns
+  `400 Missing credential 'fmp_api_key'`; `tiingo` fails likewise; `polygon` is not installed. So the
+  credential gap is real — but **the route it would authenticate serves SPOT**. A key would surface no
+  forward anywhere. **The block is a missing PRODUCT.**
+
+### 2. Why the verdict survives despite two overturned claims
+
+A verdict is only as strong as its reason, and here the reason was rebuilt rather than inherited.
+D-108 concluded "blocked" *because* the futures proxies returned nothing. That premise is false. The
+verdict nevertheless survives on a **different, measured** premise: **a rolling front-month future is
+not a forward.** The `=F` series switches contract on a schedule the source does not disclose, and at
+each roll the quoted price jumps — a *contract switch*, not a market move. Differencing such a series
+against spot yields a "forward point" that is the sum of a genuine basis and an unremovable roll
+artifact. **It is SEV-1 to publish that number under the name "forward"** (Section 21.0).
+
+So the increment does two things at once: it keeps `blocked: fx_forward_rate`, and it ships the
+nearest reachable instrument **labelled for what it is**.
+
+### 3. The design — a future published as a future
+
+`data_layer/fx_futures_client.py` follows the `fed_funds_futures_client` house pattern (a route
+constant, a domain error, a reading dataclass, reject-don't-repair cleaning). What is specific here is
+the **safety surface**, and it is the point of the module:
+
+* **`is_forward` is always `False`**, and there is **no `forward` field or accessor**. A caller that
+  needs a forward is forced to notice it does not have one; it gets a boolean rather than an
+  `AttributeError` that reads like a bug instead of a boundary.
+* **`warnings`** (a property, derived from the reading's own fields so it cannot drift) state that the
+  series is continuous and rolls on an undisclosed schedule, and that it **must not** be fed to
+  `cip_check` in place of an observed forward.
+* **`_resolve_futures(base, quote) -> (root, is_inverse) | None`** is the safety function. The CME FX
+  complex is **USD-only, quoted USD-per-foreign**, so there are exactly two supported shapes and one
+  refusal: `X/USD` → same direction, `is_inverse=False`; `USD/X` → INVERSE, `is_inverse=True`; a
+  **cross** (neither leg USD) → `None`. `convention` and `pair_close` make the inverse explicit
+  (`pair_close` inverts exactly; `latest_close` keeps the raw future price for audit).
+
+### 4. Three defects found by MEASURING, not by a green test
+
+Every one of these was in my own first draft, and each was invisible to the tests as written:
+
+1. **A cross was silently substituted.** The first `_resolve_futures` keyed on the pair's base only, so
+   `EURGBP` resolved to the `6E` root and published the **`EURUSD` series** under the cross's name —
+   identical closes, wrong label. That is the silent-wrong-number class. Fixed by the neither-leg-USD
+   refusal; pinned by a test that asserts the transport is **never called** for a cross (a test that
+   only checked `is None` on an always-answering stub would have passed under the defect).
+2. **A "roll detector" flagged ordinary volatility.** An earlier draft called large one-day moves
+   "roll gaps" and published them as such. Measured on the live series, the flagged `GBPUSD` days were
+   **2022-09-23 (the gilt crisis)** and other genuine volatility — *not* a quarterly roll schedule. A
+   large move and a roll are indistinguishable from returns alone, so the "roll" label was a
+   **mis-description** (Lesson 2: a field naming a computation that did not happen). Renamed
+   `detect_large_moves`/`LargeMove`, config `roll_sigma`→`large_move_sigma`, and the warning now says
+   plainly that rolls cannot be separated from market moves.
+3. **A counter that could never be non-zero.** `_clean_frame` originally filtered drops out and
+   returned only the kept list, so the caller always published `rows_dropped = 0`. Fixed by returning
+   `(kept, dropped)`.
+
+### 5. The scale choice, and a test that only LOOKED like its proof
+
+The detector's cutoff is a **robust** scale (median absolute deviation, `×1.4826` to a standard-
+deviation equivalent), not an ordinary `stdev`. The reason is a property of a series that *contains*
+the outlier: a `stdev` is inflated **by** the move it is hunting, so its bar rises exactly when it
+should fire; the mean is dragged the same way. The MAD — a middle order statistic — resists both.
+
+The first version of the "mover proof" test asserted only *that the shock is flagged*. The sweep
+showed it **survives** substituting a `stdev` for the MAD: the assertion was true under both scales.
+**This is Lesson 4's pattern (fourth instance): a test asserting a TEXTUAL outcome, not the
+MECHANISM.** The fixed test makes the two scales **diverge** — a tight (~0.1%) noise band with a ~20%
+shock — and asserts the returned cutoff sits *below* an ordinary stdev of the same returns. The
+`>`/`>=` boundary, by contrast, is **deliberately not swept**: it differs only at exact floating-point
+equality, which no construction can pin, so a mutation of it would be inert by arithmetic and its
+"survivor" would say nothing.
+
+### 6. The sweep — 17/17, and what the eight first-pass survivors were
+
+`scripts/mutation_fx_futures.py`, **one increment, one sweep**, labels partitioned by concern (R =
+transport, S = safety refusals, C = convention claims, D = drop guards, M = the detector, W = published
+caveats, L = the config accessor). `CANARY1` (a syntax error in the module literal) died — so the
+selection reaches the mutated module and the kills are evidence.
+
+**Eight mutations survived the first pass. Per Lesson 4, each was dug into rather than dismissed:**
+
+* **S1 was an inert mutation, not a weak test** — my replacement still returned `None`. Fixed to
+  produce the actual defect (the cross's base treated as foreign).
+* **S2, D2, D3, W1, W2 were real TEST gaps** — an unmapped-root refusal, the two secondary drop
+  counters (an unconvertible value; an unparseable date), the large-move caveat, and the convention's
+  foreign-currency leg all lacked a test asserting the mechanism. Each got one, and each new test was
+  verified to KILL its mutant.
+* **M1 (the scale) was the Lesson-4 gap described in §5.**
+* **M3 was re-cast** from the untestable boundary to the sign-agnostic `abs` (a crash must be flagged
+  like a spike), which is observable and is a real safety property.
+
+Final: **17/17 killed**, anchors sound (`check_targets`: 0 problems), no `MUTANT` residue, the target
+file byte-identical to its pre-sweep backup.
+
+### 7. Gates
+
+`ruff check src/ tests/ tools/` PASS · `ruff format --check` clean · `mypy` clean · suite **1992
+passed / 5 deselected** (up from 1967; +25 in `test_fx_futures_client.py`, with the two new non-numeric
+envelope leaves absorbed into `test_infrastructure`'s disclosed set). `AGENTS.md` byte-identical
+(`sha256 8295ccf3…`).
+
+**Files:** `src/macro_engine/data_layer/fx_futures_client.py` (new),
+`src/macro_engine/{config.py,models/fx_carry.py}`, `config/{settings.yaml,series_registry.yaml}`,
+`tests/data_layer/test_fx_futures_client.py` (new), `tests/test_infrastructure.py`, `pyproject.toml`,
+`scripts/{probe_fx_forward.py,mutation_fx_futures.py}` (new),
+`docs/{DECISIONS.md,CHANGELOG.md,PHASE5_DEFERRED.md,PROGRESS.md,MODULE_MAPPING.md,OPEN_ISSUES.md,UNWIRED_FUNCTIONS.md,BUILD_STATE.md}`,
 `README.md`.

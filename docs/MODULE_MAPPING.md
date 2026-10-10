@@ -858,6 +858,8 @@ the fallback's **literal source text** rather than its meaning — a test pinnin
 | `data_layer/snapshot_builder.py` | The **one** place a snapshot is assembled | `test_phase1_data_layer.py` |
 | `data_layer/validation.py` | Range/staleness checks — flags, never fixes | `test_phase1_data_layer.py` |
 | `data_layer/persistence.py` | Timestamped parquet audit trail | `test_phase1_data_layer.py` |
+| `data_layer/fx_client.py` | FX **spot** fetch for the configured G10 pairs; `FX_PAIRS` is the canonical pair catalogue (LAW 2) | `test_fx_client.py` |
+| `data_layer/fx_futures_client.py` | The **CME rolling front-month FX future** — the nearest reachable instrument to a forward, published **as a future** (`is_forward` False, no `forward` accessor); refuses a non-USD cross | `test_fx_futures_client.py` |
 | `data_layer/logging_json.py` | One JSON object per line; credential redaction | `test_infrastructure.py` |
 | `deployment.py` | Every endpoint/port/credential as a declared variable | `test_infrastructure.py` |
 | `settings_store.py` | Bitemporal, append-only revisions | `test_infrastructure.py` |

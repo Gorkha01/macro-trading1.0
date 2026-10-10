@@ -125,6 +125,13 @@ ignore = [
 # directly in a few probes where the point is to BYPASS the project's client
 # and observe the provider's raw answer.
 "src/macro_engine/api_layer/*.py" = []
+# `S311`: the large-move detector's tests need a NOISE distribution, not a
+# fixture of hand-listed numbers — the property under test (a MAD scale resists
+# an outlier that inflates a stdev) is a property of a *distribution*. The
+# generator is `random.Random(seed)`, so the series is deterministic and
+# reproducible; "cryptographic use" is absent by construction. Scoped to the one
+# file that needs it, per the D-067 pattern.
+"tests/data_layer/test_fx_futures_client.py" = ["S311"]
 # `test_release_calendar.py` asserts NAIVE datetimes on purpose. The provider's
 # wire format is a naive ISO string ("2026-08-13T08:30:00") and
 # `release_calendar._parse_event_datetime` returns it unlocalised by design:

@@ -5721,12 +5721,19 @@ class FxPairsSettings(BaseModel):
     a report entry rather than derived as a cross — chaining two unrelated legs is
     a third convention (bid/ask, timing) the caller did not ask for.
 
-    **Forward points are NOT here, and cannot be added.** Measured 2026-10-10:
-    the live OpenBB spec carries 278 routes and none matches
+    **Forward points are NOT here, and cannot be added — RE-MEASURED 2026-10-10.**
+    The live OpenBB spec carries 278 routes across 32 providers and none matches
     ``forward``/``swap``/``basis`` under ``currency`` or ``fixedincome``, so FX
-    forwards remain unavailable (D-108) and ``cip_check``'s live check stays
-    blocked. This block is SPOT ONLY; a forward entry here would have no route
-    behind it and would be a fabricated input (Section 21.0 rule 3).
+    forwards remain unavailable and ``cip_check``'s live check stays blocked.
+    The 2026-10-10 re-measurement (``scripts/probe_fx_forward.py``) CORRECTED the
+    original D-108 record on two points — the CME FX futures are reachable (six
+    answer via ``derivatives.futures.historical``), and the ``fmp`` credential
+    hypothesis is false (a key would unlock SPOT, not forwards). Neither changes
+    the verdict: a rolling ``=F`` future is not a forward, so this block stays
+    SPOT ONLY and a forward entry here would have no route behind it and would be
+    a fabricated input (Section 21.0 rule 3). The nearest reachable instrument —
+    the rolling CME future — is published by ``data_layer/fx_futures_client.py``
+    **as a future** (``is_forward`` False), never entered here as a forward.
 
     ``calibration_status`` and ``note`` are plain ``str``, NOT ``CalibratedValue``
     envelopes. The envelope exists to force a *tunable* to declare its
@@ -7989,6 +7996,76 @@ class MarketImpliedFuturesSettings(BaseModel):
         return self
 
 
+class FXFuturesSettings(BaseModel):
+    """Section 22.3's FX-futures layer — the exchange-traded nearest-a-forward.
+
+    **Why this exists beside ``fx_carry``.** ``cip_check`` wants an OBSERVED FX
+    forward and this installation has none (re-measured 2026-10-10 across all 32
+    installed providers: the whole FX surface is four routes, none a
+    forward/swap/basis; recorded at ``series_registry.yaml`` ``fx_forward_rate``).
+    What IS reachable is the **CME FX futures** complex via
+    ``derivatives.futures.historical``. This block holds the two constants that
+    layer needs, so the fetch is reproducible from config alone (LAW 1).
+
+    **The dangerous substitution this block must not enable.** A rolling
+    front-month future (``=F``) is NOT a forward: it switches contract on a
+    schedule and the quoted price JUMPS at each switch. Feeding it to
+    ``cip_check`` as ``forward`` would produce a plausible-looking wrong CIP
+    deviation. The client labels it a future (``is_forward`` False) and this
+    block carries no leaf that could make it look like a forward.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``_value`` suffix so the field matches the YAML key exactly —
+    #: ``extra="forbid"`` makes a mismatch a LOAD error, the right failure for a
+    #: leaf whose absence would otherwise be a default.
+    provider_value: CalibratedValue
+    cme_roots_value: CalibratedValue
+    large_move_sigma_value: CalibratedValue
+
+    @property
+    def provider(self) -> str:
+        """The provider serving ``derivatives.futures.historical`` on this install."""
+        return str(self.provider_value.value)
+
+    @property
+    def cme_roots(self) -> dict[str, str]:
+        """Currency code -> CME futures root (``"EUR" -> "6E"``).
+
+        LOAD-BEARING: the route rejects an FX pair code (``EURUSD=F`` -> HTTP
+        204) and requires the CME root (``6E=F`` -> HTTP 200), so the request
+        cannot be built from the pair alone. The map is data because the root is
+        a per-currency market fact, not a policy choice (LAW 1).
+        """
+        raw = self.cme_roots_value.value
+        if not isinstance(raw, dict) or not raw:
+            raise ValueError(
+                f"fx_futures.cme_roots_value must be a non-empty mapping of "
+                f"currency -> CME root; got {raw!r}. Without it no FX future can "
+                f"be addressed and every pair would fail as a 204."
+            )
+        return {str(k): str(v) for k, v in raw.items()}
+
+    @property
+    def large_move_sigma(self) -> float:
+        """Robust-sigma multiple above which a one-day move is reported as large.
+
+        **A threshold, and its calibration is what keeps it honest.** Too low it
+        flags ordinary volatility; too high it misses the move it exists to
+        report. It is expressed in ROBUST sigmas (scaled MAD), not ordinary ones,
+        precisely because the series CONTAINS the outlier being hunted — an
+        ordinary ``stdev`` would be inflated by the move itself.
+        """
+        value = float(self.large_move_sigma_value.value)
+        if not value > 0.0 or not math.isfinite(value):
+            raise ValueError(
+                f"fx_futures.large_move_sigma_value must be a finite positive "
+                f"number; got {value!r}. A non-positive cutoff flags every day."
+            )
+        return value
+
+
 class ScenarioEngineSettings(BaseModel):
     """The NAMED, ORDERED factor set the crisis-shock engine works in.
 
@@ -8151,6 +8228,7 @@ class Settings(BaseModel):
     volatility: VolatilitySettings
     scenario_engine: ScenarioEngineSettings
     market_implied_futures: MarketImpliedFuturesSettings
+    fx_futures: FXFuturesSettings
     kelly: KellySettings
     instrument_selection: InstrumentSelectionSettings
     curve_trade: CurveTradeSettings

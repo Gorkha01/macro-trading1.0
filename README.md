@@ -104,6 +104,16 @@ rather than assumed. **Spot only:** FX forwards remain unavailable on this insta
 `forward`/`swap`/`basis` route; D-108), so `cip_check`'s live check stays unavailable and no forward
 is ever synthesised from a spot value.
 
+**The forward block was RE-MEASURED 2026-10-10 by CALLING the source** (`scripts/probe_fx_forward.py`) —
+the seventh false-block check, and it returned a *split* verdict. CONFIRMED: 278 paths, no forward
+route. OVERTURNED: D-108's "the CME futures proxies are dead" is wrong — six CME FX futures answer
+via `derivatives.futures.historical`, but **only the rolling `=F` continuous contract**. REFUTED: the
+"missing credentials, not a missing product" hypothesis is false — `fmp` is installed and a key would
+unlock **spot**, not forwards. **The verdict is unchanged: a rolling front-month future is not a
+forward.** The nearest reachable instrument now ships as `data_layer/fx_futures_client.py`, which
+publishes it **as a future** — `is_forward` is `False`, there is no `forward` accessor, and its
+`warnings` name the `cip_check` hazard — so a caller cannot substitute one for the other by accident.
+
 ## Phase status
 
 | Phase | Scope | Status |

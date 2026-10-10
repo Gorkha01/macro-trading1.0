@@ -2622,28 +2622,54 @@ blocked:
       check is, and the market's own CIP deviation therefore cannot be measured
       here.
 
-      MEASURED 2026-09-25 (D-108), three independent probes rather than one:
-      (1) the OpenBB route inventory walks to 443 routes and NONE matches
-      `forward` / `swap` / `basis` under `currency` or `fixedincome` —
-      `obb.currency` exposes only `price`, `search` and `snapshots`;
-      (2) the CME FX futures tickers `6E=F`, `6J=F` and `6B=F` all return
-      `EmptyDataError` through the yfinance provider, so an exchange-traded
-      proxy is unavailable too; (3) FRED's spot family (`DEXUSEU`, `DEXJPUS`,
-      …) is a SPOT series — the H.10 release carries no forwards.
+      **RE-MEASURED 2026-10-10 (the D-108 claim was due a re-probe, and the
+      re-probe CHANGED TWO OF ITS THREE CONCLUSIONS).** Run
+      `uv run python scripts/probe_fx_forward.py` to reproduce; every probe there
+      CALLS its source rather than enumerating route names (the Section 5.1
+      lesson — the v1 Section 22.5 probe agreed with a wrong conclusion because
+      it only read route names).
 
-      This is an UNRECORDED-BLOCK risk of exactly the D-047 class: the
-      specification's Section 6.7 reference implementation takes a `forward`
-      argument and never says where one comes from, so without this entry there
-      would be nothing to re-probe. An entry can be re-probed on a schedule; a
-      paragraph cannot.
+      CONFIRMED — no forward ROUTE exists. The live spec is 278 paths and the
+      ENTIRE FX surface across all 32 installed providers is four routes:
+      `currency.price.historical` (fmp/tiingo/yfinance), `currency.reference_rates`
+      (ecb), `currency.search`, `currency.snapshots`. Nothing named
+      `forward`/`swap`/`basis` anywhere under `currency` or `fixedincome`.
+      (D-108 said 443 routes; the installation now reports 278 — the count moved,
+      the conclusion did not.)
 
-      What would lift it: any provider that publishes FX forward points or a
-      cross-currency basis (a licensed source, or CME settlement data via a
-      credentialed provider such as `fmp`/`polygon`, both of which currently
-      fail on MISSING CREDENTIALS rather than on a missing product — a config
-      gap, not a dead end, exactly as the `release_calendar` note above found
-      for the calendar). Re-probe with the credentialed providers before
-      concluding the product is unreachable.
+      OVERTURNED — D-108 recorded "the CME FX futures tickers `6E=F`, `6J=F`,
+      `6B=F` all return `EmptyDataError` through the yfinance provider, so an
+      exchange-traded proxy is unavailable too". **That is wrong now and was
+      measured wrong.** Through the OpenBB route `derivatives.futures.historical`
+      with `provider=yfinance` all six CME FX futures (`6E=F` EUR, `6J=F` JPY,
+      `6B=F` GBP, `6A=F` AUD, `6C=F` CAD, `6S=F` CHF) return HTTP 200 with
+      ~28-49 observed rows. D-108 tested the yfinance *provider* directly; the
+      supported path is the OpenBB route. **BUT the reachable series is the
+      ROLLING front-month (`=F`) series, not a dated contract** — a dated
+      contract (`6EZ26`, `6EM27`, `6EH27`) returns HTTP 204 (empty), and
+      `derivatives.futures.curve` for an FX symbol returns 404. A rolling series
+      rolls SILENTLY and carries a price discontinuity at every roll, so
+      differencing it against spot produces a "forward point" that is really a
+      contract switch — NOT a forward, and it is not wired as one.
+
+      REFUTED — the "missing credentials, not a missing product" hypothesis in
+      the previous revision of this entry. **The reason no forward is reachable
+      is a MISSING PRODUCT, not a missing key.** Measured: `fmp` is INSTALLED
+      (69 routes) and `currency.price.historical?provider=fmp` returns
+      `400 Missing credential 'fmp_api_key'`; `tiingo` fails the same way; and
+      `polygon` is not installed at all. So the credential gap is REAL — but it
+      only unlocks FX **SPOT** (which already ships via `fx_client.py`). No
+      installed provider carries a forward/swap/basis route WITH or WITHOUT a
+      key. The earlier advice to "re-probe with the credentialed providers"
+      was discharged here and the credentialed providers do not carry the
+      product.
+
+      What would STILL lift it: a genuinely different source — a licensed
+      feed (Refinitiv/Bloomberg/LSEG), a broker/custodian API that publishes
+      FX forward points or a cross-currency basis, or CME settlement data via a
+      credentialed provider that exposes forwards specifically. No such source
+      is configured. The block is a data-availability boundary, not a code gap.
+    opened_in: OPEN_ISSUES.md
     opened_in: OPEN_ISSUES.md
 
 # ---------------------------------------------------------------------------

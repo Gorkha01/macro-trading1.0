@@ -78,6 +78,15 @@ _NON_NUMERIC_ENVELOPES = frozenset(
         # drifted to a string.
         "market_implied_futures.symbol_value",
         "market_implied_futures.provider_value",
+        # `fx_futures.provider_value`: the provider identity, a string by nature
+        # — the same shape as `market_implied_futures.provider_value` above.
+        "fx_futures.provider_value",
+        # `fx_futures.cme_roots_value`: a currency -> CME-root MAPPING. It is data
+        # (which root tracks which currency is a market fact, LAW 1), and a
+        # mapping has no scalar form — the same reason
+        # `risk.var_confidence_levels` is listed: an envelope carrying structure,
+        # not a drifted number.
+        "fx_futures.cme_roots_value",
     }
 )
 

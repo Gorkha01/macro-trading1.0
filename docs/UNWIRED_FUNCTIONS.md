@@ -294,8 +294,8 @@ than deleted.
 | 1 | **`extensions/` — 6 modules**                                   | deliberate stubs (`raise NotImplementedError`)              | an uninstalled §4 package, one per module                                                     |
 | 2 | ~~**GARCH-family conditional volatility**~~ | **CLOSED 2026-10-09** — `models/volatility.py` built, `arch` added | — |
 | 3 | ~~**Crisis-scenario shock engine**~~                            | **CLOSED 2026-10-09** — engine, simulation half and all four §9.4 scenarios ship | — |
-| 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
-| 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code — EXCEPT the §22.5 path, where a source WAS found (item 6)     |
+| 4 | ~~**Multi-country (`gb`, `eu`, `de`, `jp`)**~~ | **CLOSED 2026-10-10** — all four non-US countries implemented end-to-end (D-145/D-148/D-149); the cross-country *reasoning* layer then shipped (D-150) | — |
+| 5 | **Market/price data coverage — FX forwards** | partially implemented | **A missing PRODUCT, not a missing key** (re-measured 2026-10-10, D-151). `fx_spot` is fetched; the forward has no route on this install. The nearest reachable instrument — the CME rolling `=F` future — ships as `data_layer/fx_futures_client.py`, **labelled as a future** and deliberately NOT wired to `cip_check` |
 | 6 | ~~**`derive_market_implied_policy_path` — the §22.5 replacement**~~ | **CLOSED 2026-10-10 — live fetch shipped, fail-safe to proxy** | — (see §4.2.1) |
 
 **Corrected 2026-10-10 (pass three).** Item 6's blocked-on said *"nothing — it is simply unbuilt"*; an
@@ -305,6 +305,17 @@ body swap) is unusable but the promised *outcome* is achievable **additively**, 
 the **live path fetches and supplies the curve** (fail-safe to the proxy). Item 6 is **CLOSED**. Item
 5's *"source availability, not code"* has one exception (the §22.5 futures path) and is annotated
 accordingly.
+
+**⚠️ `fetch_fx_futures` is reachable but NOT wired — deliberately, and it is disclosed.** D-151 adds
+`data_layer/fx_futures_client.py`, whose `fetch_fx_futures` has **no production caller**: nothing in
+`src/` imports it. That is correct — the module publishes the CME rolling front-month future, which is
+**not** a forward, so wiring it into `cip_check` (the only consumer that wants an FX forward) would put
+a rolling series where a dated one is required and produce a plausible wrong CIP deviation. It is a
+*reachable, tested, deliberately-unwired* data client — the honest disclosure the cash-flow distinction
+demands (`docs/DECISIONS.md` §D-143: reachable ≠ wired), and the same status `fetch_fx_spot` held
+before `_fetch_fx_spot_map` was written to consume it. If a dated-forward source ever appears, the
+forward's consumer is `cip_check`; the future's consumer, if one is wanted, is a *carry/positioning*
+read, not the parity check.
 
 
 ### 4.2 ⚠️ The sixth item — the obligation that fell between two lists

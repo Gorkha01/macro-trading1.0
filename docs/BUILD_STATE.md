@@ -9065,6 +9065,14 @@ implementations** for all three, so this is a stub to UPGRADE — the exception 
 input so it ships, but the **market's own CIP deviation cannot be measured here**.
 Recorded as `fx_forward_rate` in `config/series_registry.yaml`.
 
+> **⚠️ CORRECTED 2026-10-10 (D-151).** Two claims in the paragraph above are wrong when re-measured by
+> CALLING the source: the route count is **278 / 32 providers** (not 443), and the CME FX futures
+> tickers do **not** return `EmptyDataError` — six answer HTTP 200 via
+> `derivatives.futures.historical` (but only the rolling `=F` contract, so the block STANDS on a
+> re-measured reason). The `fmp` credential hypothesis was **refuted** (a key would unlock SPOT, not
+> forwards). The nearest reachable instrument — the CME rolling future — now ships as
+> `data_layer/fx_futures_client.py`, **labelled as a future, never a forward**.
+
 ### The sign, derived with a hand-computed case
 
 `F = S(1+i_d)/(1+i_f)` by no-arbitrage. Inverting it into a synthetic domestic

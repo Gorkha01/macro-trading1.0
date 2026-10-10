@@ -10,6 +10,54 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-151 — the FX-forward block RE-MEASURED (the seventh false-block check), and the CME rolling future shipped as a future (2026-10-10)
+
+`PHASE5_DEFERRED.md` §2.5 item 1 (the one real capability gap) was re-measured by **CALLING the
+source**, not by enumerating the route inventory — the rule §5.1's lesson established. The probe
+(`scripts/probe_fx_forward.py`) returned a **split verdict** and the increment follows it honestly:
+the block stays, but its *stated reason* was wrong, and the nearest reachable instrument now ships
+labelled for what it is. Full evidence: `docs/DECISIONS.md` §D-151.
+
+- **Re-measured (research).** `scripts/probe_fx_forward.py` — a durable, CALL-based probe with five
+  legs (the live FX route surface; the CME futures tickers; dated vs rolling contracts; missing ROUTE
+  vs missing CREDENTIAL; the production `fetch_series` path). Verdict: **CONFIRMED** no forward route
+  (278 paths / 32 providers; the whole `currency.*` surface is four routes, none a forward/swap/basis);
+  **OVERTURNED** D-108's "the CME FX futures return `EmptyDataError`" (six answer HTTP 200 via
+  `derivatives.futures.historical`, but only the rolling `=F` continuous contract — dated contracts
+  204); **REFUTED** the "missing credentials, not a missing product" hypothesis (`fmp` IS installed;
+  a key would unlock SPOT, not forwards). **Conclusion: missing product, not a missing key.**
+- **Corrected** the `fx_forward_rate` entry in `config/series_registry.yaml` — the `reason:` now
+  records the re-measured verdict, names the two overturned findings, and cites the probe. The block
+  itself is retained.
+- **Added** `data_layer/fx_futures_client.py` — `fetch_fx_futures(symbol)` fetches the CME rolling
+  front-month FX future via `derivatives.futures.historical` (`provider` from config). It publishes
+  the series **as a future**: `is_forward` is always `False`, there is **no `forward` accessor**, and
+  `warnings` name the `cip_check` hazard — so a caller cannot substitute one for a forward by
+  accident. `_resolve_futures` refuses a **cross** (neither leg USD) rather than substituting a
+  related USD future (measured: an earlier draft returned the `6E=F` series for `EURGBP`, identical
+  to `EURUSD`); it reports `is_inverse` for `USD/X` pairs (the future quotes USD-per-foreign) and
+  `pair_close` inverts for the pair's own convention.
+- **Added** the `fx_futures:` config block (`settings.yaml`) + `FXFuturesSettings` (`config.py`):
+  `provider_value`, `cme_roots_value` (currency → CME root; a per-currency market fact, LAW 1 — the
+  route needs the ROOT: `EURUSD=F` 204s, `6E=F` 200s), `large_move_sigma_value`.
+- **Fixed during the build** (each a real defect found by measuring, not by a green test): a draft
+  "roll-gap detector" that flagged ordinary volatility (the flagged `GBPUSD` days were the Sep-2022
+  gilt crisis, not a roll schedule) — renamed to `detect_large_moves`/`LargeMove` with the warning
+  honestly framed; a `rows_dropped` counter filtered out before the caller could count it (always 0);
+  a cross silently substituted by its base currency's future.
+- **Tests:** `tests/data_layer/test_fx_futures_client.py` — **25 tests**. **Mutation proof:**
+  `scripts/mutation_fx_futures.py` — **17/17 killed** (canary dead, anchors sound). Eight mutations
+  survived the first pass; per Lesson 4 each was a real TEST gap (or an inert mutation), not a
+  redundant guard: the S1 mutation was inert by construction (fixed to produce the wrong series); a
+  root-missing refusal, a boundary counter, an unconvertible-value counter, the MAD-vs-stdev scale,
+  the sign-agnostic `abs`, and the large-move caveat all lacked a test that asserted the MECHANISM.
+  The `>`/`>=` boundary was **deliberately not swept** — it differs only at exact floating-point
+  equality, which is untestable, so a mutation of it would be inert by arithmetic.
+- **Docs:** `PHASE5_DEFERRED.md` §2.5/§2.5.1 corrected; `DECISIONS.md` D-108 annotated (history not
+  rewritten) and D-151 added; `README.md`; the `FxPairsSettings` and `cip_check` docstrings.
+- **Gates:** `ruff check` PASS · `ruff format --check` clean · `mypy` clean · suite **1992 passed /
+  5 deselected** (+25). `AGENTS.md` byte-identical (`sha256 8295ccf3…`).
+
 ### D-150 — the cross-country reasoning layer (layer 4): the divergence model, the duration-neutral RV selector, and the honest wiring boundary (2026-10-10)
 
 Section 22.3's **fourth and last** multi-country capability. `CROSS_COUNTRY_DIVERGENCE` used to return

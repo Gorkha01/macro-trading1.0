@@ -424,7 +424,7 @@ surprise component must disclose that it is absent.
 | Central bank gold purchases | WGC quarterly | MANUAL |
 | Corporate margin trend | — | human assessment |
 | Default rate trend | — | human assessment |
-| FX forward points | IBKR | may be unavailable depending on entitlements |
+| FX forward points | IBKR / a licensed feed | **RE-MEASURED 2026-10-10 (D-151): missing PRODUCT, not a missing entitlement.** No OpenBB route on this installation serves a forward (278 paths, 0 forward/swap/basis). The `fmp` credential hypothesis was **refuted** — a key would unlock SPOT, not forwards. The nearest reachable instrument, the CME rolling `=F` future, ships as `data_layer/fx_futures_client.py` **as a future**; a rolling series is not a forward and must not be fed to `cip_check` |
 | Trimmed-mean / median CPI | Dallas / Cleveland Fed | separate sources, not integrated |
 | Raw CPI microdata | BLS | index functions are reference-only |
 
