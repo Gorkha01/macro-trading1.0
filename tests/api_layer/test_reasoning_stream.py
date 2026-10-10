@@ -24,6 +24,8 @@ import pytest
 from fastapi import HTTPException
 
 from macro_engine.api_layer import reasoning_stream as rs
+from macro_engine.data_layer.fed_funds_futures_client import FuturesCurveError
+from macro_engine.data_layer.openbb_client import OpenBBFetchError
 from macro_engine.models.contracts import ModelResult
 from macro_engine.models.policy_rules import MarketPricingGap
 from macro_engine.thesis_layer.schemas import (
@@ -128,9 +130,22 @@ def _thesis(*, warnings: list[str] | None = None) -> MacroThesis:
 
 
 def _stub_chain(monkeypatch: pytest.MonkeyPatch, thesis: MacroThesis) -> None:
-    """Stub the four stages ``_reasoning_frames`` calls, keeping the frames real."""
+    """Stub the FIVE stages ``_reasoning_frames`` calls, keeping the frames real.
+
+    The fifth is the Section 22.5 futures-curve fetch. It is stubbed to FAIL by
+    default so the harness is hermetic: a real fetch here would make every test
+    depend on the network and on the provider's current curve, which is exactly
+    the coupling the snapshot stub above exists to avoid. Tests that want the
+    success path stub it themselves (see ``test_the_market_leg_uses_the_futures
+    _curve_when_it_is_available``).
+    """
     monkeypatch.setattr(rs, "get_snapshot", lambda country: (object(), _provenance()))
     monkeypatch.setattr(rs, "snapshot_to_thesis_inputs", lambda snapshot: _inputs())
+    monkeypatch.setattr(
+        rs,
+        "_fetch_futures_curve",
+        lambda: (None, "stubbed: curve unavailable for the hermetic test harness"),
+    )
     monkeypatch.setattr(
         rs,
         "build_policy_gap",
@@ -196,6 +211,132 @@ async def test_the_gap_frame_labels_both_sides_correctly(
     assert "gap = -1.4000pp (-140.0bp)" in detail
     # The old wording, which showed the market side twice and the model side never.
     assert "vs market-implied policy path" not in detail
+
+
+# ---------------------------------------------------------------------------
+# Section 22.5 — the live futures-curve fetch, success and fail-safe
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_market_leg_uses_the_futures_curve_when_it_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§22.5: when the curve is fetchable, it must REACH the builder chain.
+
+    The discriminating check is that ``build_policy_gap`` receives a non-``None``
+    ``futures_curve``. A test that only checked the trace frame would pass on a
+    fetch whose result was then dropped on the floor.
+    """
+    _stub_chain(monkeypatch, _thesis())
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        rs,
+        "_fetch_futures_curve",
+        lambda: (_sentinel_curve(), "curve supplied (test)"),
+    )
+    monkeypatch.setattr(
+        rs,
+        "build_policy_gap",
+        lambda *a, **k: (
+            seen.update(k),
+            (
+                _gap(),
+                (
+                    _result("taylor_rule", 3.2),
+                    _result("balanced_approach_rule", 2.6),
+                    _result("first_difference_rule", 3.0),
+                ),
+                _result("policy_rule_ensemble", {"dispersion_pp": 0.25}),
+                _result("derive_market_implied_policy_path", 4.5),
+            ),
+        )[1],
+    )
+    await _drain()
+    assert seen.get("futures_curve") is not None, (
+        "the fetched curve was not passed to build_policy_gap — the fetch is dead"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_futures_fetch_failure_falls_back_to_the_proxy_without_breaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """§22.5 fail-safe: a futures outage WARNS, it does not break the run.
+
+    The operator's chosen behaviour: use the curve when reachable, fall back to
+    the term-premium proxy when not, and NAME the fallback on the trace. So the
+    stream must (a) still terminate, (b) carry a ``warning`` frame naming the
+    fallback, and (c) pass ``futures_curve=None`` so the proxy actually runs.
+
+    ⚠️ The REAL ``_fetch_futures_curve`` is exercised here, with only its inner
+    ``fetch_fed_funds_futures_curve`` made to raise. An earlier version of this
+    test stubbed ``_fetch_futures_curve`` itself and so asserted the STUB's
+    behaviour — measured: re-raising inside the real handler (removing the
+    fail-safe entirely) left that version GREEN. Stub the SOURCE of the failure,
+    never the function under test.
+    """
+    _stub_chain(monkeypatch, _thesis())
+    seen: dict[str, object] = {}
+
+    def _raise(**_kwargs: object) -> object:
+        raise FuturesCurveError("provider returned no usable expirations")
+
+    # Break the SOURCE, keep the function under test real.
+    monkeypatch.setattr(rs, "fetch_fed_funds_futures_curve", _raise)
+    monkeypatch.setattr(
+        rs,
+        "build_policy_gap",
+        lambda *a, **k: (
+            seen.update(k),
+            (
+                _gap(),
+                (
+                    _result("taylor_rule", 3.2),
+                    _result("balanced_approach_rule", 2.6),
+                    _result("first_difference_rule", 3.0),
+                ),
+                _result("policy_rule_ensemble", {"dispersion_pp": 0.25}),
+                _result("derive_market_implied_policy_path", 4.5),
+            ),
+        )[1],
+    )
+    frames = await _drain()
+    # (a) the stream finished cleanly
+    assert rs._TERMINATOR in frames[-1], "the run did not terminate cleanly"
+    # (b) the fallback is NAMED on the trace, as a warning
+    assert any("unavailable" in f and '"warning"' in f for f in frames), (
+        f"a futures outage must emit a warning frame naming the fallback; got {frames}"
+    )
+    # (c) the proxy branch is what actually ran
+    assert seen.get("futures_curve") is None, (
+        "the fallback did not pass None, so the proxy branch did not run"
+    )
+
+
+def test_the_real_fetcher_converts_a_source_error_into_a_none_and_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_fetch_futures_curve`` itself: the fail-safe is IN the function, tested directly.
+
+    This is the unit-level partner of the stream test above. It calls the real
+    ``_fetch_futures_curve`` with the inner fetch made to raise, and asserts it
+    returns ``(None, <reason>)`` rather than propagating — which is what makes the
+    fail-safe real rather than a property of the trace harness.
+    """
+
+    def _raise(**_kwargs: object) -> object:
+        raise OpenBBFetchError("socket closed")
+
+    monkeypatch.setattr(rs, "fetch_fed_funds_futures_curve", _raise)
+    curve, detail = rs._fetch_futures_curve()
+    assert curve is None, "a failed fetch must yield None so the proxy branch runs"
+    assert "unavailable" in detail and "PROXY" in detail, detail
+
+
+def _sentinel_curve() -> object:
+    """A non-None stand-in for a fetched curve (identity is all these tests need)."""
+    return object()
 
 
 # ---------------------------------------------------------------------------

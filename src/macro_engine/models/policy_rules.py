@@ -719,18 +719,28 @@ def canonical_policy_gap(
 #:     and the function prefers the futures path when a curve is supplied.
 #:
 #: So the obligation is DISCHARGEABLE by an additive change, and this version does
-#: it. The marker below stays ``"outstanding"`` only until the caller chain is
-#: wired end to end (``build_policy_gap`` → ``build_us_macro_thesis`` →
-#: ``_reasoning_frames``): the reader now accepts a curve, but nothing yet
-#: SUPPLIES one on the live path, so the proxy branch still runs in production.
-#: Flipping the marker now would claim a live-path replacement that has not
-#: happened.
+#: it — **and the live path now SUPPLIES the curve.** ``_reasoning_frames``
+#: (``api_layer/reasoning_stream.py``) fetches the ZQ curve through
+#: ``fetch_fed_funds_futures_curve`` (which routes through ``OpenBBClient``,
+#: D-087.25) and passes it down ``build_us_macro_thesis`` → ``build_policy_gap``
+#: → ``derive_market_implied_policy_path``, so the market leg is the market's own
+#: futures-implied rate, not the proxy. The fetch is **fail-safe**: on
+#: ``FuturesCurveError`` / ``OpenBBFetchError`` it returns ``None`` and the proxy
+#: runs, with the fallback NAMED on the reasoning trace — a futures outage
+#: degrades the market leg but never breaks a live run (the operator's choice).
+#:
+#: **The marker is therefore ``"discharged"`` as of 2026-10-10.** Both halves of
+#: §22.5 hold: the market leg is genuinely futures-implied when the source is
+#: reachable, AND — measured, not asserted — the change was additive, so no
+#: pre-existing caller broke (the proxy branch is byte-for-byte intact under
+#: ``futures_curve=None``, which is also the fallback path).
 #:
 #: This constant is read by `tests/models/test_policy_rules.py`'s tripwire, which
-#: asserts BOTH that the proxy branch is intact AND that this marker agrees — so
-#: discharging the obligation FAILS the suite until the record is updated in the
-#: same change. The obligation is closed explicitly or not at all.
-PHASE5_REPLACEMENT_OBLIGATION: str = "outstanding"
+#: asserts BOTH that the proxy branch is intact AND that this marker agrees with
+#: the live wiring. It was ``"outstanding"`` while the reader accepted a curve
+#: that nothing supplied; flipping it required wiring the live fetch in the SAME
+#: change, which is exactly what the tripwire forced.
+PHASE5_REPLACEMENT_OBLIGATION: str = "discharged"
 
 
 def derive_market_implied_policy_path(

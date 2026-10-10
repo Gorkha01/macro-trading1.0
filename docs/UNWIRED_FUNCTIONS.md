@@ -285,8 +285,8 @@ Tier 5 being complete does **not** mean Phase 5+ has nothing left. Six things re
 them is a Tier-5 function**. Authority: `docs/PHASE5_DEFERRED.md` §2, plus item 6 (found 2026-10-08  
 by reading §22.5 against the shipped body, and **re-measured 2026-10-10** — see §4.2).
 
-Two of the six are now closed (items 2 and 3) and item 6's blocked-on has changed; the count of six
-is kept because the six *slots* are still the register, and a closed slot is struck through rather
+Three of the six are now closed (items 2, 3 and 6) and item 5's blocked-on has narrowed; the count of
+six is kept because the six *slots* are still the register, and a closed slot is struck through rather
 than deleted.
 
 | # | Outstanding item                                                | Why                                                         | Blocked on                                                                                    |
@@ -296,14 +296,15 @@ than deleted.
 | 3 | ~~**Crisis-scenario shock engine**~~                            | **CLOSED 2026-10-09** — engine, simulation half and all four §9.4 scenarios ship | — |
 | 4 | **Multi-country (`de`, `jp`, `gb`)**                            | not implemented                                             | per country: its own data registry, **its own reaction function**, and its own instrument set |
 | 5 | **Market/price data coverage** (incl. FX forwards)              | partially implemented                                       | **source availability**, not code — EXCEPT the §22.5 path, where a source WAS found (item 6)     |
-| 6 | **`derive_market_implied_policy_path` — the §22.5 replacement** | **Partially DONE — source EXISTS, reader+model built, the live SUPPLY remains** | supplying a curve on the live path (a `OpenBBClient`-routed fetch), not the spec (see §4.2.1) |
+| 6 | ~~**`derive_market_implied_policy_path` — the §22.5 replacement**~~ | **CLOSED 2026-10-10 — live fetch shipped, fail-safe to proxy** | — (see §4.2.1) |
 
-**Corrected 2026-10-10 (pass two).** Item 6's blocked-on said *"nothing — it is simply unbuilt"*, and an
-intermediate revision said the source *"needs data"*. Both were wrong. The data exists (item 6's source
-was found — see §4.2.1), and pass one then said the block was the specification's *mechanism* — which was
-also wrong: the promised *mechanism* (a pure body swap) is unusable, but the promised *outcome* is
-achievable **additively**, and the reader + builder chain now do it. What remains is the live-path
-*fetch*. Item 5's *"source availability, not code"* has one exception and is annotated accordingly.
+**Corrected 2026-10-10 (pass three).** Item 6's blocked-on said *"nothing — it is simply unbuilt"*; an
+intermediate revision said the source *"needs data"*; pass one then said the block was the
+specification's *mechanism* — all three were wrong. The data exists; the promised *mechanism* (a pure
+body swap) is unusable but the promised *outcome* is achievable **additively**, and as of pass three
+the **live path fetches and supplies the curve** (fail-safe to the proxy). Item 6 is **CLOSED**. Item
+5's *"source availability, not code"* has one exception (the §22.5 futures path) and is annotated
+accordingly.
 
 
 ### 4.2 ⚠️ The sixth item — the obligation that fell between two lists
@@ -356,7 +357,7 @@ test — `is_meaningful = abs(gap) > dispersion`, the max-min spread of the thre
 strongest idea in this subsystem. *"Three rules differing by 80bp cannot support a claim about a  
 50bp gap."* A replacement must preserve it.
 
-### 4.2.1 ⚠️ MEASURED 2026-10-10 (two passes) — the source EXISTS; the swap is impossible, the change is not
+### 4.2.1 ⚠️ MEASURED 2026-10-10 (three passes) — source EXISTS, swap impossible, change additive, live fetch SHIPPED
 
 **Two earlier claims in this document were wrong, and both are corrected here. A third claim — made in
 the first version of this subsection — was ALSO wrong and is corrected in pass two.**
@@ -412,8 +413,8 @@ the replacement is dischargeable by an additive change, and this version does it
 | `models/policy_rules.futures_implied_policy_path` | **BUILT.** Publishes the NEAR rate (not the path mean, which would rebuild the horizon mismatch in reverse) and reports the slope. Tests: `tests/models/test_policy_rules.py` |
 | The reader's preference | **BUILT.** `derive_market_implied_policy_path(curve=…)` prefers the futures branch and keeps the proxy byte-for-byte when the curve is `None`. The extension is additive, so no caller breaks. Pinned by `test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied`. |
 | The builder chain | **BUILT.** `build_policy_gap(..., futures_curve=…)` and `build_us_macro_thesis(..., futures_curve=…)` thread an optional curve to the market leg. Pinned by `test_build_policy_gap_threads_the_futures_curve_to_the_market_leg`. |
-| **Supplying a curve on the LIVE path** | **NOT DONE — this is the remaining step.** `_reasoning_frames` (`api_layer/`) must **fetch** a curve and pass it down. That is a network read that must route through `OpenBBClient` (D-087.25) and is an explicit operator decision, not a silent default inside a builder. Until it is done, the proxy branch is what production runs. |
-| `PHASE5_REPLACEMENT_OBLIGATION` | **still `"outstanding"`, correctly.** The reader and model accept a curve, but nothing SUPPLIES one live. Flipping the marker now would claim a live-path replacement that has not happened. The tripwire fires the moment the chain is wired without updating the record. |
+| **Supplying a curve on the LIVE path** | **DONE (2026-10-10, third pass).** `_reasoning_frames` (`api_layer/reasoning_stream.py`) **fetches** the ZQ curve via `fetch_fed_funds_futures_curve` (routed through `OpenBBClient`, D-087.25) and threads it down the chain. **Fail-safe:** on `FuturesCurveError`/`OpenBBFetchError` it returns `None`, the proxy runs, and the fallback is NAMED as a `warning` frame — a futures outage degrades the market leg but never breaks a live run. Pinned by `test_the_market_leg_uses_the_futures_curve_when_it_is_available` and `test_a_futures_fetch_failure_falls_back_to_the_proxy_without_breaking`. |
+| `PHASE5_REPLACEMENT_OBLIGATION` | **`"discharged"`.** The live path supplies a curve, so both halves of §22.5 hold: the market leg is futures-implied when the source is reachable, and the change was additive (the proxy survives as the fail-safe). Pinned by the tripwire `test_the_section_22_5_replacement_obligation_is_now_discharged`. |
 
 
 ### 4.3 Status of the three defects — ADDRESSED 2026-10-08
@@ -549,21 +550,20 @@ them.
 
 ### DO work on — the genuinely-outstanding Phase 5+ items (§4.1)
 
-`extensions/` (6 stubs) · multi-country · market/price data coverage (FX forwards) ·
-**the §22.5 `derive_market_implied_policy_path` replacement (§4.2)**. **None is a Tier-5
-function** — they are capability gaps, and they are the real Phase-5 remainder.
+`extensions/` (6 stubs) · multi-country · market/price data coverage (FX forwards).
+**None is a Tier-5 function** — they are capability gaps, and they are the real Phase-5 remainder.
 **GARCH and the whole crisis-shock engine closed 2026-10-09** — `docs/PHASE5_DEFERRED.md` §2.2 and
-§2.3.
+§2.3. **The §22.5 `derive_market_implied_policy_path` replacement CLOSED 2026-10-10** — the live path
+now fetches and supplies the ZQ curve, fail-safe to the proxy (§4.2.1).
 
-⚠️ **On §22.5, re-measured 2026-10-10 (pass two) (§4.2.1): the CODE is done; what remains is to SUPPLY
-a curve live.** The reader (`derive_market_implied_policy_path`) now accepts an optional curve and
-prefers the futures branch; `build_policy_gap` and `build_us_macro_thesis` thread it. The extension is
+⚠️ **On §22.5 (pass three, 2026-10-10): DISCHARGED.** The reader accepts an optional curve; the builder
+chain threads it; and `_reasoning_frames` now **fetches** it through `OpenBBClient` (D-087.25) and
+supplies it, falling back to the proxy with a named warning if the fetch fails. The change was
 **additive** (keyword-only, `None` default), so §22.5's promised *outcome* — *"not a caller-facing
-breaking change"* — holds. Only its stated *mechanism* (a pure body swap) does not, and pass one's
-"therefore blocked on the spec" was wrong. The last step is a live **fetch** of the curve on the
-reasoning path (`_reasoning_frames`), which must route through `OpenBBClient` (D-087.25) and is an
-operator decision. Until then the proxy branch runs and the marker stays `"outstanding"`.
-**All the same, read §4.2 first:** the proxy is the reference every thesis's gap is measured against.
+breaking change"* — holds; only its stated *mechanism* (a pure body swap) does not.
+`PHASE5_REPLACEMENT_OBLIGATION` is `"discharged"`.
+**All the same, read §4.2 first:** the proxy is the reference every thesis's gap is measured against,
+and it remains the fail-safe when the futures source is unreachable.
 
 ### How to keep this honest
 

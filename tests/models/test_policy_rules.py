@@ -611,54 +611,80 @@ def test_the_config_asserts_the_two_horizons_agree() -> None:
     )
 
 
-def test_the_section_22_5_replacement_obligation_is_still_outstanding() -> None:
-    """D2 — a tripwire for an obligation that no work list owned.
+def test_the_section_22_5_replacement_obligation_is_now_discharged() -> None:
+    """D2 — the tripwire, now reading the DISCHARGED state.
 
     Section 22.5 obligates Phase 5+ to replace the proxy with a real
-    Fed-funds-futures-implied distribution. Phase 5+ is recorded COMPLETE
-    (Tier 5 = 23/23, D-092 … D-125) and, at the time this tripwire was written,
-    nothing owned the obligation: it is attached to a **Tier 3** function while
-    the Phase-5+ work list came from the **Tier 5** names, so it fell between two
-    lists.
+    Fed-funds-futures-implied distribution. That obligation is now closed, and
+    this tripwire asserts the closed state is real rather than declared:
 
-    Measured 2026-10-10 the state moved in two steps, and BOTH are recorded here
-    so neither is mis-read:
+    * the proxy body is **still intact** (it is the fail-safe fallback, so it must
+      not be deleted), AND
+    * the record says the obligation is ``"discharged"``, AND
+    * the LIVE path actually supplies a curve — ``_reasoning_frames`` imports and
+      calls the fetch, and the builder chain threads it.
 
-    * The source EXISTS and the replacement is BUILT: ``futures_implied_policy_path``
-      and ``fetch_fed_funds_futures_curve`` are implemented and tested, and the
-      reader ``derive_market_implied_policy_path`` now PREFERS the futures branch
-      when it is handed a curve.
-    * But nothing on the live path SUPPLIES a curve yet, so the proxy branch is
-      still what production runs. Until the caller chain is wired end to end
-      (``build_policy_gap`` → ``build_us_macro_thesis`` → ``_reasoning_frames``),
-      flipping the marker would claim a replacement that has not happened.
-
-    This test asserts BOTH halves, so neither can drift:
-
-    * the body still contains the Phase 1-4 term-premium proxy, AND
-    * the record still says the obligation is outstanding.
-
-    Discharging the obligation therefore FAILS this test until the record is
-    updated in the same change. That is the point — the decision gets recorded
-    rather than absorbed by a quiet refactor. (The project already uses this
-    tripwire idiom: O-34 kept its gates with tripwires rather than deleting
-    them, because deleting them freezes the current state as permanent.)
+    A tripwire that only checked the marker string could be satisfied by editing
+    the marker alone; the live-wiring assertions are what make it a real test of
+    the state. Conversely, if someone unwires the live path without reverting the
+    marker, this fails too.
     """
+    import ast
     import inspect
+    import pathlib
 
     from macro_engine.models.policy_rules import PHASE5_REPLACEMENT_OBLIGATION
 
     source = inspect.getsource(derive_market_implied_policy_path)
     still_the_proxy = "short_yield - short_tenor_term_premium" in source
     assert still_the_proxy, (
-        "The body no longer looks like the Phase 1-4 term-premium proxy. If the "
-        "Section 22.5 replacement has landed, update PHASE5_REPLACEMENT_OBLIGATION "
-        "and this test IN THE SAME CHANGE — the obligation must be closed "
-        "explicitly, never absorbed."
+        "The Phase 1-4 proxy body is gone. It is the FAIL-SAFE FALLBACK, not dead "
+        "code — it must survive the replacement, because a futures outage falls "
+        "back to it. Restore it, or the fail-safe path is a fiction."
     )
-    assert PHASE5_REPLACEMENT_OBLIGATION == "outstanding", (
+    assert PHASE5_REPLACEMENT_OBLIGATION == "discharged", (
         f"PHASE5_REPLACEMENT_OBLIGATION says {PHASE5_REPLACEMENT_OBLIGATION!r} but "
-        "the body is still the proxy. The marker and the body must agree."
+        "the live fetch is wired. Reverting the marker without unwiring the live "
+        "path (or vice versa) leaves the record and the code disagreeing."
+    )
+
+    stream = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "src/macro_engine/api_layer/reasoning_stream.py"
+    ).read_text(encoding="utf-8")
+    # AST, not a string scan. The earlier string version SURVIVED a mutant that
+    # replaced the fetch with a literal `None` — every searched name was still
+    # present (the import line and the builder call remain) while the fetched
+    # value was discarded. So assert the MECHANISM: the result of a call to
+    # `_fetch_futures_curve` must be unpacked and its first element passed as
+    # `futures_curve=` somewhere downstream. Lesson 4, fourth instance.
+    tree = ast.parse(stream)
+    fetch_targets: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_fetch_futures_curve"
+            and isinstance(node.targets[0], ast.Tuple)
+            and node.targets[0].elts
+            and isinstance(node.targets[0].elts[0], ast.Name)
+        ):
+            fetch_targets.add(node.targets[0].elts[0].id)
+    assert fetch_targets, (
+        "no `futures_curve, detail = _fetch_futures_curve()` unpacking found — the "
+        "live fetch is not wired, so the marker's 'discharged' is false"
+    )
+    passed_names = {
+        kw.value.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for kw in node.keywords
+        if kw.arg == "futures_curve" and isinstance(kw.value, ast.Name)
+    }
+    assert fetch_targets & passed_names, (
+        f"the fetched curve ({sorted(fetch_targets)}) is never passed as "
+        f"`futures_curve=` (found {sorted(passed_names)}); the fetch is dead"
     )
 
 
@@ -766,43 +792,51 @@ def test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied() -> Non
     )
 
 
-def test_the_replacement_is_called_by_the_reader_but_not_yet_by_the_live_path() -> None:
-    """The state of the increment, asserted rather than claimed.
+def test_the_live_path_supplies_the_curve_through_the_sanctioned_client() -> None:
+    """The wiring is real, routed correctly, and fail-safe — asserted three ways.
 
-    ``futures_implied_policy_path`` is reached from ``derive_market_implied_policy_path``
-    (the reader now prefers it when handed a curve), but **nothing in the live
-    path supplies a curve yet**: ``build_policy_gap`` → ``build_us_macro_thesis``
-    → ``_reasoning_frames`` still call the reader with the two scalars only, so
-    the proxy branch is what production runs.
+    Section 22.5's replacement is only discharged if the LIVE path supplies a
+    curve. Three things must hold, and each was a failure mode this project has
+    met before:
 
-    A test rather than a note, because "built but un-wired" is exactly the kind
-    of claim that rots: if someone wires the chain without updating the record,
-    this fails; if someone deletes the replacement, the import at the top of this
-    module fails.
+    * **It fetches.** ``_reasoning_frames`` calls ``fetch_fed_funds_futures_curve``
+      and passes the result into the builder chain.
+    * **It is routed.** The fetch must go through ``OpenBBClient`` (D-087.25), not
+      a raw HTTP call — so the module must NOT import ``httpx``/``requests``.
+    * **It is fail-safe.** On a fetch failure the run falls back to the proxy
+      rather than raising, so a futures outage degrades the market leg and does
+      not break a live thesis. Pinned by the ``FuturesCurveError`` handler.
     """
+    import ast
     import pathlib
 
-    src_root = pathlib.Path(__file__).resolve().parents[2] / "src"
-    live_path_files = {
-        "builder.py",
-        "thesis_layer",
-        "data_layer/fed_funds_futures_client.py",
-        "models/policy_rules.py",
-    }
-    offenders: list[str] = []
-    for path in src_root.rglob("*.py"):
-        rel = path.as_posix()
-        if any(part in rel for part in live_path_files):
-            continue
-        text = path.read_text(encoding="utf-8")
-        # The BARE names, not "name(" — a wiring may be an import first.
-        if "fetch_fed_funds_futures_curve" in text:
-            offenders.append(rel)
-    assert offenders == [], (
-        f"a live-path module now fetches the futures curve ({offenders}). That "
-        f"means the chain is being wired; update PHASE5_REPLACEMENT_OBLIGATION "
-        f"and this record in the same commit rather than letting the state drift."
+    source = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "src/macro_engine/api_layer/reasoning_stream.py"
+    ).read_text(encoding="utf-8")
+
+    assert "fetch_fed_funds_futures_curve" in source, (
+        "the live path no longer fetches the curve — the obligation's discharge was reverted"
     )
+    assert "futures_curve=futures_curve" in source, (
+        "the fetched curve is not threaded into build_policy_gap/build_us_macro_thesis"
+    )
+    assert "FuturesCurveError" in source and "OpenBBFetchError" in source, (
+        "the fetch is no longer caught — a futures outage would break a live run, "
+        "contradicting the fail-safe contract the operator chose"
+    )
+
+    # Routed, not raw: D-087.25. Parse imports rather than grepping strings, so a
+    # commented-out mention cannot satisfy the check (the textual-trace trap).
+    tree = ast.parse(source)
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert "httpx" not in imported, "the live path must route through OpenBBClient, not raw httpx"
+    assert "requests" not in imported, "the live path must route through OpenBBClient, not requests"
 
 
 if __name__ == "__main__":

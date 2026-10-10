@@ -66,6 +66,13 @@ from macro_engine.api_layer.orchestration import (
     snapshot_to_thesis_inputs,
 )
 from macro_engine.api_layer.snapshot_provider import SnapshotUnavailableError, get_snapshot
+from macro_engine.data_layer.fed_funds_futures_client import (
+    FedFundsFuturesCurve,
+    FuturesCurveError,
+    fetch_fed_funds_futures_curve,
+)
+from macro_engine.data_layer.openbb_client import OpenBBFetchError
+from macro_engine.models.contracts import utc_now
 from macro_engine.thesis_layer.builder import build_policy_gap, build_us_macro_thesis
 from macro_engine.thesis_layer.no_trade import NO_TRADE_TRIGGER_LABELS, NoTradeTrigger
 
@@ -104,6 +111,47 @@ def _fired(thesis_warnings: list[str]) -> list[NoTradeTrigger]:
         for trigger in _TRIGGERS
         if any(NO_TRADE_TRIGGER_LABELS[trigger] in w for w in thesis_warnings)
     ]
+
+
+def _fetch_futures_curve() -> tuple[FedFundsFuturesCurve | None, str]:
+    """Fetch the ZQ curve for the market leg — FAIL-SAFE, never raises.
+
+    Section 22.5's replacement: the market leg should be the market's own
+    Fed-funds-futures-implied rate, not the Phase 1-4 term-premium proxy. This
+    is the LIVE SUPPLY of that curve — the step the reader and the builder chain
+    were built to accept (``derive_market_implied_policy_path``,
+    ``build_policy_gap``, ``build_us_macro_thesis`` all take an optional curve).
+
+    **Why it returns a status string instead of raising.** A network read can
+    fail for reasons that say nothing about the thesis (the provider is down, a
+    rate limit, a cold socket). The chosen behaviour is the operator's: use the
+    futures curve when it is available, and **fall back to the proxy with a loud,
+    on-trace warning** when it is not — so a futures outage degrades the market
+    leg but never breaks a live thesis run. The status is returned rather than
+    logged so the reasoning trace can name which leg the run actually used; a
+    silent fallback would publish a proxy number the client believed was a
+    futures-implied one (the "field describing a computation that did not
+    happen" failure, one layer up).
+
+    ``OpenBBFetchError`` and ``FuturesCurveError`` are caught specifically, not
+    ``Exception``: the first is a transport failure, the second is the client's
+    own refusal (empty curve, too few plausible expirations). Any OTHER exception
+    is a bug in the client and should surface, not be papered over as "no data".
+    """
+    as_of = utc_now().date()
+    try:
+        curve = fetch_fed_funds_futures_curve(as_of=as_of)
+    except (FuturesCurveError, OpenBBFetchError) as exc:
+        return None, (
+            f"fed-funds-futures curve unavailable ({type(exc).__name__}); the "
+            f"market leg falls back to the Section 22.5 term-premium PROXY: {exc}"
+        )
+    return curve, (
+        f"fed-funds-futures curve supplied ({len(curve.expirations)} usable "
+        f"expiration(s), front {curve.expirations[0].implied_rate_pct:.3f}%"
+        + (f", {curve.rows_rejected} row(s) rejected" if curve.rows_rejected else "")
+        + ")"
+    )
 
 
 async def reasoning_step_generator(country: str) -> AsyncGenerator[str, None]:
@@ -264,11 +312,22 @@ async def _reasoning_frames(country: str) -> AsyncGenerator[str, None]:
     )
 
     yield _event("run_models", "started", "Running the policy rules and the gap")
+    # Section 22.5: supply the market leg with a real Fed-funds-futures curve,
+    # failing safe to the term-premium proxy on any fetch trouble. The status is
+    # emitted on the trace so the client can see WHICH leg this run used — a
+    # silent fallback would let a proxy number pass for a futures-implied one.
+    futures_curve, curve_detail = _fetch_futures_curve()
+    yield _event(
+        "run_models",
+        "done" if futures_curve is not None else "warning",
+        curve_detail,
+    )
     gap, rules, _ensemble, _market_path = build_policy_gap(
         inputs.taylor_inputs,
         inputs.first_difference_inputs,
         short_yield=inputs.short_yield,
         short_tenor_term_premium=None,
+        futures_curve=futures_curve,
     )
     rule_values = {rule.model_name: rule.value for rule in rules}
     yield _event(
@@ -302,6 +361,7 @@ async def _reasoning_frames(country: str) -> AsyncGenerator[str, None]:
             thesis_type=inputs.thesis_type,
             universe=inputs.universe,
             short_yield=inputs.short_yield,
+            futures_curve=futures_curve,
             regime=inputs.regime,
         )
     except Exception as exc:

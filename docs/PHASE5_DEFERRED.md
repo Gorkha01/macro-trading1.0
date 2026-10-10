@@ -455,7 +455,7 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | `fx_spot` / `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them |
 | 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden |
-| §22.5 Fed-funds-futures-implied policy path | **Built + tested; reader & chain wired additively; the live FETCH remains** (2026-10-10) | the SOURCE exists and the code is done; the remaining step is supplying a curve on the live path (an `OpenBBClient`-routed fetch) — see §5.1 |
+| §22.5 Fed-funds-futures-implied policy path | **DISCHARGED 2026-10-10 — live fetch shipped, fail-safe to proxy** (§5.1) | the SOURCE exists; the reader + builder chain + live fetch are wired; marker `"discharged"` |
 | `bayesian.likelihoods.table` (data) | Deferred | historical evidence-vs-outcome data |
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
@@ -541,7 +541,7 @@ Finding IDs in `.review-evidence/module_findings.json`:
 `F-MOD-001` (path divergences, SEV-3, OPEN), `F-MOD-002` (census verified, INFO),
 `F-MOD-003` (scenario shock engine deferred, SEV-3, OPEN — **GARCH half CLOSED 2026-10-09, §2.2**).
 
-### 5.1 §22.5 — the Fed-funds-futures path: the source EXISTS, the mechanism does not, the change is additive
+### 5.1 §22.5 — the Fed-funds-futures path: DISCHARGED (source exists, mechanism not, change additive, live fetch shipped)
 
 Measured 2026-10-10, in **two passes**. **Pass two reverses part of pass one.** Pass one recorded the
 obstacle as *"the SIGNATURE"* and concluded the obligation was **blocked on the spec**. Measured again,
@@ -605,15 +605,34 @@ swap"* as the only permitted change and concluded the block was the spec. What t
 byte-for-byte when the curve is `None`; `build_policy_gap` and `build_us_macro_thesis` thread the
 optional curve. The extension is additive, so the promise's *outcome* holds.
 
-**So the obligation is still outstanding, but for a narrower reason: nothing SUPPLIES a curve on the
-live path yet.** `_reasoning_frames` (`api_layer/`) must **fetch** one and pass it down — a network read
-that must route through `OpenBBClient` (D-087.25) and is an explicit operator decision, not a silent
-default inside a builder. Until that lands, the proxy branch is what production runs, so
-`PHASE5_REPLACEMENT_OBLIGATION` keeps the value `"outstanding"` and flipping it now would be a false
-claim. `tests/models/test_policy_rules.py` pins the state in three tests
-(`test_the_section_22_5_body_swap_is_impossible_but_the_change_is_additive`,
-`test_the_reader_prefers_the_futures_branch_when_a_curve_is_supplied`,
-`test_the_replacement_is_called_by_the_reader_but_not_yet_by_the_live_path`) so the record cannot be
-quietly "closed" by someone who assumes the build was what was missing — and the last of the three
-**fails the moment the live chain is wired**, forcing the record to be updated in the same change.
+**The last step — and it is now DONE. The obligation is DISCHARGED (2026-10-10, third pass).**
+`_reasoning_frames` (`api_layer/reasoning_stream.py`) now **fetches** the ZQ curve and threads it down:
+
+```bash
+grep -n "_fetch_futures_curve\|futures_curve=futures_curve" src/macro_engine/api_layer/reasoning_stream.py
+# futures_curve, curve_detail = _fetch_futures_curve()      <- the LIVE supply
+#     futures_curve=futures_curve,                          <- passed to build_policy_gap
+#     futures_curve=futures_curve,                          <- passed to build_us_macro_thesis
+```
+
+The fetch routes through `fetch_fed_funds_futures_curve`, which routes through `OpenBBClient`
+(D-087.25). It is **fail-safe by the operator's choice**: on `FuturesCurveError` / `OpenBBFetchError`
+it returns `None` and the **proxy runs**, with the fallback NAMED as a `warning` frame on the
+reasoning trace — so a futures outage degrades the market leg but never breaks a live thesis run.
+Because the live path now supplies a curve, `PHASE5_REPLACEMENT_OBLIGATION` is **`"discharged"`**: both
+halves of §22.5 hold — the market leg is genuinely futures-implied when the source is reachable, AND
+the change was additive (the proxy body is intact as the fail-safe).
+
+`tests/models/test_policy_rules.py` pins the discharged state (the tripwire
+`test_the_section_22_5_replacement_obligation_is_now_discharged`, which asserts the proxy body
+survives, the marker agrees, and — by **AST**, not a string scan — that the fetched value is actually
+passed downstream). `tests/api_layer/test_reasoning_stream.py` pins both live paths: the market leg uses
+the curve when available, and a fetch failure warns and falls back to the proxy.
+
+⚠️ **A string-based version of that tripwire SURVIVED a mutation**, caught and fixed in the same
+change: replacing the fetch with a literal `None` left every searched name present (the import and the
+builder call remain) while the value was discarded. The check is now an AST assertion that
+`_fetch_futures_curve()`'s result is unpacked and its first element passed as `futures_curve=`. *This is
+the fourth instance in two sessions of a textual-trace assertion surviving a mutation a
+mechanism-assertion kills — see `MEMORY.md` lesson 4.*
 
