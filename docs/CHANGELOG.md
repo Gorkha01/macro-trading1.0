@@ -87,14 +87,15 @@ expression, and `ValidationSettings` is `extra="forbid"` so no working override 
 
 `PHASE5_DEFERRED.md` §2.5 item 1 (the one real capability gap) was re-measured by **CALLING the
 source**, not by enumerating the route inventory — the rule §5.1's lesson established. The probe
-(`scripts/probe_fx_forward.py`) returned a **split verdict** and the increment follows it honestly:
+(`tools/probe_fx_forward.py`) returned a **split verdict** and the increment follows it honestly:
 the block stays, but its *stated reason* was wrong, and the nearest reachable instrument now ships
 labelled for what it is. Full evidence: `docs/DECISIONS.md` §D-151.
 
-- **Re-measured (research).** `scripts/probe_fx_forward.py` — a durable, CALL-based probe with five
-  legs (the live FX route surface; the CME futures tickers; dated vs rolling contracts; missing ROUTE
-  vs missing CREDENTIAL; the production `fetch_series` path). Verdict: **CONFIRMED** no forward route
-  (278 paths / 32 providers; the whole `currency.*` surface is four routes, none a forward/swap/basis);
+- **Re-measured (research).** `tools/probe_fx_forward.py` — a durable, CALL-based probe, extended on
+  2026-10-10 to **seven legs** (the live FX route surface; the CME futures tickers; dated vs rolling
+  contracts; **the `expiration` parameter — a coverage gap in the first pass**; **FRED's
+  "Currency, Swaps" family — a look-alike, not a CIP series**; missing ROUTE vs missing CREDENTIAL;
+  the production `fetch_series` path). Verdict: **CONFIRMED** no forward route  (278 paths / 32 providers; the whole `currency.*` surface is four routes, none a forward/swap/basis);
   **OVERTURNED** D-108's "the CME FX futures return `EmptyDataError`" (six answer HTTP 200 via
   `derivatives.futures.historical`, but only the rolling `=F` continuous contract — dated contracts
   204); **REFUTED** the "missing credentials, not a missing product" hypothesis (`fmp` IS installed;

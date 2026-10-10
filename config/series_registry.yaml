@@ -2624,7 +2624,7 @@ blocked:
 
       **RE-MEASURED 2026-10-10 (the D-108 claim was due a re-probe, and the
       re-probe CHANGED TWO OF ITS THREE CONCLUSIONS).** Run
-      `uv run python scripts/probe_fx_forward.py` to reproduce; every probe there
+      `uv run python tools/probe_fx_forward.py` to reproduce; every probe there
       CALLS its source rather than enumerating route names (the Section 5.1
       lesson — the v1 Section 22.5 probe agreed with a wrong conclusion because
       it only read route names).
@@ -2633,7 +2633,11 @@ blocked:
       ENTIRE FX surface across all 32 installed providers is four routes:
       `currency.price.historical` (fmp/tiingo/yfinance), `currency.reference_rates`
       (ecb), `currency.search`, `currency.snapshots`. Nothing named
-      `forward`/`swap`/`basis` anywhere under `currency` or `fixedincome`.
+      `forward`/`swap`/`basis` anywhere under `currency` or `fixedincome`. (The
+      only four routes on the whole installation whose NAME matches
+      `forward|swap|basis` are `equity.estimates.forward_ebitda/eps/pe/sales` —
+      analyst ratios, a pure name-match false positive, which is exactly why a
+      probe must CALL a route rather than grep its name.)
       (D-108 said 443 routes; the installation now reports 278 — the count moved,
       the conclusion did not.)
 
@@ -2669,7 +2673,51 @@ blocked:
       FX forward points or a cross-currency basis, or CME settlement data via a
       credentialed provider that exposes forwards specifically. No such source
       is configured. The block is a data-availability boundary, not a code gap.
-    opened_in: OPEN_ISSUES.md
+
+      **RE-RESEARCHED 2026-10-10 (operator challenge: "sure that's blocked or
+      not-found data?") — the verdict STANDS, and the two things that looked
+      like they might lift it were CALLED and do not.** Recorded here because a
+      re-probe that only confirms is worth less than the two negative results
+      it produced, which now close paths a future reader would otherwise retry:
+
+      (a) **FUTURES `expiration` PARAMETER — called, 422.** `derivatives.
+      futures.historical` accepts an `expiration` query parameter (visible in
+      the live spec: `chart, provider, symbol, start_date, end_date, expiration,
+      interval`) that the D-151 probe never exercised — a genuine gap in
+      that probe's coverage. It is a narrow route: its ONLY providers are
+      `deribit` and `yfinance` (no CME venue, no fmp/polygon). Called with
+      `symbol=6EZ6|6E|6EV6` and
+      `expiration=2026-12-14|2026-10-19`: **HTTP 422, `"unconverted data
+      remains: -14"`**, i.e. the route's yfinance path cannot parse the date
+      even in the contract's own format. All dated-ticker spellings
+      (`6EZ=F`, `6EZ26=F`, `6EZ6=F`, `EZ=F`) return **HTTP 204 (empty)**. The
+      only reachable series remains the rolling `6E=F`, which is NOT a forward
+      for any date (it rolls; its 2026-10-09 close of 1.12055 vs FRED spot
+      `DEXUSEU` 1.1259 on 2026-10-02 differs by **-53.5 pips** — the
+      contract-vs-spot basis, whose sign is consistent with USD rates above EUR
+      rates at the front end, and which is NOT a forward point for any date).
+
+      (b) **FRED "Currency, Swaps" family — called, WRONG PRODUCT.** A FRED
+      search returns a 16-series `currency;swaps` family, which reads like a
+      CIP source. CALLED: the family is **Central Bank Liquidity Swaps** (the
+      Fed's USD swap lines — balance-sheet quantities), NOT FX forwards or a
+      cross-currency basis. No FRED series carries a forward point or a CIP
+      deviation. (The search route itself works and is not in doubt:
+      `DEXUSEU`/`DTWEXBGS`/`BAMLH0A0HYM2` all return rows on the same probe.)
+
+      **A source DOES exist in the world, and this is the actionable finding:**
+      CME's own venue data carries 96 dated 6E instruments with explicit
+      expiries (e.g. `6EZ6` 2026-12-14, `6EX6` 2026-11-16, `6EV6` 2026-10-19 —
+      read live from the Databento GLBX.MDP3 catalog, 2026-10-09), which are
+      forwards for their expiry and would give `cip_check` its `forward` input.
+      Databento offers free signup API keys. **It is NOT wired because it is not
+      an installed OpenBB provider** (0 routes mention `databento`) and no
+      `databento_api_key` is configured. Lifting the block is therefore a
+      **dependency + credential** task — install/author a Databento client (the
+      `databento` PyPI package, free key), fetch a dated contract's close as
+      `F`, and wire `cip_check`'s live path — NOT a "no data exists" wall. The
+      block stays `blocked:` until that dependency lands, but the registry now
+      records the concrete path so it is a plan rather than a dead end.
     opened_in: OPEN_ISSUES.md
 
 # ---------------------------------------------------------------------------

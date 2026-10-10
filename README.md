@@ -105,7 +105,7 @@ rather than assumed. **Spot only:** FX forwards remain unavailable on this insta
 `forward`/`swap`/`basis` route; D-108), so `cip_check`'s live check stays unavailable and no forward
 is ever synthesised from a spot value.
 
-**The forward block was RE-MEASURED 2026-10-10 by CALLING the source** (`scripts/probe_fx_forward.py`) —
+**The forward block was RE-MEASURED 2026-10-10 by CALLING the source** (`tools/probe_fx_forward.py`) —
 the seventh false-block check, and it returned a *split* verdict. CONFIRMED: 278 paths, no forward
 route. OVERTURNED: D-108's "the CME futures proxies are dead" is wrong — six CME FX futures answer
 via `derivatives.futures.historical`, but **only the rolling `=F` continuous contract**. REFUTED: the
@@ -114,6 +114,15 @@ unlock **spot**, not forwards. **The verdict is unchanged: a rolling front-month
 forward.** The nearest reachable instrument now ships as `data_layer/fx_futures_client.py`, which
 publishes it **as a future** — `is_forward` is `False`, there is no `forward` accessor, and its
 `warnings` name the `cip_check` hazard — so a caller cannot substitute one for the other by accident.
+
+**Re-challenged 2026-10-10 ("sure that's blocked, or is it not-found data?").** The verdict STANDS and
+two further paths were CALLED and close: the `expiration` query parameter (declared on the route,
+never sent by the first pass) returns **422 `unconverted data remains: -14`** for every dated ticker,
+and FRED's "Currency, Swaps" family is **Central Bank Liquidity Swaps** (the Fed's USD swap *lines*), a
+look-alike rather than a CIP series. **One actionable finding:** CME's 96 dated `6E` instruments carry
+explicit expiries and *are* forwards for their expiry; Databento serves them with free keys, but
+`databento` is not an installed OpenBB provider — so lifting the block is a **dependency + credential**
+task, not a "no data exists" wall. Both new checks are permanent probe legs.
 
 ## Phase status
 

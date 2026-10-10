@@ -23947,7 +23947,8 @@ conclusion instead of overturning it.
 
 ### 1. What the probe found — a SPLIT verdict
 
-`scripts/probe_fx_forward.py` (durable, five legs) returned three findings, and they point in
+`tools/probe_fx_forward.py` (durable; five legs at D-151, extended to seven on 2026-10-10 — see the
+follow-on note at the end of this decision) returned three findings, and they point in
 different directions. That is the whole content of this decision: the block stands, but two of its
 three supporting claims were false.
 
@@ -24069,9 +24070,49 @@ envelope leaves absorbed into `test_infrastructure`'s disclosed set). `AGENTS.md
 **Files:** `src/macro_engine/data_layer/fx_futures_client.py` (new),
 `src/macro_engine/{config.py,models/fx_carry.py}`, `config/{settings.yaml,series_registry.yaml}`,
 `tests/data_layer/test_fx_futures_client.py` (new), `tests/test_infrastructure.py`, `pyproject.toml`,
-`scripts/{probe_fx_forward.py,mutation_fx_futures.py}` (new),
+`tools/{probe_fx_forward.py,mutation_fx_futures.py}` (new),
 `docs/{DECISIONS.md,CHANGELOG.md,PHASE5_DEFERRED.md,PROGRESS.md,MODULE_MAPPING.md,OPEN_ISSUES.md,UNWIRED_FUNCTIONS.md,BUILD_STATE.md}`,
 `README.md`.
+
+### D-151 follow-on — the block re-challenged ("sure that's blocked, or is it not-found data?"), the verdict STANDS, and the probe gained the two legs its first pass lacked (2026-10-10)
+
+The operator challenged D-151's own conclusion as a possible EIGHTH false block — the correct instinct,
+since a verdict that has only been *confirmed* is not yet a verdict that has been *attacked*. The
+re-research called two paths D-151 never sent, and **both negative results are now permanent probe
+legs** (the standing rule: a re-probe that only confirms is worth less than the negative results it
+produces).
+
+* **(a) the `expiration` parameter — a real coverage gap in pass one.** `derivatives.futures.historical`
+  declares `expiration` in its parameter list (`chart, provider, symbol, start_date, end_date,
+  expiration, interval`) and the D-151 probe never sent it. Called with `symbol=6EZ6|6E|6EV6` and the
+  contract's own expiry date: **HTTP 422, `"unconverted data remains: -14"`** (the parser reads the
+  string as a date and chokes on the `-DD` tail). Every dated ticker spelling (`6EZ=F`, `6EZ26=F`,
+  `6EZ6=F`, `EZ=F`) returns **204**. The route's only providers are `deribit` and `yfinance` — no CME
+  venue — so the parameter cannot reach a dated CME contract on this installation at all.
+* **(b) FRED's "Currency, Swaps" family — a look-alike.** A 16-member family that *reads* like a CIP
+  source. CALLED: every member is `Assets: Central Bank Liquidity Swaps` — the Fed's **USD swap lines**
+  (a balance-sheet quantity), not a forward point and not a cross-currency basis. The route itself is
+  fine (control: `DEXUSEU`/`TWEXBGS` return rows); the product is simply absent.
+* **(c) the actionable finding — a source DOES exist in the world.** CME's venue data carries **96
+  dated `6E` instruments with explicit expiries** (e.g. `6EZ6` 2026-12-14, `6EX6` 2026-11-16, `6EV6`
+  2026-10-19 — read live from the Databento GLBX.MDP3 catalog), which *are* forwards for their expiry
+  and would give `cip_check` its `forward` input. Databento offers free signup keys. **Not wired
+  because `databento` is not an installed OpenBB provider (0 routes) and no key is configured** — so
+  lifting the block is a **dependency + credential** task, not a "no data exists" wall. That re-frames
+  the gap from *impossible* to *uninstalled*, which is the honest description and the one a future
+  reader can act on.
+
+**A dangling-citation defect found and fixed while recording the above.** The first pass cited the
+probe as `scripts/probe_fx_forward.py` — but `.gitignore` keeps `scripts/` local, so **five versioned
+files** (`config/series_registry.yaml`, `docs/CHANGELOG.md`, `docs/DECISIONS.md` ×2, `README.md`) cited
+a reproduction path the pushed repo would not contain. That is precisely the F-CAT-002 class the
+`.gitignore` comment names ("those citations dangle"). The probe is durable, production-transport code
+(it imports `OpenBBClient`), not sweep scratch, so it moves to versioned **`tools/`** and all five
+citations follow. Only the genuinely exploratory `.probe/fx_forward_research.py` stays untracked.
+
+**Gates:** `ruff check src/ tests/ tools/ config/` PASS · `mypy` clean (192 files) · suite **2002
+passed / 5 deselected** (unchanged — the probe and the prose are outside the unit-test surface; the
+142 registry/config tests re-verified green). `AGENTS.md` byte-identical (`sha256 8295ccf3…`).
 
 ---
 
