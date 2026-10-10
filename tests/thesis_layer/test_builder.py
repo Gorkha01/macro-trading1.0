@@ -38,7 +38,10 @@ from macro_engine.thesis_layer.builder import (
     THESIS_ID_PREFIX,
     THESIS_TIMEFRAME_PHASE_1,
     BoeRuleInputs,
+    DeRuleInputs,
     EconomyReads,
+    EuRuleInputs,
+    JpRuleInputs,
     build_policy_gap,
     new_thesis_id,
 )
@@ -215,6 +218,114 @@ def _boe_inputs() -> BoeRuleInputs:
     )
 
 
+def _eu_inputs() -> EuRuleInputs:
+    """A minimal valid euro-area record bundle (D-148).
+
+    Values are chosen only to satisfy the records' own field requirements; the
+    tests that use this helper assert on the DISPATCH (which rules ran, which
+    guard fired), never on the numbers.
+    """
+    from macro_engine.models.policy_rules import (
+        EcbContemporaneousInputs,
+        EcbErrorCorrectionInputs,
+        EcbRestrictedCointegrationInputs,
+    )
+
+    return EuRuleInputs(
+        contemporaneous=EcbContemporaneousInputs(i_prev=3.75, pi_current=2.4, output_gap=-0.6),
+        error_correction=EcbErrorCorrectionInputs(
+            i_prev=3.75,
+            i_prev_change=0.0,
+            long_rate=3.20,
+            pi_current=2.4,
+            pi_change=-0.1,
+            output_gap=-0.6,
+            output_gap_change=-0.2,
+        ),
+        restricted_cointegration=EcbRestrictedCointegrationInputs(
+            i_prev=3.75,
+            i_prev_change=0.0,
+            long_rate=3.20,
+            real_rate=0.4,
+            pi_change=-0.1,
+            output_gap=-0.6,
+            output_gap_change=-0.2,
+        ),
+    )
+
+
+def _de_rule_inputs() -> DeRuleInputs:
+    """A minimal valid German member-state record bundle (D-149).
+
+    Three records, mirroring the cluster: the appropriateness divergences, the
+    Bund spread's curve points, and the real-rate pair. The records carry RAW
+    LEVELS (the German and euro-area values side by side) — the rules compute
+    the divergences themselves, so this helper must not pre-difference them.
+    The point of this helper is that a *complete* de bundle exists, so a test
+    can show the missing-input guard is not the one doing the work in the
+    wrong-country case.
+    """
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        DeMemberAppropriatenessInputs,
+        DeRealRateInputs,
+    )
+
+    return DeRuleInputs(
+        appropriateness=DeMemberAppropriatenessInputs(
+            f_ecb=3.75,
+            pi_de=2.4,
+            pi_ea=1.8,
+            output_gap_de=-0.1,
+            output_gap_ea=-0.8,
+            unemployment_de=6.1,
+            unemployment_ea=6.4,
+            gdp_growth_de=0.3,
+            gdp_growth_ea=-0.1,
+        ),
+        bund_spread=DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.40),
+        real_rate=DeRealRateInputs(f_ecb=3.75, pi_de=2.4, pi_ea=1.8, r_neutral_de=0.5),
+    )
+
+
+def _jp_rule_inputs() -> JpRuleInputs:
+    """A minimal valid BoJ record bundle (D-149).
+
+    Carries the two STATE fields (the previous notional rate and the previous
+    shadow rate) explicitly, because those are what make the jp arm a genuinely
+    different shape from every other country's. ``zlb_floor`` is a per-call
+    field on the shadow-rate record as well as a config leaf; the helper passes
+    the config's value so the record is self-consistent.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        JpOvershootCommitmentInputs,
+        JpReifschneiderWilliamsInputs,
+        JpYccInputs,
+    )
+
+    jp = get_settings().policy.jp
+    return JpRuleInputs(
+        shadow_rate=JpReifschneiderWilliamsInputs(
+            pi=2.4,
+            output_gap=-0.5,
+            i_notional_prev=0.0,
+            z_prev=0.0,
+            zlb_floor=float(jp.zlb_floor_value),
+        ),
+        ycc=JpYccInputs(
+            jgb_10y=1.62,
+            ycc_target=float(jp.ycc_target_value),
+            ycc_band=float(jp.ycc_band_value),
+        ),
+        overshoot=JpOvershootCommitmentInputs(
+            pi=2.4,
+            cumulative_inflation_gap=0.5,
+            stabilization_threshold=float(jp.stabilization_threshold_value),
+        ),
+    )
+
+
 def test_a_gb_policy_gap_runs_the_boe_rules_not_the_fed_trio() -> None:
     """(§22.3) ``country='gb'`` reads ``boe_inputs`` and the BoE's three rules.
 
@@ -296,15 +407,100 @@ def test_a_country_with_no_rule_set_is_refused_not_borrowed() -> None:
     The dispatch is explicit rather than a ``getattr``/try-except fallback
     precisely so this is a loud refusal: a country without its own central-bank
     rules has no policy leg, and borrowing another's would be the relabeled-Fed
-    failure §22.3 exists to prevent.
+    failure §22.3 exists to prevent. ``fr`` (France) is genuinely unimplemented —
+    the old example (``jp``) is now a modellable country with its own rule set,
+    so using it here would assert that a working country fails.
     """
     with pytest.raises(ValueError, match="no rule set for country"):
         build_policy_gap(
             TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
             FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
-            country="jp",
+            country="fr",
             short_yield=4.35,
             short_tenor_term_premium=None,
+        )
+
+
+def test_de_requires_its_own_inputs_and_refuses_the_others() -> None:
+    """(§22.3) de with no de_inputs is refused; with another country's, also refused.
+
+    Germany's arm is a member-state cluster reading German-vs-euro-area data;
+    the Fed's, the BoE's and the ECB's records cannot stand in for it.
+
+    TWO guards, TWO witnesses, in the order the code checks them. Passing only
+    ``taylor_inputs`` (no ``de_inputs``) trips the *missing* guard, not the
+    *wrong-country* guard, so asserting only that case would leave the second
+    guard unproven — and the discriminating message is the point: a caller who
+    simply forgot ``de_inputs`` must be told that, not told they handed over the
+    wrong central bank's records.
+    """
+    # Guard 1 — de_inputs absent: diagnosed as MISSING, whatever else was passed.
+    with pytest.raises(TypeError, match="requires de_inputs"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="de",
+            short_yield=2.51,
+            short_tenor_term_premium=None,
+        )
+    # Guard 2 — de_inputs present AND the Fed's records too: now the wrong-country
+    # guard fires. ``de_inputs`` must be supplied or guard 1 keeps winning.
+    de_in = _de_rule_inputs()
+    with pytest.raises(TypeError, match="Fed's rule inputs"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="de",
+            short_yield=2.51,
+            short_tenor_term_premium=None,
+            de_inputs=de_in,
+        )
+    # ...and another country's records too (a DIFFERENT guard, a distinct message).
+    with pytest.raises(TypeError, match="another country's"):
+        build_policy_gap(
+            None,
+            None,
+            country="de",
+            short_yield=2.51,
+            short_tenor_term_premium=None,
+            de_inputs=de_in,
+            boe_inputs=_boe_inputs(),
+        )
+
+
+def test_jp_requires_its_own_inputs_and_refuses_the_others() -> None:
+    """(§22.3) jp with no jp_inputs is refused; with another country's, also refused.
+
+    Same two-guard structure as the de test above: the missing case and the
+    wrong-country case are separate branches with separate messages.
+    """
+    with pytest.raises(TypeError, match="requires jp_inputs"):
+        build_policy_gap(
+            None,
+            None,
+            country="jp",
+            short_yield=1.46,
+            short_tenor_term_premium=None,
+        )
+    jp_in = _jp_rule_inputs()
+    with pytest.raises(TypeError, match="Fed's rule inputs"):
+        build_policy_gap(
+            TaylorRuleInputs(r_star=0.5, pi_current=3.0, output_gap=1.0),
+            FirstDifferenceInputs(i_prev=4.0, pi_current=3.0, output_gap_change=0.2),
+            country="jp",
+            short_yield=1.46,
+            short_tenor_term_premium=None,
+            jp_inputs=jp_in,
+        )
+    with pytest.raises(TypeError, match="another country's"):
+        build_policy_gap(
+            None,
+            None,
+            country="jp",
+            short_yield=1.46,
+            short_tenor_term_premium=None,
+            jp_inputs=jp_in,
+            eu_inputs=_eu_inputs(),
         )
 
 

@@ -488,10 +488,45 @@ def test_an_unimplemented_country_is_rejected_not_defaulted_to_us() -> None:
     The dangerous alternative — falling back to the US plan — produces an
     internally consistent universe that serves US instruments to another
     country's thesis, invisibly. Raising makes "no instrument set" a loud fact.
+
+    ``de``/``jp`` were used as the examples here until 2026-10-10; both now HAVE
+    plans (§22.3, D-149) so they are no longer evidence of anything. ``fr`` is
+    the genuinely-unimplemented code — see the companion test below, which pins
+    the other half of the boundary (an implemented country must NOT raise).
     """
-    for code in ("de", "jp", "fr", ""):
+    for code in ("fr", ""):
         with pytest.raises(ValidationError):
             ProductionUniverse(country=code)
+
+
+def test_de_and_jp_have_their_own_plans_not_a_borrowed_one() -> None:
+    """(§22.3, D-149) the two newest countries resolve to their OWN instruments.
+
+    Complements the refusal test above: that one pins "an unimplemented code
+    raises", this one pins "an implemented code does not, and does not silently
+    get the US plan". Together they are the boundary — either half alone passes
+    under a mutant that hardcodes the other.
+    """
+    de = ProductionUniverse(country="de")
+    jp = ProductionUniverse(country="jp")
+    us = ProductionUniverse(country="us")
+
+    assert de.country == "de"
+    assert jp.country == "jp"
+
+    # Each is distinct from the US plan in rates AND equity (the two categories
+    # §22.3 requires to differ; fx is shared by design).
+    assert de.rates != us.rates
+    assert jp.rates != us.rates
+    assert de.equity != us.equity
+    assert jp.equity != us.equity
+    assert de.rates != jp.rates
+    assert de.equity != jp.equity
+
+    # ...and each names its own market's vocabulary.
+    assert any("Bund" in i for i in de.rates)
+    assert any("JGB" in i for i in jp.rates)
+    assert "Nikkei 225 index futures" in jp.equity
 
 
 def test_the_us_plan_is_unchanged_by_the_country_field() -> None:

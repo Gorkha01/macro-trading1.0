@@ -462,9 +462,15 @@ def test_the_triggers_are_the_ones_the_builder_can_emit() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unimplemented_country_is_a_501_before_the_stream_opens() -> None:
-    """A client that has opened a stream cannot be told "wrong country"."""
+    """A client that has opened a stream cannot be told "wrong country".
+
+    ``fr`` (France) is genuinely unimplemented — no series set, no reaction
+    function, no instrument universe. de/jp were the old examples and are now
+    implemented, so using them here would be testing that a working country
+    fails.
+    """
     with pytest.raises(HTTPException) as excinfo:
-        await rs.stream_thesis_reasoning("de")
+        await rs.stream_thesis_reasoning("fr")
     assert excinfo.value.status_code == 501
 
 

@@ -343,6 +343,57 @@ class ProductionUniverse(BaseModel):
         "fx": ("G10 FX spot", "G10 FX forwards"),
         "equity": ("Euro Stoxx 50 index futures", "DAX index futures"),
     }
+    #: The GERMAN plan. Germany is a euro-area member, so its instruments live
+    #: in the SAME market as the eu plan — but the set is not the eu plan
+    #: relabelled: the eu plan names the aggregate benchmark AND the whole
+    #: intra-area spread complex (OATs, BTPs, Bonos, SPGBs and the BTP-Bund /
+    #: OAT-Bund spreads), because the euro area has twenty sovereign issuers.
+    #: Germany is ONE of those issuers, so the German plan names GERMANY's own
+    #: instruments and the Bund complex specifically: the **Bund / Bobl /
+    #: Schatz** curve (not "Bunds, OATs, BTPs…"), the **Euro-Bund future** and
+    #: the Bund's role as the benchmark other members' spreads are quoted
+    #: against. The DAX is Germany's equity benchmark (the eu plan lists it
+    #: alongside the Euro Stoxx 50; the German plan's benchmark IS the DAX).
+    #:
+    #: Section 22.3's test — would this read as wrong if the label said "us",
+    #: "gb" or "eu"? It would: it claims one sovereign's instruments and its
+    #: benchmark role, which is what a member-state thesis trades.
+    _DE_PLAN: dict[str, tuple[str, ...]] = {
+        "rates": (
+            "German government bonds (Bunds, Bobls, Schatz)",
+            "Euro-Bund futures (Bund, Bobl, Schatz)",
+            "Bund-EUR OIS spread instruments",
+            "German sovereign benchmark vs euro-area spreads",
+            "ESTR futures and swaps",
+        ),
+        "fx": ("G10 FX spot", "G10 FX forwards"),
+        "equity": ("DAX index futures",),
+    }
+    #: The JAPANESE plan. Every rates/equity entry names an instrument that
+    #: trades in Tokyo and has no US, UK or euro-area equivalent: **JGBs** are
+    #: Japan's government bonds (not USTs, gilts or Bunds), the **JGB future**
+    #: is the contract, **TONA** (the Tokyo Overnight Average rate) is Japan's
+    #: risk-free reference — the analogue of SOFR, SONIA and ESTR and distinct
+    #: from all three — and the **Nikkei 225 / TOPIX** are Japan's equity
+    #: benchmarks. Section 22.3's test — would this read as wrong if the label
+    #: said "us"? It would.
+    #:
+    #: NON-NEGOTIABLE, and the reason the list is not a relabel: Japan's policy
+    #: framework is the one the `jp` rules model (Yield Curve Control targeting
+    #: the 10-year JGB, a ZLB floor), so the **10-year JGB future and the curve
+    #: are the instruments the policy actually operates on** — a link neither
+    #: the US nor the UK nor the euro-area plan carries in the same form.
+    _JP_PLAN: dict[str, tuple[str, ...]] = {
+        "rates": (
+            "Japanese government bonds (JGB 2yr, 5yr, 10yr, 30yr)",
+            "JGB futures (10yr, 20yr)",
+            "TONA OIS swaps",
+            "JGB curve instruments (YCC-relevant 10yr)",
+            "Japan sovereign benchmark vs JGB curve spreads",
+        ),
+        "fx": ("G10 FX spot", "G10 FX forwards"),
+        "equity": ("Nikkei 225 index futures", "TOPIX index futures"),
+    }
     #: Country code -> plan. A code absent here is rejected by the validator.
     _PLANS: dict[str, dict[str, tuple[str, ...]]] = {}
 
@@ -526,6 +577,100 @@ class ProductionUniverse(BaseModel):
         "euro-area equity",
         "euro area equity",
     )
+    #: The German rates vocabulary. Germany is a euro-area member, so it SHARES
+    #: the euro-area market vocabulary — this is deliberately NOT disjoint from
+    #: the eu set, unlike the us/gb/eu separation. The asymmetry is honest: a
+    #: Bund IS a euro-area instrument, and pretending a `de` thesis must reject
+    #: the word "bund" while the `eu` plan accepts it would be a fiction. What
+    #: the German set ADDS over the eu set is the member-state vocabulary: the
+    #: Bund/Bobl/Schatz curve named as GERMANY's instruments and the benchmark
+    #: vocabulary ("german", "bund benchmark", "dax"). What it does NOT carry is
+    #: the basket-of-periphery terms as though they were German ("btp", "oat",
+    #: "bonos", "spgb") — those are OTHER members' instruments and are absent.
+    _DE_RATES_KEYWORDS: tuple[str, ...] = (
+        "bund",
+        "bunds",
+        "bobl",
+        "schatz",
+        "euro-bund",
+        "euro bobl",
+        "euro schatz",
+        "german",
+        "germany",
+        "bund benchmark",
+        "euro-area government",
+        "euro area government",
+        "eurozone",
+        "estr",
+        "euro short-term rate",
+        # Curve-shape vocabulary is market-neutral and shared.
+        "steepener",
+        "flattener",
+        "steepening",
+        "flattening",
+        "duration-weighted",
+        "butterfly",
+        "curve",
+        "swap",
+        "ois",
+    )
+    #: The German equity vocabulary. The US-only (``s&p``, ``spx``, ``nasdaq``,
+    #: ``russell``), UK-only (``ftse``) and euro-area-broad (``euro stoxx``)
+    #: words are deliberately ABSENT; the German benchmark IS the DAX.
+    _DE_EQUITY_KEYWORDS: tuple[str, ...] = (
+        "equity index",
+        "equity indices",
+        "index futures",
+        "dax",
+        "german equity",
+        "germany equity",
+        "frankfurt",
+    )
+    #: The Japanese rates vocabulary. Kept SEPARATE from the us/gb/eu sets and
+    #: selected by country, so a jp thesis cannot be admitted on the strength of
+    #: another market's keyword. Note what is deliberately ABSENT: ``ust``,
+    #: ``treasury``, ``sofr``, ``tips`` (US); ``gilt``, ``sonia`` (UK);
+    #: ``bund``, ``btp``, ``estr`` (euro area). What is PRESENT and
+    #: Japan-specific is ``jgb``, ``japan government bond``, ``tona`` (the Tokyo
+    #: Overnight Average rate — Japan's risk-free reference) and the YCC curve
+    #: vocabulary.
+    _JP_RATES_KEYWORDS: tuple[str, ...] = (
+        "jgb",
+        "jgbs",
+        "japan government",
+        "japanese government",
+        "japan sovereign",
+        "tona",
+        "tokyo overnight",
+        "boj",
+        "bank of japan",
+        "yield curve control",
+        "ycc",
+        # Curve-shape vocabulary is market-neutral and shared.
+        "steepener",
+        "flattener",
+        "steepening",
+        "flattening",
+        "duration-weighted",
+        "butterfly",
+        "curve",
+        "swap",
+        "ois",
+    )
+    #: The Japanese equity vocabulary. The US-only (``s&p``, ``spx``,
+    #: ``nasdaq``, ``russell``), UK-only (``ftse``) and euro-area (``dax``,
+    #: ``euro stoxx``) words are deliberately ABSENT; Japan's benchmarks are the
+    #: Nikkei 225 and TOPIX.
+    _JP_EQUITY_KEYWORDS: tuple[str, ...] = (
+        "equity index",
+        "equity indices",
+        "index futures",
+        "nikkei",
+        "topix",
+        "japan equity",
+        "japanese equity",
+        "tokyo equity",
+    )
     # Bare exchange tickers, matched only as a standalone token or as the token
     # immediately preceding "futures"/"options". These are unambiguous enough
     # to admit, but too short to match as loose substrings ("es" appears inside
@@ -584,7 +729,13 @@ class ProductionUniverse(BaseModel):
         is also what ``CountrySettings._no_false_genericity_claim`` enforces one
         layer up.
         """
-        plans = {"us": self._US_PLAN, "gb": self._GB_PLAN, "eu": self._EU_PLAN}
+        plans = {
+            "us": self._US_PLAN,
+            "gb": self._GB_PLAN,
+            "eu": self._EU_PLAN,
+            "de": self._DE_PLAN,
+            "jp": self._JP_PLAN,
+        }
         if self.country not in plans:
             raise ValueError(
                 f"ProductionUniverse.country={self.country!r} has no instrument "
@@ -620,6 +771,10 @@ class ProductionUniverse(BaseModel):
             return self._GB_RATES_KEYWORDS
         if self.country == "eu":
             return self._EU_RATES_KEYWORDS
+        if self.country == "de":
+            return self._DE_RATES_KEYWORDS
+        if self.country == "jp":
+            return self._JP_RATES_KEYWORDS
         return self._RATES_KEYWORDS
 
     @property
@@ -629,6 +784,10 @@ class ProductionUniverse(BaseModel):
             return self._GB_EQUITY_KEYWORDS
         if self.country == "eu":
             return self._EU_EQUITY_KEYWORDS
+        if self.country == "de":
+            return self._DE_EQUITY_KEYWORDS
+        if self.country == "jp":
+            return self._JP_EQUITY_KEYWORDS
         return self._EQUITY_KEYWORDS
 
     def permits(self, instrument: str) -> bool:

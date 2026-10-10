@@ -10,6 +10,66 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-149 — the `de` and `jp` increments: the last two multi-country countries, the two rule sets that are un-fakeable for OPPOSITE reasons, and the seventh FALSE BLOCK (2026-10-10)
+
+The `de` (Germany) and `jp` (Japan) increments completing §22.3's three-workstream bar for the **last
+two** named countries (`us` was built in Phases 0–4, `gb` at D-145, the euro area `eu` at D-148). With
+this change **all five modelled countries are implemented end-to-end**; the only remaining
+multi-country capability is the **cross-country reasoning layer** itself (§2.4.1 layer 4, still
+refused by `BLOCKED_MULTI_COUNTRY_NOT_BUILT`). Each country got its own verified data, its own
+genuinely distinct reaction function and its own instrument set, wired so a `de` or `jp` snapshot
+produces a thesis. Design record: `docs/DE_JP_DESIGN.md`; full evidence: `docs/DECISIONS.md` §D-149.
+
+- **Added** the German data workstream (`config/series_registry.yaml`, WS1): `de_*` series — CPI,
+  unemployment, real GDP growth, short/long rates, the Bund 10-year yield — plus the euro-area
+  comparators each is measured against. Registered in `persistence.SCALAR_SERIES_FIELDS` in the same
+  change (omitting a fetched scalar silently erases it).
+- **Added** the Japanese data workstream: `jp_*` series for CPI, unemployment, real GDP, the policy
+  and short/long rates (10y JGB, 3m). Same registry + persistence treatment.
+- **Added** the German reaction function (`models/policy_rules.py`, WS2) — the **member-state
+  appropriateness** trio, not a central-bank rule: `de_member_appropriateness_rule` (measures the sign
+  and size of the divergence of *German* inflation/output/unemployment/GDP growth from the euro-area
+  aggregate the ECB actually reacts to), `de_bund_spread_rule` (the Bund 10-year against the ECB-set
+  reference) and `de_real_rate_rule` (the German real rate against its neutral level). **The
+  un-fakeable case:** Germany does **not** set monetary policy (the ECB Governing Council sets the
+  single rate), so a "German Taylor rule" would be a relabelled ECB rule — a rule that reads the
+  country's *divergence from a stance it does not itself set* is member-state analysis, which no
+  relabelling of the Fed rule can produce.
+- **Added** the Japanese reaction function — the **Reifschneider–Williams shadow-rate rule**
+  (`jp_reifschneider_williams_rule`) whose `max[0, ·]` **ZLB floor** and cumulative-shortfall `z_t`
+  term a plain Taylor rule cannot reproduce, plus `jp_ycc_reference_rule` (Yield Curve Control — the
+  10-year JGB yield is the instrument, with a band classifier) and `jp_overshoot_commitment_rule` (the
+  BoJ's inflation-**overshooting** commitment, which is *asymmetric* and reads the *level*, not the
+  gap). Calibration from Hasui & Teranishi (2025, HIAS-E-149) and Reifschneider–Williams (2000);
+  read directly via `pypdf`.
+- **Added** the two instrument sets (`thesis_layer/schemas.py` + `config/settings.yaml`'s
+  `instrument_selection.country_routes`, WS3): a `_DE_PLAN` universe (Bunds/Bobl/Schatz, Bund
+  futures, DAX) and a `_JP_PLAN` (JGBs, JGB futures, Nikkei 225 / Topix index futures), plus `de`/`jp`
+  routing tables.
+- **Added** the dispatch: `snapshot_to_thesis_inputs` dispatches on country to `_de_thesis_inputs` /
+  `_jp_thesis_inputs`; `new_thesis_id` and `ProductionUniverse` are country-aware; `/thesis/de` and
+  `/thesis/jp` both run end-to-end.
+- **Fixed** a real **published-output** defect found by *reading the body*, not by a mutation: the
+  `de_bund_spread_rule`'s published `direction` was the garbled concatenation
+  `"curve {curve_word} the ECB referencethe ECB-set reference"` — now
+  `f"the Bund 10-year curve is {curve_word} the ECB-set reference"`.
+- **Recorded the SEVENTH FALSE BLOCK (D-043 class)** — the Japan CPI sourcing claim. OECD and FRED
+  Japan CPI both stop at **2021-06** (`JPNCPIALLMINMEI`, `CPALTT01JPM659N`), so a probe stopping there
+  would file "Japan CPI is unavailable" as a measured constraint. It is **not**: the **IMF provider**
+  on `economy.cpi` serves Japan CPI **current to 2026-08**. The route was never the problem; the
+  *provider* was.
+- **Proved** with a new 20-mutation sweep `scripts/mutation_de_jp.py` (plus a `CANARY1`): **20/20
+  killed**. Four first-pass survivors were each dug into and none dismissed — two were **EQUIVALENT**
+  mutations (retargeted, not "fixed" by weakening a test) and three exposed **real test gaps** that
+  asserted a *textual trace* rather than the *mechanism* (now AST-checked, or strengthened with an
+  injected value).
+- **Verified** end to end against the LIVE routes: `/thesis/de` →
+  `de-2026-10-10-770d3622` with rules 1.0943 / 0.5984 / −0.2118, dispersion 1.3061, DAX;
+  `/thesis/jp` → `jp-2026-10-10-2d46eb0f` with rules 1.25 / 2.94 / 1.0, dispersion 1.94, Nikkei.
+- **Gates:** `ruff check` PASS · `ruff format --check` 188 clean · `mypy` 188 clean · suite
+  **1952 passed / 5 deselected / 0 failed** (+32 new tests). `AGENTS.md` byte-identical
+  (`8295ccf3…`). Tree byte-identical after the sweep; no `MUTANT` residue; no sidecars.
+
 ### D-148 — the euro area (ECB) increment: country `eu`, the second multi-country and third modelled country (2026-10-10)
 
 The `eu` (euro area) increment completing §22.3's three-workstream bar for the **second**

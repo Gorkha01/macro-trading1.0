@@ -136,10 +136,16 @@ from macro_engine.models.policy_rules import (
     BoeContemporaneousInputs,
     BoeFirstDifferenceInputs,
     BoeForwardLookingInputs,
+    DeBundSpreadInputs,
+    DeMemberAppropriatenessInputs,
+    DeRealRateInputs,
     EcbContemporaneousInputs,
     EcbErrorCorrectionInputs,
     EcbRestrictedCointegrationInputs,
     FirstDifferenceInputs,
+    JpOvershootCommitmentInputs,
+    JpReifschneiderWilliamsInputs,
+    JpYccInputs,
     MarketPricingGap,
     PolicyRuleResult,
     TaylorRuleInputs,
@@ -148,11 +154,17 @@ from macro_engine.models.policy_rules import (
     boe_first_difference_rule,
     boe_forward_looking_taylor_rule,
     canonical_policy_gap,
+    de_bund_spread_rule,
+    de_member_appropriateness_rule,
+    de_real_rate_rule,
     derive_market_implied_policy_path,
     ecb_contemporaneous_taylor_rule,
     ecb_error_correction_rule,
     ecb_restricted_cointegration_rule,
     first_difference_rule,
+    jp_overshoot_commitment_rule,
+    jp_reifschneider_williams_rule,
+    jp_ycc_reference_rule,
     policy_rule_ensemble,
     taylor_rule,
 )
@@ -424,6 +436,44 @@ class EuRuleInputs:
     restricted_cointegration: EcbRestrictedCointegrationInputs
 
 
+@dataclass(frozen=True)
+class DeRuleInputs:
+    """The three German rule-input records, as one bundle (Section 22.3).
+
+    The same reason ``BoeRuleInputs`` and ``EuRuleInputs`` are bundles. The
+    three German legs each take a DISTINCT record: the appropriateness rule
+    reads the divergences of German from euro-area conditions; the Bund-spread
+    rule reads the German curve and the exogenous ECB rate; the real-rate rule
+    reads the shared nominal rate and both inflation rates. None can be
+    expressed by another.
+
+    There is **no policy-rate field anywhere in this bundle** — Germany has no
+    policy rate. The euro-area rate enters as ``f_ecb``, an EXOGENOUS input to
+    the rules, not a prescription from them.
+    """
+
+    appropriateness: DeMemberAppropriatenessInputs
+    bund_spread: DeBundSpreadInputs
+    real_rate: DeRealRateInputs
+
+
+@dataclass(frozen=True)
+class JpRuleInputs:
+    """The three Japanese rule-input records, as one bundle (Section 22.3).
+
+    The same reason the other country bundles are bundles. The three Japanese
+    legs take DISTINCT records: the shadow-rate rule reads the notional rate and
+    the cumulative ZLB shortfall (state); the YCC rule reads the 10-year JGB
+    yield against the BoJ's target and band; the overshooting-commitment rule
+    reads the cumulative inflation shortfall. The state-carrying fields are why
+    these cannot be collapsed into one record.
+    """
+
+    shadow_rate: JpReifschneiderWilliamsInputs
+    ycc: JpYccInputs
+    overshoot: JpOvershootCommitmentInputs
+
+
 #: The three policy rules, in §7.3's order. Named so the two functions that
 #: unpack the tuple cannot disagree about the order.
 RuleTrio = tuple[PolicyRuleResult, PolicyRuleResult, PolicyRuleResult]
@@ -439,6 +489,8 @@ def build_policy_gap(
     country: str = "us",
     boe_inputs: BoeRuleInputs | None = None,
     eu_inputs: EuRuleInputs | None = None,
+    de_inputs: DeRuleInputs | None = None,
+    jp_inputs: JpRuleInputs | None = None,
 ) -> tuple[MarketPricingGap, RuleTrio, ModelResult, ModelResult]:
     """Q3-Q5: the three rules, their dispersion, and the canonical gap.
 
@@ -540,6 +592,61 @@ def build_policy_gap(
         taylor = ecb_contemporaneous_taylor_rule(eu_inputs.contemporaneous)
         balanced = ecb_error_correction_rule(eu_inputs.error_correction)
         first_diff = ecb_restricted_cointegration_rule(eu_inputs.restricted_cointegration)
+    elif country == "de":
+        if de_inputs is None:
+            raise TypeError(
+                "build_policy_gap(country='de') requires de_inputs; Germany has "
+                "NO central bank of its own — the ECB sets the currency union's "
+                "single rate — so its three rules are MEMBER-STATE rules that "
+                "read German data against the euro-area aggregate, and none can "
+                "be derived from the Fed's, the BoE's or the ECB's records. A de "
+                "thesis with no German inputs has no policy leg (Section 22.3)."
+            )
+        if taylor_inputs is not None or first_difference_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='de') was given the Fed's rule inputs "
+                "as well as Germany's. A thesis carries ONE country's records "
+                "(Section 22.3); passing both would let the wrong central bank's "
+                "rules run silently."
+            )
+        if boe_inputs is not None or eu_inputs is not None or jp_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='de') was given another country's "
+                "inputs; a thesis carries ONE country's records (Section 22.3)."
+            )
+        # Germany's trio is a MEMBER-STATE cluster, not a central bank's three
+        # rules: the appropriateness diagnostic (German vs euro-area divergence),
+        # the Bund's market expression of it, and the real-rate leg. The euro
+        # area's rate is EXOGENOUS in all three — Germany sets no rate.
+        taylor = de_member_appropriateness_rule(de_inputs.appropriateness)
+        balanced = de_bund_spread_rule(de_inputs.bund_spread)
+        first_diff = de_real_rate_rule(de_inputs.real_rate)
+    elif country == "jp":
+        if jp_inputs is None:
+            raise TypeError(
+                "build_policy_gap(country='jp') requires jp_inputs; the Bank of "
+                "Japan's three rules — a ZLB shadow-rate rule, a Yield Curve "
+                "Control reference and an inflation-overshooting commitment — "
+                "take distinct input records, two of which carry STATE (the "
+                "notional rate and the cumulative shortfalls), and none can be "
+                "derived from the Fed's, the BoE's or the ECB's. A jp thesis "
+                "with no BoJ inputs has no policy leg (Section 22.3)."
+            )
+        if taylor_inputs is not None or first_difference_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='jp') was given the Fed's rule inputs "
+                "as well as the BoJ's. A thesis carries ONE country's records "
+                "(Section 22.3); passing both would let the wrong central bank's "
+                "rules run silently."
+            )
+        if boe_inputs is not None or eu_inputs is not None or de_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='jp') was given another country's "
+                "inputs; a thesis carries ONE country's records (Section 22.3)."
+            )
+        taylor = jp_reifschneider_williams_rule(jp_inputs.shadow_rate)
+        balanced = jp_ycc_reference_rule(jp_inputs.ycc)
+        first_diff = jp_overshoot_commitment_rule(jp_inputs.overshoot)
     elif country == "us":
         if taylor_inputs is None or first_difference_inputs is None:
             raise TypeError(
@@ -553,14 +660,21 @@ def build_policy_gap(
                 "eu_inputs; a thesis carries ONE country's records (Section "
                 "22.3)."
             )
+        if de_inputs is not None or jp_inputs is not None:
+            raise TypeError(
+                "build_policy_gap(country='us') was given de_inputs or "
+                "jp_inputs; a thesis carries ONE country's records (Section "
+                "22.3)."
+            )
         taylor = taylor_rule(taylor_inputs)
         balanced = balanced_approach_rule(taylor_inputs)
         first_diff = first_difference_rule(first_difference_inputs)
     else:
         raise ValueError(
             f"build_policy_gap has no rule set for country {country!r}; "
-            f"implemented: ['eu', 'gb', 'us'] (Section 22.3). A country without "
-            f"its own central-bank rules must not borrow another's."
+            f"implemented: ['de', 'eu', 'gb', 'jp', 'us'] (Section 22.3). A "
+            f"country without its own central-bank (or member-state) rules must "
+            f"not borrow another's."
         )
 
     ensemble = policy_rule_ensemble(taylor, balanced, first_diff)
@@ -928,6 +1042,8 @@ def build_us_macro_thesis(
     country: str = "us",
     boe_inputs: BoeRuleInputs | None = None,
     eu_inputs: EuRuleInputs | None = None,
+    de_inputs: DeRuleInputs | None = None,
+    jp_inputs: JpRuleInputs | None = None,
     curve_short_tenor: str | None = None,
     curve_long_tenor: str | None = None,
     short_yield: float,
@@ -1064,6 +1180,8 @@ def build_us_macro_thesis(
         country=country,
         boe_inputs=boe_inputs,
         eu_inputs=eu_inputs,
+        de_inputs=de_inputs,
+        jp_inputs=jp_inputs,
     )
 
     # -- Q6. THE SIGNIFICANCE TEST reads the published gap's own verdict, not a

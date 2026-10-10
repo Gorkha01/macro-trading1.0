@@ -23602,3 +23602,198 @@ data_layer/openbb_client.py,api_layer/orchestration.py}`,
 `tests/{models/test_policy_rules.py,models/test_instrument_selection.py,
 thesis_layer/test_schemas.py,api_layer/test_orchestration.py,data_layer/test_eu_registry.py}`,
 `docs/{CHANGELOG.md,DECISIONS.md}`, `README.md`.
+
+## D-149 — §22.3 multi-country, countries 3 and 4: `de` and `jp` wired end-to-end, the two rule sets that are un-fakeable for OPPOSITE reasons, and the seventh FALSE BLOCK
+
+### 1. What this increment is, against the four-layer bar
+
+D-146 fixed the bar (data → reaction function → instruments+FX → cross-country reasoning); D-145 closed
+`gb` (country 1); D-148 closed `eu` (country 2). This increment closes **`de` and `jp` together — the
+last two countries** — so the §22.3 country set is now `["us","gb","eu","de","jp"]` and the second
+layer of the bar (the un-fakeable reaction function) is complete for every enabled country.
+
+They are done in one increment because they are the two countries the spec's own note flagged as
+**"NOT mechanical"** (§22.3), and they are un-fakeable for *opposite* reasons:
+
+* **`de` has no central bank of its own.** The ECB sets one rate for the union. A German rule that
+  *prescribed* a rate would be a fiction — so the German arm publishes a **divergence from the
+  euro-area aggregate**, not a prescription.
+* **`jp` has a central bank whose FRAMEWORK is not a Taylor rule.** A ZLB floor held for two decades, a
+  long-yield operating target (YCC), and an inflation-overshooting commitment. A Taylor rule provably
+  cannot reproduce the overshooting — so the Japanese arm carries a **floored shadow rate and a
+  history-dependent price-level term**.
+
+Both are recorded here because the *nature* of each country's un-fakeability was a design decision the
+spec left open, and the two answers are not the same kind of answer.
+
+### 2. WS1 — the `de` / `jp` data workstream
+
+The registry gained the German and Japanese series and **both countries' `snapshot_fields` plans** were
+added to `config/settings.yaml`, registered in `persistence.SCALAR_SERIES_FIELDS` in the same change
+(the D-145/D-148 lesson: a field declared, fetched and populated, then silently erased).
+
+**The `de` snapshot carries the euro-area comparator keys, and that is not another country's data.**
+`de`'s plan includes `eu_ecb_main_refi_rate`, `eu_hicp_index`, `eu_unemployment_rate` and
+`eu_gdp_real_level` — because **the ECB rate IS Germany's policy rate** and the euro-area aggregate is
+the *reference Germany diverges from*. The first live build of `_de_thesis_inputs` failed on an empty
+`eu_ecb_main_refi_rate`, and the fix was to add the comparator to the `de` plan with a comment
+explaining why it is Germany's own input. This is the mirror image of the `gb`/`eu` separation: there,
+sharing would serve US data to a UK trade; here, *not* sharing would leave Germany without its own
+policy rate.
+
+**THE SEVENTH FALSE BLOCK — Japanese CPI.** The D-043 class again: a "no source" claim recorded once and
+never re-measured. OECD and FRED Japanese CPI series both **stop at 2021-06**, and that reading had been
+carried as a constraint. Measured live: the **IMF provider is current to 2026-08**. The same rule as
+always — re-measure every "unavailable" claim, and a probe must **CALL** the source, never enumerate it.
+The BoJ's target measure (CPI all items **less fresh food**) is what the `jp` rules read, and it is
+available on the IMF route.
+
+### 3. WS2 — the two reaction functions (the layer that decides whether this is real)
+
+**`de` — the member-state appropriateness cluster.** Three rules in `models/policy_rules.py`, each with
+its own input record, `rule_variant` and `country="de"`:
+
+* **`de_member_appropriateness_rule`** — the headline leg:
+  `gap = w_π(π_de − π_ea) + w_y(y_de − y_ea) + w_u(u_ea − u_de) + w_g(g_de − g_ea)`.
+  The unemployment term is entered as **`u_ea − u_de`** (German unemployment *below* the aggregate is
+  *tighter* labour, a POSITIVE contribution). Unit is `percentage_points`, and the sign convention is
+  **inverted**: a POSITIVE gap means the shared rate is too **LOOSE** for Germany — it is a stance
+  diagnosis, **not** a prescription that any rate should rise.
+* **`de_bund_spread_rule`** — the market leg: `signal = bund_10y − (w_ecb·f_ecb + w_de·de_short_3m)`,
+  the Bund's vertical position against the ECB-set reference.
+* **`de_real_rate_rule`** — the real-terms leg: `real_de = f_ecb − π_de`, reported against the German
+  neutral real rate. The structural marker in real terms: **the shared nominal rate CANCELS** in the
+  Germany-vs-euro-area differential, leaving exactly `π_ea − π_de`.
+
+**`DePolicySettings` deliberately has NO `pi_target`, NO `i_star` and NO `smoothing`** — and the absence
+is *tested* (`test_the_de_approp_rule_has_no_pi_target_and_no_owned_rate`). A member state owns no
+target; if those leaves existed, some rule could read them and quietly fabricate a German reaction
+function. The absence IS the design.
+
+**`jp` — the Bank of Japan ZLB / overshoot cluster.** Three rules, grounded in **Reifschneider–Williams
+(2000)** as calibrated for Japan by **Hasui & Teranishi (2025, HIAS-E-149)** and Nakov (2008):
+
+* **`jp_reifschneider_williams_rule`** — the shadow-rate rule:
+  `ĩ_t = (1−ρ)(i* + φ_π(π−π*) + φ_x·x_t) + ρ·ĩ_{t−1}`;
+  `unconstrained = ĩ_t − φ_z·z_{t−1}`; `rate = max(zlb_floor, unconstrained)`.
+  Two structural features no other rule in the module has: the **`max(floor, ·)`** bound and the
+  **`−φ_z·z_{t−1}` cumulative-shortfall** term. `z` is the "ZLB debt" — the amount by which the floor
+  has held the actual rate above the notional one — and a larger `z` makes the rule prescribe **more**
+  stimulus. That history dependence is what the primary source shows is required to produce
+  overshooting: *"the Taylor-type rule can not replicate inflation overshooting."*
+* **`jp_ycc_reference_rule`** — the instrument leg: `deviation = jgb_10y − ycc_target`, classified
+  against the BoJ's own ±band. Here the 10-year yield is the thing the BoJ **targets**, not a proxy for
+  expected inflation as in the ECB arm — a different structural role for the same variable.
+* **`jp_overshoot_commitment_rule`** — the price-level leg:
+  `open_shortfall = max(0, T_stab − Σ(π−π*))`; `accommodation = φ_s·open_shortfall`. **Asymmetric**:
+  while a shortfall remains open, the rule adds accommodation **even if current inflation is above 2%**.
+  A symmetric Taylor rule would tighten in exactly that state — and that difference IS the commitment.
+
+**The mover identity holds and is tested:** `jp.i_star (1.5) == pi_target (2.0) + natural_rate (−0.5)`.
+The **negative** natural rate (the opposite sign from the Fed's +0.5, the BoE's +1.0 and the euro area's
+0.0) is why Japan's floor binds, and `i_star` is DERIVED from the target plus it rather than being a
+second independent constant that could silently disagree.
+
+The **shadow-rate state** (`z_prev`, `i_notional_prev`) and the **cumulative inflation gap** are
+**SEEDED at 0.0** in `_jp_thesis_inputs`, with a **DISCLOSED warning** — the rules are stateless
+functions of their inputs, the caller threads the state, and a caller who resets it degenerates the
+rule toward a Taylor rule. That is stated in the warnings rather than hidden.
+
+### 4. WS3 — the instrument sets and the end-to-end wiring
+
+`ProductionUniverse(country="de")` (`_DE_PLAN`: Bunds/Bobls/Schatz, Euro-Bund futures, ESTR futures,
+DAX) and `(country="jp")` (`_JP_PLAN`: JGBs, JGB futures, TONA OIS, Nikkei/TOPIX), each with its own
+`_*_RATES_KEYWORDS` / `_*_EQUITY_KEYWORDS` sets, registered in `_populate_from_country_plan`,
+`_rates_keywords` and `_equity_keywords`. `config/settings.yaml` gained the `de`/`jp` `country_routes`
+(four templates each). `snapshot_to_thesis_inputs` gained the `de`/`jp` dispatch branches;
+`build_policy_gap` gained `elif country == "de"` / `"jp"` with **two guard classes each** (missing-inputs
+vs wrong-country), and the three call sites (`reasoning_stream`, `routes_query`, `routes_thesis`) thread
+`de_inputs` / `jp_inputs`.
+
+**`de` and `eu` instrument plans are HONESTLY non-disjoint** — a Bund is a real member of both markets'
+vocabulary. That is documented rather than hidden: unlike the `gb`/`eu` case (where a UST in a gilt
+thesis is a data error), a Bund in a German thesis is *correct*, so the disjointness assertion is
+deliberately NOT made for `de`/`eu`.
+
+### 5. The mutation proofs (20, all killed)
+
+A new sweep, `scripts/mutation_de_jp.py`, covering the six rules and their config leaves. The canary is
+required to be killed (O-72). Final: **20/20 killed**.
+
+| # | Mutation | Killed by |
+|---|---|---|
+| DE1 | unemployment divergence entered as `u_de − u_ea` | `..._member_appropriateness_rule_matches_the_hand_calculation` |
+| DE2 | inflation divergence reversed | `..._member_appropriateness_rule_matches_the_hand_calculation` |
+| DE3 | the "too loose"/"too tight" branches swapped | `..._sign_is_a_stance_diagnosis_not_a_rate` |
+| DE4 | the Bund reference drops the German short-rate term | `..._de_bund_spread_rule_matches_the_hand_calculation` |
+| DE5 | the real-rate gap drops the neutral-rate subtraction | `..._de_real_rate_rule_matches_the_hand_calculation_and_cancels_f_ecb` |
+| JP1 | the notional recursion drops its persistence weight | `..._jp_shadow_rate_rule_matches_the_hand_calculation` |
+| JP2 | the ZLB floor becomes a `min` | `..._jp_shadow_rate_rule_is_not_a_relabelled_fed_rule` |
+| JP3 | the cumulative-shortfall term dropped | `..._jp_shadow_rate_rule_matches_the_hand_calculation` |
+| JP4 | the YCC deviation reversed | `..._jp_ycc_rule_matches_the_hand_calculation_and_classifies_the_band` |
+| JP5 | the YCC band test drops `abs()` | `..._jp_ycc_rule_matches_the_hand_calculation_and_classifies_the_band` |
+| JP6 | the overshoot's `max(0, ·)` dropped | `..._jp_overshoot_rule_is_asymmetric_and_reads_the_level_not_the_gap` |
+| L1 | the de Bund rule's `model_name` renamed | `..._de_rules_are_labelled_de_with_distinct_variants` |
+| L2 | the jp shadow-rate rule's `model_name` renamed | `..._jp_rules_are_labelled_jp_with_distinct_variants` |
+| L3 | the jp overshoot rule's country stamped `us` | `..._jp_rules_are_labelled_jp_with_distinct_variants` |
+| L4 | the de appropriateness rule's Bundesbank prohibition weakened | `..._de_appropriateness_rule_forbids_the_bundesbank_relabel` |
+| C1 | the de appropriateness rule stops weighting the inflation divergence | `..._every_de_coefficient_leaf_is_a_real_mover` |
+| C2 | the jp `i_star` accessor returns a hardcoded constant | `..._jp_coefficients_are_read_and_the_mover_identity_holds` |
+| C3 | the jp `zlb_floor` accessor returns a hardcoded −0.1 | `..._jp_coefficients_are_read_and_the_mover_identity_holds` |
+| C4 | the persistence `[0, 1)` validator widened to `[0, ∞)` | `..._jp_persistence_validator_rejects_an_out_of_range_value` |
+
+Tree restored **byte-identical** after every mutation (`policy_rules.py` sha256 `072ce57e…`,
+`config.py` sha256 `9f6d5351…`, `orchestration.py` sha256 `05eb7794…`); `grep MUTANT` clean.
+
+**Four survivors on the first pass, and each taught something — none was dismissed as "a weak test" on
+sight:**
+
+1. **DE4 was a BROKEN mutation, not a weak test.** The first form appended `+ 0.0` to the *first* term
+   of a two-line `+` expression — an **equivalence transformation** that computes the identical value.
+   It was retargeted to drop the German term entirely. The sweep doctrine's own case: an equivalent
+   mutation reported as a survivor says nothing about the suite.
+2. **C1 was likewise EQUIVALENT** — hardcoding the accessor's return to `1.0` matches the leaf's actual
+   value. Retargeted to the **consumer** (the rule's use of the weight), and a `..._is_a_real_mover`
+   test added, which is what makes a leaf inert-check possible at all.
+3. **DE5 was a REAL test gap.** `real_gap` is computed but published only in the `interpretation`
+   string, so a mutant that dropped the subtraction left `value` (which is `real_de`) correct. The test
+   now asserts the **exact interpretation sentence** — the field a reader actually consumes. This is
+   Lesson 2's shape: a quantity computed and only published.
+4. **L4, JP5 and C4 were REAL test gaps** — the prohibition was asserted on the *Bund* rule but mutated
+   on the *appropriateness* rule; the YCC band test used only *positive* deviations (where `abs()` is a
+   no-op); and the persistence validator was never **injected**. All three tests were strengthened (the
+   `abs` case now uses a yield one-and-a-half band-widths *below* target; the validator test patches an
+   out-of-range leaf and asserts the accessor RAISES).
+
+**A defect found by READING the body, not by a mutation.** `de_bund_spread_rule`'s published `direction`
+was the garbled concatenation `"curve {curve_word} the ECB referencethe ECB-set reference"` — a
+truncated/pasted string. Fixed, and a test now asserts `"referencethe" not in direction`. Mutations
+prove the code you *aimed* at; this defect lived in the code you did not.
+
+### 6. The live end-to-end verification
+
+Against the **live** routes, both countries build full theses:
+
+```
+de-2026-10-10-770d3622  de_member_appropriateness=1.0943 · de_bund_spread=0.5984 · de_real_rate=-0.2118
+                        dispersion=1.3061 · instrument: DAX index futures
+jp-2026-10-10-2d46eb0f  jp_reifschneider_williams=1.25 · jp_ycc_reference=2.94 · jp_overshoot_commitment=1.0
+                        dispersion=1.94 · instrument: Nikkei 225 index futures
+```
+
+`country.enabled` / `implemented` are `["us", "gb", "eu", "de", "jp"]`.
+
+### 7. Gates
+
+`ruff check` PASS · `ruff format --check` **188** clean · bare `mypy` **188** clean · suite
+**1952 passed / 5 deselected** (up from 1920 — +32 new tests). Mutation sweep **20/20 killed**.
+`AGENTS.md` byte-identical (`sha256 8295ccf3…`).
+
+**Files:** `src/macro_engine/{config.py,models/policy_rules.py,thesis_layer/{schemas.py,builder.py},
+api_layer/{orchestration.py,reasoning_stream.py,routes_query.py,routes_thesis.py},
+data_layer/publication_dates.py}`, `config/{settings.yaml,series_registry.yaml}`,
+`scripts/mutation_de_jp.py`,
+`tests/{models/test_policy_rules.py,thesis_layer/{test_builder.py,test_schemas.py},
+api_layer/{test_orchestration.py,test_reasoning_stream.py}}`,
+`docs/{DECISIONS.md,CHANGELOG.md,PHASE5_DEFERRED.md,DE_JP_DESIGN.md,BUILD_STATE.md,PROGRESS.md}`,
+`README.md`.

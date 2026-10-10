@@ -249,6 +249,8 @@ async def query(
             country=inputs.country,
             boe_inputs=inputs.boe_inputs,
             eu_inputs=inputs.eu_inputs,
+            de_inputs=inputs.de_inputs,
+            jp_inputs=inputs.jp_inputs,
             short_yield=inputs.short_yield,
             regime=inputs.regime,
         )

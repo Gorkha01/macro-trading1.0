@@ -1985,5 +1985,834 @@ def test_the_ecb_rules_refuse_a_non_finite_input() -> None:
             cls(**{**kwargs, field: math.nan})
 
 
+# ---------------------------------------------------------------------------
+# Section 22.3 — GERMANY (country "de"). A member state, NOT a central bank.
+#
+# Every expected value below is derived BY HAND from the rule's own published
+# form with the config leaves read and asserted first. The section's point is
+# STRUCTURAL: Germany has no central bank of its own, so nothing here may
+# prescribe a German rate. The rules take the ECB's single rate as an EXOGENOUS
+# input and publish a DIVERGENCE — the un-fakeable difference from the Fed, BoE
+# and ECB arms, each of which SETS the rate it trades off.
+# ---------------------------------------------------------------------------
+def test_the_de_coefficients_match_their_stated_provenance() -> None:
+    """The `de` config leaves are read and pinned before any arithmetic.
+
+    The German arm's weights are ILLUSTRATIVE (there is no published Bundesbank
+    reaction function to transcribe), so the honest pin is not a primary-source
+    citation but the leaves' OWN provenance: each is marked illustrative in
+    config, and each is asserted here by value so a silent edit is caught. A
+    test that skipped this would let the "appropriate" weights drift with no
+    witness — and the sign convention (below) is calibrated against them.
+    """
+    from macro_engine.config import get_settings
+
+    de = get_settings().policy.de
+
+    # All four divergences enter with weight 1.0 — equal, and stated, not implied.
+    assert de.appropriateness.inflation_coefficient_value == pytest.approx(1.0)
+    assert de.appropriateness.output_gap_coefficient_value == pytest.approx(1.0)
+    assert de.appropriateness.unemployment_coefficient_value == pytest.approx(1.0)
+    assert de.appropriateness.growth_coefficient_value == pytest.approx(1.0)
+    assert de.appropriateness.r_neutral_value == pytest.approx(0.0)
+
+    # The Bund-spread reference: an even blend of the set rate and the German
+    # short rate. Equal weights are what make the reference a midpoint.
+    assert de.bund_spread.ecb_rate_weight_value == pytest.approx(0.5)
+    assert de.bund_spread.german_short_rate_weight_value == pytest.approx(0.5)
+    assert de.bund_spread.ecb_rate_weight_value + de.bund_spread.german_short_rate_weight_value == (
+        pytest.approx(1.0)
+    )
+
+
+def test_the_de_approp_rule_has_no_pi_target_and_no_owned_rate() -> None:
+    """A member state does not OWN a target or a rate — the fields are absent.
+
+    This is the structural refusal stated as an ABSENCE: unlike the Fed's, the
+    BoE's and the ECB's settings, ``DePolicySettings`` carries no ``pi_target``,
+    no ``i_star`` and no ``smoothing``. If it did, some rule could read them and
+    quietly fabricate a German reaction function. The absence IS the design, so
+    it is asserted directly rather than left to a docstring.
+    """
+    from macro_engine.config import get_settings
+
+    de = get_settings().policy.de
+    for absent in ("pi_target", "i_star", "smoothing"):
+        assert not hasattr(de, absent), (
+            f"DePolicySettings must not carry {absent!r}: Germany owns no target "
+            f"and no policy rate (Section 22.3)"
+        )
+
+
+def test_the_de_member_appropriateness_rule_matches_the_hand_calculation() -> None:
+    """``gap = 1·(πd-πe) + 1·(yd-ye) + 1·(ue-ud) + 1·(gd-ge)``, by hand.
+
+    Two hand values, config read (all weights 1.0):
+
+    * **At convergence** (every German value equals its euro-area counterpart):
+      all four divergences are 0 → gap = **0.0**. Pins the "a divergence, not a
+      level" convention: a rule reading German levels would return something
+      near the inflation or unemployment VALUE and fail — which is the point.
+    * **Germany hot** (πd=3, πe=2; y_d=0.5, y_e=0; u_d=5, u_e=6; g_d=0.4,
+      g_e=0): gap = 1 + 0.5 + 1 + 0.4 = **2.9**. Every term is POSITIVE because
+      Germany is hotter than the aggregate on all four — and note the
+      unemployment term is entered as ``u_e - u_d``: German unemployment BELOW
+      the aggregate contributes POSITIVELY.
+    """
+    from macro_engine.models.policy_rules import (
+        DeMemberAppropriatenessInputs,
+        de_member_appropriateness_rule,
+    )
+
+    at_convergence = de_member_appropriateness_rule(
+        DeMemberAppropriatenessInputs(
+            f_ecb=3.75,
+            pi_de=2.0,
+            pi_ea=2.0,
+            output_gap_de=0.0,
+            output_gap_ea=0.0,
+            unemployment_de=6.0,
+            unemployment_ea=6.0,
+            gdp_growth_de=0.0,
+            gdp_growth_ea=0.0,
+        )
+    )
+    assert at_convergence.value == pytest.approx(0.0)
+
+    hot = de_member_appropriateness_rule(
+        DeMemberAppropriatenessInputs(
+            f_ecb=3.75,
+            pi_de=3.0,
+            pi_ea=2.0,
+            output_gap_de=0.5,
+            output_gap_ea=0.0,
+            unemployment_de=5.0,
+            unemployment_ea=6.0,
+            gdp_growth_de=0.4,
+            gdp_growth_ea=0.0,
+        )
+    )
+    hand = (3.0 - 2.0) + (0.5 - 0.0) + (6.0 - 5.0) + (0.4 - 0.0)
+    assert hot.value == pytest.approx(round(hand, 4))
+    assert hot.value == pytest.approx(2.9)
+    # The unemployment sign convention: German unemployment BELOW the aggregate
+    # must push the gap UP, not down.
+    assert hot.value_float() > at_convergence.value_float()
+
+
+def test_the_de_approp_rule_sign_is_a_stance_diagnosis_not_a_rate() -> None:
+    """A POSITIVE gap means the shared rate is too LOOSE for Germany.
+
+    The inverted convention is the rule's identity: the euro-area rules read a
+    rate and prescribe a rate; this one reads a rate and publishes a DIVERGENCE.
+    Asserted in BOTH directions so a sign flip cannot survive — a flipped sign
+    would read as a plausible number either way.
+    """
+    from macro_engine.models.policy_rules import (
+        DeMemberAppropriatenessInputs,
+        PolicyRuleResult,
+        de_member_appropriateness_rule,
+    )
+
+    def run(*, pi_de: float) -> PolicyRuleResult:
+        return de_member_appropriateness_rule(
+            DeMemberAppropriatenessInputs(
+                f_ecb=3.75,
+                pi_de=pi_de,
+                pi_ea=2.0,
+                output_gap_de=0.0,
+                output_gap_ea=0.0,
+                unemployment_de=6.0,
+                unemployment_ea=6.0,
+                gdp_growth_de=0.0,
+                gdp_growth_ea=0.0,
+            )
+        )
+
+    hot = run(pi_de=3.0)  # German inflation ABOVE the union
+    cold = run(pi_de=1.0)  # ...and BELOW it
+    assert hot.value_float() > 0, (
+        "German inflation above the euro area means the single rate is too loose "
+        "— a POSITIVE divergence"
+    )
+    assert cold.value_float() < 0
+    assert "TOO LOOSE" in (hot.direction or "")
+    assert "TOO TIGHT" in (cold.direction or "")
+    assert hot.unit == "percentage_points"
+    assert "not a rate" in hot.warnings[0].lower() or "NOT A RATE" in hot.warnings[0]
+
+
+def test_the_de_bund_spread_rule_matches_the_hand_calculation() -> None:
+    """``signal = bund_10y - (0.5·f_ecb + 0.5·de_short_3m)``, by hand.
+
+    With config read (both weights 0.5):
+    * bund_10y=2.51, f_ecb=3.75, de_short_3m=3.40:
+      reference = 0.5·3.75 + 0.5·3.40 = 1.875 + 1.70 = 3.575;
+      signal = 2.51 - 3.575 = **-1.065**. NEGATIVE: the German curve sits BELOW
+      the ECB-set reference.
+    * A Bund above the reference gives a POSITIVE signal — asserted separately
+      so the sign is pinned in both directions.
+    """
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        de_bund_spread_rule,
+    )
+
+    below = de_bund_spread_rule(DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.40))
+    hand_reference = 0.5 * 3.75 + 0.5 * 3.40
+    assert below.value == pytest.approx(round(2.51 - hand_reference, 4))
+    assert below.value == pytest.approx(-1.065)
+    assert "BELOW" in (below.direction or "")
+
+    above = de_bund_spread_rule(DeBundSpreadInputs(bund_10y=4.00, f_ecb=3.75, de_short_3m=3.40))
+    assert above.value == pytest.approx(round(4.00 - hand_reference, 4))
+    assert above.value_float() > 0
+    assert "ABOVE" in (above.direction or "")
+
+    # The German short rate is a REAL regressor: moving it, holding everything
+    # else, moves the signal. A reference that dropped the German term (leaving
+    # the ECB weight alone) would make the signal INVARIANT to `de_short_3m`,
+    # which is the mechanism this pins.
+    low = de_bund_spread_rule(DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.00))
+    high = de_bund_spread_rule(DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.80))
+    assert low.value != high.value, (
+        "the German 3-month rate must move the Bund signal — the reference is a "
+        "BLEND of the ECB rate and the German short rate, not the ECB rate alone"
+    )
+    assert low.value_float() > high.value_float(), (
+        "a HIGHER German short rate raises the reference, so the signal FALLS"
+    )
+
+
+def test_the_de_real_rate_rule_matches_the_hand_calculation_and_cancels_f_ecb() -> None:
+    """``real_de = f_ecb - π_de``; the shared rate CANCELS in the differential.
+
+    Hand (f_ecb=3.75, π_de=2.4, π_ea=1.8, r_neutral=0.5):
+      real_de = 3.75 - 2.40 = **1.35**; versus the euro area's 3.75 - 1.80 =
+      1.95, so Germany's real rate is 0.60pp BELOW — which equals π_ea - π_de =
+      1.8 - 2.4 = **-0.60**. The shared nominal rate appears on both sides and
+      cancels, which is stated here as an identity and asserted.
+
+    This is the structural marker in real terms: no central-bank rule in the
+    module can produce a quantity where the rate it sets cancels out.
+    """
+    from macro_engine.models.policy_rules import DeRealRateInputs, de_real_rate_rule
+
+    result = de_real_rate_rule(DeRealRateInputs(f_ecb=3.75, pi_de=2.4, pi_ea=1.8, r_neutral_de=0.5))
+    real_de = 3.75 - 2.40
+    real_ea = 3.75 - 1.80
+    assert result.value == pytest.approx(round(real_de, 4))
+    assert result.value == pytest.approx(1.35)
+    # The differential equals the inflation divergence with f_ecb held constant.
+    assert (real_de - real_ea) == pytest.approx(1.8 - 2.4)
+    # Direction: Germany's real rate BELOW the euro area's reads "too loose".
+    assert result.direction == "too loose for Germany"
+    assert result.unit == "percent"
+    # The neutral-rate gap (`real_de - r_neutral_de`) is PUBLISHED only in the
+    # interpretation, so the test reads the interpretation: a mutant that
+    # dropped the subtraction would leave `value` (= real_de) correct while the
+    # published gap silently became the raw real rate. Asserting the exact
+    # sentence is what pins the term the mutation aimed at.
+    assert result.interpretation == (
+        "With the ECB's 3.75% nominal rate and German inflation at 2.40%, "
+        "Germany's real policy rate is 1.35% \u2014 +0.85pp against an "
+        "illustrative neutral real rate of 0.50%"
+    )
+    assert f"{real_de - 0.5:+.2f}pp" in result.interpretation
+
+
+def test_the_de_bund_spread_is_not_a_de_policy_rate() -> None:
+    """The Bund leg must forbid being read as a rate (a gate against the relabel).
+
+    The relabel Section 22.3 forbids would be presenting a German curve position
+    as Germany's policy rate. The rule's own ``decision_prohibition`` must name
+    that, or the prohibition is only in the docstring and a downstream consumer
+    can ignore it. Asserted on the rule's published field, not the source text.
+    """
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        de_bund_spread_rule,
+    )
+
+    result = de_bund_spread_rule(DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.40))
+    joined = " ".join(result.decision_prohibition).lower()
+    assert "must not be read as a policy rate" in joined
+    assert result.unit == "percentage_points"
+    # The direction string must be a coherent sentence, not a garbled
+    # concatenation — the exact defect a defect-reading of the body found.
+    assert "referencethe" not in (result.direction or "")
+    assert (result.direction or "").startswith("the Bund 10-year curve is ")
+
+
+def test_the_de_appropriateness_rule_forbids_the_bundesbank_relabel() -> None:
+    """The appropriateness rule must name its OWN prohibition, not just the Bund's.
+
+    L4 in the sweep weakens this exact prohibition, and the Bund-spread test
+    above does not read it — so without this test the weakening survives. The
+    rule is the one most exposed to the relabel §22.3 forbids (its name contains
+    "rule" and it reads a policy rate), so its published prohibition must say
+    plainly that it is NOT a Bundesbank reaction function.
+    """
+    from macro_engine.models.policy_rules import (
+        DeMemberAppropriatenessInputs,
+        de_member_appropriateness_rule,
+    )
+
+    result = de_member_appropriateness_rule(
+        DeMemberAppropriatenessInputs(
+            f_ecb=3.75,
+            pi_de=3.0,
+            pi_ea=2.0,
+            output_gap_de=0.5,
+            output_gap_ea=0.0,
+            unemployment_de=5.0,
+            unemployment_ea=6.0,
+            gdp_growth_de=0.4,
+            gdp_growth_ea=0.0,
+        )
+    )
+    joined = " ".join(result.decision_prohibition)
+    assert "MUST NOT be described as a Bundesbank or German reaction function" in joined, (
+        "the appropriateness rule must forbid the Bundesbank relabel in its own "
+        "published prohibitions (Section 22.3)"
+    )
+    assert "Germany does NOT set monetary policy" in joined
+    assert result.unit == "percentage_points"
+
+
+def test_the_de_rules_are_labelled_de_with_distinct_variants() -> None:
+    """Every `de` rule reports country ``de``, model_name and its own variant.
+
+    A rule that ran the German arithmetic but stamped ``country="eu"`` (or ``us``)
+    would produce a thesis attributing German divergence to the wrong entity.
+    The ``model_name`` is asserted as well as the ``rule_variant``: both are
+    consumer keys, and a rename of either breaks every caller keyed on it while
+    the value stays plausible.
+    """
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        DeMemberAppropriatenessInputs,
+        DeRealRateInputs,
+        de_bund_spread_rule,
+        de_member_appropriateness_rule,
+        de_real_rate_rule,
+    )
+
+    results = [
+        de_member_appropriateness_rule(
+            DeMemberAppropriatenessInputs(
+                f_ecb=3.75,
+                pi_de=2.0,
+                pi_ea=2.0,
+                output_gap_de=0.0,
+                output_gap_ea=0.0,
+                unemployment_de=6.0,
+                unemployment_ea=6.0,
+                gdp_growth_de=0.0,
+                gdp_growth_ea=0.0,
+            )
+        ),
+        de_bund_spread_rule(DeBundSpreadInputs(bund_10y=2.51, f_ecb=3.75, de_short_3m=3.40)),
+        de_real_rate_rule(DeRealRateInputs(f_ecb=3.75, pi_de=2.4, pi_ea=1.8, r_neutral_de=0.5)),
+    ]
+    for r in results:
+        assert r.country == "de"
+    assert {r.rule_variant for r in results} == {
+        "de_member_appropriateness",
+        "de_bund_spread",
+        "de_real_rate",
+    }
+    assert {r.model_name for r in results} == {
+        "de_member_appropriateness_rule",
+        "de_bund_spread_rule",
+        "de_real_rate_rule",
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        (
+            "de_inflation",
+            ("appropriateness", "inflation_coefficient", 2.0),
+        ),
+        (
+            "de_output_gap",
+            ("appropriateness", "output_gap_coefficient", 2.0),
+        ),
+        (
+            "de_unemployment",
+            ("appropriateness", "unemployment_coefficient", 2.0),
+        ),
+        (
+            "de_growth",
+            ("appropriateness", "growth_coefficient", 2.0),
+        ),
+        (
+            "de_ecb_weight",
+            ("bund_spread", "ecb_rate_weight", 0.25),
+        ),
+        (
+            "de_german_short_weight",
+            ("bund_spread", "german_short_rate_weight", 0.75),
+        ),
+    ],
+)
+def test_every_de_coefficient_leaf_is_a_real_mover(
+    label: str, change: tuple[str, str, float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each `de` coefficient leaf the rules read must CHANGE the output.
+
+    LAW 1's mover proof: a weight read into a variable and then not used is the
+    exact failure this catches — the leaf looks calibrated and is inert. The
+    four appropriateness weights and the two Bund-reference weights are each
+    substituted and the rule re-run; a leaf the rule silently ignored fails here.
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        DeMemberAppropriatenessInputs,
+        de_bund_spread_rule,
+        de_member_appropriateness_rule,
+    )
+
+    de = get_settings().policy.de
+    section, leaf, replacement = change
+    target = getattr(de, section)
+    original = getattr(target, leaf)
+
+    class _Patched:
+        value = replacement
+
+    if section == "appropriateness":
+        inputs_kwargs = {
+            "f_ecb": 3.75,
+            "pi_de": 3.0,
+            "pi_ea": 2.0,
+            "output_gap_de": 0.5,
+            "output_gap_ea": 0.0,
+            "unemployment_de": 5.0,
+            "unemployment_ea": 6.0,
+            "gdp_growth_de": 0.4,
+            "gdp_growth_ea": 0.0,
+        }
+        baseline = de_member_appropriateness_rule(
+            DeMemberAppropriatenessInputs(**inputs_kwargs)
+        ).value
+        monkeypatch.setattr(target, leaf, _Patched())
+        moved = de_member_appropriateness_rule(DeMemberAppropriatenessInputs(**inputs_kwargs)).value
+    else:
+        spread_kwargs = {"bund_10y": 2.51, "f_ecb": 3.75, "de_short_3m": 3.40}
+        baseline = de_bund_spread_rule(DeBundSpreadInputs(**spread_kwargs)).value
+        monkeypatch.setattr(target, leaf, _Patched())
+        moved = de_bund_spread_rule(DeBundSpreadInputs(**spread_kwargs)).value
+
+    assert moved != pytest.approx(baseline), (
+        f"moving the config leaf policy.de.{section}.{leaf} (for {label}) did not "
+        f"change the result — the leaf is INERT (LAW 1's failure in the opposite "
+        f"direction: a calibrated-looking value that nothing reads)"
+    )
+    monkeypatch.setattr(target, leaf, original)
+
+
+def test_the_de_rules_refuse_a_non_finite_input() -> None:
+    """The D-078 finiteness guard applies to the German input groups too."""
+    import math
+
+    from macro_engine.models.policy_rules import (
+        DeBundSpreadInputs,
+        DeMemberAppropriatenessInputs,
+        DeRealRateInputs,
+    )
+
+    for cls, kwargs, field in (
+        (
+            DeMemberAppropriatenessInputs,
+            {
+                "f_ecb": 3.75,
+                "pi_de": 2.0,
+                "pi_ea": 2.0,
+                "output_gap_de": 0.0,
+                "output_gap_ea": 0.0,
+                "unemployment_de": 6.0,
+                "unemployment_ea": 6.0,
+                "gdp_growth_ea": 0.0,
+            },
+            "gdp_growth_de",
+        ),
+        (
+            DeBundSpreadInputs,
+            {"f_ecb": 3.75, "de_short_3m": 3.40},
+            "bund_10y",
+        ),
+        (
+            DeRealRateInputs,
+            {"f_ecb": 3.75, "pi_ea": 1.8, "r_neutral_de": 0.5},
+            "pi_de",
+        ),
+    ):
+        with pytest.raises(ValueError, match=r"non-finite"):
+            cls(**{**kwargs, field: math.nan})
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — JAPAN (country "jp"). A central bank whose FRAMEWORK is not a
+# Taylor rule: a ZLB floor, a long-yield operating target, and an
+# inflation-overshooting commitment.
+# ---------------------------------------------------------------------------
+def test_the_jp_coefficients_are_read_and_the_mover_identity_holds() -> None:
+    """The `jp` leaves are pinned, and ``i* == pi_target + natural_rate`` holds.
+
+    The natural rate is NEGATIVE (-0.5%) — the opposite sign from the Fed's,
+    the BoE's and the euro area's — and that sign is why the floor binds. The
+    mover identity (``i*`` DERIVED from the target plus the natural rate, not a
+    second independent constant) is asserted here first: if the three leaves
+    could disagree, every shadow-rate number downstream would be unmoored.
+    """
+    from macro_engine.config import get_settings
+
+    jp = get_settings().policy.jp
+    assert jp.pi_target_value == pytest.approx(2.0)
+    assert jp.natural_rate_value == pytest.approx(-0.5)
+    assert jp.i_star_value == pytest.approx(1.5)
+    assert jp.i_star_value == pytest.approx(jp.pi_target_value + jp.natural_rate_value), (
+        "i* must equal the target plus the natural rate — the mover identity"
+    )
+    # The floor and the YCC controls are leaves because the policy MOVED.
+    assert jp.zlb_floor_value == pytest.approx(0.0)
+    assert jp.ycc_target_value == pytest.approx(0.0)
+    assert jp.ycc_band_value == pytest.approx(1.0)
+    assert jp.stabilization_threshold_value == pytest.approx(2.0)
+    # The rule coefficients.
+    assert jp.shadow_rate.inflation_coefficient_value == pytest.approx(1.5)
+    assert jp.shadow_rate.output_gap_coefficient_value == pytest.approx(0.5)
+    assert jp.shadow_rate.shortfall_coefficient_value == pytest.approx(0.5)
+    assert jp.shadow_rate.notional_persistence_value == pytest.approx(0.5)
+    # The persistence must be in [0, 1) or the recursion is non-stationary.
+    assert 0.0 <= jp.shadow_rate.notional_persistence_value < 1.0
+
+
+def test_the_jp_shadow_rate_rule_matches_the_hand_calculation() -> None:
+    """``i = max[0, i~ - 0.5·z]``, ``i~ = 0.5·(1.5 + 1.5·(π-2) + 0.5·x) + 0.5·i~_prev``.
+
+    Three hand values, config read:
+
+    * **At target, no history** (π=2, x=0, i~_prev=0, z=0):
+      i~ = 0.5·1.5 = **0.75**; unconstrained = 0.75 - 0 = 0.75; rate = max(0,
+      0.75) = **0.75**. The floor does NOT bind.
+    * **Deep slump** (π=-1, x=-2, i~_prev=0, z=0):
+      i~ = 0.5·(1.5 + 1.5·(-3) + 0.5·(-2)) = 0.5·(-4) = **-2.0**;
+      rate = max(0, -2.0) = **0.0**. The floor BINDS: a plain Taylor rule would
+      prescribe -2.0 here; the BoJ did not set negative rates.
+    * **With accumulated shortfall** (π=2, x=0, i~_prev=0, z=1):
+      i~ = 0.75; unconstrained = 0.75 - 0.5·1 = **0.25** — the state term makes
+      the rule prescribe LESS than the no-history case, which is the
+      history-dependence the primary source says produces overshooting.
+    """
+    from macro_engine.models.policy_rules import (
+        JpReifschneiderWilliamsInputs,
+        jp_reifschneider_williams_rule,
+    )
+
+    at_target = jp_reifschneider_williams_rule(
+        JpReifschneiderWilliamsInputs(
+            pi=2.0, output_gap=0.0, i_notional_prev=0.0, z_prev=0.0, zlb_floor=0.0
+        )
+    )
+    assert at_target.value == pytest.approx(0.75)
+
+    slump = jp_reifschneider_williams_rule(
+        JpReifschneiderWilliamsInputs(
+            pi=-1.0, output_gap=-2.0, i_notional_prev=0.0, z_prev=0.0, zlb_floor=0.0
+        )
+    )
+    notional_hand = 0.5 * (1.5 + 1.5 * (-1.0 - 2.0) + 0.5 * (-2.0))
+    assert notional_hand == pytest.approx(-2.0)
+    assert slump.value == pytest.approx(0.0)
+    assert slump.value == pytest.approx(max(0.0, notional_hand))
+
+    with_shortfall = jp_reifschneider_williams_rule(
+        JpReifschneiderWilliamsInputs(
+            pi=2.0, output_gap=0.0, i_notional_prev=0.0, z_prev=1.0, zlb_floor=0.0
+        )
+    )
+    assert with_shortfall.value == pytest.approx(0.25)
+    assert with_shortfall.value_float() < at_target.value_float(), (
+        "a larger accumulated shortfall must make the rule prescribe LESS — the "
+        "history dependence that produces overshooting"
+    )
+
+
+def test_the_jp_shadow_rate_rule_is_not_a_relabelled_fed_rule() -> None:
+    """The FLOOR binds where a Taylor rule would not — the structural marker.
+
+    At the same slump inputs, the Fed's Taylor rule prescribes a NEGATIVE rate
+    (no floor); the BoJ rule floors at zero. That difference is the entire
+    reason the `jp` arm exists, and it is asserted as a comparison rather than a
+    description: the BoJ prescription is the floored value, the Taylor
+    prescription is the raw notional value, and they differ in sign.
+    """
+    from macro_engine.models.policy_rules import (
+        JpReifschneiderWilliamsInputs,
+        TaylorRuleInputs,
+        jp_reifschneider_williams_rule,
+        taylor_rule,
+    )
+
+    jp_rate = jp_reifschneider_williams_rule(
+        JpReifschneiderWilliamsInputs(
+            pi=-1.0, output_gap=-2.0, i_notional_prev=0.0, z_prev=0.0, zlb_floor=0.0
+        )
+    ).value_float()
+
+    # A Taylor rule at the same state (negative gap dominant) prescribes below 0.
+    fed = taylor_rule(
+        TaylorRuleInputs(r_star=0.5, pi_current=-1.0, pi_target=2.0, output_gap=-2.0)
+    ).value_float()
+
+    assert jp_rate == pytest.approx(0.0), "the BoJ rule must floor at the ELB"
+    assert fed < 0.0, "the Fed's rule has no floor and prescribes a negative rate"
+    assert jp_rate > fed, (
+        "the floor is exactly what distinguishes the jp arm from a Taylor rule (Section 22.3)"
+    )
+
+
+def test_the_jp_ycc_rule_matches_the_hand_calculation_and_classifies_the_band() -> None:
+    """``deviation = jgb_10y - ycc_target``, classified against the SYMMETRIC band.
+
+    Hand (target 0.0, band ±1.0):
+    * jgb_10y = 1.62 → deviation = **+1.62**, OUTSIDE the ±1.0 band: the BoJ
+      faces purchase pressure (the yield is above tolerance).
+    * jgb_10y = 0.50 → deviation = **+0.50**, WITHIN the band: tolerated, which
+      is NOT the same as inactive.
+    * jgb_10y = -1.50 → deviation = **-1.50**, OUTSIDE (a BREACH below the
+      target). This is the case a band test written without ``abs()`` gets
+      wrong, and the reason the test asserts both sides.
+    The pressure figure is ``1.0 · deviation`` (config leaf), so it scales the
+    deviation without changing its sign.
+    """
+    from macro_engine.models.policy_rules import JpYccInputs, jp_ycc_reference_rule
+
+    outside = jp_ycc_reference_rule(JpYccInputs(jgb_10y=1.62, ycc_target=0.0, ycc_band=1.0))
+    assert outside.value == pytest.approx(1.62)
+    assert "OUTSIDE" in outside.interpretation
+    assert "outside" in (outside.direction or "")
+    assert outside.unit == "percentage_points"
+
+    inside = jp_ycc_reference_rule(JpYccInputs(jgb_10y=0.50, ycc_target=0.0, ycc_band=1.0))
+    assert inside.value == pytest.approx(0.50)
+    assert "WITHIN" in inside.interpretation
+    assert "within" in (inside.direction or "")
+
+    # ...and the band test is SYMMETRIC — a yield BELOW the target breaches by
+    # the same rule. This is the discriminating case: a band test written
+    # without `abs()` (e.g. `deviation <= band`) admits every below-target yield
+    # as "within" and would pass a test that only checked positive deviations.
+    below_breach = jp_ycc_reference_rule(JpYccInputs(jgb_10y=-1.50, ycc_target=0.0, ycc_band=1.0))
+    assert below_breach.value == pytest.approx(-1.50)
+    assert "OUTSIDE" in below_breach.interpretation, (
+        "a yield one-and-a-half band-widths BELOW the target is outside the "
+        "band; the band test must be symmetric (abs)"
+    )
+    below_within = jp_ycc_reference_rule(JpYccInputs(jgb_10y=-0.50, ycc_target=0.0, ycc_band=1.0))
+    assert "WITHIN" in below_within.interpretation
+
+
+def test_the_jp_overshoot_rule_is_asymmetric_and_reads_the_level_not_the_gap() -> None:
+    """The commitment ADDS accommodation even when current inflation is ABOVE target.
+
+    This is the rule a symmetric Taylor rule provably cannot be, and the
+    discriminating test is a state a Taylor rule would TIGHTEN in: high current
+    inflation, but a cumulative shortfall still open.
+
+    Hand (threshold 2.0, acceleration 0.5):
+    * Open shortfall (cum gap 0.5, current π = 2.4): open = 2.0 - 0.5 = 1.5 →
+      accommodation = 0.5·1.5 = **0.75**, POSITIVE despite inflation above 2%.
+    * Closed shortfall (cum gap 2.5, current π = 3.0): open = max(0, 2.0-2.5) = 0
+      → accommodation = **0.0** — the commitment stops adding, even though
+      current inflation (3.0) is well above target.
+
+    Both cases have inflation ABOVE 2%, and the rule's response differs only
+    because of the HISTORY — which is the price-level behaviour.
+    """
+    from macro_engine.models.policy_rules import (
+        JpOvershootCommitmentInputs,
+        jp_overshoot_commitment_rule,
+    )
+
+    open_ = jp_overshoot_commitment_rule(
+        JpOvershootCommitmentInputs(
+            pi=2.4, cumulative_inflation_gap=0.5, stabilization_threshold=2.0
+        )
+    )
+    assert open_.value == pytest.approx(0.75)
+
+    closed = jp_overshoot_commitment_rule(
+        JpOvershootCommitmentInputs(
+            pi=3.0, cumulative_inflation_gap=2.5, stabilization_threshold=2.0
+        )
+    )
+    assert closed.value == pytest.approx(0.0)
+
+    # Both inputs have inflation ABOVE the 2% target, yet the responses differ —
+    # the discrimination is the cumulative shortfall, not the current gap.
+    assert open_.value_float() > closed.value_float()
+    open_dir = open_.direction or ""
+    assert "adding" in open_dir.lower()
+    assert "no additional" in (closed.direction or "").lower()
+
+
+def test_the_jp_rules_are_labelled_jp_with_distinct_variants() -> None:
+    """Every `jp` rule reports country ``jp``, model_name and its own variant.
+
+    Both consumer keys are asserted: a rename of the ``model_name`` leaves the
+    value plausible while breaking every caller keyed on it.
+    """
+    from macro_engine.models.policy_rules import (
+        JpOvershootCommitmentInputs,
+        JpReifschneiderWilliamsInputs,
+        JpYccInputs,
+        jp_overshoot_commitment_rule,
+        jp_reifschneider_williams_rule,
+        jp_ycc_reference_rule,
+    )
+
+    results = [
+        jp_reifschneider_williams_rule(
+            JpReifschneiderWilliamsInputs(
+                pi=2.4, output_gap=-0.5, i_notional_prev=0.0, z_prev=0.0, zlb_floor=0.0
+            )
+        ),
+        jp_ycc_reference_rule(JpYccInputs(jgb_10y=1.62, ycc_target=0.0, ycc_band=1.0)),
+        jp_overshoot_commitment_rule(
+            JpOvershootCommitmentInputs(
+                pi=2.4, cumulative_inflation_gap=0.5, stabilization_threshold=2.0
+            )
+        ),
+    ]
+    for r in results:
+        assert r.country == "jp"
+    assert {r.rule_variant for r in results} == {
+        "jp_reifschneider_williams",
+        "jp_ycc_reference",
+        "jp_overshoot_commitment",
+    }
+    assert {r.model_name for r in results} == {
+        "jp_reifschneider_williams_rule",
+        "jp_ycc_reference_rule",
+        "jp_overshoot_commitment_rule",
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "change"),
+    [
+        ("jp_inflation", ("shadow_rate", "inflation_coefficient", 2.5)),
+        ("jp_output_gap", ("shadow_rate", "output_gap_coefficient", 1.5)),
+        ("jp_shortfall", ("shadow_rate", "shortfall_coefficient", 1.0)),
+        ("jp_persistence", ("shadow_rate", "notional_persistence", 0.25)),
+    ],
+)
+def test_every_jp_shadow_rate_coefficient_leaf_is_a_real_mover(
+    label: str, change: tuple[str, str, float], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each `jp` shadow-rate coefficient leaf must CHANGE the prescription.
+
+    LAW 1's mover proof on the BoJ's rule. ``jp_persistence`` is included
+    deliberately: the notional recursion's weight is the one a future edit might
+    "simplify" away, and the test proves it is genuinely consumed. The floor and
+    the target/threshold leaves are exercised by the hand-calc tests
+    (``zlb_floor`` is an INPUT on the record, not a coefficient read here).
+    """
+    from macro_engine.config import get_settings
+    from macro_engine.models.policy_rules import (
+        JpReifschneiderWilliamsInputs,
+        jp_reifschneider_williams_rule,
+    )
+
+    jp = get_settings().policy.jp
+    section, leaf, replacement = change
+    target = getattr(jp, section)
+    original = getattr(target, leaf)
+
+    class _Patched:
+        value = replacement
+
+    inputs = JpReifschneiderWilliamsInputs(
+        pi=3.0, output_gap=-0.5, i_notional_prev=0.5, z_prev=0.5, zlb_floor=0.0
+    )
+    baseline = jp_reifschneider_williams_rule(inputs).value
+    monkeypatch.setattr(target, leaf, _Patched())
+    moved = jp_reifschneider_williams_rule(inputs).value
+
+    assert moved != pytest.approx(baseline), (
+        f"moving the config leaf policy.jp.{section}.{leaf} (for {label}) did not "
+        f"change the shadow-rate prescription — the leaf is INERT (LAW 1)"
+    )
+    monkeypatch.setattr(target, leaf, original)
+
+
+def test_the_jp_persistence_validator_rejects_an_out_of_range_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ``[0, 1)`` guard on the notional persistence is INJECTED, not assumed.
+
+    A guard test that only reads the accessor's happy-path value never proves
+    the guard exists. This substitutes an out-of-range ``notional_persistence``
+    leaf and asserts the accessor RAISES — the validator's only observable
+    behaviour. A mutant that widened the range to ``[0, inf)`` returns a value
+    instead of raising, and fails here. Both bounds are tested: ``1.0`` (the
+    non-stationary case the guard exists for) and ``-0.1``.
+    """
+    from macro_engine.config import get_settings
+
+    jp = get_settings().policy.jp
+    original = jp.shadow_rate.notional_persistence
+
+    for bad in (1.0, -0.1, 1.5):
+
+        class _Patched:
+            value = bad
+
+        monkeypatch.setattr(jp.shadow_rate, "notional_persistence", _Patched())
+        with pytest.raises(ValueError, match=r"must be in \[0, 1\)"):
+            _ = jp.shadow_rate.notional_persistence_value
+
+    monkeypatch.setattr(jp.shadow_rate, "notional_persistence", original)
+    # ...and the restored leaf is valid again.
+    assert 0.0 <= jp.shadow_rate.notional_persistence_value < 1.0
+
+
+def test_the_jp_rules_refuse_a_non_finite_input() -> None:
+    """The D-078 finiteness guard applies to the Japanese input groups too."""
+    import math
+
+    from macro_engine.models.policy_rules import (
+        JpOvershootCommitmentInputs,
+        JpReifschneiderWilliamsInputs,
+        JpYccInputs,
+    )
+
+    for cls, kwargs, field in (
+        (
+            JpReifschneiderWilliamsInputs,
+            {"output_gap": 0.0, "i_notional_prev": 0.0, "z_prev": 0.0, "zlb_floor": 0.0},
+            "pi",
+        ),
+        (
+            JpYccInputs,
+            {"ycc_target": 0.0, "ycc_band": 1.0},
+            "jgb_10y",
+        ),
+        (
+            JpOvershootCommitmentInputs,
+            {"cumulative_inflation_gap": 0.5, "stabilization_threshold": 2.0},
+            "pi",
+        ),
+    ):
+        with pytest.raises(ValueError, match=r"non-finite"):
+            cls(**{**kwargs, field: math.nan})
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

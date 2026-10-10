@@ -257,8 +257,9 @@ thesis rather than an error.
 > `country: str = "us"` is not a generalization — it is a label on a system
 > that currently only works for one value of it.
 
-Adding `de`/`jp`/`gb` requires its own data sources, its own central-bank
-reaction function, and its own instrument set. None of that is a label change.
+Adding a country (`gb`, `eu`, `de`, `jp` — all four landed 2026-10-10) requires its own data sources,
+its own central-bank (or, for `de`, member-state) reaction function, and its own instrument set. None
+of that is a label change.
 
 ### Stubs are correctly signed, never silently empty
 

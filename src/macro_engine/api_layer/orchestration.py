@@ -137,10 +137,16 @@ from macro_engine.models.policy_rules import (
     BoeContemporaneousInputs,
     BoeFirstDifferenceInputs,
     BoeForwardLookingInputs,
+    DeBundSpreadInputs,
+    DeMemberAppropriatenessInputs,
+    DeRealRateInputs,
     EcbContemporaneousInputs,
     EcbErrorCorrectionInputs,
     EcbRestrictedCointegrationInputs,
     FirstDifferenceInputs,
+    JpOvershootCommitmentInputs,
+    JpReifschneiderWilliamsInputs,
+    JpYccInputs,
     TaylorRuleInputs,
     qe_qt_stance,
 )
@@ -151,7 +157,13 @@ from macro_engine.models.yield_curve import (
     breakeven_inflation,
     curve_slope,
 )
-from macro_engine.thesis_layer.builder import BoeRuleInputs, EconomyReads, EuRuleInputs
+from macro_engine.thesis_layer.builder import (
+    BoeRuleInputs,
+    DeRuleInputs,
+    EconomyReads,
+    EuRuleInputs,
+    JpRuleInputs,
+)
 from macro_engine.thesis_layer.schemas import ProductionUniverse
 
 #: The balance-sheet change window, in WEEKLY observations (thirteen weeks ~ one
@@ -247,6 +259,16 @@ class ThesisInputs:
     #: regressor sets — the euro area's error-correction rule reads the LONG
     #: rate and the changes, which the BoE's records have no field for.
     eu_inputs: EuRuleInputs | None = None
+    #: Germany's three member-state rule-input records. Required for a de
+    #: thesis, ``None`` otherwise. See :class:`DeRuleInputs`. Germany has no
+    #: central bank of its own, so this carries NO policy rate — the euro-area
+    #: rate enters the rules as an exogenous ``f_ecb`` input.
+    de_inputs: DeRuleInputs | None = None
+    #: The Bank of Japan's three rule-input records. Required for a jp thesis,
+    #: ``None`` otherwise. See :class:`JpRuleInputs`. Two of the three carry
+    #: STATE (the notional shadow rate and the cumulative shortfalls), which is
+    #: why they cannot be collapsed into one record.
+    jp_inputs: JpRuleInputs | None = None
     #: Section 16.2 Q1's **fourth** read: the regime classification. ``None``
     #: means the classifier was not run, and the builder then publishes
     #: ``regime.state = None`` with its ``NOT_COMPUTED`` note (D-043/D-045) —
@@ -2096,6 +2118,26 @@ def snapshot_to_thesis_inputs(
             curve_long_tenor=curve_long_tenor,
             short_tenor_term_premium=short_tenor_term_premium,
         )
+    if snapshot.country == "de":
+        return _de_thesis_inputs(
+            snapshot,
+            thesis_type=thesis_type,
+            universe=universe,
+            short_yield_tenor=short_yield_tenor,
+            curve_short_tenor=curve_short_tenor,
+            curve_long_tenor=curve_long_tenor,
+            short_tenor_term_premium=short_tenor_term_premium,
+        )
+    if snapshot.country == "jp":
+        return _jp_thesis_inputs(
+            snapshot,
+            thesis_type=thesis_type,
+            universe=universe,
+            short_yield_tenor=short_yield_tenor,
+            curve_short_tenor=curve_short_tenor,
+            curve_long_tenor=curve_long_tenor,
+            short_tenor_term_premium=short_tenor_term_premium,
+        )
     raise NotImplementedError(
         f"country '{snapshot.country}' is listed in country.implemented but has "
         f"no derivation in snapshot_to_thesis_inputs (Section 22.3). Add one — a "
@@ -2859,6 +2901,657 @@ def _hicp_rate_change_pp(
         )
         return 0.0
     return current_rate - prior_rate
+
+
+def _de_thesis_inputs(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+) -> ThesisInputs:
+    """Derive the German thesis inputs from a ``de`` snapshot (Section 22.3).
+
+    The German half of the country dispatch. It mirrors the contract of the
+    other country helpers — the economy reads, the policy-rule inputs, the
+    short yield, the same notes/warnings discipline — but its policy leg is
+    structurally unlike any other, because **Germany has no central bank of its
+    own**: the ECB sets the currency union's single rate and the Bundesbank
+    executes it. There is therefore no ``de_policy_rate`` anywhere and no
+    German target or neutral rate of Germany's own.
+
+    What is genuinely different, and why it is not a relabelled eu thesis
+    --------------------------------------------------------------------
+    1. **The two-sided data.** The German rules read BOTH German and euro-area
+       series in the same input record: German vs euro-area inflation, output
+       gap, unemployment and growth. The eu rules read only the aggregate. So
+       this derivation sources ``de_*`` AND ``eu_*`` fields — the eu helper
+       never touches a German field.
+    2. **The shared rate is exogenous.** The three German rules take the
+       euro-area policy rate as ``f_ecb``, GIVEN to them. The euro-area rules
+       PRODUCE a rate. That sign/role inversion is the structural marker.
+    3. **The market leg is a Bund curve position, not a policy expectation.**
+       ``de_long_rate_10y`` and ``de_short_rate_3m`` feed ``de_bund_spread_rule``;
+       the German 3-month rate is a MARKET rate (Germany has none of its own),
+       stated as such in the note.
+    4. **The rule set.** The three records feed
+       ``de_member_appropriateness_rule``, ``de_bund_spread_rule`` and
+       ``de_real_rate_rule`` via the ``de_inputs`` bundle; every other country's
+       inputs are ``None``, which ``build_policy_gap`` refuses to accept
+       alongside Germany's.
+
+    The output gap is ESTIMATED for both Germany and the euro area from their
+    real GDP levels against their own mean growth, exactly as the UK and euro
+    helpers do — neither publishes a gap series on this route. Both estimates
+    are DISCLOSED as estimates, not passed off as measurements.
+    """
+    settings = get_settings()
+    as_of = snapshot.as_of
+
+    resolved_type = thesis_type or ThesisType(settings.api.default_thesis_type)
+    resolved_universe = universe if universe is not None else ProductionUniverse(country="de")
+
+    notes: list[DerivationNote] = []
+    warnings: list[str] = []
+
+    # -- The euro-area aggregate side, sourced through the SAME series the eu
+    #    helper reads, so the German rule's comparator is the ECB's own
+    #    aggregate and not a re-derivation.
+    ea_policy_rate, ea_policy_described = _eu_policy_rate(snapshot, as_of=as_of)
+    ea_hicp_points = _realised(snapshot.eu_hicp_index, as_of=as_of, field="eu_hicp_index")
+    ea_hicp_yoy, _ea_hicp_described = _yoy_percent(ea_hicp_points, field="eu_hicp_index")
+    ea_unemployment_points = _realised(
+        snapshot.eu_unemployment_rate, as_of=as_of, field="eu_unemployment_rate"
+    )
+    ea_unemployment, _ea_unemployment_described = _latest_percent(
+        ea_unemployment_points, field="eu_unemployment_rate"
+    )
+    ea_gdp_points = _realised(snapshot.eu_gdp_real_level, as_of=as_of, field="eu_gdp_real_level")
+    if len(ea_gdp_points) < 2:
+        raise OrchestrationError(
+            f"snapshot field 'eu_gdp_real_level' has {len(ea_gdp_points)} "
+            f"observation(s); the euro-area comparator for the German rules "
+            f"needs at least 2.",
+            fields=("eu_gdp_real_level",),
+        )
+    ea_gdp_growth = (ea_gdp_points[-1].value / ea_gdp_points[-2].value - 1.0) * 100.0
+    ea_qoq_rates = [
+        (ea_gdp_points[i].value / ea_gdp_points[i - 1].value - 1.0) * 100.0
+        for i in range(1, len(ea_gdp_points))
+    ]
+    ea_mean_growth = sum(ea_qoq_rates) / len(ea_qoq_rates)
+    ea_output_gap = ea_gdp_growth - ea_mean_growth
+
+    # -- The German side.
+    de_pi_points = _realised(snapshot.de_cpi_yoy, as_of=as_of, field="de_cpi_yoy")
+    de_pi, de_pi_described = _latest_percent(de_pi_points, field="de_cpi_yoy")
+    notes.append(
+        DerivationNote(
+            name="pi_de (German inflation)",
+            value=(
+                f"{de_pi:+.4f} (euro-area {ea_hicp_yoy:+.4f}, "
+                f"divergence {de_pi - ea_hicp_yoy:+.4f}pp)"
+            ),
+            source=(
+                "de_cpi_yoy (German CPI, year-over-year %, IMF-sourced). The "
+                "German leg of the appropriateness divergence; the euro-area "
+                "comparator is the eu HICP YoY."
+            ),
+            window=de_pi_described,
+        )
+    )
+
+    de_unemployment_points = _realised(
+        snapshot.de_unemployment_rate, as_of=as_of, field="de_unemployment_rate"
+    )
+    de_unemployment, de_unemployment_described = _latest_percent(
+        de_unemployment_points, field="de_unemployment_rate"
+    )
+    notes.append(
+        DerivationNote(
+            name="unemployment_de",
+            value=(
+                f"{de_unemployment:g} (euro-area {ea_unemployment:g}, "
+                f"divergence {de_unemployment - ea_unemployment:+.2f}pp)"
+            ),
+            source=(
+                "de_unemployment_rate (German unemployment %, OECD-sourced); "
+                "euro-area comparator eu_unemployment_rate"
+            ),
+            window=de_unemployment_described,
+        )
+    )
+
+    # The German output-gap estimate — the same disclosed method as the others.
+    de_gdp_points = _realised(snapshot.de_gdp_real_level, as_of=as_of, field="de_gdp_real_level")
+    if len(de_gdp_points) < 2:
+        raise OrchestrationError(
+            f"snapshot field 'de_gdp_real_level' has {len(de_gdp_points)} "
+            f"observation(s); a quarter-on-quarter growth needs at least 2.",
+            fields=("de_gdp_real_level",),
+        )
+    de_gdp_growth = (de_gdp_points[-1].value / de_gdp_points[-2].value - 1.0) * 100.0
+    de_qoq_rates = [
+        (de_gdp_points[i].value / de_gdp_points[i - 1].value - 1.0) * 100.0
+        for i in range(1, len(de_gdp_points))
+    ]
+    de_mean_growth = sum(de_qoq_rates) / len(de_qoq_rates)
+    de_output_gap = de_gdp_growth - de_mean_growth
+    notes.append(
+        DerivationNote(
+            name="output_gap (de, ESTIMATED)",
+            value=(
+                f"{de_output_gap:+.4f} (euro-area {ea_output_gap:+.4f}, "
+                f"divergence {de_output_gap - ea_output_gap:+.4f}pp)"
+            ),
+            source=(
+                "ESTIMATE: latest German q/q real GDP growth minus its own mean "
+                f"over the realised window (mean {de_mean_growth:+.4f}) — Germany "
+                "publishes no output-gap series on this route. The euro-area "
+                f"comparator is estimated the same way (mean {ea_mean_growth:+.4f})."
+            ),
+            window=(
+                f"de_gdp_real_level: {de_gdp_points[-1].observation_date.isoformat()} "
+                f"{de_gdp_points[-1].value:g} vs "
+                f"{de_gdp_points[-2].observation_date.isoformat()} {de_gdp_points[-2].value:g}"
+            ),
+        )
+    )
+
+    # -- Q1's three reads. The growth read is the German output-gap estimate
+    #    routed through the real model (same normalisation as the eu path), so
+    #    the provenance (potential is unobservable -> confidence) is the model's.
+    growth = output_gap(
+        OutputGapInputs(
+            actual_gdp=1.0 + de_output_gap / 100.0,
+            potential_gdp=1.0,
+        )
+    )
+    inflation = inflation_breadth_score(
+        InflationSubMeasures(
+            cpi_headline_mom=de_pi,
+            cpi_core_mom=de_pi,
+            pce_core_mom=de_pi,
+        )
+    )
+    warnings.append(
+        "DE INFLATION BREADTH: the score's three m/m measures are the German CPI "
+        "level repeated (Germany publishes no US-style core PCE on this route). "
+        "Breadth is therefore a single measure, not three — read the score as a "
+        "level, not a breadth signal."
+    )
+    labor = labor_tightness_score(
+        LaborInputs(
+            initial_claims_4wk_avg_change_pct=0.0,
+            jolts_openings_yoy_pct=0.0,
+            jolts_quits_level_percentile=0.0,
+            nfp_3m_avg=get_settings().labor.neutral_nfp_pace,
+        )
+    )
+    warnings.append(
+        "DE LABOR READ: Germany publishes no JOLTS, initial-claims or payrolls "
+        "series on this route, so every labor-tightness block is at its neutral "
+        "point and the score is ~0 by construction — it says nothing about "
+        "German labour tightness. The genuine German read "
+        "(de_unemployment_rate) is carried in the notes and enters the "
+        "appropriateness rule."
+    )
+    reads = EconomyReads(growth=growth, inflation=inflation, labor=labor)
+
+    # -- The market read: the German short rate (a MARKET rate, not a policy
+    #    rate — Germany has none).
+    de_short_points = _realised(snapshot.de_short_rate_3m, as_of=as_of, field="de_short_rate_3m")
+    de_short_3m, de_short_described = _latest_percent(de_short_points, field="de_short_rate_3m")
+    if not 0.0 < de_short_3m < get_settings().validation.max_yield:
+        raise OrchestrationError(
+            f"the German 3-month rate is {de_short_3m}, outside the plausible "
+            f"bond range (Section 5.4's max_plausible_yield_pct is "
+            f"{get_settings().validation.max_yield:g}). A value in basis points "
+            f"would read as a percent and inflate every downstream gap.",
+            fields=("de_short_rate_3m",),
+        )
+    notes.append(
+        DerivationNote(
+            name="short_yield",
+            value=f"{de_short_3m:g}",
+            source=(
+                "de_short_rate_3m, in percent — a German MARKET rate (the "
+                "money-market short rate), NOT a policy rate: Germany has none. "
+                "The snapshot carries no 11-tenor curve, so the short end is the "
+                "3-month rate."
+            ),
+            window=de_short_described,
+        )
+    )
+
+    # -- The German curve's long end: the Bund 10-year.
+    de_long_points = _realised(snapshot.de_long_rate_10y, as_of=as_of, field="de_long_rate_10y")
+    de_long_10y, de_long_described = _latest_percent(de_long_points, field="de_long_rate_10y")
+    notes.append(
+        DerivationNote(
+            name="bund_10y",
+            value=f"{de_long_10y:g}",
+            source=(
+                "de_long_rate_10y (the German 10-year Bund yield, %). THE euro "
+                "area's risk-free benchmark; feeds de_bund_spread_rule as the "
+                "market's read of whether the ECB's single stance fits Germany."
+            ),
+            window=de_long_described,
+        )
+    )
+
+    # -- The exogenous ECB rate. The German rules take it as f_ecb, GIVEN.
+    notes.append(
+        DerivationNote(
+            name="f_ecb (exogenous)",
+            value=f"{ea_policy_rate:g}",
+            source=(
+                "the euro-area MAIN REFINANCING OPERATIONS rate "
+                "(eu_ecb_main_refi_rate) — the ECB's single policy rate, "
+                "EXOGENOUS to Germany. Germany has no policy rate; this is the "
+                "rate the German rules measure the appropriateness of, not one "
+                "they prescribe."
+            ),
+            window=ea_policy_described,
+        )
+    )
+
+    de_inputs = DeRuleInputs(
+        appropriateness=DeMemberAppropriatenessInputs(
+            f_ecb=ea_policy_rate,
+            pi_de=de_pi,
+            pi_ea=ea_hicp_yoy,
+            output_gap_de=de_output_gap,
+            output_gap_ea=ea_output_gap,
+            unemployment_de=de_unemployment,
+            unemployment_ea=ea_unemployment,
+            gdp_growth_de=de_gdp_growth,
+            gdp_growth_ea=ea_gdp_growth,
+        ),
+        bund_spread=DeBundSpreadInputs(
+            f_ecb=ea_policy_rate,
+            bund_10y=de_long_10y,
+            de_short_3m=de_short_3m,
+        ),
+        real_rate=DeRealRateInputs(
+            f_ecb=ea_policy_rate,
+            pi_de=de_pi,
+            pi_ea=ea_hicp_yoy,
+            r_neutral_de=float(settings.policy.de.appropriateness.r_neutral_value),
+        ),
+    )
+
+    if resolved_type is ThesisType.CURVE_SHAPE_GAP:
+        notes.append(
+            DerivationNote(
+                name="curve legs",
+                value=f"{curve_short_tenor} -> {curve_long_tenor}",
+                source="forwarded from the caller; a curve expression names its own legs",
+                window=None,
+            )
+        )
+    elif curve_short_tenor is not None or curve_long_tenor is not None:
+        warnings.append(
+            "CURVE LEGS IGNORED: curve_short_tenor/curve_long_tenor were supplied "
+            f"but the thesis type is {resolved_type.value}, so nothing reads them "
+            "(D-037's inert-input class)."
+        )
+
+    notes.append(
+        DerivationNote(
+            name="thesis_type",
+            value=resolved_type.value,
+            source=(
+                "assumed from api.default_thesis_type"
+                if thesis_type is None
+                else "supplied by the caller"
+            ),
+            window=None,
+        )
+    )
+    if short_tenor_term_premium is not None:
+        notes.append(
+            DerivationNote(
+                name="short_tenor_term_premium",
+                value=f"{short_tenor_term_premium:g}",
+                source="supplied by the caller",
+                window=None,
+            )
+        )
+
+    return ThesisInputs(
+        reads=reads,
+        taylor_inputs=None,
+        first_difference_inputs=None,
+        short_yield=de_short_3m,
+        thesis_type=resolved_type,
+        universe=resolved_universe,
+        country="de",
+        boe_inputs=None,
+        eu_inputs=None,
+        de_inputs=de_inputs,
+        regime=None,
+        national_accounts=None,
+        curve=(),
+        balance_sheet=None,
+        notes=tuple(notes),
+        warnings=tuple(warnings),
+    )
+
+
+def _jp_thesis_inputs(
+    snapshot: MacroDataSnapshot,
+    *,
+    thesis_type: ThesisType | None = None,
+    universe: ProductionUniverse | None = None,
+    short_yield_tenor: str | None = None,
+    curve_short_tenor: str | None = None,
+    curve_long_tenor: str | None = None,
+    short_tenor_term_premium: float | None = None,
+) -> ThesisInputs:
+    """Derive the Japanese thesis inputs from a ``jp`` snapshot (Section 22.3).
+
+    The Japanese half of the country dispatch. It mirrors the contract of the
+    other country helpers, but its policy leg carries STATE no other country's
+    does: the Bank of Japan's shadow-rate rule threads a NOTIONAL rate and a
+    cumulative ZLB shortfall, and the overshooting-commitment rule threads the
+    cumulative inflation shortfall. Those state values are seeded here (a jp
+    snapshot has no history to derive them from) and the seeding is DISCLOSED,
+    because a fabricated history would move the rules on no evidence.
+
+    What is genuinely different, and why it is not a relabelled Fed thesis
+    ---------------------------------------------------------------------
+    1. **The target measure.** The BoJ targets CPI all items LESS FRESH FOOD;
+       ``jp_cpi_yoy`` is that measure. The Fed, BoE and ECB helpers read PCE,
+       CPI and HICP respectively — a different measure in every case.
+    2. **The instrument is the 10-year JGB yield.** ``jp_long_rate_10y`` is the
+       series YCC names as its operating target, so it feeds
+       ``jp_ycc_reference_rule`` directly plus the shadow-rate rule's shadow
+       state. No other country's long rate is a policy TARGET.
+    3. **The floor is explicit.** The effective lower bound is passed to the
+       shadow-rate rule; it is set to the BoJ's CURRENT regime convention (0.0
+       after the March-2024 NIRP exit), and the note says so — a reader must be
+       able to tell which floor a result was produced under.
+    4. **The rule set.** The three records feed
+       ``jp_reifschneider_williams_rule``, ``jp_ycc_reference_rule`` and
+       ``jp_overshoot_commitment_rule`` via the ``jp_inputs`` bundle; every
+       other country's inputs are ``None``, which ``build_policy_gap`` refuses
+       to accept alongside the BoJ's.
+
+    The output gap is ESTIMATED from the Japanese real GDP level against its own
+    mean growth, exactly as the other helpers do — Japan publishes no gap series
+    on this route. The estimate is DISCLOSED.
+    """
+    settings = get_settings()
+    as_of = snapshot.as_of
+
+    resolved_type = thesis_type or ThesisType(settings.api.default_thesis_type)
+    resolved_universe = universe if universe is not None else ProductionUniverse(country="jp")
+
+    notes: list[DerivationNote] = []
+    warnings: list[str] = []
+
+    pi_target = float(settings.policy.jp.pi_target_value)
+
+    # -- Q1's German-analogue first read: Japanese CPI (the BoJ's measure).
+    jp_pi_points = _realised(snapshot.jp_cpi_yoy, as_of=as_of, field="jp_cpi_yoy")
+    jp_pi, jp_pi_described = _latest_percent(jp_pi_points, field="jp_cpi_yoy")
+    notes.append(
+        DerivationNote(
+            name="pi (jp, CPI ex fresh food)",
+            value=f"{jp_pi:+.4f} (target {pi_target:.1f}%, gap {jp_pi - pi_target:+.4f}pp)",
+            source=(
+                "jp_cpi_yoy — Japanese CPI all items less fresh food, "
+                "year-over-year %, the BoJ's own target measure (IMF-sourced; the "
+                "OECD and FRED Japan CPI series are STALE to 2021-06 — the "
+                "seventh FALSE BLOCK). The gap the shadow-rate rule forms "
+                "internally is stated here for the reader."
+            ),
+            window=jp_pi_described,
+        )
+    )
+
+    jp_unemployment_points = _realised(
+        snapshot.jp_unemployment_rate, as_of=as_of, field="jp_unemployment_rate"
+    )
+    jp_unemployment, jp_unemployment_described = _latest_percent(
+        jp_unemployment_points, field="jp_unemployment_rate"
+    )
+    notes.append(
+        DerivationNote(
+            name="jp_unemployment_rate",
+            value=f"{jp_unemployment:g}",
+            source=(
+                "jp_unemployment_rate (Japanese unemployment %, OECD-sourced), "
+                "latest realised point"
+            ),
+            window=jp_unemployment_described,
+        )
+    )
+
+    # The Japanese output-gap estimate — the same disclosed method as every
+    # other country's: latest q/q growth minus its own window mean.
+    jp_gdp_points = _realised(snapshot.jp_gdp_real_level, as_of=as_of, field="jp_gdp_real_level")
+    if len(jp_gdp_points) < 2:
+        raise OrchestrationError(
+            f"snapshot field 'jp_gdp_real_level' has {len(jp_gdp_points)} "
+            f"observation(s); a quarter-on-quarter growth needs at least 2.",
+            fields=("jp_gdp_real_level",),
+        )
+    jp_gdp_growth = (jp_gdp_points[-1].value / jp_gdp_points[-2].value - 1.0) * 100.0
+    jp_qoq_rates = [
+        (jp_gdp_points[i].value / jp_gdp_points[i - 1].value - 1.0) * 100.0
+        for i in range(1, len(jp_gdp_points))
+    ]
+    jp_mean_growth = sum(jp_qoq_rates) / len(jp_qoq_rates)
+    jp_output_gap = jp_gdp_growth - jp_mean_growth
+    notes.append(
+        DerivationNote(
+            name="output_gap (jp, ESTIMATED)",
+            value=f"{jp_output_gap:+.4f}",
+            source=(
+                "ESTIMATE: latest Japanese q/q real GDP growth minus its own mean "
+                f"over the realised window (mean {jp_mean_growth:+.4f}) — Japan "
+                "publishes no output-gap series on this route, so the shadow-rate "
+                "rule's gap input is estimated, not measured"
+            ),
+            window=(
+                f"jp_gdp_real_level: {jp_gdp_points[-1].observation_date.isoformat()} "
+                f"{jp_gdp_points[-1].value:g} vs "
+                f"{jp_gdp_points[-2].observation_date.isoformat()} {jp_gdp_points[-2].value:g}"
+            ),
+        )
+    )
+    growth_read = output_gap(
+        OutputGapInputs(
+            actual_gdp=1.0 + jp_output_gap / 100.0,
+            potential_gdp=1.0,
+        )
+    )
+    inflation = inflation_breadth_score(
+        InflationSubMeasures(
+            cpi_headline_mom=jp_pi,
+            cpi_core_mom=jp_pi,
+            pce_core_mom=jp_pi,
+        )
+    )
+    warnings.append(
+        "JP INFLATION BREADTH: the score's three m/m measures are the Japanese "
+        "CPI level repeated (Japan publishes no US-style core PCE on this route). "
+        "Breadth is therefore a single measure, not three — read the score as a "
+        "level, not a breadth signal."
+    )
+    labor = labor_tightness_score(
+        LaborInputs(
+            initial_claims_4wk_avg_change_pct=0.0,
+            jolts_openings_yoy_pct=0.0,
+            jolts_quits_level_percentile=0.0,
+            nfp_3m_avg=get_settings().labor.neutral_nfp_pace,
+        )
+    )
+    warnings.append(
+        "JP LABOR READ: Japan publishes no JOLTS, initial-claims or payrolls "
+        "series on this route, so every labor-tightness block is at its neutral "
+        "point and the score is ~0 by construction — it says nothing about "
+        "Japanese labour tightness. The genuine Japanese read "
+        "(jp_unemployment_rate) is carried in the notes."
+    )
+    reads = EconomyReads(growth=growth_read, inflation=inflation, labor=labor)
+
+    # -- Q3/Q4's market read: Japan's 3-month rate.
+    jp_short_points = _realised(snapshot.jp_short_rate_3m, as_of=as_of, field="jp_short_rate_3m")
+    jp_short_3m, jp_short_described = _latest_percent(jp_short_points, field="jp_short_rate_3m")
+    if not 0.0 < jp_short_3m < get_settings().validation.max_yield:
+        raise OrchestrationError(
+            f"the Japanese 3-month rate is {jp_short_3m}, outside the plausible "
+            f"bond range (Section 5.4's max_plausible_yield_pct is "
+            f"{get_settings().validation.max_yield:g}). A value in basis points "
+            f"would read as a percent and inflate every downstream gap.",
+            fields=("jp_short_rate_3m",),
+        )
+    notes.append(
+        DerivationNote(
+            name="short_yield",
+            value=f"{jp_short_3m:g}",
+            source=(
+                "jp_short_rate_3m, in percent — the Japanese 3-month rate. The "
+                "snapshot carries no 11-tenor curve, so the short end is the "
+                "3-month rate."
+            ),
+            window=jp_short_described,
+        )
+    )
+
+    # -- The policy rate: the BoJ's call rate, and the YCC target series.
+    jp_call_points = _realised(snapshot.jp_call_rate, as_of=as_of, field="jp_call_rate")
+    jp_call, jp_call_described = _latest_percent(jp_call_points, field="jp_call_rate")
+    notes.append(
+        DerivationNote(
+            name="i_policy (jp)",
+            value=f"{jp_call:g}",
+            source=(
+                "jp_call_rate (the BoJ's uncollateralised overnight call rate, %). "
+                "The policy rate; under NIRP it was -0.1%, and after the March-2024 "
+                "exit it is ~0-0.1%."
+            ),
+            window=jp_call_described,
+        )
+    )
+    jp_long_points = _realised(snapshot.jp_long_rate_10y, as_of=as_of, field="jp_long_rate_10y")
+    jp_long_10y, jp_long_described = _latest_percent(jp_long_points, field="jp_long_rate_10y")
+    notes.append(
+        DerivationNote(
+            name="jgb_10y",
+            value=f"{jp_long_10y:g}",
+            source=(
+                "jp_long_rate_10y (the 10-year JGB yield, %) — the series the BoJ's "
+                "Yield Curve Control names as its OPERATING TARGET. Feeds the YCC "
+                "reference rule directly."
+            ),
+            window=jp_long_described,
+        )
+    )
+
+    # -- The shadow-rate state. A jp snapshot carries no history from which to
+    #    derive the notional rate or the cumulative shortfalls, so they are
+    #    SEEDED and the seeding is DISCLOSED. The seed is the honest neutral
+    #    start: zero accumulated shortfall (no ZLB debt yet) and a notional rate
+    #    equal to the policy rate, so the first step of the recursion starts
+    #    from the observed state rather than from an invented history.
+    jp_floor = float(settings.policy.jp.zlb_floor_value)
+    z_prev_seed = 0.0
+    cumulative_inflation_gap_seed = 0.0
+    warnings.append(
+        "JP SHADOW-RATE STATE SEEDED: the shadow-rate rule threads a cumulative "
+        "ZLB shortfall z_t and the overshooting-commitment rule a cumulative "
+        "inflation shortfall, but a jp snapshot carries no history from which to "
+        "derive either. Both are seeded to 0.0 (no accumulated shortfall) here, "
+        "so the rules run in their UNACCUMULATED state. This is a DISCLOSED seed, "
+        "not a measured history: a longer-running caller should thread the real "
+        "state, and in particular a caller evaluating a period DEEP in the ZLB "
+        "will understate the shortfall by starting from zero."
+    )
+
+    jp_inputs = JpRuleInputs(
+        shadow_rate=JpReifschneiderWilliamsInputs(
+            pi=jp_pi,
+            output_gap=jp_output_gap,
+            i_notional_prev=jp_call,
+            z_prev=z_prev_seed,
+            zlb_floor=jp_floor,
+        ),
+        ycc=JpYccInputs(
+            jgb_10y=jp_long_10y,
+            ycc_target=float(settings.policy.jp.ycc_target_value),
+            ycc_band=float(settings.policy.jp.ycc_band_value),
+        ),
+        overshoot=JpOvershootCommitmentInputs(
+            pi=jp_pi,
+            cumulative_inflation_gap=cumulative_inflation_gap_seed,
+            stabilization_threshold=float(settings.policy.jp.stabilization_threshold_value),
+        ),
+    )
+
+    if resolved_type is ThesisType.CURVE_SHAPE_GAP:
+        notes.append(
+            DerivationNote(
+                name="curve legs",
+                value=f"{curve_short_tenor} -> {curve_long_tenor}",
+                source="forwarded from the caller; a curve expression names its own legs",
+                window=None,
+            )
+        )
+    elif curve_short_tenor is not None or curve_long_tenor is not None:
+        warnings.append(
+            "CURVE LEGS IGNORED: curve_short_tenor/curve_long_tenor were supplied "
+            f"but the thesis type is {resolved_type.value}, so nothing reads them "
+            "(D-037's inert-input class)."
+        )
+
+    notes.append(
+        DerivationNote(
+            name="thesis_type",
+            value=resolved_type.value,
+            source=(
+                "assumed from api.default_thesis_type"
+                if thesis_type is None
+                else "supplied by the caller"
+            ),
+            window=None,
+        )
+    )
+    if short_tenor_term_premium is not None:
+        notes.append(
+            DerivationNote(
+                name="short_tenor_term_premium",
+                value=f"{short_tenor_term_premium:g}",
+                source="supplied by the caller",
+                window=None,
+            )
+        )
+
+    return ThesisInputs(
+        reads=reads,
+        taylor_inputs=None,
+        first_difference_inputs=None,
+        short_yield=jp_short_3m,
+        thesis_type=resolved_type,
+        universe=resolved_universe,
+        country="jp",
+        boe_inputs=None,
+        eu_inputs=None,
+        de_inputs=None,
+        jp_inputs=jp_inputs,
+        regime=None,
+        national_accounts=None,
+        curve=(),
+        balance_sheet=None,
+        notes=tuple(notes),
+        warnings=tuple(warnings),
+    )
 
 
 def _gb_policy_rate(snapshot: MacroDataSnapshot, *, as_of: datetime) -> tuple[float, str]:

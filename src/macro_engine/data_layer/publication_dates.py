@@ -16,14 +16,27 @@ on the record itself.
 **Measured live 2026-09-20: 42 of 42 then-resolvable registry symbols returned a
 ``last_updated``, 0 transport errors.** That is the coverage claim, and it is a
 count, not an impression. The denominator is dated on purpose and it has since
-moved three times: re-measured 2026-10-05, the registry declared **59** series
+moved four times: re-measured 2026-10-05, the registry declared **59** series
 of which **50** resolved through this route; re-measured 2026-10-10 (Section
 22.3's multi-country increment added seven ``gb_*`` UK series), it declared
 **66** series of which **57** resolved; re-measured the same day for the second
-multi-country increment (eight ``eu_*`` euro-area series), it declares
-**74** series of which **63** resolve through this route. So 42/42 describes the
-2026-09-20 registry rather than today's. The ROUTE is unchanged — the registry
-grew, and each expansion is a count re-measured rather than a number trusted.
+multi-country increment (eight ``eu_*`` euro-area series), it declared
+**74** series of which **63** resolved; re-measured the same day for the third
+and fourth increments (twelve ``de_*``/``jp_*`` German and Japanese series), it
+declares **86** series of which **69** resolve through this route. So 42/42
+describes the 2026-09-20 registry rather than today's. The ROUTE is unchanged —
+the registry grew, and each expansion is a count re-measured rather than a
+number trusted.
+
+The de/jp increment moved the two numbers by DIFFERENT amounts (74 -> 86
+declared, 63 -> 69 resolved): six of the twelve new series are FRED (the German
+and Japanese 3m, 10y and call rates) and resolve here, while the two CPI series
+(IMF), the two unemployment and two GDP series (OECD) do not — the German and
+Japanese inflation, labour and activity legs are on no FRED route, and the Japan
+CPI case is the sharper one: the FRED Japan CPI variants are stale to 2021-06
+(the seventh FALSE BLOCK), so a FRED route exists but carries no current data.
+A reader who assumed "a new country adds its series to both counts" would again
+have been wrong; the counts are measured, not extrapolated.
 
 The euro increment moved the two numbers by DIFFERENT amounts (66 -> 74 declared,
 57 -> 63 resolved) and the reason is worth keeping: six of the eight new series

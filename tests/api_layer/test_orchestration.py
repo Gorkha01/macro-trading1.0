@@ -271,18 +271,39 @@ def _gb_snapshot() -> MacroDataSnapshot:
 
 
 def test_an_unimplemented_country_snapshot_is_refused() -> None:
-    """(§22.3) de is refused; the refusal names the implemented set.
+    """(§22.3) a country NOT in ``implemented`` is refused; the message names the set.
 
     The guard no longer reads a literal ``"us"`` — it reads
-    ``country.implemented``, so the first multi-country increment (gb) is
-    admitted while de/jp are still refused. The assertion is on the BEHAVIOUR
-    (``de`` raises) and on the message naming the implemented set, not on the
-    old "us only" literal, which would have made this test the thing that
-    blocked gb rather than the thing that guards the boundary.
+    ``country.implemented``, so each multi-country increment is admitted as it
+    lands while countries not yet built are still refused. ``fr`` (France) has
+    no series set, no reaction function and no instrument universe — it is the
+    honest example of "not implemented". The assertion is on the BEHAVIOUR (the
+    code raises) and on the message naming the implemented set, not on any
+    particular country literal, which would have made this test the thing that
+    blocked an increment rather than the thing that guards the boundary.
     """
-    snapshot = MacroDataSnapshot(country="de", as_of=AS_OF, data_quality_flags=[])
+    snapshot = MacroDataSnapshot(country="fr", as_of=AS_OF, data_quality_flags=[])
     with pytest.raises(NotImplementedError, match="implemented for"):
         orch.snapshot_to_thesis_inputs(snapshot)
+
+
+def test_de_and_jp_are_admitted_now_that_they_are_implemented() -> None:
+    """(§22.3) de and jp are NOT refused any more — they reached their derivations.
+
+    The counterpart to the refusal test above, extended to the third and fourth
+    increments. ``de`` and ``jp`` are in ``country.implemented``, so a snapshot
+    for either must reach its own derivation rather than the guard's
+    ``NotImplementedError``. This is what would fail if the config and the
+    dispatch ever drifted apart.
+    """
+    for code, attr in (("de", "de_inputs"), ("jp", "jp_inputs")):
+        snapshot = _snapshot_for_country(code)
+        inputs = orch.snapshot_to_thesis_inputs(snapshot)
+        assert inputs.country == code
+        assert getattr(inputs, attr) is not None, f"{code} derivation produced no {attr}"
+        # The other countries' records must be None — one country's inputs only.
+        assert inputs.boe_inputs is None
+        assert inputs.eu_inputs is None
 
 
 def test_an_implemented_country_snapshot_is_admitted() -> None:
@@ -380,6 +401,114 @@ def _eu_snapshot() -> MacroDataSnapshot:
             [3.60, 3.70, 3.748], start="2025-09-01", step_days=91, series="eu_long_rate_10y"
         ),
     )
+
+
+def _de_snapshot() -> MacroDataSnapshot:
+    """A German snapshot carrying every series the de derivation reads.
+
+    Germany's rules read BOTH its own data and the euro-area aggregate (the ECB
+    rate IS Germany's policy rate; the aggregate is the comparator it diverges
+    from), so this fixture carries ``de_*`` AND the ``eu_*`` comparators. The
+    German values are set to diverge from the euro-area ones — German inflation
+    above, unemployment below — so the appropriateness gap is a non-trivial
+    signed number rather than a coincidence of equal series.
+    """
+    return MacroDataSnapshot(
+        country="de",
+        as_of=AS_OF,
+        data_quality_flags=[],
+        de_cpi_yoy=_monthly([2.6, 2.7, 2.8, 2.9, 2.86], series="de_cpi_yoy"),
+        de_unemployment_rate=_monthly([4.5, 4.4, 4.4, 4.3, 4.3], series="de_unemployment_rate"),
+        de_gdp_real_level=_series(
+            [5_180_000.0, 5_210_000.0, 5_228_000.0, 5_240_000.0],
+            start="2025-06-01",
+            step_days=91,
+            series="de_gdp_real_level",
+        ),
+        de_short_rate_3m=_series(
+            [2.45, 2.51, 2.513], start="2025-09-01", step_days=91, series="de_short_rate_3m"
+        ),
+        de_long_rate_10y=_series(
+            [3.05, 3.12, 3.18], start="2025-09-01", step_days=91, series="de_long_rate_10y"
+        ),
+        de_call_rate=_series(
+            [2.15, 2.19, 2.187], start="2025-09-01", step_days=91, series="de_call_rate"
+        ),
+        # The euro-area comparator (Germany's policy inputs, not another country's).
+        eu_ecb_main_refi_rate=_series(
+            [2.40, 2.25, 2.15], start="2025-09-01", step_days=91, series="eu_ecb_main_refi_rate"
+        ),
+        eu_hicp_index=_monthly(
+            [
+                100.0,
+                100.2,
+                100.4,
+                100.6,
+                100.9,
+                101.2,
+                101.5,
+                101.7,
+                101.9,
+                102.0,
+                102.1,
+                102.2,
+                102.2,
+                102.3,
+                102.35,
+                102.4,
+            ],
+            series="eu_hicp_index",
+        ),
+        eu_unemployment_rate=_monthly(
+            [6.4, 6.3, 6.2, 6.2, 6.1, 6.1], series="eu_unemployment_rate"
+        ),
+        eu_gdp_real_level=_series(
+            [2_950_000.0, 2_975_000.0, 2_998_000.0, 3_041_000.0],
+            start="2025-06-01",
+            step_days=91,
+            series="eu_gdp_real_level",
+        ),
+    )
+
+
+def _jp_snapshot() -> MacroDataSnapshot:
+    """A Japanese snapshot carrying every series the jp derivation reads.
+
+    The BoJ's CPI measure is all items less fresh food; the shadow-rate rule
+    reads it against the 2% target, and the YCC leg reads the 10-year JGB yield
+    against the BoJ's target. The Japanese values are plausible for the
+    post-2024 regime (a small positive policy rate, a JGB yield well above the
+    YCC target) so the floor is NOT binding by default — the binding case is
+    exercised by a dedicated unit test on the rule itself.
+    """
+    return MacroDataSnapshot(
+        country="jp",
+        as_of=AS_OF,
+        data_quality_flags=[],
+        jp_cpi_yoy=_monthly([2.8, 2.7, 2.5, 2.2, 1.96], series="jp_cpi_yoy"),
+        jp_unemployment_rate=_monthly([2.5, 2.5, 2.6, 2.6, 2.6], series="jp_unemployment_rate"),
+        jp_gdp_real_level=_series(
+            [5_900_000.0, 5_920_000.0, 5_943_000.0, 5_950_000.0],
+            start="2025-06-01",
+            step_days=91,
+            series="jp_gdp_real_level",
+        ),
+        jp_short_rate_3m=_series(
+            [1.35, 1.44, 1.458], start="2025-09-01", step_days=91, series="jp_short_rate_3m"
+        ),
+        jp_long_rate_10y=_series(
+            [2.70, 2.85, 2.94], start="2025-09-01", step_days=91, series="jp_long_rate_10y"
+        ),
+        jp_call_rate=_series(
+            [0.50, 0.75, 0.977], start="2025-09-01", step_days=91, series="jp_call_rate"
+        ),
+    )
+
+
+def _snapshot_for_country(country: str) -> MacroDataSnapshot:
+    """The fixture snapshot for an implemented multi-country code."""
+    builders = {"gb": _gb_snapshot, "eu": _eu_snapshot, "de": _de_snapshot, "jp": _jp_snapshot}
+    return builders[country]()
 
 
 def test_the_eu_output_gap_change_is_a_gap_change_not_a_gdp_level_change() -> None:

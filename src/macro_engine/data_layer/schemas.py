@@ -487,6 +487,124 @@ class MacroDataSnapshot(BaseModel):
         ),
     )
 
+    # --- Germany (Section 22.3 — country "de") -----------------------------
+    #
+    # A DEDICATED block, for the same reason the UK and euro blocks are ones.
+    #
+    # NOTE what is ABSENT: no ``de_policy_rate``. Germany has no central bank
+    # of its own for policy purposes — the ECB sets the single rate for the
+    # currency union (the Bundesbank executes it), so a German policy-rate
+    # series would be a fabrication. The ``de`` arm reads the ECB rate through
+    # a documented stand-in, and its distinct content is the German NATIONAL
+    # data below (see docs/DE_JP_DESIGN.md).
+    de_cpi_yoy: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German CPI, all items, year-over-year (%) — IMF via "
+            "``economy.cpi``, current through 2026-08. The German national "
+            "inflation the ECB's single stance maps onto; the member-state rule "
+            "is built on its divergence from the euro-area aggregate."
+        ),
+    )
+    de_unemployment_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German unemployment rate (%) — OECD ``economy.unemployment``, "
+            "monthly, current through 2026-08. The national labour read."
+        ),
+    )
+    de_gdp_real_level: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German real GDP, LEVEL — OECD ``economy.gdp.real``, quarterly, "
+            "current through 2026-Q2. The INPUT from which the German output "
+            "gap is derived."
+        ),
+    )
+    de_short_rate_3m: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German 3-month interbank rate (%) — FRED IR3TIB01DEM156N, monthly. "
+            "The German short end, and the input the `de` market-implied path is "
+            "derived from."
+        ),
+    )
+    de_long_rate_10y: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German 10-year Bund yield (%) — FRED IRLTLT01DEM156N, monthly. The "
+            "national long rate; the member-state rule reads the Bund-vs-"
+            "aggregate spread, which needs this AND ``eu_long_rate_10y``."
+        ),
+    )
+    de_call_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "German call money / overnight interbank rate (%) — FRED "
+            "IRSTCI01DEM156N, monthly. A MARKET rate (Germany has no policy "
+            "rate); used as the `de` rule's previous-rate leg."
+        ),
+    )
+
+    # --- Japan (Section 22.3 — country "jp") -------------------------------
+    #
+    # A DEDICATED block. Japan's distinguishing feature is that its central
+    # bank's framework is NOT a Taylor rule: the BoJ used the 10-year JGB yield
+    # as an instrument (Yield Curve Control) and an inflation-overshooting
+    # commitment as guidance, under a ZLB that made the zero floor bind for
+    # years. The fields below are exactly what that structure reads.
+    jp_cpi_yoy: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japan CPI, all items, year-over-year (%) — IMF via "
+            "``economy.cpi``, current through 2026-08. THE SEVENTH FALSE BLOCK: "
+            "the OECD route and the FRED series (JPNCPIALLMINMEI, "
+            "CPALTT01JPM659N) all stop at 2021-06, but the IMF provider on the "
+            "same route is current — so 'Japan CPI is unavailable' was wrong."
+        ),
+    )
+    jp_unemployment_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japan unemployment rate (%) — OECD ``economy.unemployment``, "
+            "monthly, current through 2026-08. Structurally low (~2.5%), which "
+            "is why the jp rule reads it against Japan's own norm."
+        ),
+    )
+    jp_gdp_real_level: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japanese real GDP, LEVEL — OECD ``economy.gdp.real``, quarterly, "
+            "current through 2026-Q2. The INPUT from which the Japanese output "
+            "gap is derived."
+        ),
+    )
+    jp_short_rate_3m: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japanese 3-month interbank rate (%) — FRED IR3TIB01JPM156N, monthly. "
+            "The Japanese short end; its own history at/below zero is the ZLB "
+            "evidence the jp rule encodes."
+        ),
+    )
+    jp_long_rate_10y: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japanese 10-year JGB yield (%) — FRED IRLTLT01JPM156N, monthly. THE "
+            "STRUCTURAL SERIES: under YCC (2016-2024) this yield was a policy "
+            "TARGET, not merely a market price, which is the fact that most "
+            "distinguishes the BoJ's framework from a Taylor rule."
+        ),
+    )
+    jp_call_rate: list[ObservationPoint] = Field(
+        default_factory=list,
+        description=(
+            "Japanese call money / overnight rate (%) — FRED IRSTCI01JPM156N, "
+            "monthly. The policy-sensitive overnight rate; the `jp` rule's "
+            "previous-rate leg and the series whose NIRP-era values were negative."
+        ),
+    )
+
     # --- Cross-asset (Modules 9, 10, 11) ---
     fx_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)
     commodity_spot: dict[str, list[ObservationPoint]] = Field(default_factory=dict)

@@ -115,8 +115,21 @@ country:
   # choice, 2026-10-10): the ECB sets ONE policy rate for the currency union, so
   # the honest unit for a euro-area reaction function is the aggregate, not a
   # member state's.
-  enabled: ["us", "gb", "eu"]
-  implemented: ["us", "gb", "eu"]
+  # de/jp (Germany / Japan) were added 2026-10-10 after all three workstreams
+  # were built and tested. GERMANY is NOT a relabelled ECB: it has NO central
+  # bank of its own (the Bundesbank executes the ECB's single policy), so its
+  # reaction function is a MEMBER-STATE APPROPRIATENESS rule — how the single
+  # ECB stance maps onto GERMAN conditions — not a Taylor rule for a central
+  # bank Germany does not have. JAPAN is NOT a relabelled Fed: the BoJ's
+  # framework uses the 10-year JGB yield as an instrument (Yield Curve Control)
+  # under a ZLB, with an inflation-overshooting commitment — a form the
+  # Reifschneider-Williams shadow-rate rule encodes and a plain Taylor rule
+  # provably cannot (Hasui & Teranishi 2025). See docs/DE_JP_DESIGN.md.
+  #
+  # The euro area remains enabled as the AGGREGATE ("eu"); "de" is its largest
+  # member state (see the de block's note for how the two relate).
+  enabled: ["us", "gb", "eu", "de", "jp"]
+  implemented: ["us", "gb", "eu", "de", "jp"]
 
 policy:
   r_star:
@@ -656,6 +669,280 @@ policy:
           significant at 5%). Larger than the unrestricted 0.358, again because
           the restriction re-allocates weight away from inflation.
         source_reference: "ECB Working Paper No 258 (Sept 2003), Table 4."
+
+  # ---------------------------------------------------------------------------
+  # Section 22.3 — GERMANY's member-state rules (country "de").
+  #
+  # GERMANY HAS NO MONETARY POLICY OF ITS OWN. The Bundesbank's own statement
+  # of its role is that it conducts "the Eurosystem's monetary policy
+  # operations with German counterparties" — the ECB Governing Council sets the
+  # ONE policy rate for the currency union, and the Bundesbank executes it. A
+  # "German Taylor rule" would therefore be a RELABELLED ECB rule (the exact
+  # Section 22.3 / D-146 substitution), and unlike the gb case, worse: Germany
+  # does not even have a separate policy rate to relabel.
+  #
+  # So there is NO `pi_target`, NO `i_star`, NO `smoothing` and NO policy rate
+  # in this block — those belong to a central bank Germany does not have.
+  # What IS genuinely German, and what these rules measure, is the
+  # APPROPRIATENESS GAP: the ECB sets one rate for twenty economies; the same
+  # rate is a different stance in Germany than on average. The ECB's own
+  # Economic Bulletin 5/2024 ("The dynamics of inflation differentials in the
+  # euro area") sets out the mechanism — a single stance is too loose for
+  # high-inflation members and too tight for low-inflation ones.
+  #
+  # The coefficients below are ILLUSTRATIVE WEIGHTS on the divergences, not
+  # estimates of a reaction function that does not exist. Their
+  # calibration_status says so.
+  # ---------------------------------------------------------------------------
+  de:
+    appropriateness:
+      # The four divergence weights. The sign each encodes: German inflation
+      # ABOVE the euro-area aggregate and German activity ABOVE it both mean
+      # the shared rate is too LOOSE for Germany; German unemployment BELOW
+      # the aggregate means German labour is tighter, so the rule enters that
+      # leg as (u_ea - u_de).
+      inflation_coefficient:
+        value: 1.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Illustrative weight on the GERMAN-vs-EURO-AREA INFLATION divergence
+          (pi_de - pi_ea). Set to 1.0 so a 1pp German inflation excess carries
+          1.0 into the appropriateness gap. NOT an estimated Bundesbank
+          coefficient — no such function exists, because Germany does not set
+          policy. The sign convention: a positive divergence means the shared
+          nominal rate is too loose for Germany.
+      output_gap_coefficient:
+        value: 1.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Illustrative weight on the German-vs-euro-area OUTPUT GAP divergence
+          (y_de - y_ea). The same illustrative status and sign convention as the
+          inflation weight: a German gap above the aggregate means German
+          activity is hot relative to the union.
+      unemployment_coefficient:
+        value: 1.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Illustrative weight on the LABOUR divergence, entered as
+          (u_ea - u_de) so a LOWER German unemployment rate is a POSITIVE
+          contribution — German labour tighter than the aggregate means the
+          shared rate is too loose. The sign inversion is in the rule body and
+          stated in its context string.
+      growth_coefficient:
+        value: 1.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Illustrative weight on the ACTIVITY divergence (g_de - g_ea), the
+          q/q-growth companion to the output-gap leg at a one-step frequency.
+      r_neutral:
+        value: 0.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          The illustrative GERMAN neutral REAL rate, percent, consumed by
+          de_real_rate_rule. UNOBSERVABLE (Section 21.4 item 13). Zero, the same
+          honest default the euro-area arm uses, because the euro area's own
+          real-rate estimate is insignificantly different from zero (ECB WP
+          258) and Germany is inside that aggregate. It is a leaf so the German
+          real-rate gap is measured the way the caller intends, and so moving it
+          is visible.
+    bund_spread:
+      ecb_rate_weight:
+        value: 0.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Weight on the ECB's set rate in the reference the German curve is
+          read against. 0.5 with the German short-rate weight (the two sum to
+          1) makes the reference the midpoint of the set rate and the German
+          money-market rate. An illustrative blend, not an estimate; a
+          different blend moves the signal's LEVEL, not its sign for reasonable
+          weights.
+      german_short_rate_weight:
+        value: 0.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Weight on the German 3-month MARKET rate in the same reference. The
+          German short rate is a MARKET rate, not a policy rate — Germany has
+          none. Kept as its own leaf so the blend is auditable.
+
+  # ---------------------------------------------------------------------------
+  # Section 22.3 — the Bank of Japan's reaction function (country "jp").
+  #
+  # NOT a relabelled Fed Taylor rule. The BoJ's framework has three features no
+  # Taylor rule can reproduce, and the primary source (Hasui & Teranishi 2025,
+  # HIAS-E-149) states the first directly:
+  #
+  #   1. THE ZLB FLOOR + CUMULATIVE SHORTFALL. The Reifschneider-Williams
+  #      (2000) shadow-rate rule: i_t = max[floor, i~_t - phi_z * z_t], where
+  #      i~_t is a NOTIONAL rate and z_t is the accumulated "ZLB debt". The
+  #      primary source: "the Taylor-type rule can not replicate inflation
+  #      overshooting, even though the zero interest rate policy continues…
+  #      the augmented Taylor-type rule with a strong history dependence can
+  #      work as a price-level targeting policy." No Fed/BoE/ECB rule here has
+  #      a floor or a state term.
+  #   2. YIELD CURVE CONTROL (Sept 2016). The INSTRUMENT is the 10-year JGB
+  #      yield (target ~0%), named by the BoJ as its operating target.
+  #   3. THE INFLATION-OVERSHOOTING COMMITMENT (Sept 2016). Easing continues
+  #      "until the year-on-year rate of increase in the observed CPI (all
+  #      items less fresh food) exceeds 2 percent and stays above the target in
+  #      a stable manner" — a deliberate TOLERANCE of overshoot.
+  #
+  # `i_star` is the natural rate plus the target; Japan's NATURAL RATE IS
+  # NEGATIVE (-0.5%, the primary source's own calibration), the opposite sign
+  # from the Fed's, the BoE's and the euro area's — the honest convention for
+  # an economy that spent two decades at the floor.
+  # ---------------------------------------------------------------------------
+  jp:
+    # The BoJ's target measure: CPI all items LESS FRESH FOOD, 2%, symmetric.
+    pi_target:
+      value: 2.0
+      calibration_status: institutional_fact
+      note: >
+        The Bank of Japan's 2% price stability target, measured on CPI all
+        items less fresh food — the measure the overshooting commitment names
+        in terms. Distinct from the Fed's PCE, the BoE's CPI and the euro
+        area's HICP: the TARGET MEASURE differs, which is why the jp rules
+        read the jp_cpi_yoy series.
+      source_reference: >-
+        Bank of Japan, "New Framework for Strengthening Monetary Easing"
+        (Sept 2016); Joint Statement of the Government and the Bank of Japan
+        (Jan 2013).
+
+    # The BoJ's nominal neutral rate convention: target + natural rate.
+    i_star:
+      value: 1.5
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The illustrative nominal neutral rate: the 2% target plus a NEGATIVE
+        0.5% natural rate = 1.5%. UNOBSERVABLE (Section 21.4 item 13). The
+        NEGATIVE natural rate is the primary source's own calibration for Japan
+        and is the structural point: for an economy that spent two decades at
+        the floor, r* < 0 is why the floor binds. The mover test asserts
+        i_star == pi_target + natural_rate.
+      source_reference: >-
+        Hasui & Teranishi (2025), HIAS-E-149 — the natural-rate calibration for
+        Japan (-0.5%).
+
+    # The natural-rate component of i_star, kept as its own leaf so the mover
+    # test can assert i_star is DERIVED from the target rather than a second
+    # independent constant (LAW 2). NEGATIVE, unlike every other country here.
+    natural_rate:
+      value: -0.5
+      calibration_status: uncalibrated_illustrative
+      note: >
+        Japan's natural real rate, percent, from the primary source's
+        calibration. NEGATIVE — the opposite sign from the Fed's 0.5, the BoE's
+        1.0 and the euro area's 0.0, and the reason Japan's floor binds. Named
+        separately so i_star is DERIVED from the target rather than a second
+        independent constant that could silently disagree with it.
+      source_reference: "Hasui & Teranishi (2025), HIAS-E-149 — Japan calibration."
+
+    # The effective lower bound. A policy CHOICE that MOVED — Japan ran -0.1%
+    # under NIRP (2016-2024) and exited to 0-0.1% in March 2024 — so it is a
+    # leaf, not a hard-coded zero.
+    zlb_floor:
+      value: 0.0
+      calibration_status: institutional_fact
+      note: >
+        The effective lower bound on the BoJ's policy rate, percent. 0.0
+        reflects the POST-March-2024 regime (the NIRP exit). It is a leaf
+        because the floor has MOVED: during NIRP (2016-2024) it was -0.1%, and
+        a result produced under one floor must not be read under another. The
+        shadow-rate rule's floor is data, not a literal (LAW 1).
+      source_reference: >-
+        Bank of Japan, the March-2024 decision to exit NIRP and YCC.
+
+    # The YCC target and band. Both MOVED by policy, so both are leaves.
+    ycc_target:
+      value: 0.0
+      calibration_status: institutional_fact
+      note: >
+        The BoJ's Yield Curve Control target for the 10-year JGB yield,
+        percent. About 0% as introduced in September 2016. A leaf because the
+        policy moved (the band widened, and YCC was discontinued at the
+        March-2024 exit), so freezing one regime's value into every period
+        would misstate the others.
+      source_reference: "Bank of Japan (Sept 2016), New Framework for Strengthening Monetary Easing."
+    ycc_band:
+      value: 1.0
+      calibration_status: institutional_fact
+      note: >
+        The half-width of the BoJ's YCC tolerance band around the target, in
+        percentage points. The band widened over the policy's life (about
+        +/-0.5%, later +/-1%); 1.0 records the widest pre-exit band. A leaf for
+        the same reason as the target.
+      source_reference: "Bank of Japan YCC band adjustments (2021-2023)."
+
+    # The overshooting commitment's stabilisation threshold.
+    stabilization_threshold:
+      value: 2.0
+      calibration_status: uncalibrated_illustrative
+      note: >
+        The cumulative inflation shortfall, in percentage-point-periods, that
+        the overshooting commitment seeks to close before it stops adding
+        accommodation. The BoJ's "stable manner" is a JUDGEMENT, not a
+        published constant, so this is an illustrative threshold — a leaf so it
+        is visible and movable, and so the commitment's history dependence
+        cannot be silently disabled by hiding it in the body.
+      source_reference: >-
+        Bank of Japan (Sept 2016) — the "exceeds 2 percent and stays above the
+        target in a stable manner" commitment.
+
+    shadow_rate:
+      inflation_coefficient:
+        value: 1.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Response to the inflation gap in the NOTIONAL rate. 1.5, the standard
+          Taylor value, as used in the primary source's augmented Taylor-type
+          rule. The structural content of the `jp` arm is NOT this coefficient
+          but the floor and the shortfall term below.
+      output_gap_coefficient:
+        value: 0.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Response to the output gap in the notional rate (standard Taylor
+          value, per the primary source).
+      shortfall_coefficient:
+        value: 0.5
+        calibration_status: institutional_fact
+        note: >
+          phi_z, the coefficient on the cumulative ZLB SHORTFALL z_t
+          (Nakov 2008, phi_z = 0.5; the value the primary source's formal rule
+          uses). THE STRUCTURAL MARKER: no Fed, BoE or ECB rule in this system
+          has a state/shortfall term. It is what makes the rule history-
+          dependent and able to produce the inflation OVERSHOOTING a plain
+          Taylor rule provably cannot.
+        source_reference: "Nakov (2008), as used in Hasui & Teranishi (2025), HIAS-E-149."
+      notional_persistence:
+        value: 0.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          rho, the persistence of the NOTIONAL (shadow) rate recursion. Must be
+          in [0, 1); a value of 1 makes the notional rate ignore its own terms
+          and explode. Distinct from the actual rate's floor: the shadow rate is
+          inertial, the actual rate is floored.
+    ycc:
+      pressure_per_bp:
+        value: 1.0
+        calibration_status: uncalibrated_illustrative
+        note: >
+          Reporting scale turning the 10-year JGB yield's deviation from the YCC
+          target into a named pressure figure. 1.0 means the reported pressure
+          equals the deviation in percentage points. A leaf for the LAW 1
+          reason every scale in this module is one: it must be visible and
+          movable rather than inlined.
+    overshoot:
+      shortfall_acceleration:
+        value: 0.5
+        calibration_status: uncalibrated_illustrative
+        note: >
+          The acceleration, in percentage points per unit of open cumulative
+          shortfall, that the overshooting commitment prescribes. An
+          illustrative strength for the commitment's implied response (the BoJ
+          does not publish a coefficient); a leaf so it is reviewable. The
+          commitment's ASYMMETRY — adding accommodation while a cumulative
+          shortfall is open even if current inflation exceeds target — is
+          structural and lives in the rule, not in this value.
 
 phillips:
   nairu:
@@ -2514,9 +2801,17 @@ instrument_selection:
       names an instrument that exists in that country's ProductionUniverse plan
       and NOT in the US one, so a country cannot be served the base table's
       instruments silently. gb was the first entry (the BoE's UK market); eu (the
-      ECB's euro-area market) is the second, and its four templates each name a
-      member of ProductionUniverse(country="eu") and NOT a member of the us or
-      gb universe. us itself needs no entry: it IS the base table.
+      ECB's euro-area market) is the second; de (Germany, a member state with no
+      central bank of its own) and jp (the Bank of Japan) are the third and
+      fourth. Each of de's and jp's four templates names a member of that
+      country's ProductionUniverse plan and NOT a member of the us universe. us
+      itself needs no entry: it IS the base table.
+      NOTE de/eu SHARE the policy_path_gap and curve_shape_gap instruments (ESTR
+      and the Bund), because the euro area has ONE policy and the Bund is a genuine
+      member of both markets' vocabulary -- the honest non-disjointness documented
+      on ProductionUniverse. The two plans DIVERGE where it matters: the breakeven
+      (euro-area linkers vs GERMAN linkers) and the equity index (Euro Stoxx 50 vs
+      DAX). A de thesis is not a relabelled eu thesis.
     routes:
       gb:
         policy_path_gap:
@@ -2612,6 +2907,109 @@ instrument_selection:
             and would smuggle in a country bet the thesis did not make. The
             single-country DAX remains a listed universe member for a thesis that
             specifically wants it, but it is not the default macro expression.
+
+      de:
+        policy_path_gap:
+          instrument_template: "ESTR futures"
+          universe_category: rates
+          rationale: >
+            The German policy-path instrument. Germany has NO policy rate of its
+            own, so the policy path a `de` thesis is positioned against is the
+            EURO-AREA path -- and ESTR (the euro short-term rate) is its
+            policy-expectations point, exactly as it is for the eu table. Naming
+            a Bund here would be wrong for the same reason it is wrong in the eu
+            table (duration and term premium are not the near path), and naming
+            any German short-rate instrument would imply a German policy rate
+            that does not exist. This template therefore EQUALS the eu one: for
+            this ONE route the correct instrument is the same, because the
+            currency union has one policy. The German DIFFERENCE lives in the
+            other three routes, where the member-state and Bund-specific
+            instruments appear.
+        curve_shape_gap:
+          instrument_template: "Duration-weighted {short}/{long} Bund {direction_word}"
+          universe_category: rates
+          rationale: >
+            The German slope instrument -- and here the German plan DIVERGES from
+            the eu plan in what it means. For the euro area, "Bund" is the
+            benchmark of a multi-sovereign curve; for GERMANY, the Bund/Bobl/
+            Schatz curve IS the sovereign curve, and a Bund slope trade is
+            Germany's own. The emitted string is admitted by both the de and eu
+            vocabularies (Bund is a genuine member of both markets' vocabulary --
+            the honest non-disjointness documented in ProductionUniverse), so the
+            ROUTE TABLE is what keeps a de template out of a gb/us thesis, and
+            each of those countries has its own curve override. The route table
+            is the gate, and it is a hard one.
+        inflation_expectations_gap:
+          instrument_template: "Duration-matched German inflation-linked long / nominal Bund short"
+          universe_category: rates
+          rationale: >
+            The German breakeven instrument -- the member-state specific one.
+            German inflation-linked Bunds (the German linkers) against nominal
+            Bunds of matching duration isolate GERMAN inflation expectations,
+            which is exactly the quantity the de appropriateness rule measures in
+            macro data. This is the leg on which the German plan most clearly is
+            NOT the eu plan: the eu breakeven names "euro-area inflation-linked"
+            (a union-wide basket), whereas this names GERMAN linkers, so a de
+            thesis prices German -- not euro-area -- breakevens. The wording
+            carries "German" and "inflation-linked", admitted by the de rates
+            vocabulary.
+        equity_macro:
+          instrument_template: "DAX index futures"
+          universe_category: equity
+          rationale: >
+            The German broad-index instrument, named VERBATIM as a member of
+            ProductionUniverse(country="de").equity so membership is literal, not
+            keyword-only. The DAX rather than the Euro Stoxx 50: a de thesis
+            expresses a GERMAN macro view, so naming the currency-area index here
+            would smuggle in the aggregate the thesis is diverging from -- the
+            mirror of the reason the eu table names Euro Stoxx 50 rather than the
+            DAX.
+
+      jp:
+        policy_path_gap:
+          instrument_template: "TONA OIS swaps"
+          universe_category: rates
+          rationale: >
+            The Japanese policy-path instrument. TONA (the Tokyo Overnight
+            Average rate) is Japan's risk-free reference and the analogue of
+            SOFR/SONIA/ESTR -- but it is admitted ONLY by the jp rates
+            vocabulary, so this template cannot be selected into a us, gb, eu or
+            de thesis. NOT a JGB: a JGB carries duration and term premium,
+            whereas the policy-path view is about the near path.
+        curve_shape_gap:
+          instrument_template: "Duration-weighted {short}/{long} JGB {direction_word}"
+          universe_category: rates
+          rationale: >
+            The Japanese slope instrument, and the leg that ties the market to
+            the policy: the BoJ's Yield Curve Control names the 10-year JGB yield
+            as its operating target, so a JGB curve trade is positioned directly
+            on the instrument the jp reaction function models. The leading "JGB"
+            is load-bearing: the legs are substituted at call time, and without a
+            market anchor the string would name no instrument the jp universe
+            recognises. The curve-shape words are the deliberate shared exception
+            across all countries, so this emitted name is admitted by every
+            vocabulary; the ROUTE TABLE is the gate that keeps a jp template out
+            of another country's thesis.
+        inflation_expectations_gap:
+          instrument_template: "Duration-matched JGBi long / nominal JGB short"
+          universe_category: rates
+          rationale: >
+            The Japanese breakeven instrument. JGBi (Japanese inflation-indexed
+            government bonds) against nominal JGBs of matching duration isolate
+            Japanese inflation expectations -- the exact quantity the BoJ's
+            overshooting commitment is defined against, so this leg is the market
+            read of the commitment the jp rule encodes. Carries "jgb" and is
+            admitted by the jp rates vocabulary; measured, both the us and gb
+            universes classify it as out of universe.
+        equity_macro:
+          instrument_template: "Nikkei 225 index futures"
+          universe_category: equity
+          rationale: >
+            The Japanese broad-index instrument, named VERBATIM as a member of
+            ProductionUniverse(country="jp").equity so membership is literal, not
+            keyword-only. The Nikkei 225 rather than TOPIX (also a listed member):
+            the Nikkei is the headline Japanese benchmark, matching the role the
+            FTSE 100 plays in the gb table.
 
   curve_default_short_tenor:
     value: "2y"
@@ -6385,6 +6783,43 @@ snapshot_fields:
     - eu_gdp_real_level
     - eu_short_rate_3m
     - eu_long_rate_10y
+
+  # Section 22.3 — the Germany fetch plan. Registry KEYS. There is no `de_*`
+  # policy rate because Germany has none — the `de` arm reads the ECB rate.
+  #
+  # The `eu_*` entries below are NOT another country's data mistaken for
+  # Germany's: they are Germany's OWN policy inputs. The ECB sets the currency
+  # union's single rate and Germany uses it, so the euro-area policy rate (the
+  # main refinancing operations rate) IS Germany's policy rate, and the
+  # euro-area HICP / unemployment / GDP are the AGGREGATE the German rules
+  # measure Germany's divergence FROM. The de reaction functions read both
+  # sides, so the de snapshot must carry both. Omitting them (the first attempt)
+  # made a de thesis unbuildable — the comparator is not optional.
+  de:
+    # -- Germany's own national data.
+    - de_cpi_yoy
+    - de_unemployment_rate
+    - de_gdp_real_level
+    - de_short_rate_3m
+    - de_long_rate_10y
+    - de_call_rate
+    # -- The euro-area aggregate and the shared ECB rate: Germany's policy
+    #    inputs, present because Germany has no policy of its own.
+    - eu_ecb_main_refi_rate
+    - eu_hicp_index
+    - eu_unemployment_rate
+    - eu_gdp_real_level
+
+  # Section 22.3 — the Japan fetch plan (Bank of Japan). Registry KEYS. Note
+  # `jp_cpi_yoy` is IMF-sourced (the OECD and FRED Japan CPI series are stale to
+  # 2021 — the seventh FALSE BLOCK). `jp_long_rate_10y` is the YCC-target series.
+  jp:
+    - jp_cpi_yoy
+    - jp_unemployment_rate
+    - jp_gdp_real_level
+    - jp_short_rate_3m
+    - jp_long_rate_10y
+    - jp_call_rate
 
 # ---------------------------------------------------------------------------
 # fx_pairs — Section 22.3's FX layer (the bridge between two countries)

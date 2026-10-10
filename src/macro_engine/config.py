@@ -2480,6 +2480,260 @@ class EuPolicySettings(BaseModel):
         return raw
 
 
+class DeAppropriatenessCoefficients(BaseModel):
+    """The four illustrative weights on Germany's divergence from the euro area.
+
+    Germany sets no monetary policy (the ECB sets the union's single rate),
+    so there is **no estimated Bundesbank reaction function** to import — the
+    honest calibration is an explicitly ILLUSTRATIVE weighting of the four
+    divergences the rule reads. They are config leaves (LAW 1) so the weighting
+    is reviewable and movable rather than buried in an expression, and their
+    ``calibration_status`` says ``uncalibrated_illustrative`` rather than
+    pretending to an estimation that does not exist.
+
+    The SIGN convention each weight encodes, stated here so a reviewer can see
+    it without reading the rule body: German inflation ABOVE the aggregate and
+    German activity ABOVE the aggregate both mean the shared rate is too LOOSE
+    for Germany (positive contributions); German unemployment BELOW the
+    aggregate means German labour is tighter, so the rule enters that leg as
+    ``u_ea - u_de`` (also a positive contribution when Germany is tighter).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inflation_coefficient: CalibratedValue
+    output_gap_coefficient: CalibratedValue
+    unemployment_coefficient: CalibratedValue
+    growth_coefficient: CalibratedValue
+    #: The illustrative German neutral REAL rate, percent, consumed by
+    #: ``de_real_rate_rule``. Sits beside the weights because it is the same
+    #: kind of object: an illustrative German input, not an estimate.
+    r_neutral: CalibratedValue
+
+    @property
+    def inflation_coefficient_value(self) -> float:
+        return float(self.inflation_coefficient.value)
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+    @property
+    def unemployment_coefficient_value(self) -> float:
+        return float(self.unemployment_coefficient.value)
+
+    @property
+    def growth_coefficient_value(self) -> float:
+        return float(self.growth_coefficient.value)
+
+    @property
+    def r_neutral_value(self) -> float:
+        return float(self.r_neutral.value)
+
+
+class DeBundSpreadCoefficients(BaseModel):
+    """The two weights forming the German curve's reference level.
+
+    ``bund_spread`` reads the German 10-year yield against a reference blended
+    from the ECB's set rate and the German 3-month market rate. The two weights
+    are config leaves because the blend is an illustrative choice: a different
+    blend moves the signal's LEVEL (not its sign for reasonable weights), and
+    the choice must be visible rather than inlined.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ecb_rate_weight: CalibratedValue
+    german_short_rate_weight: CalibratedValue
+
+    @property
+    def ecb_rate_weight_value(self) -> float:
+        return float(self.ecb_rate_weight.value)
+
+    @property
+    def german_short_rate_weight_value(self) -> float:
+        return float(self.german_short_rate_weight.value)
+
+
+class DePolicySettings(BaseModel):
+    """Section 22.3 — Germany's MEMBER-STATE rule coefficients (country "de").
+
+    **There is deliberately no ``pi_target``, ``i_star`` or ``smoothing`` here,
+    and no policy rate anywhere.** Germany has no monetary policy of its own:
+    the ECB Governing Council sets the currency union's single rate and the
+    Bundesbank executes it. Those leaves would belong to a central-bank rule
+    Germany does not have, and adding them would fabricate the "German central
+    bank" the design exists to avoid. The ``de`` rules read the euro-area rate
+    as an EXOGENOUS input and measure the divergence of German conditions from
+    the aggregate.
+
+    ``appropriateness`` carries the divergence weights and the German neutral
+    real rate; ``bund_spread`` carries the curve-reference blend.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    appropriateness: DeAppropriatenessCoefficients
+    bund_spread: DeBundSpreadCoefficients
+
+
+class JpShadowRateCoefficients(BaseModel):
+    """The BoJ's shadow-rate (Reifschneider-Williams) rule coefficients.
+
+    From Reifschneider & Williams (2000) as calibrated for Japan by Hasui &
+    Teranishi (2025, HIAS-E-149) and Nakov (2008). The two that make the rule a
+    SHADOW-RATE rule rather than a Taylor rule are ``shortfall_coefficient``
+    (the φ_z on the cumulative ZLB shortfall) and ``notional_persistence`` (the
+    rho on the previous NOTIONAL rate) — neither has an analogue in any Fed, BoE
+    or ECB rule in this system.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inflation_coefficient: CalibratedValue
+    output_gap_coefficient: CalibratedValue
+    shortfall_coefficient: CalibratedValue
+    notional_persistence: CalibratedValue
+
+    @property
+    def inflation_coefficient_value(self) -> float:
+        return float(self.inflation_coefficient.value)
+
+    @property
+    def output_gap_coefficient_value(self) -> float:
+        return float(self.output_gap_coefficient.value)
+
+    @property
+    def shortfall_coefficient_value(self) -> float:
+        return float(self.shortfall_coefficient.value)
+
+    @property
+    def notional_persistence_value(self) -> float:
+        """The notional-rate persistence rho. Must be in ``[0, 1)``.
+
+        Same range and same reason as the BoE's and the ECB's smoothing: a
+        value of exactly 1 makes the notional rate never converge (it becomes a
+        random walk that ignores the rule's own terms) and a value outside
+        ``[0, 1)`` makes the recursion explode. It is read into the notional
+        rate, so a bad value is a bad prescription — validated rather than
+        trusted.
+        """
+        raw = float(self.notional_persistence.value)
+        if not 0.0 <= raw < 1.0:
+            raise ValueError(
+                f"policy.jp.shadow_rate.notional_persistence must be in [0, 1); "
+                f"got {raw!r}. The notional (shadow) rate recursion interpolates "
+                f"between the rule's own terms and the previous notional rate "
+                f"with this weight, so 1 makes the notional rate ignore its own "
+                f"terms and a value outside [0, 1) makes it explode."
+            )
+        return raw
+
+
+class JpYccCoefficients(BaseModel):
+    """The Yield-Curve-Control reference constants.
+
+    ``pressure_per_bp`` is a reporting scale turning the yield deviation into a
+    named pressure figure; it is a leaf for the same LAW 1 reason as every
+    other scale in this module — an auditor must be able to see and move it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pressure_per_bp: CalibratedValue
+
+    @property
+    def pressure_per_bp_value(self) -> float:
+        return float(self.pressure_per_bp.value)
+
+
+class JpOvershootCoefficients(BaseModel):
+    """The inflation-overshooting commitment's acceleration coefficient.
+
+    The BoJ's commitment is history-dependent and asymmetric; this coefficient
+    converts the OPEN cumulative shortfall into a percentage-point acceleration
+    of accommodation. It is a leaf so the strength of the commitment's implied
+    response is reviewable.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    shortfall_acceleration: CalibratedValue
+
+    @property
+    def shortfall_acceleration_value(self) -> float:
+        return float(self.shortfall_acceleration.value)
+
+
+class JpPolicySettings(BaseModel):
+    """Section 22.3 — the Bank of Japan's rule coefficients (country "jp").
+
+    Everything the three ``jp_*`` rule functions read, so no coefficient is
+    written into an expression (LAW 1). The framework is the BoJ's own — a ZLB
+    shadow-rate rule, a Yield Curve Control target for the 10-year JGB, and the
+    inflation-overshooting commitment — not a Fed Taylor rule with Japanese
+    series, which is the substitution Section 22.3 forbids.
+
+    ``i_star`` is stated as a leaf AND decomposed into ``pi_target`` +
+    ``natural_rate``; the mover test asserts the three agree. Japan's natural
+    rate is NEGATIVE (-0.5%, the primary source's calibration), which is the
+    honest convention for an economy that spent two decades at the floor — and
+    the opposite sign from the Fed's, the BoE's and the euro area's.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pi_target: CalibratedValue
+    i_star: CalibratedValue
+    natural_rate: CalibratedValue
+    #: The effective lower bound on the policy rate, percent. A policy CHOICE
+    #: that has moved (Japan ran -0.1% under NIRP 2016-2024, then exited to
+    #: 0-0.1%), so it is a leaf, not a hard-coded zero: a result produced under
+    #: one floor must not be read under another.
+    zlb_floor: CalibratedValue
+    #: The BoJ's Yield Curve Control target for the 10-year JGB yield, percent.
+    #: Has moved by policy (about 0%, then a band, then the March-2024 exit), so
+    #: it is a leaf for the same reason.
+    ycc_target: CalibratedValue
+    #: The half-width of the YCC tolerance band, in percentage points.
+    ycc_band: CalibratedValue
+    #: The cumulative inflation shortfall (in pp-periods) that must be closed
+    #: before the overshooting commitment stops adding accommodation. The BoJ's
+    #: "stable manner" is a judgement, so it is a leaf rather than a constant.
+    stabilization_threshold: CalibratedValue
+    shadow_rate: JpShadowRateCoefficients
+    ycc: JpYccCoefficients
+    overshoot: JpOvershootCoefficients
+
+    @property
+    def pi_target_value(self) -> float:
+        return float(self.pi_target.value)
+
+    @property
+    def i_star_value(self) -> float:
+        return float(self.i_star.value)
+
+    @property
+    def natural_rate_value(self) -> float:
+        return float(self.natural_rate.value)
+
+    @property
+    def zlb_floor_value(self) -> float:
+        return float(self.zlb_floor.value)
+
+    @property
+    def ycc_target_value(self) -> float:
+        return float(self.ycc_target.value)
+
+    @property
+    def ycc_band_value(self) -> float:
+        return float(self.ycc_band.value)
+
+    @property
+    def stabilization_threshold_value(self) -> float:
+        return float(self.stabilization_threshold.value)
+
+
 class PolicyEnsembleThresholds(BaseModel):
     """Dispersion bands that decide whether the rules agree or conflict."""
 
@@ -2573,6 +2827,15 @@ class PolicySettings(BaseModel):
     #: (change) form, so a reader comparing the three must see they are
     #: different functions, not one function with three labels.
     eu: EuPolicySettings
+    #: Section 22.3 — Germany's MEMBER-STATE rule coefficients. Not a central
+    #: bank's: Germany sets no policy, so this block carries divergence weights
+    #: and a curve-reference blend, and NO policy rate, target or neutral rate
+    #: of Germany's own. Beside the others so a reader sees the asymmetry.
+    de: DePolicySettings
+    #: Section 22.3 — the Bank of Japan's rule coefficients. A ZLB shadow-rate
+    #: rule, a YCC target and an overshooting commitment — a framework whose
+    #: floor and history-dependence no Fed/BoE/ECB rule here has.
+    jp: JpPolicySettings
 
     @property
     def pi_target_value(self) -> float:

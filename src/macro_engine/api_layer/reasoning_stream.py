@@ -364,6 +364,8 @@ async def _reasoning_frames(country: str) -> AsyncGenerator[str, None]:
             country=inputs.country,
             boe_inputs=inputs.boe_inputs,
             eu_inputs=inputs.eu_inputs,
+            de_inputs=inputs.de_inputs,
+            jp_inputs=inputs.jp_inputs,
             short_yield=inputs.short_yield,
             futures_curve=futures_curve,
             regime=inputs.regime,

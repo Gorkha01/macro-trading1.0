@@ -54,10 +54,16 @@ __all__ = [
     "BoeContemporaneousInputs",
     "BoeFirstDifferenceInputs",
     "BoeForwardLookingInputs",
+    "DeBundSpreadInputs",
+    "DeMemberAppropriatenessInputs",
+    "DeRealRateInputs",
     "EcbContemporaneousInputs",
     "EcbErrorCorrectionInputs",
     "EcbRestrictedCointegrationInputs",
     "FirstDifferenceInputs",
+    "JpOvershootCommitmentInputs",
+    "JpReifschneiderWilliamsInputs",
+    "JpYccInputs",
     "MarketPricingGap",
     "PolicyRuleResult",
     "QEStance",
@@ -69,12 +75,18 @@ __all__ = [
     "boe_first_difference_rule",
     "boe_forward_looking_taylor_rule",
     "canonical_policy_gap",
+    "de_bund_spread_rule",
+    "de_member_appropriateness_rule",
+    "de_real_rate_rule",
     "derive_market_implied_policy_path",
     "ecb_contemporaneous_taylor_rule",
     "ecb_error_correction_rule",
     "ecb_restricted_cointegration_rule",
     "first_difference_rule",
     "futures_implied_policy_path",
+    "jp_overshoot_commitment_rule",
+    "jp_reifschneider_williams_rule",
+    "jp_ycc_reference_rule",
     "policy_rule_ensemble",
     "qe_qt_stance",
     "statement_text_diff",
@@ -1636,6 +1648,1072 @@ def ecb_restricted_cointegration_rule(
             "MUST NOT be read as a level. It is a change from the previous rate.",
             "MUST NOT be compared directly against the Fed's or BoE's rules. "
             "Different functional form, different regressors, different economy.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — GERMANY (country "de"). A MEMBER-STATE rule, not a
+# central-bank rule.
+#
+# Germany has NO monetary policy of its own. The Bundesbank's own statement of
+# its role: it conducts "the Eurosystem's monetary policy operations with
+# German counterparties" — the ECB Governing Council sets the ONE policy rate
+# for the currency union, and the Bundesbank executes it. A "German Taylor
+# rule" would therefore be a RELABELLED ECB rule, which is the exact Section
+# 22.3 / D-146 substitution the multi-country bar forbids — and unlike the gb
+# case it is worse, because Germany does not even have a separate policy rate
+# to relabel. Inventing a `de_policy_rate` would be fabricating a series.
+#
+# What IS genuinely German, and is what these three rules measure: the
+# APPROPRIATENESS GAP. The ECB sets one rate for twenty economies; the ECB's
+# own Economic Bulletin 5/2024 ("The dynamics of inflation differentials in
+# the euro area") sets out the consequence — a single stance is too loose for
+# high-inflation members and too tight for low-inflation ones. Germany's
+# inflation, its output gap and its own Bund curve diverge from the euro-area
+# aggregate, so the SAME ECB rate is a different stance in Germany than on
+# average. These rules quantify that divergence using GERMAN data. The
+# structural marker is that the euro-area aggregate rate is an EXOGENOUS input
+# (f_ecb) the rule does not set — it is GIVEN, and the rule asks whether it is
+# appropriate for German conditions.
+# ---------------------------------------------------------------------------
+
+
+class DeMemberAppropriatenessInputs(_FiniteInputs):
+    """Inputs for Germany's member-state appropriateness rule (country "de").
+
+    The rule's estimand is the **divergence of German conditions from the
+    euro-area aggregate the ECB actually reacts to**. It therefore reads BOTH
+    sides: Germany's own inflation and output gap, and the euro-area aggregate
+    the ECB's single rate was set against.
+
+    ``f_ecb`` is the euro-area policy rate as an EXOGENOUS input — the ECB's
+    actual MAIN REFINANCING OPERATIONS rate, not something this rule
+    prescribes. That is the structural difference from every central-bank rule
+    in this module: the Fed, BoE and ECB rules all OUTPUT a prescription for
+    the rate they own; this rule TAKES the euro-area rate as given and measures
+    whether it fits German conditions. The field name ``f_ecb`` ("foreign/ECB
+    rate") is the source of that asymmetry, and it is why there is no
+    ``de_policy_rate`` anywhere in the registry.
+
+    ``pi_de`` and ``pi_ea`` are the SAME measure on both sides — German and
+    euro-area HICP inflation, year-over-year, in percent — so the differential
+    ``pi_de - pi_ea`` is in percentage points and comparable to the
+    coefficients. ``u_de`` / ``u_ea`` are the two unemployment rates and
+    ``g_de`` / ``g_ea`` the two q/q real GDP growth rates, so BOTH sides of the
+    labour and activity divergences are observable from the snapshot.
+    """
+
+    f_ecb: float = Field(
+        description=(
+            "The euro-area policy rate (ECB main refinancing operations), "
+            "percent, as an EXOGENOUS input. The ECB sets it; this rule does "
+            "not. Germany has no policy rate of its own."
+        ),
+    )
+    pi_de: float = Field(
+        description="German HICP-equivalent inflation, percent, year-over-year. A LEVEL.",
+    )
+    pi_ea: float = Field(
+        description="Euro-area HICP inflation, percent, year-over-year. A LEVEL.",
+    )
+    output_gap_de: float = Field(
+        description="German output gap as percent of potential, current quarter.",
+    )
+    output_gap_ea: float = Field(
+        description="Euro-area output gap as percent of potential, current quarter.",
+    )
+    unemployment_de: float = Field(
+        description="German unemployment rate, percent. The labour-slack level.",
+    )
+    unemployment_ea: float = Field(
+        description="Euro-area unemployment rate, percent. The aggregate comparator.",
+    )
+    gdp_growth_de: float = Field(
+        description="German q/q real GDP growth, percent. The activity divergence.",
+    )
+    gdp_growth_ea: float = Field(
+        description="Euro-area q/q real GDP growth, percent. The aggregate comparator.",
+    )
+
+
+class DeBundSpreadInputs(_FiniteInputs):
+    """Inputs for Germany's Bund-spread rule (country "de").
+
+    The secondary-market expression of the same appropriateness question. The
+    **Bund is the euro area's risk-free benchmark**, so the spread of another
+    member's yield over the Bund is the market's price of the divergence the
+    appropriateness rule measures in macro data. This rule reads Germany's own
+    curve — the Bund 10-year yield and the German 3-month rate — against the
+    euro-area policy rate, and reports the TERM-STRUCTURE signal: a Bund curve
+    that has priced a different policy path from the one the ECB has set is the
+    market's vote on whether the single stance fits Germany.
+
+    There is deliberately no ``de_policy_rate``: ``f_ecb`` is the euro-area
+    rate, exogenous, and the German short rate enters as the MARKET's German
+    short rate (``de_short_rate_3m``), not as a policy rate. A German rule that
+    treated the 3-month rate as Germany's own policy instrument would be the
+    relabel this design exists to avoid.
+    """
+
+    f_ecb: float = Field(
+        description=(
+            "The euro-area policy rate, percent, EXOGENOUS. The level the Bund "
+            "curve is read against."
+        ),
+    )
+    bund_10y: float = Field(
+        description=(
+            "The German 10-year Bund yield, percent. THE BENCHMARK: the euro "
+            "area's risk-free long rate."
+        ),
+    )
+    de_short_3m: float = Field(
+        description=(
+            "The German 3-month rate, percent. This is a MARKET rate — the "
+            "German money-market short rate — not a policy rate Germany "
+            "does not have."
+        ),
+    )
+
+
+class DeRealRateInputs(_FiniteInputs):
+    """Inputs for Germany's real-rate divergence rule (country "de").
+
+    The appropriateness question in REAL terms, which is the form in which a
+    single nominal policy rate becomes inappropriate: with one nominal rate
+    ``f_ecb``, the German REAL rate is ``f_ecb - pi_de`` and the euro-area real
+    rate is ``f_ecb - pi_ea``. When German inflation runs above the euro-area
+    average, the SAME nominal rate is a LOWER real rate in Germany — i.e. the
+    stance is passively looser in the member with the higher inflation, which
+    is the ECB's own stated divergence mechanism (Economic Bulletin 5/2024).
+
+    The rule's structural feature is that the NOMINAL rate is shared and
+    cancels in the real-rate DIFFERENTIAL: ``real_de - real_ea = pi_ea -
+    pi_de``. So this leg isolates the inflation divergence with the shared rate
+    held exactly constant — a quantity no central-bank rule in this module can
+    produce, because each of those sets its own rate.
+    """
+
+    f_ecb: float = Field(
+        description="The euro-area policy rate, percent, EXOGENOUS and SHARED.",
+    )
+    pi_de: float = Field(
+        description="German inflation, percent, year-over-year. A LEVEL.",
+    )
+    pi_ea: float = Field(
+        description="Euro-area inflation, percent, year-over-year. A LEVEL.",
+    )
+    r_neutral_de: float = Field(
+        description=(
+            "The rule's illustrative German neutral REAL rate, percent — an "
+            "input rather than a literal so the real-rate gap the rule reports "
+            "is measured the way the caller intends it (LAW 1)."
+        ),
+    )
+
+
+def _de_appropriateness_word(real_de: float, real_ea: float) -> str:
+    """``too tight for Germany`` / ``too loose for Germany`` / ``appropriate``.
+
+    The classification the whole `de` arm exists to publish: the SAME ECB
+    stance reads as a different stance member by member. The comparison is the
+    German real rate against the euro-area real rate; when Germany's real rate
+    is below the euro area's, the shared nominal rate is passively looser in
+    Germany, and vice versa. Kept as its own function, like
+    ``_ecb_stance_word``, so the three-state comparison is not inlined where a
+    float landing exactly on the reference could be mislabelled by a branch's
+    ``else`` (the D-040 class).
+    """
+    if real_de > real_ea:
+        return "too tight for Germany"
+    if real_de < real_ea:
+        return "too loose for Germany"
+    return "appropriate for Germany"
+
+
+def de_member_appropriateness_rule(
+    inputs: DeMemberAppropriatenessInputs,
+) -> PolicyRuleResult:
+    """``gap = w_π·(π_de - π_ea) + w_y·(y_de - y_ea) + w_u·(u_ea - u_de) + w_g·(g_de - g_ea)``
+
+    Germany's member-state APPROPRIATENESS rule — the `de` arm's headline leg.
+    It does NOT prescribe a rate for a German central bank (Germany has none).
+    It measures how far GERMAN conditions diverge from the euro-area aggregate
+    the ECB's single rate ``f_ecb`` is set against, and signs that divergence:
+
+    * **Inflation** (``w_π``): German inflation above the euro-area average
+      means the shared nominal rate is too loose for Germany.
+    * **Output gap** (``w_y``): a German gap above the aggregate means German
+      activity is running hot relative to the union — the same direction.
+    * **Unemployment** (``w_u``): German unemployment BELOW the aggregate means
+      German labour is tighter, so the sign is entered as ``u_ea - u_de`` (a
+      lower German rate is a POSITIVE contribution).
+    * **Activity** (``w_g``): German q/q growth above the aggregate, the same
+      direction as the output gap, at a one-step frequency.
+
+    **Why this is not a relabelled ECB rule (Section 22.3).** The euro-area
+    rule takes the aggregate inflation and gap and produces a rate; this rule
+    takes the AGGREGATE RATE as an exogenous input and produces a DIVERGENCE of
+    German conditions from the aggregate. Its sign convention is inverted (a
+    positive value means the shared rate is too LOOSE for Germany, not that the
+    rate should rise) and its regressors are DIFFERENCES between two economies'
+    measured data, which no central-bank rule in this module reads. The
+    structural marker is ``f_ecb``: it is on the INPUT side. A rule that set
+    Germany's policy rate would be fabricating a rate Germany does not have.
+
+    Confidence is ``compute_confidence()``'s with ``depends_on_unobservable=
+    True``, because the German output gap is ESTIMATED from German activity (no
+    published German gap series exists on this route) — the estimate is
+    disclosed, and its uncertainty is carried rather than hidden.
+    """
+    de = get_settings().policy.de
+    coefficients = de.appropriateness
+
+    inflation_divergence = inputs.pi_de - inputs.pi_ea
+    gap_divergence = inputs.output_gap_de - inputs.output_gap_ea
+    labor_divergence = inputs.unemployment_ea - inputs.unemployment_de
+    activity_divergence = inputs.gdp_growth_de - inputs.gdp_growth_ea
+
+    gap = (
+        coefficients.inflation_coefficient_value * inflation_divergence
+        + coefficients.output_gap_coefficient_value * gap_divergence
+        + coefficients.unemployment_coefficient_value * labor_divergence
+        + coefficients.growth_coefficient_value * activity_divergence
+    )
+
+    return PolicyRuleResult(
+        model_name="de_member_appropriateness_rule",
+        rule_variant="de_member_appropriateness",
+        country="de",
+        as_of=utc_now(),
+        value=round(gap, 4),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"The single ECB rate of {inputs.f_ecb:.2f}% maps onto German "
+            f"conditions with an appropriateness gap of {gap:+.2f} — a POSITIVE "
+            f"value means the shared stance is too LOOSE for Germany, a NEGATIVE "
+            f"value too TIGHT"
+        ),
+        context=(
+            f"German vs euro-area divergence: inflation "
+            f"{inflation_divergence:+.2f}pp (weight "
+            f"{coefficients.inflation_coefficient_value:g}), output gap "
+            f"{gap_divergence:+.2f}pp (weight "
+            f"{coefficients.output_gap_coefficient_value:g}), unemployment "
+            f"{-labor_divergence:+.2f}pp (weight "
+            f"{coefficients.unemployment_coefficient_value:g}, sign entered as "
+            f"u_ea - u_de), activity {activity_divergence:+.2f}pp (weight "
+            f"{coefficients.growth_coefficient_value:g})."
+        ),
+        inputs_used=[
+            "f_ecb",
+            "pi_de",
+            "pi_ea",
+            "output_gap_de",
+            "output_gap_ea",
+            "unemployment_de",
+            "unemployment_ea",
+            "gdp_growth_de",
+            "gdp_growth_ea",
+        ],
+        warnings=[
+            "THE SIGN IS A STANCE DIAGNOSIS, NOT A RATE. A positive value means "
+            "the shared ECB stance is too loose FOR GERMANY; it is NOT a "
+            "prescription that any rate should rise. Germany has no policy rate "
+            "(the Bundesbank executes the ECB's single policy), so this rule "
+            "cannot and does not prescribe one.",
+            "The German output gap is an ESTIMATE from German activity, not a "
+            "published series: no German output-gap series exists on this route. "
+            "The estimate is disclosed and the result carries "
+            "depends_on_unobservable=True; a reader who treats it as a measured "
+            "gap overstates the rule's precision.",
+            "The coefficients are ILLUSTRATIVE weights on the divergences, not "
+            "estimates of a Bundesbank reaction function — no such function "
+            "exists, because Germany does not set policy. They are stated in "
+            "config (policy.de.appropriateness) so the weighting is reviewable "
+            "and movable rather than buried.",
+            "This measures the divergence in the FOUR series it reads; a "
+            "divergence concentrated in a series not carried here (e.g. German "
+            "house prices, or a sectoral gap) would not appear.",
+        ],
+        unit="percentage_points",
+        direction=(
+            f"the single ECB rate of {inputs.f_ecb:.2f}% is "
+            f"{'TOO LOOSE' if gap > 0 else 'TOO TIGHT' if gap < 0 else 'APPROPRIATE'} "
+            f"for German conditions"
+        ),
+        assumptions=[
+            "The euro-area policy rate f_ecb is EXOGENOUS: it is the ECB's "
+            "single rate, GIVEN to this rule, not set by it.",
+            "German and euro-area inflation are the SAME measure (HICP, "
+            "year-over-year, percent), so their difference is in percentage "
+            "points and comparable to the weights.",
+            "The positive-inflation, positive-gap, low-unemployment, "
+            "high-growth direction all point the same way — German conditions "
+            "hotter than the aggregate mean the shared rate is too loose.",
+        ],
+        data_provenance=[
+            "f_ecb — the euro-area policy rate (eu_ecb_main_refi_rate; the same "
+            "series the euro-area rules read). EXOGENOUS here.",
+            "pi_de — German inflation (de_cpi_yoy); pi_ea — euro-area HICP inflation (eu_hicp_*)",
+            "output_gap_de — ESTIMATED from German real GDP (de_gdp_real_level); "
+            "output_gap_ea — ESTIMATED from euro-area real GDP (eu_gdp_real_level)",
+            "unemployment_de — de_unemployment_rate; unemployment_ea — eu_unemployment_rate",
+            "coefficients — config leaves policy.de.appropriateness.*",
+        ],
+        limitations=[
+            "This is NOT a German monetary policy rule and cannot become one: "
+            "Germany does not conduct monetary policy. It is a member-state "
+            "APPROPRIATENESS diagnostic.",
+            "The divergence is measured against the euro-area aggregate; if the "
+            "aggregate itself is mis-measured, the divergence inherits the error "
+            "in equal and opposite forms.",
+            "The four weight coefficients are illustrative, not estimated.",
+            "The output and activity legs share a q/q frequency, so a quarterly "
+            "German print that later revises moves the result.",
+        ],
+        decision_relevance=(
+            "The 'de' leg of Section 22.3's country set and the input to "
+            "cross-country reasoning: with the euro-area arm it states WHERE in "
+            "the union the single stance is most misaligned, which is the "
+            "trading question a member-state view answers (e.g. Bunds vs "
+            "periphery, or German real rates vs the ESTR path)."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described as a Bundesbank or German reaction function. "
+            "Germany does NOT set monetary policy; the ECB sets one rate and the "
+            "Bundesbank executes it. Presenting this as a central-bank rule is "
+            "the relabel Section 22.3 forbids and would be factually false.",
+            "MUST NOT be read as a rate or fed into a rate scale without "
+            "conversion: the unit is percentage points of DIVERGENCE, not a "
+            "percent policy level. Placing it beside the ECB's 2.0% main refi "
+            "rate as if both were rates is a unit error.",
+            "MUST NOT be compared against the Fed's, BoE's or ECB's rule values "
+            "as if the three were the same kind of object. Those are prescriptions "
+            "for a rate the bank owns; this is a stance-appropriateness "
+            "diagnostic with an inverted sign convention.",
+        ],
+    )
+
+
+def de_bund_spread_rule(inputs: DeBundSpreadInputs) -> PolicyRuleResult:
+    """``spread_signal = bund_10y - (f_ecb + de_short_3m)/2`` — the Bund's vote.
+
+    Germany's Bund-spread leg: the market's own price of the appropriateness
+    question. The Bund is the euro area's risk-free benchmark, so its curve
+    embeds the path the market expects FOR THE EURO AREA; the signal published
+    here is the vertical position of the German curve relative to the ECB's set
+    rate, read off two German tenors.
+
+    **Why the Bund and not a sovereign spread.** A peripheral spread over the
+    Bund is a credit/redenomination premium, not a policy-appropriateness
+    signal. The Bund itself is what the UNION prices against, so the German
+    curve's misalignment with the set rate is the cleanest market read of
+    whether the single stance is currently seen as fitting Germany — and it is
+    the leg a Bund trade acts on directly.
+
+    The rule reports a LEVEL signal in percentage points, with the sign
+    convention: POSITIVE means the German curve sits ABOVE the set rate (the
+    market prices a higher path than the ECB has set — consistent with the
+    stance being too loose for Germany), NEGATIVE the reverse.
+    """
+    de = get_settings().policy.de
+    coefficients = de.bund_spread
+
+    reference = (
+        coefficients.ecb_rate_weight_value * inputs.f_ecb
+        + coefficients.german_short_rate_weight_value * inputs.de_short_3m
+    )
+    signal = inputs.bund_10y - reference
+    curve_word = "ABOVE" if signal > 0 else "BELOW" if signal < 0 else "aligned with"
+
+    return PolicyRuleResult(
+        model_name="de_bund_spread_rule",
+        rule_variant="de_bund_spread",
+        country="de",
+        as_of=utc_now(),
+        value=round(signal, 4),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The German curve (10y {inputs.bund_10y:.2f}%) sits {signal:+.2f}pp "
+            f"relative to the ECB-set reference of {reference:.2f}% — a POSITIVE "
+            f"signal is the market pricing a path above the stance the ECB has "
+            f"set"
+        ),
+        context=(
+            f"Bund 10-year {inputs.bund_10y:.2f}%, the ECB's rate "
+            f"{inputs.f_ecb:.2f}% (weight "
+            f"{coefficients.ecb_rate_weight_value:g}) and the German 3-month "
+            f"market rate {inputs.de_short_3m:.2f}% (weight "
+            f"{coefficients.german_short_rate_weight_value:g}) form the "
+            f"{reference:.2f}% reference."
+        ),
+        inputs_used=["f_ecb", "bund_10y", "de_short_3m"],
+        warnings=[
+            "The Bund 10-year carries a TERM PREMIUM and an inflation-risk "
+            "premium as well as a policy-path expectation, so a positive signal "
+            "is not purely 'the market expects a higher policy rate'. No "
+            "term-premium adjustment is made here; the same contamination the "
+            "Section 22.5 market-implied proxy discloses applies to this leg.",
+            "The German 3-month rate is a MARKET rate, not a policy rate: "
+            "Germany has no policy rate. Treating de_short_3m as Germany's "
+            "policy instrument would revive the relabel this design removes.",
+            "The two weights make the reference an illustrative blend of the "
+            "set rate and the German short rate; they are stated in config "
+            "(policy.de.bund_spread) rather than inlined, and a different blend "
+            "moves the level of the signal (not its sign, for reasonable "
+            "weights).",
+        ],
+        unit="percentage_points",
+        direction=(f"the Bund 10-year curve is {curve_word} the ECB-set reference"),
+        assumptions=[
+            "The Bund 10-year is the euro area's risk-free benchmark, so its "
+            "level embeds the union-wide expected path.",
+            "f_ecb is the euro-area set rate, exogenous to Germany.",
+            "No term-premium adjustment is applied; the signal is a raw curve "
+            "position against the set rate.",
+        ],
+        data_provenance=[
+            "bund_10y — the German 10-year Bund yield (de_long_rate_10y)",
+            "de_short_3m — the German 3-month rate (de_short_rate_3m), a MARKET rate",
+            "f_ecb — the euro-area policy rate (eu_ecb_main_refi_rate)",
+            "coefficients — config leaves policy.de.bund_spread.*",
+        ],
+        limitations=[
+            "A spread/curve signal, not a rate prescription and not an "
+            "appropriateness measure in macro data — it is the MARKET's read, "
+            "which can be wrong.",
+            "Contaminated by the term and inflation-risk premia embedded in the 10-year yield.",
+            "Reads three yields only; a curve-shape change beyond these tenors is invisible.",
+        ],
+        decision_relevance=(
+            "The market-expression companion to de_member_appropriateness_rule: "
+            "where the macro rule measures the divergence in data, this rule "
+            "measures the price the market has already put on it — the two are "
+            "compared, and their disagreement is itself the signal."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a policy rate or as Germany's policy "
+            "instrument. It is a curve position in percentage points.",
+            "MUST NOT be presented as term-premium-free. The 10-year yield "
+            "carries premia this rule does not strip.",
+            "MUST NOT be combined with a central bank's rule value as if it "
+            "were the same kind of object (a prescription for an owned rate).",
+        ],
+    )
+
+
+def de_real_rate_rule(inputs: DeRealRateInputs) -> PolicyRuleResult:
+    """``real_gap = (f_ecb - π_de) - r_neutral_de`` — Germany's real stance.
+
+    Germany's real-rate leg: the appropriateness question in the units that
+    decide whether a single nominal rate is appropriate. With ONE nominal rate
+    ``f_ecb`` shared across the union, the German real rate is ``f_ecb - π_de``;
+    this rule reports the German real rate against ITS illustrative neutral real
+    rate, so the German real-rate gap is measured directly.
+
+    **The structural marker, restated in real terms: the shared nominal rate
+    CANCELS in the differential.** Germany's real rate minus the euro area's is
+    ``(f_ecb - π_de) - (f_ecb - π_ea) = π_ea - π_de`` — the inflation
+    divergence with the shared rate held exactly constant. No central-bank rule
+    in this module can produce such a quantity, because each of those SETS the
+    rate it trades off. This leg is the cleanest statement of the ECB's own
+    divergence mechanism (Economic Bulletin 5/2024): the member with higher
+    inflation passively gets the lower real rate.
+    """
+    real_de = inputs.f_ecb - inputs.pi_de
+    real_gap = real_de - inputs.r_neutral_de
+
+    return PolicyRuleResult(
+        model_name="de_real_rate_rule",
+        rule_variant="de_real_rate",
+        country="de",
+        as_of=utc_now(),
+        value=round(real_de, 4),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"With the ECB's {inputs.f_ecb:.2f}% nominal rate and German "
+            f"inflation at {inputs.pi_de:.2f}%, Germany's real policy rate is "
+            f"{real_de:.2f}% — {real_gap:+.2f}pp against an illustrative "
+            f"neutral real rate of {inputs.r_neutral_de:.2f}%"
+        ),
+        context=(
+            f"The shared nominal rate is {inputs.f_ecb:.2f}% and German "
+            f"inflation {inputs.pi_de:.2f}% (euro-area inflation "
+            f"{inputs.pi_ea:.2f}%); the nominal rate is SHARED across the "
+            f"union, so Germany's real-rate divergence from the euro area is "
+            f"exactly the inflation divergence {inputs.pi_ea - inputs.pi_de:+.2f}pp."
+        ),
+        inputs_used=["f_ecb", "pi_de", "pi_ea", "r_neutral_de"],
+        warnings=[
+            "The German neutral real rate is UNOBSERVABLE (Section 21.4 item 13) "
+            "and is an INPUT here, not an estimate this rule makes. The real-rate "
+            "gap is therefore only as reliable as the neutral-rate assumption, "
+            "and the result carries depends_on_unobservable=True.",
+            "A real rate formed from realized inflation is a BACKWARD-looking "
+            "measure; the appropriate real rate depends on EXPECTED inflation, "
+            "which this rule does not have. The value is a realized-inflation "
+            "real rate and must not be read as the forward real rate.",
+            "The shared nominal rate cancels in the Germany-vs-euro-area "
+            "difference, so a change in the ECB rate with unchanged inflation "
+            "moves this German LEVEL but not the Germany-vs-aggregate DIVERGENCE.",
+        ],
+        unit="percent",
+        direction=_de_appropriateness_word(real_de, inputs.f_ecb - inputs.pi_ea),
+        assumptions=[
+            "The real rate is formed with the SAME measure on both sides (HICP, "
+            "year-over-year), so the shared nominal rate cancels in the "
+            "differential.",
+            "The German neutral real rate is an illustrative input, not an estimate produced here.",
+            "Germany's real rate uses the euro-area nominal policy rate because "
+            "Germany has no policy rate of its own.",
+        ],
+        data_provenance=[
+            "f_ecb — the euro-area policy rate (eu_ecb_main_refi_rate), exogenous",
+            "pi_de — German inflation (de_cpi_yoy); pi_ea — euro-area HICP inflation",
+            "r_neutral_de — config leaf policy.de.appropriateness.r_neutral (the "
+            "illustrative German neutral real rate)",
+        ],
+        limitations=[
+            "Real rates from realized inflation are backward-looking.",
+            "The German real rate is computed from the SHARED euro-area nominal "
+            "rate; it is not a German policy rate, which does not exist.",
+            "The neutral-rate input dominates the reported gap.",
+        ],
+        decision_relevance=(
+            "The real-terms leg of the German appropriateness cluster: it states "
+            "in the units that matter whether the shared nominal stance is "
+            "passively loose or tight for Germany, and it is the leg a real-rate "
+            "or breakeven trade reads."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described as Germany's policy rate. Germany has none; "
+            "this is the euro-area rate deflated by German inflation.",
+            "MUST NOT be read as a forward real rate; the deflator is realized.",
+            "MUST NOT be compared against the euro-area real rate as if the "
+            "nominal rates differed — they are the same rate.",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — JAPAN (country "jp"). A central bank whose FRAMEWORK is not a
+# Taylor rule.
+#
+# The Bank of Japan's framework has three features NO Taylor rule can
+# reproduce, and the first is the marker:
+#
+#   1. THE ZLB FLOOR. The BoJ held the policy rate at or below zero (NIRP,
+#      -0.1%) from 2016 to the March-2024 exit, and before that at zero for
+#      most of two decades. A plain Taylor rule prescribes negative rates in
+#      such periods; the BoJ did not set them. The Reifschneider-Williams
+#      (2000) SHADOW-RATE rule encodes this: a NOTIONAL rate ĩ_t is computed,
+#      and the ACTUAL rate is bounded below by zero, with a cumulative
+#      shortfall term z_t ("ZLB debt") that makes policy MORE stimulative the
+#      longer the floor has bound. Hasui & Teranishi (2025, HIAS-E-149) state
+#      the point in the primary source: "the Taylor-type rule can not
+#      replicate inflation overshooting, even though the zero interest rate
+#      policy continues."
+#   2. YIELD CURVE CONTROL (Sept 2016). The INSTRUMENT is the 10-year JGB
+#      yield (target ~0%), not only the overnight rate. A Taylor rule reads a
+#      single short rate.
+#   3. THE INFLATION-OVERSHOOTING COMMITMENT (Sept 2016). The BoJ undertakes to
+#      continue easing "until the year-on-year rate of increase in the observed
+#      CPI (all items less fresh food) exceeds 2 percent and stays above the
+#      target in a stable manner" — a deliberate TOLERANCE of overshooting that
+#      a symmetric Taylor rule actively opposes.
+#
+# The `jp` arm's three legs are therefore the shadow-rate ZLB rule, a YCC
+# reference rule (the 10-year yield against the BoJ's own target band) and an
+# overshooting-commitment rule (a price-LEVEL-style history-dependent term).
+# ---------------------------------------------------------------------------
+
+
+class JpReifschneiderWilliamsInputs(_FiniteInputs):
+    """Inputs for Japan's shadow-rate (ZLB) rule (country "jp").
+
+    The rule tracks the NOTIONAL shadow rate ``ĩ_t`` separately from the ACTUAL
+    rate, which is floored at zero, and accumulates the "ZLB debt" ``z_t`` — the
+    cumulative gap by which the floor has held the actual rate above the
+    notional one. The three quantities are inputs rather than internal state
+    because the rule is a STATELESS function of its inputs (the same discipline
+    the BoE's rules follow); the caller threads the state, and the state's
+    meaning is documented here.
+    """
+
+    pi: float = Field(
+        description=(
+            "Japanese CPI inflation (all items less fresh food), percent, year-over-year. A LEVEL."
+        ),
+    )
+    output_gap: float = Field(
+        description="Japanese output gap as percent of potential, current period.",
+    )
+    i_notional_prev: float = Field(
+        description=(
+            "The previous period's NOTIONAL (shadow) rate ĩ_{t-1}, percent. The "
+            "shadow rate is what the rule WOULD set were there no ZLB; the "
+            "actual rate is this floored at zero. An input so the rule has no "
+            "hidden state."
+        ),
+    )
+    z_prev: float = Field(
+        description=(
+            "The previous period's cumulative ZLB shortfall z_{t-1}, in "
+            "percentage-point-periods. z_t = z_{t-1} + (i_t - ĩ_t), the "
+            "cumulative amount the floor has held the actual rate above the "
+            "notional one — the 'ZLB debt' that makes policy more stimulative "
+            "the longer the floor has bound."
+        ),
+    )
+    zlb_floor: float = Field(
+        description=(
+            "The effective lower bound on the policy rate, percent — the "
+            "ACTUAL floor, an input rather than an inlined 0.0 because Japan "
+            "operated a NEGATIVE rate (-0.1%) under NIRP from 2016 to 2024, so "
+            "the floor is a policy choice that has moved, not a constant."
+        ),
+    )
+
+
+class JpYccInputs(_FiniteInputs):
+    """Inputs for Japan's Yield Curve Control reference rule (country "jp").
+
+    The instrument is the 10-year JGB yield against the BoJ's own target. This
+    is not a Taylor-rule regressor: the BoJ NAMED the long yield as its
+    operating target (initially about 0%, with a ±0.5% / ±1% band over time),
+    so the deviation of the market yield from the target is the measure of how
+    much EASING the BoJ must do to defend the band. No Fed, BoE or ECB rule in
+    this module reads a targeted long yield this way — the ECB's long-rate
+    term is a proxy for expected inflation, not an operating target.
+    """
+
+    jgb_10y: float = Field(
+        description="The 10-year JGB yield, percent — the YCC operating target's observable.",
+    )
+    ycc_target: float = Field(
+        description=(
+            "The BoJ's YCC target for the 10-year yield, percent. An input "
+            "because the target has been changed by policy (about 0%, then a "
+            "±0.5% band, then ±1%); a literal here would freeze one regime's "
+            "value into every period."
+        ),
+    )
+    ycc_band: float = Field(
+        description=(
+            "The half-width of the BoJ's tolerance band around the target, in "
+            "percentage points. A deviation inside the band is within tolerance; "
+            "outside it the BoJ is expected to buy JGBs to pull the yield back."
+        ),
+    )
+
+
+class JpOvershootCommitmentInputs(_FiniteInputs):
+    """Inputs for Japan's inflation-overshooting commitment rule (country "jp").
+
+    The BoJ's commitment is asymmetric: it tolerates — indeed seeks — inflation
+    ABOVE 2% until it is "stable", which a symmetric Taylor rule opposes. This
+    rule makes the asymmetry explicit and history-dependent (the primary
+    source's "augmented Taylor-type rule with a strong history dependence can
+    work as a price-level targeting policy"): it reads the cumulative inflation
+    shortfall since the commitment began and prescribes MORE accommodation the
+    larger that shortfall, and it does NOT prescribe tightening merely because
+    inflation is above 2% while the cumulative shortfall is still open.
+    """
+
+    pi: float = Field(
+        description=(
+            "Japanese CPI inflation (all items less fresh food), percent, year-over-year. A LEVEL."
+        ),
+    )
+    cumulative_inflation_gap: float = Field(
+        description=(
+            "The cumulative inflation shortfall since the overshooting "
+            "commitment began, in percentage-point-periods: the running sum of "
+            "(π - π*) over the period the commitment has been in force. The "
+            "state that makes the commitment HISTORY-DEPENDENT."
+        ),
+    )
+    stabilization_threshold: float = Field(
+        description=(
+            "The cumulative shortfall that must be closed before the rule stops "
+            "adding accommodation, in percentage-point-periods. An input, since "
+            "the 'stable manner' the BoJ requires is a judgement, not a "
+            "constant (LAW 1)."
+        ),
+    )
+
+
+def jp_reifschneider_williams_rule(
+    inputs: JpReifschneiderWilliamsInputs,
+) -> PolicyRuleResult:
+    """``i_t = max[floor, i~_t - phi_z*z_t]``,
+    ``i~_t = (1-rho)*(i* + phi_pi*(pi-pi*) + phi_x*x_t) + rho*i~_{t-1}``
+
+    Japan's shadow-rate rule — the `jp` arm's headline leg, from
+    Reifschneider & Williams (2000) as calibrated for Japan by Hasui &
+    Teranishi (2025, HIAS-E-149) and Nakov (2008). It is the rule that makes
+    the `jp` arm structurally unlike the Fed's, the BoE's or the ECB's:
+
+    * **The ``max[floor, ·]`` bound.** A plain Taylor rule prescribes negative
+      rates during a long slump; Japan did not set them. The rule computes a
+      NOTIONAL rate and floors the ACTUAL rate at the effective lower bound.
+    * **The ``-φ_z·z_t`` term — the cumulative ZLB shortfall.** ``z_t`` is the
+      running sum of ``i_t - ĩ_t``, the amount by which the floor has held the
+      actual rate ABOVE the notional one. A larger ``z_t`` makes the rule
+      prescribe MORE stimulus, which is the history dependence the primary
+      source shows is required to produce inflation OVERSHOOTING: *"the
+      Taylor-type rule can not replicate inflation overshooting… the augmented
+      Taylor-type rule with a strong history dependence can work as a
+      price-level targeting policy."* No Fed/BoE/ECB rule in this module has a
+      state term of any kind.
+
+    The notional-rate recursion carries its own persistence ``rho``; the shadow
+    rate is itself inertial, distinct from the actual rate's floor. Both the
+    floor and the persistence are config leaves because Japan's floor MOVED
+    (-0.1% under NIRP, 0 after the March-2024 exit), so a literal would freeze
+    one regime.
+
+    Confidence is ``compute_confidence()``'s with ``depends_on_unobservable=
+    True``: ``i*`` (the natural rate) is unobservable (Section 21.4 item 13),
+    and so is the output gap's potential — the same limitation every rule in
+    this module that reads ``i*`` or a gap carries, which is precisely why the
+    rule's structure (a hard floor plus a measured shortfall) is worth having:
+    the unobservables enter through ``i*``, but the FLOOR is exact.
+    """
+    jp = get_settings().policy.jp
+    coefficients = jp.shadow_rate
+    i_star = jp.i_star_value
+    pi_target = jp.pi_target_value
+    rho = coefficients.notional_persistence_value
+
+    # The notional (shadow) rate: the Taylor-type rule unconstrained by the
+    # floor, with the BoJ's own coefficients and its own natural rate and
+    # target. The recursion carries the previous NOTIONAL rate, not the actual
+    # one — the shadow rate has no floor.
+    notional = (1.0 - rho) * (
+        i_star
+        + coefficients.inflation_coefficient_value * (inputs.pi - pi_target)
+        + coefficients.output_gap_coefficient_value * inputs.output_gap
+    ) + rho * inputs.i_notional_prev
+    # The shadow-rate ZLB correction: subtract the accumulated shortfall, then
+    # floor. Written as max() of two config-driven quantities, so the floor is
+    # data, not a literal (LAW 1).
+    unconstrained = notional - coefficients.shortfall_coefficient_value * inputs.z_prev
+    rate = max(inputs.zlb_floor, unconstrained)
+    binding = unconstrained < inputs.zlb_floor
+    regime_word = (
+        "binding: the actual rate cannot follow the notional rate down"
+        if binding
+        else "not binding: the rule is in its unconstrained regime"
+    )
+
+    return PolicyRuleResult(
+        model_name="jp_reifschneider_williams_rule",
+        rule_variant="jp_reifschneider_williams",
+        country="jp",
+        as_of=utc_now(),
+        value=round(rate, 2),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=True)),
+        interpretation=(
+            f"Japan's shadow-rate rule prescribes an actual policy rate of "
+            f"{rate:.2f}% (notional shadow rate {notional:.2f}%, accumulated ZLB "
+            f"shortfall {inputs.z_prev:+.2f}) — the floor is "
+            f"{'BINDING' if unconstrained < inputs.zlb_floor else 'not binding'}"
+        ),
+        context=(
+            f"The unconstrained prescription would be {unconstrained:.2f}%, so "
+            f"the effective lower bound of {inputs.zlb_floor:.2f}% is "
+            f"{regime_word}. "
+            f"Reads CPI {inputs.pi:.2f}% against the {pi_target:.1f}% target and "
+            f"the output gap {inputs.output_gap:+.2f}% (weights "
+            f"{coefficients.inflation_coefficient_value:g} / "
+            f"{coefficients.output_gap_coefficient_value:g}), with notional "
+            f"persistence {rho:g}."
+        ),
+        inputs_used=[
+            "pi",
+            "output_gap",
+            "i_notional_prev",
+            "z_prev",
+            "zlb_floor",
+        ],
+        warnings=[
+            "THE ZLB FLOOR IS THE STRUCTURAL MARKER. A reader who reads only the "
+            "notional rate sees a Taylor rule; the ACTUAL prescription is the "
+            "notional rate floored and reduced by the accumulated shortfall. "
+            "Treating this as a Taylor rule loses exactly the behaviour the BoJ "
+            "exhibited for two decades.",
+            "The effective lower bound MOVED: Japan operated -0.1% under NIRP "
+            "(2016-2024) and exited to 0-0.1% in March 2024. The floor is a "
+            "config input; a result produced under one floor must not be read "
+            "under another.",
+            "The natural rate i* and the output gap's potential are "
+            "UNOBSERVABLE (Section 21.4 item 13); the rule records "
+            "depends_on_unobservable=True. The FLOOR itself is exact, which is "
+            "why the floor-plus-shortfall structure is worth having despite the "
+            "unobservables.",
+            "The cumulative shortfall z_t is threaded in by the caller; if the "
+            "caller resets it, the history-dependence that produces overshooting "
+            "disappears and the rule degenerates toward a Taylor rule. The "
+            "state's correct propagation is the caller's responsibility and is "
+            "documented in the input record.",
+        ],
+        unit="percent",
+        direction=(
+            f"{'at the effective lower bound' if rate <= inputs.zlb_floor else 'above the ELB'} "
+            f"with a notional shadow rate of {notional:.2f}%"
+        ),
+        assumptions=[
+            "The notional rate is a Taylor-type rule with the BoJ's own "
+            "calibration (Hasui & Teranishi 2025 / Nakov 2008), including the "
+            "NATURAL RATE of -0.5% the primary source calibrates for Japan.",
+            "The actual policy rate is the notional rate, floored at the "
+            "effective lower bound and reduced by the accumulated shortfall.",
+            "Inflation is the BoJ's target measure: CPI all items less fresh "
+            "food, the measure the overshooting commitment names.",
+        ],
+        data_provenance=[
+            "pi — Japanese CPI inflation (jp_cpi_yoy), the BoJ's target measure",
+            "output_gap — ESTIMATED from Japanese real GDP (jp_gdp_real_level); "
+            "Japan publishes no gap series on this route",
+            "i_notional_prev, z_prev — the shadow rate and the accumulated "
+            "shortfall, threaded in by the caller (the rule is stateless)",
+            "zlb_floor — supplied by the caller from countries' current regime",
+            "coefficients — config leaves policy.jp.shadow_rate.*",
+        ],
+        limitations=[
+            "The shadow rate is an ESTIMATE of an unobservable, not a "
+            "measurement; every statement about it inherits that.",
+            "The natural rate and the output gap are unobservable.",
+            "The rule is a SIMULATION transcription of the primary source's "
+            "calibration, not a description of the Policy Board's decisions.",
+            "Japan's long ZLB period means the short sample constrains how "
+            "precisely the notional-rate coefficients are identified.",
+        ],
+        decision_relevance=(
+            "The 'jp' arm's headline leg and the reason the `jp` country is not "
+            "a relabel: it is the only rule in the system that can represent a "
+            "central bank held at a floor for decades, which is the defining "
+            "fact of Japanese policy and the thing a JGB or JPY trade is "
+            "positioned against."
+        ),
+        decision_prohibition=[
+            "MUST NOT be described or used as a Taylor rule. The floor and the "
+            "cumulative-shortfall term are the rule; dropping them leaves a "
+            "different model that contradicts the primary source.",
+            "MUST NOT have its floor treated as a constant zero. Japan's floor "
+            "was negative and then moved; hard-coding zero would misstate the "
+            "NIRP period.",
+            "MUST NOT be read without the notional rate and the shortfall "
+            "visible: the actual rate alone hides whether the floor binds, "
+            "which is the entire content of the leg.",
+        ],
+    )
+
+
+def jp_ycc_reference_rule(inputs: JpYccInputs) -> PolicyRuleResult:
+    """``ycc_gap = jgb_10y - ycc_target`` against the BoJ's own tolerance band.
+
+    Japan's Yield Curve Control reference leg. The BoJ named the **10-year JGB
+    yield** as an operating target (about 0%, with a band that widened over
+    time), so the deviation of the market yield from that target is the measure
+    of how much intervention the BoJ faces. The rule classifies the deviation
+    against the band and reports it.
+
+    **Why the 10-year JGB is an INSTRUMENT, not a proxy.** In the ECB's arm the
+    long rate is a regressor that proxies expected inflation. Here the long
+    yield is the thing the BoJ TARGETS — it buys JGBs to hold it in the band.
+    Those are different structural roles for the same variable, which is why
+    this is a distinct rule rather than a coefficient change on the ECB form.
+    """
+    jp = get_settings().policy.jp
+    coefficients = jp.ycc
+
+    deviation = inputs.jgb_10y - inputs.ycc_target
+    in_band = abs(deviation) <= inputs.ycc_band
+    # The signed pressure the BoJ faces: a yield ABOVE the band forces JGB
+    # PURCHASES (easing); a yield BELOW is the opposite. Reported as a level
+    # with the band explicitly published so a reader sees tolerance vs breach.
+    pressure = coefficients.pressure_per_bp_value * deviation
+
+    return PolicyRuleResult(
+        model_name="jp_ycc_reference_rule",
+        rule_variant="jp_ycc_reference",
+        country="jp",
+        as_of=utc_now(),
+        value=round(deviation, 4),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The 10-year JGB yield ({inputs.jgb_10y:.2f}%) sits {deviation:+.2f}pp "
+            f"from the BoJ's YCC target of {inputs.ycc_target:.2f}% — "
+            f"{'WITHIN' if in_band else 'OUTSIDE'} the ±{inputs.ycc_band:.2f}pp "
+            f"band"
+        ),
+        context=(
+            f"YCC target {inputs.ycc_target:.2f}%, observed 10-year JGB yield "
+            f"{inputs.jgb_10y:.2f}%, deviation {deviation:+.2f}pp against a band "
+            f"of ±{inputs.ycc_band:.2f}pp; the implied intervention pressure is "
+            f"{pressure:+.2f}."
+        ),
+        inputs_used=["jgb_10y", "ycc_target", "ycc_band"],
+        warnings=[
+            "The YCC target and band MOVED over the policy's life (about 0% "
+            "with a ±0.5% band, later ±1%, and the March-2024 exit). They are "
+            "inputs, not constants; a result produced under one regime must not "
+            "be read under another.",
+            "The deviation is a MARKET yield against a POLICY target; it "
+            "includes any term premium and expectations component, so a "
+            "breach is not purely an intervention signal.",
+            "A deviation inside the band is within TOLERANCE, not evidence that "
+            "YCC is inactive; the BoJ may still be purchasing.",
+            "After the March-2024 exit YCC was discontinued as an explicit "
+            "framework; reading this leg for post-exit periods describes a "
+            "policy that was no longer in force unless the target is set to the "
+            "post-exit convention.",
+        ],
+        unit="percentage_points",
+        direction=(
+            f"{'above' if deviation > 0 else 'below' if deviation < 0 else 'at'} "
+            f"the YCC target, {'outside' if not in_band else 'within'} the "
+            f"tolerance band"
+        ),
+        assumptions=[
+            "The BoJ's operating target for the 10-year JGB yield is an input "
+            "(it has moved by policy), not a constant.",
+            "Deviation within the band is tolerance, not inactivity.",
+        ],
+        data_provenance=[
+            "jgb_10y — the 10-year JGB yield (jp_long_rate_10y)",
+            "ycc_target, ycc_band — supplied by the caller / config leaves policy.jp.ycc.*",
+            "coefficients — config leaves policy.jp.ycc.*",
+        ],
+        limitations=[
+            "A yield deviation, not a quantity of intervention.",
+            "Contaminated by term premium and expectations.",
+            "The post-March-2024 regime change means the YCC framing is itself period-specific.",
+        ],
+        decision_relevance=(
+            "The instrument-level leg of the Japanese cluster: it states where "
+            "the BoJ's named long-yield target is under pressure, which is the "
+            "leg a JGB or curve trade acts on and the mechanism by which YCC "
+            "interacts with the FX layer."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as a policy RATE. It is a yield deviation in "
+            "percentage points from the BoJ's long-yield target.",
+            "MUST NOT have the target or band hard-coded to the pre-2024 values; the policy moved.",
+            "MUST NOT be treated as evidence of intervention absent the band "
+            "context — inside-band deviations are tolerated.",
+        ],
+    )
+
+
+def jp_overshoot_commitment_rule(
+    inputs: JpOvershootCommitmentInputs,
+) -> PolicyRuleResult:
+    """``accommodation = φ_s·max(0, T_stab - Σ(π - π*))`` — the price-level rule.
+
+    Japan's inflation-overshooting commitment leg, from the Bank of Japan's
+    September 2016 framework and the primary source's finding that *"the
+    augmented Taylor-type rule with a strong history dependence can work as a
+    price-level targeting policy."* The commitment makes the stance depend on
+    the CUMULATIVE inflation shortfall since the commitment began, not on the
+    current inflation gap — which is the price-LEVEL (history-dependent) form a
+    Taylor rule provably cannot be.
+
+    The asymmetry is what makes it structurally distinct from every rule in
+    this module: while a cumulative shortfall remains open, the rule adds
+    accommodation EVEN IF current inflation is above 2%. A symmetric Taylor
+    rule would tighten in exactly that state. That difference IS the
+    commitment the BoJ made.
+    """
+    jp = get_settings().policy.jp
+    coefficients = jp.overshoot
+
+    open_shortfall = max(0.0, inputs.stabilization_threshold - inputs.cumulative_inflation_gap)
+    accommodation = coefficients.shortfall_acceleration_value * open_shortfall
+    commitment_word = (
+        "commitment is STILL ADDING accommodation because the shortfall is open"
+        if open_shortfall > 0
+        else "shortfall is closed, so the commitment is no longer adding accommodation"
+    )
+    overshoot_dir = (
+        "still adding accommodation" if open_shortfall > 0 else "no additional accommodation"
+    )
+
+    return PolicyRuleResult(
+        model_name="jp_overshoot_commitment_rule",
+        rule_variant="jp_overshoot_commitment",
+        country="jp",
+        as_of=utc_now(),
+        value=round(accommodation, 4),
+        confidence=compute_confidence(ConfidenceInputs(depends_on_unobservable=False)),
+        interpretation=(
+            f"The overshooting commitment prescribes {accommodation:+.2f}pp of "
+            f"additional accommodation — the cumulative inflation shortfall is "
+            f"{inputs.cumulative_inflation_gap:+.2f} against a stabilisation "
+            f"threshold of {inputs.stabilization_threshold:.2f}"
+        ),
+        context=(
+            f"Current inflation is {inputs.pi:.2f}% and the running cumulative "
+            f"gap is {inputs.cumulative_inflation_gap:+.2f}pp-periods; the "
+            f"{commitment_word}. "
+            f"The rule is ASYMMETRIC: while the shortfall is open it adds "
+            f"accommodation even if current inflation is above target."
+        ),
+        inputs_used=["pi", "cumulative_inflation_gap", "stabilization_threshold"],
+        warnings=[
+            "THE RULE IS DELIBERATELY ASYMMETRIC. While the cumulative "
+            "shortfall is open it prescribes accommodation even though current "
+            "inflation may exceed 2%. A reader who expects symmetric "
+            "tightening above target will misread the commitment the BoJ made.",
+            "The stabilisation threshold is a JUDGEMENT about what 'in a stable "
+            "manner' means, not a published constant; it is an input so the "
+            "judgement is visible and movable.",
+            "The cumulative gap is the CALLER's running state; the rule is "
+            "stateless. A caller that recomputes it over a short window loses "
+            "the history dependence that gives the rule its form.",
+            "This leg is a base-rate ACCELERATION in percentage points; it is "
+            "not an absolute policy rate and must not be added to the "
+            "shadow-rate leg's percent level without a stated conversion.",
+        ],
+        unit="percentage_points",
+        direction=(overshoot_dir),
+        assumptions=[
+            "The commitment is HISTORY-DEPENDENT: it reads the cumulative "
+            "inflation shortfall, not the current gap.",
+            "The tolerance of overshooting above 2% is deliberate and encoded by "
+            "the asymmetric treatment of the shortfall.",
+            "The stabilisation threshold is a disclosed judgement, supplied as an input.",
+        ],
+        data_provenance=[
+            "pi — Japanese CPI inflation (jp_cpi_yoy), all items less fresh food",
+            "cumulative_inflation_gap — the caller's running sum of (π - π*)",
+            "stabilization_threshold — an input (the caller's judgement of 'stable')",
+            "coefficients — config leaves policy.jp.overshoot.*",
+        ],
+        limitations=[
+            "A base-rate acceleration, not a policy rate.",
+            "The threshold and the cumulative gap are judgement- and state-dependent.",
+            "The commitment's post-2024 status is unclear; the rule describes "
+            "the commitment as made, not the Board's current view.",
+        ],
+        decision_relevance=(
+            "The commitment leg of the Japanese cluster: it states the "
+            "history-dependent easing bias that a forward-looking trade on JPY "
+            "or JGBs must price, and it is the rule that makes the `jp` arm's "
+            "asymmetry explicit rather than implied."
+        ),
+        decision_prohibition=[
+            "MUST NOT be read as symmetric with the Fed's rules. The whole point "
+            "is that it does not tighten merely because inflation is above "
+            "target while a cumulative shortfall is open.",
+            "MUST NOT be added to a policy-rate level without a stated unit "
+            "conversion; it is a percentage-point acceleration.",
+            "MUST NOT be presented as the Policy Board's current commitment "
+            "without noting the March-2024 exit from the framework it came from.",
         ],
     )
 

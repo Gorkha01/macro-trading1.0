@@ -23,19 +23,20 @@ The authoritative specification is [`AGENTS.md`](./AGENTS.md).
 
 ## Scope, stated honestly
 
-**Phases 0–4 build a US-only system; the first two multi-country increments (`gb`, then the euro area `eu`) landed 2026-10-10.**
+**Phases 0–4 build a US-only system; the four post-US multi-country increments (`gb`, then the euro area `eu`, then `de` and `jp`) all landed 2026-10-10.**
 `country: str = "us"` is not a generalization — it is a label on a system that, through Phase 4,
-worked for exactly one value of it. Multi-country support (`de`, `jp`, `gb`) is Phase 5+, and requires
+worked for exactly one value of it. Multi-country support is Phase 5+, and requires
 for *each* new country:
 
 - its own verified data sources,
 - its own central-bank reaction function (the ECB's 20-country compromise
-  dynamic, the BoJ's deflation-scar-tissue bias, and the PBoC's non-Western
-  reaction function each need genuinely distinct logic — none is "the Fed's
+  dynamic, the BoJ's deflation-scar + Yield Curve Control, and — for Germany, which
+  has no policy rate of its own — a member-state *appropriateness* rule, each need
+  genuinely distinct logic — none is "the Fed's
   Taylor Rule with a different country label"),
 - its own instrument set.
 
-**`gb` has now earned all three** (`country.implemented: ["us", "gb", "eu"]`): seven verified `gb_*`
+**`gb` has now earned all three:** seven verified `gb_*`
 series, the Bank of England's three *published* rules (contemporaneous, forward-looking,
 first-difference — genuinely distinct, not a relabelled Fed rule), and a UK `ProductionUniverse`
 (gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100). `snapshot_to_thesis_inputs`
@@ -43,7 +44,7 @@ dispatches on country, so `/thesis/gb` runs end to end and selects UK instrument
 carries three **disclosed stand-ins** (no published UK output-gap series, no JOLTS/claims/payrolls, no
 BoE projection path) — disclosed rather than passed off as measurements.
 
-**`eu` (the euro area) has now earned all three** (`country.implemented: ["us", "gb", "eu"]`, landed
+**`eu` (the euro area) has now earned all three** (landed
 2026-10-10): its own verified `eu_*` series (HICP index, main-refi and deposit rates, ESTR,
 unemployment, real-GDP level, 3-month and 10-year yields); the **ECB's three published rules** from
 ECB Working Paper No 258 — a level rule carrying the euro area's OWN coefficients (2.733 / 1.443,
@@ -62,9 +63,24 @@ not by any unit test — Lesson 2): `output_gap_change` was fed the raw change i
 and `pi_change` was fed the raw change in the HICP *index* (~+0.44) rather than the change in the
 YoY *rate*; the first blew the error-correction prescription to ~4885% and the dispersion to ~4882pp.
 Both are now derived from the canonical YoY/growth quantities and pinned by tests with a realistic
-GDP magnitude. **`de` and `jp` remain unimplemented**, and the increment proves the *pattern* (three
-workstreams per country, wired and mutation-proved), not that a less comparable country is
-straightforward.
+GDP magnitude.
+
+**`de` and `jp` have now earned all three too** (both landed 2026-10-10; `country.implemented:
+["us", "gb", "eu", "de", "jp"]`). **`de` (Germany)** reads its own verified `de_*` series against the
+single ECB stance the ECB actually sets — Germany has **no policy rate of its own**, so a "German
+Taylor rule" would be a relabelled ECB rule. The `de` arm is therefore a **member-state
+appropriateness** trio (`de_member_appropriateness_rule`, `de_bund_spread_rule`, `de_real_rate_rule`)
+that measures the *divergence* of German inflation/output/unemployment/growth and its own Bund curve
+from the euro-area aggregate the ECB reacts to, with a German `ProductionUniverse` (Bunds/Bobl/Schatz,
+Bund futures, DAX). **`jp` (Japan)** runs a genuinely distinct central-bank framework: the
+**Reifschneider–Williams shadow-rate rule** with the `max[0, ·]` ZLB floor and a cumulative-shortfall
+term no plain Taylor rule reproduces, plus `jp_ycc_reference_rule` (Yield Curve Control, the 10-year
+JGB as the instrument) and `jp_overshoot_commitment_rule` (the BoJ's inflation-**overshooting**
+commitment), with a Japanese `ProductionUniverse` (JGBs, JGB futures, Nikkei 225 / Topix futures).
+`/thesis/de` and `/thesis/jp` both run end to end. **With this, all five modelled countries are
+complete**; the increment proves the *pattern* (three workstreams per country, wired and
+mutation-proved) across four structurally different reaction functions, and the only remaining
+multi-country capability is the **cross-country reasoning layer** itself.
 
 No function may claim country-genericity it has not earned.
 
@@ -86,7 +102,7 @@ is ever synthesised from a spot value.
 | 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **101/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 23/23** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: multi-country** (per country, its *own* data registry, reaction function and instrument set — `us`, `gb` and the euro area `eu` are now complete; `de`/`jp` remain) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: cross-country reasoning** (per-country coverage is now complete for all five modelled countries — `us`, `gb`, the euro area `eu`, `de` and `jp` — each with its *own* data registry, reaction function and instrument set) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded
@@ -97,8 +113,9 @@ is ever synthesised from a spot value.
 >
 > **Phase 5 is under way by explicit operator instruction**, one function per increment, each
 > to production standard and each independently verified. With the §21.3 list complete, the
-> standing obligations are the **multi-country theses** (the first two, `gb` and the euro area
-> `eu`, landed 2026-10-10 — see *Scope, stated honestly* above) — and the **22 Tier-5 functions wired but
+> standing obligations are the **multi-country theses** (all four post-US countries — `gb`, the euro
+> area `eu`, `de` and `jp` — landed 2026-10-10, so only the cross-country *reasoning* layer remains)
+> — and the **22 Tier-5 functions wired but
 > not yet called from the thesis pipeline**. See
 > `docs/PROGRESS.md` for the live state and `docs/DECISIONS.md` for the per-increment evidence.
 

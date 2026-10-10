@@ -118,6 +118,26 @@ SCALAR_SERIES_FIELDS: tuple[str, ...] = (
     "eu_gdp_real_level",
     "eu_short_rate_3m",
     "eu_long_rate_10y",
+    # Section 22.3 — the Germany block. Added 2026-10-10 with the third
+    # multi-country increment, and added HERE in the same change rather than
+    # after the gate failed: the failure this tuple causes is silent — these
+    # fields would be declared, fetched, populated, and ERASED from every
+    # persisted snapshot (the P-1 defect).
+    "de_cpi_yoy",
+    "de_unemployment_rate",
+    "de_gdp_real_level",
+    "de_short_rate_3m",
+    "de_long_rate_10y",
+    "de_call_rate",
+    # Section 22.3 — the Japan block. Added 2026-10-10 with the fourth
+    # multi-country increment, for the same reason and with the same silent
+    # failure mode as the blocks above.
+    "jp_cpi_yoy",
+    "jp_unemployment_rate",
+    "jp_gdp_real_level",
+    "jp_short_rate_3m",
+    "jp_long_rate_10y",
+    "jp_call_rate",
 )
 
 # Curve-shaped series: stored with field == curve name and the tenor in series_id.
