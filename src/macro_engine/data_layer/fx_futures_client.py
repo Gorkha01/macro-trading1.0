@@ -57,7 +57,7 @@ a schedule the source does not disclose, and therefore contains discontinuities
 that this module cannot separate from market moves.
 
 Run the probe that established all of the above:
-    uv run python scripts/probe_fx_forward.py
+    uv run python tools/probe_fx_forward.py
 """
 
 from __future__ import annotations

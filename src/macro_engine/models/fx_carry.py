@@ -738,7 +738,7 @@ def cip_check(inputs: CIPInputs) -> ModelResult:
             "Script-only today: re-measured 2026-10-10, no OpenBB route on this "
             "installation returns FX forward points — the entire currency "
             "surface is spot (see the fx_forward_rate entry in "
-            "series_registry.yaml and scripts/probe_fx_forward.py), so the "
+            "series_registry.yaml and tools/probe_fx_forward.py), so the "
             "caller supplies the forward and the live check is the only "
             "consumer until a forward source exists. The nearest reachable "
             "instrument is the CME rolling front-month future, published by "

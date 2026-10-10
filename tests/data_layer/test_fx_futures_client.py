@@ -564,7 +564,7 @@ def test_cme_roots_cover_the_enabled_catalogue() -> None:
 
     A malformed map makes every pair a 204, so the shape is asserted rather than
     assumed. The CONTENT (which root tracks which currency) is verified live by
-    ``scripts/probe_fx_forward.py``.
+    ``tools/probe_fx_forward.py``.
     """
     from macro_engine.config import get_settings
 

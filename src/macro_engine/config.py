@@ -5764,7 +5764,7 @@ class FxPairsSettings(BaseModel):
     The live OpenBB spec carries 278 routes across 32 providers and none matches
     ``forward``/``swap``/``basis`` under ``currency`` or ``fixedincome``, so FX
     forwards remain unavailable and ``cip_check``'s live check stays blocked.
-    The 2026-10-10 re-measurement (``scripts/probe_fx_forward.py``) CORRECTED the
+    The 2026-10-10 re-measurement (``tools/probe_fx_forward.py``) CORRECTED the
     original D-108 record on two points — the CME FX futures are reachable (six
     answer via ``derivatives.futures.historical``), and the ``fmp`` credential
     hypothesis is false (a key would unlock SPOT, not forwards). Neither changes
