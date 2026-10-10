@@ -657,7 +657,7 @@ Tier 4 = construction · Tier 5 = deferred to Phase 5+.
 | **Phase 3 — thesis + API** | 2 | 2 | **100%** ✅ |
 | **Phase 4 — instruments** | 4 | 4 | **100%** ✅ |
 | **§21.3's Tier-5 function LIST** | 23 | 23 | **complete** (D-092 … D-125) — but see the row below |
-| **Phase 5+ — the PHASE** | — | — | **NOT COMPLETE: cross-country reasoning remains** — per-country coverage is COMPLETE (`us` + `gb` + the euro area `eu` + `de` + `jp`, each modelled end-to-end, all 2026-10-10); what remains is the cross-country *reasoning* layer itself. §22.3 files multi-country under Phase 5+ |
+| **Phase 5+ — the PHASE** | — | — | **Layer 4 SHIPPED; one plumbing joint remains** — per-country coverage is COMPLETE (`us` + `gb` + the euro area `eu` + `de` + `jp`, each modelled end-to-end, all 2026-10-10) **and the cross-country *reasoning* layer shipped 2026-10-10 (D-150)**: `models/cross_country.py` + the `CROSS_COUNTRY_DIVERGENCE` selector branch + the `build_us_macro_thesis` linkage. What remains is the two-snapshot **orchestration** (`docs/PHASE5_DEFERRED.md` §2.4.2) and FX-forward data. §22.3 files multi-country under Phase 5+ |
 
 > **CORRECTED 2026-10-08.** This table previously read `86/98 (88%)` for Phase 2 and
 > *"stubs only by design"* for Phases 5+. Both were stale: §21.3's Tier 5 reached **23/23** at

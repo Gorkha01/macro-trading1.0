@@ -2057,7 +2057,7 @@ def snapshot_to_thesis_inputs(
     This is the public entry point and the ONE place the country guard lives. It
     reads ``settings.country.implemented`` — the same list the snapshot builder
     gates on — so "the country is implemented" is a single fact rather than two
-    free to disagree. A country absent from that list is refused outright (de/jp);
+    free to disagree. A country absent from that list is refused outright;
     a listed country dispatches to its own derivation.
 
     The dispatch is an explicit ``if/elif/else`` rather than a dict lookup or a
@@ -2076,11 +2076,19 @@ def snapshot_to_thesis_inputs(
     settings = get_settings()
     if snapshot.country not in settings.country.implemented:
         # Section 22.3 / Finding #3. Previously `if snapshot.country != "us"`.
-        # The check is now the `implemented` list rather than a literal, so the
-        # first multi-country increment (gb) — which added its own series set,
-        # reaction function and instrument universe — is admitted while de/jp
-        # are still refused. The refusal is unchanged in KIND; only the set of
-        # countries that have earned the label has grown.
+        # The check is now the `implemented` list rather than a literal, so each
+        # multi-country increment (gb, then eu, then de/jp) — each of which added
+        # its own series set, reaction function and instrument universe — is
+        # admitted once it has earned the label. The refusal is unchanged in KIND;
+        # only the set of countries that have earned it has grown (all five,
+        # as of 2026-10-10).
+        #
+        # NOTE: this dispatch is ONE-SNAPSHOT by construction — one
+        # `snapshot.country` selects one derivation. A cross-country thesis
+        # (Section 22.3 layer 4) needs a SECOND country's snapshot and is
+        # therefore NOT driven from here; its model/selector/builder path ships
+        # (models/cross_country.py, D-150) but the two-snapshot orchestration is
+        # an API-layer increment not yet wired (docs/PHASE5_DEFERRED.md §2.4.2).
         raise NotImplementedError(
             f"the API layer is implemented for {sorted(settings.country.implemented)} "
             f"only; got '{snapshot.country}' (Section 22.3 / Finding #3). This is "

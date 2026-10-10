@@ -79,8 +79,19 @@ JGB as the instrument) and `jp_overshoot_commitment_rule` (the BoJ's inflation-*
 commitment), with a Japanese `ProductionUniverse` (JGBs, JGB futures, Nikkei 225 / Topix futures).
 `/thesis/de` and `/thesis/jp` both run end to end. **With this, all five modelled countries are
 complete**; the increment proves the *pattern* (three workstreams per country, wired and
-mutation-proved) across four structurally different reaction functions, and the only remaining
-multi-country capability is the **cross-country reasoning layer** itself.
+mutation-proved) across four structurally different reaction functions.
+
+**The cross-country reasoning layer (layer 4) landed 2026-10-10 (D-150)** — the fourth and last
+capability of the multi-country bar. `models/cross_country.py`'s `cross_country_divergence` measures
+the **signed real-rate differential** between two complete country systems (same instrument, same
+horizon, FX-reconciled — each an input validator), and `select_instrument`'s `CROSS_COUNTRY_DIVERGENCE`
+branch names a **duration-neutral cross-market RV pair** (long the higher-real-rate country, short the
+other) from config `leg_labels`/`instrument_template`, or refuses with a sentinel inside the noise
+band. `build_us_macro_thesis(cross_country=...)` computes the divergence once and threads it. The
+`BLOCKED_MULTI_COUNTRY_NOT_BUILT` sentinel is retained but **narrowed** to "malformed divergence
+record". The remaining boundary is documented honestly: the two-snapshot **orchestration** (fetching
+both countries' data from one request) is an API-layer increment not yet wired
+(`docs/PHASE5_DEFERRED.md` §2.4.2).
 
 No function may claim country-genericity it has not earned.
 
@@ -102,7 +113,7 @@ is ever synthesised from a spot value.
 | 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **101/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 23/23** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: cross-country reasoning** (per-country coverage is now complete for all five modelled countries — `us`, `gb`, the euro area `eu`, `de` and `jp` — each with its *own* data registry, reaction function and instrument set) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: the two-snapshot cross-country orchestration** (the cross-country *reasoning* layer itself shipped 2026-10-10, D-150 — per-country coverage is complete for all five modelled countries — `us`, `gb`, the euro area `eu`, `de` and `jp` — each with its *own* data registry, reaction function and instrument set, and the reasoning layer now measures the divergence between any two of them) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded

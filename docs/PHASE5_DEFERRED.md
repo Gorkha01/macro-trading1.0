@@ -16,7 +16,7 @@ it calls *done* was checked to have a real body — not a `NotImplementedError`.
 | Are Phases 0–4 done? | **Yes.** All 101 functions named in AGENTS.md §21.3 Tier 1–5 exist in `src/`. |
 | Is Tier 5 (the spec's "stubs only") stubbed? | **No — 23 of 23 Tier 5 functions have real bodies.** |
 | How many `extensions/` modules are stubbed? | **6** — each gated on an uninstalled §4 package. |
-| How many genuine *capability* gaps remain? | **2** — **cross-country reasoning** (all four named countries `us`/`gb`/`eu`/`de`/`jp` now modelled end-to-end as of 2026-10-10, §2.4; the *reasoning layer* itself is still refused), and FX-forward/market-data coverage. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included. The multi-country *coverage* gap closed 2026-10-10 (§2.4, D-145 `gb` / D-148 `eu` / D-149 `de`+`jp`).** |
+| How many genuine *capability* gaps remain? | **1** — **FX-forward/market-data coverage.** **Cross-country reasoning (layer 4) was BUILT 2026-10-10 (D-150)**: `models/cross_country.py` measures the signed real-rate divergence between two complete country systems, `select_instrument` routes `CROSS_COUNTRY_DIVERGENCE` to a duration-neutral RV pair, and `build_us_macro_thesis` threads the measurement. Every one of the five modelled countries (`us`/`gb`/`eu`/`de`/`jp`) is complete end-to-end as of 2026-10-10, §2.4. **GARCH closed 2026-10-09 (§2.2); the crisis-shock engine closed the same day (§2.3.1 + §2.3.2), simulation half and scenario library included. The multi-country *coverage* gap closed 2026-10-10 (§2.4, D-145 `gb` / D-148 `eu` / D-149 `de`+`jp`), and the *reasoning* layer closed with it (D-150).** |
 | Why are they not implemented? | Mostly AGENTS.md §4 (*"no dependency before its phase"*); two are **data-availability** blocks, not code gaps. |
 
 **Correction on the record:** AGENTS.md §21.3 heads Tier 5 *"Phase 5+ (stubs only until their
@@ -235,9 +235,9 @@ assumed the same correlation response would be one scenario written four times:
 | `country.enabled` | **`["us", "gb", "eu", "de", "jp"]`** — `enabled` gates the *snapshot build*, `implemented` gates the *derivation*. Both lists now carry all five; they were emptied of the false "US-only" claim when each country's pipeline landed. `_no_false_genericity_claim` rejects `enabled - implemented`. |
 | What exists for other countries | **For `gb`: a full pipeline (D-145).** (1) Seven verified `gb_*` series in the registry (`gb_cpi_headline`, `gb_cpi_core`, `gb_unemployment_rate`, `gb_gdp_growth_qoq`, `gb_bank_rate`, `gb_gilt_10y_yield`, `gb_short_rate_3m`); (2) the Bank of England's **three published rules** (`boe_contemporaneous_taylor_rule`, `boe_first_difference_rule`, `boe_forward_looking_taylor_rule`, `models/policy_rules.py`) — genuinely distinct, not a relabelled Fed rule; (3) a country-aware `ProductionUniverse` carrying the UK plan (gilts, index-linked gilts, short-sterling, SONIA OIS, FTSE 100); (4) `snapshot_to_thesis_inputs` dispatching to `_gb_thesis_inputs`, so `/thesis/gb` runs. **For `eu`: a full pipeline (D-148).** (1) Eight verified `eu_*` series (HICP index, ECB main-refi and deposit rates, ESTR, euro-area unemployment, real GDP, 3m and 10y rates); (2) the ECB's **three WP-258 rules** (`ecb_contemporaneous_taylor_rule`, `ecb_error_correction_rule`, `ecb_restricted_cointegration_rule`) whose **long rate is a regressor** and whose form is **error-correction** — structurally unlike Fed and BoE, so not a relabelled rule; (3) a `ProductionUniverse(country="eu")` carrying the euro-area plan (Bunds/BTPs/OATs/Bonos/SPGBs, Eurex Bund/BTP futures, ESTR futures, Euro Stoxx 50); (4) `snapshot_to_thesis_inputs` dispatching to `_eu_thesis_inputs`, so `/thesis/eu` runs. **For `de` and `jp`: a full pipeline each (D-149).** **`de`** — (1) its own verified `de_*` series (CPI, unemployment, GDP growth, short/long rates, the Bund 10y, the euro-area comparators it is measured against); (2) the **member-state appropriateness rule** (`de_member_appropriateness_rule`) plus the `de_bund_spread_rule` and `de_real_rate_rule` — reads *German* conditions against the single ECB stance the ECB actually sets, **not a relabelled ECB rule** (Germany has no separate policy rate to relabel); (3) a `ProductionUniverse(country="de")` carrying the German plan (Bunds/Bobl/Schatz, Bund futures, DAX); (4) `snapshot_to_thesis_inputs` dispatching to `_de_thesis_inputs`, so `/thesis/de` runs. **`jp`** — (1) its own verified `jp_*` series; (2) a genuinely distinct central-bank framework: the **Reifschneider–Williams shadow-rate rule** (`jp_reifschneider_williams_rule`, with the `max[0, ·]` ZLB floor and the cumulative-shortfall `z_t` term) plus `jp_ycc_reference_rule` (Yield Curve Control) and `jp_overshoot_commitment_rule` (the BoJ's inflation-overshooting commitment) — the `max[0, ·]` and `z_t` are exactly what a plain Taylor rule cannot reproduce; (3) a `ProductionUniverse(country="jp")` carrying the Japanese plan (JGBs, JGB futures, Nikkei 225/Topix index futures); (4) `snapshot_to_thesis_inputs` dispatching to `_jp_thesis_inputs`, so `/thesis/jp` runs. **The remaining US-only guards** (`gdp_nowcast.output_gap_from_snapshot`, `regime.check_trilemma_tension`) stay US-only (`NotImplementedError`) and are **correct boundaries, not gaps** — the gb/eu/de/jp paths never reach them (`_gb_thesis_inputs` et al. set `regime=None`). |
 | What is genuinely *data-ready* for other countries | The three FX-reserve fixtures (`fx_reserves_japan`, `fx_reserves_uk`, `fx_reserves_china`) remain **fixtures** for the 1992/1997 case studies (D-048) — a different act from supporting those countries. |
-| A cross-country *trade* | `instrument_selection.py` still defines `BLOCKED_MULTI_COUNTRY_NOT_BUILT`, returned for every `CROSS_COUNTRY_DIVERGENCE` thesis. **Still correct but now a coverage statement, not a pattern statement:** a cross-country RV trade needs *two* fully-built country systems and the FX bridge converted between them; with `us`, `gb` and `eu` each complete and `fx_spot` live, the remaining block is that the cross-country *reasoning* layer itself is not built, not that fewer than two countries exist. |
+| A cross-country *trade* | **BUILT 2026-10-10 (D-150).** `models/cross_country.py`'s `cross_country_divergence` measures the signed real-rate differential between two complete country systems; `select_instrument`'s `CROSS_COUNTRY_DIVERGENCE` branch (`_select_cross_country_instrument`) names the duration-neutral RV pair (long the higher-real-rate country, short the other) from a config `leg_labels`/`instrument_template`, and refuses with a sentinel inside the noise band. `build_us_macro_thesis` computes the divergence once and threads it. `BLOCKED_MULTI_COUNTRY_NOT_BUILT` is **retained but NARROWED** — it now fires only on a malformed divergence record, never for "no second country exists". |
 
-**Status: CLOSED for coverage (all four named countries), OPEN for the reasoning layer.** §22.3
+**Status: CLOSED for coverage (all four named countries) AND CLOSED for the reasoning layer.** §22.3
 (Finding #3) retracted any claim of multi-country generality, and that retraction still stands
 literally — the system is *not* country-generic, it has **five** countries (`us` plus the four
 non-US) with a shared, now-tested dispatch. What the `gb`, `eu`, `de` and `jp` increments earned is
@@ -253,13 +253,14 @@ claim that multi-country *reasoning* is done: that layer remains refused, and it
 thing between a set of complete countries and the engine described in §2.4.1.
 
 
-**What is still OPEN — and correctly so — is the reasoning layer only.** AGENTS.md §22.3 (Finding #3)
+**The reasoning layer itself is now BUILT (2026-10-10, D-150).** AGENTS.md §22.3 (Finding #3)
 explicitly retracted any claim of multi-country generality: *"Phases 0–4 build a US-only system. …
 `country: str = "us"` is not a generalization — it is a label on a system that currently only works
-for one value of it."* That retraction still binds: the system is not country-generic. What changed on
-2026-10-10 is that the **per-country coverage** (three workstreams × four countries) is complete, so
-the one task that remains is the **cross-country reasoning layer** itself (§2.4.1 layer 4) — the
-capability that compares two complete countries on a shared, FX-converted, same-horizon basis.
+for one value of it."* That retraction still binds: the system is not country-generic. What is now
+true is that the **per-country coverage** (three workstreams × four countries) is complete **and** the
+fourth-layer capability that compares two complete countries on a shared, FX-converted, same-horizon
+basis exists — `models/cross_country.py` measures the divergence, and `select_instrument` names the
+pair (or refuses inside the noise band).
 
 #### 2.4.1 What "multi-country" actually means — the four-layer bar
 
@@ -290,7 +291,7 @@ gb runs the BoE's *published* Annex 1 rules, not a Taylor rule with a British ac
 | 2 · Reaction function | ✅ Fed trio | ✅ 3 BoE rules | ✅ 3 ECB WP-258 rules (level + **two** error-correction; long rate a regressor) | ✅ `de`: member-state appropriateness + Bund spread + real rate (no owned rate — reads divergence from the single ECB stance); `jp`: **shadow-rate rule with ZLB floor + `z_t` shortfall** + YCC + overshooting commitment | — |
 | 3 · Instruments | ✅ | ✅ gilt / short-sterling / SONIA / FTSE | ✅ Bund/BTP/OAT curve, ESTR futures, Euro Stoxx 50 | ✅ `de`: Bund/Bobl/Schatz, Bund futures, DAX; `jp`: JGBs, JGB futures, Nikkei/Topix futures | — |
 | **FX (the bridge)** | ✅ **`fx_spot` fetched since 2026-10-10** (spot; forwards still blocked) | — | — | — | ⚠️ convertible |
-| 4 · Cross-country reasoning | — | — | — | — | ❌ **`BLOCKED_MULTI_COUNTRY_NOT_BUILT`** |
+| 4 · Cross-country reasoning | — | — | — | — | ✅ **BUILT 2026-10-10 (D-150): `models/cross_country.py` + the `CROSS_COUNTRY_DIVERGENCE` selector branch** |
 
 **The three things genuinely missing for the engine the operator described** (Fed-vs-ECB,
 US-vs-EU inflation, USD-vs-EUR), in dependency order:
@@ -316,18 +317,47 @@ US-vs-EU inflation, USD-vs-EUR), in dependency order:
    overshooting commitment), and the Reifschneider–Williams shadow-rate rule it is modelled on contains
    a `max[0, ·]` ZLB floor and a cumulative-shortfall term that no plain Taylor rule reproduces.
    `/thesis/de` and `/thesis/jp` both run end-to-end.
-4. **Cross-country reasoning itself.** `CROSS_COUNTRY_DIVERGENCE` is refused
-   (`BLOCKED_MULTI_COUNTRY_NOT_BUILT`) — correctly, because it needs *two* fully-built country
-   systems **and** the FX bridge between them. Both conditions are now met for every pair among
-   `us`/`gb`/`eu`/`de`/`jp`; what remains is the reasoning layer itself, so the block is now the last
-   leg of the dependency chain rather than a wall with no bridge under it.
+4. ~~**Cross-country reasoning itself.**~~ **CLOSED 2026-10-10 — D-150.** `CROSS_COUNTRY_DIVERGENCE`
+   no longer refuses. `models/cross_country.py`'s `cross_country_divergence` measures the signed
+   real-rate differential between two complete country systems (with the same-instrument/same-horizon/
+   FX-reconciled checks as input validators), and `select_instrument` names the duration-neutral RV
+   pair — long the higher-real-rate country, short the other — or refuses with a sentinel inside the
+   configured noise band. `build_us_macro_thesis` computes the divergence once and threads it. The
+   `BLOCKED_MULTI_COUNTRY_NOT_BUILT` sentinel is **retained but narrowed**: it now means "this specific
+   divergence record is malformed", never "no second country exists". **What remains un-wired is the
+   two-snapshot ORCHESTRATION** (fetching BOTH countries' snapshots and calling the model) — the model,
+   the selector and the builder linkage all ship; see §2.4.2 for the honest boundary.
 
 **What the repo CAN honestly say today:** *"Five countries — `us`, `gb`, the euro area `eu`, `de` and
 `jp` — are modelled end-to-end on their own data, their own central-bank (or, for `de`, member-state)
 rules and their own instruments, with four genuinely different reaction-function shapes proving the
-dispatch general; an FX spot layer converts between currencies; the cross-country reasoning layer
-itself is the one capability still refused."* That is a real, defensible statement — and it is
-finally within one increment of the multi-country engine described in this subsection.
+dispatch general; an FX spot layer converts between currencies; and the **cross-country reasoning
+layer** measures the divergence between any two of them and names a duration-neutral RV pair, refusing
+inside the noise band."* That is a real, defensible statement — the multi-country engine described in
+this subsection now **exists**, with one honest boundary: the reasoning is reachable through
+`build_us_macro_thesis(cross_country=...)`, but the two-snapshot **orchestration** that fetches both
+countries' data and drives it from a single request is not yet wired (§2.4.2).
+
+#### 2.4.2 The layer-4 boundary — what ships and what does not (D-150)
+
+To keep the "STILL DEFERRED" ledger honest, the cross-country increment draws an explicit line:
+
+| Piece | State | Where |
+|---|---|---|
+| The divergence arithmetic (`real_a − real_b`, signed bp, noise band) | ✅ SHIPPED | `models/cross_country.py::cross_country_divergence` |
+| The input contract (same instrument, same horizon, FX-reconciled) | ✅ SHIPPED | `CrossCountryInputs` validators |
+| The instrument selection (duration-neutral RV pair, or sentinel) | ✅ SHIPPED | `instrument_selection.py::_select_cross_country_instrument` |
+| The builder linkage (`build_us_macro_thesis(cross_country=...)`) | ✅ SHIPPED | `thesis_layer/builder.py` |
+| The config (noise band, horizon, leg labels, template) | ✅ SHIPPED | `settings.yaml → cross_country:` |
+| **Two-snapshot orchestration** (fetch both countries, drive from one request) | ❌ **NOT WIRED** | the API layer's country dispatch is one-snapshot; a cross-country request needs a counterpart snapshot, which no route constructs yet |
+| **The live FX conversion feeding the legs** | ⚠️ **manual** | `fx_conversion.convert` ships and `fx_spot` is live, but the caller must convert before building `CrossCountryInputs` (attested via `fx_converted`) |
+
+**Why the boundary is drawn here and not crossed:** the model, selector and builder are the *reasoning
+layer*; the two-snapshot orchestration is *plumbing* over an API surface whose request shape
+(`/thesis/{country}`) is single-country by design. Crossing it means either a new endpoint
+(`/thesis/{a}/vs/{b}`) or a batch call — a genuine API-layer increment, not a model one. It is recorded
+here rather than silently implied, because a reader seeing "layer 4 built" must know that the path from
+an HTTP request to a cross-country thesis still has one manual joint in it.
 
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**
@@ -561,7 +591,7 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | ~~GARCH conditional volatility~~ | **CLOSED 2026-10-09 — shipped** (§2.2) | `arch` added; `models/volatility.py` created |
 | ~~`extensions/scenario_engine.py` + `scenarios/*.yaml`~~ | **CLOSED 2026-10-09 — shipped** (§2.3.1); corrected 2026-10-10 | file exists at the spec path, 0 `NotImplementedError`, 4 `scenarios/*.yaml` |
 | Multi-country — **`gb`, `eu`, `de`, `jp`** | **CLOSED 2026-10-10 — all four non-US countries implemented** — four multi-country increments (§2.4), wired end-to-end, with mutation proofs on each dispatch and rule set (`gb` D-145: 4 dispatch proofs; `eu` D-148: 7 rule + unit proofs; `de`+`jp` D-149: **20/20 killed**) | — |
-| Multi-country — **cross-country *reasoning*** | **Still deferred — the one genuine capability left** (§2.4.1 layer 4; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | the reasoning layer itself (two complete countries + the FX bridge are all now in place) |
+| Multi-country — **cross-country *reasoning*** | **CLOSED 2026-10-10 — shipped (D-150)** (§2.4.1 layer 4): `models/cross_country.py` + the `CROSS_COUNTRY_DIVERGENCE` selector branch + the builder linkage. `BLOCKED_MULTI_COUNTRY_NOT_BUILT` retained but narrowed to "malformed divergence record". **Not wired:** the two-snapshot orchestration (§2.4.2) | the reasoning layer itself |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
 | **FX spot (`fx_spot`, the layer-3→4 bridge)** | **CLOSED 2026-10-10 — fetched** | `data_layer/fx_client.py` + `snapshot_builder._fetch_fx_spot_map` + `models/fx_conversion.py`; `fx_spot` left `declared_not_wired`. Spot only — the forward is the row above |
 | `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them (`FX_UNWIRED_ALWAYS`) |
@@ -571,10 +601,12 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | Kalman-filtered `r_star` | Deferred | `statsmodels.tsa.statespace` |
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
 
-**Two genuine capability gaps remain: cross-country reasoning** (all four non-US countries — `gb`,
-the euro area `eu`, `de` and `jp` — closed 2026-10-10; only the
-*reasoning layer* itself is still refused), **and
-FX-forward coverage** (a data block, not a plan). **The FX SPOT layer closed 2026-10-10** — it was
+**One genuine capability gap remains: FX-forward coverage** (a data block, not a plan). **The
+cross-country reasoning layer closed 2026-10-10** (D-150): the all-four non-US countries landed
+(`gb`, the euro area `eu`, `de`, `jp`), the FX spot bridge shipped, and layer 4 itself — the divergence
+model, the RV-pair selector branch and the builder linkage — is now built. What remains open on that
+front is the two-snapshot orchestration (§2.4.2), an API-layer increment rather than a modelling one.
+**The FX SPOT layer closed 2026-10-10** — it was
 recorded as a data block and re-measured as an unwired field (the sixth FALSE BLOCK). **The
 multi-country coverage gap closed 2026-10-10** once the last two countries (`de`, `jp`, D-149) landed;
 what the multi-country row now carries is the reasoning layer, not country coverage. Three closures
@@ -635,9 +667,10 @@ ls -d scenarios/ 2>&1                            # four files: the four §9.4 sc
 ls -l src/macro_engine/extensions/scenario_engine.py
 grep -c "raise NotImplementedError" src/macro_engine/extensions/scenario_engine.py   # 0 — it is not a stub
 
-# 6. Multi-country
-grep -n "implemented:" config/settings.yaml      # implemented: ["us"]
-grep -rn "BLOCKED_MULTI_COUNTRY_NOT_BUILT" --include=*.py src/
+# 6. Multi-country — CORRECTED 2026-10-10 (this printed implemented: ["us"], stale since gb landed)
+grep -n "implemented:" config/settings.yaml      # ["us", "gb", "eu", "de", "jp"]
+grep -rn "BLOCKED_MULTI_COUNTRY_NOT_BUILT" --include=*.py src/   # retained, NARROWED to a malformed-record sentinel
+uv run python -c "from macro_engine.models.cross_country import cross_country_divergence; print('layer 4 SHIPPED')"
 
 # 7. Market data: what IS verified vs what is blocked
 #    (59 `series:` entries, all status: verified; 5 `blocked:` entries)

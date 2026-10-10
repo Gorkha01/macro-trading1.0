@@ -23797,3 +23797,126 @@ data_layer/publication_dates.py}`, `config/{settings.yaml,series_registry.yaml}`
 api_layer/{test_orchestration.py,test_reasoning_stream.py}}`,
 `docs/{DECISIONS.md,CHANGELOG.md,PHASE5_DEFERRED.md,DE_JP_DESIGN.md,BUILD_STATE.md,PROGRESS.md}`,
 `README.md`.
+
+---
+
+## D-150 — §22.3 layer 4: the cross-country reasoning layer, the duration-neutral RV selector, and the two-snapshot boundary stated honestly
+
+**Date:** 2026-10-10
+**Status:** Implemented
+**Specification reference:** Section 22.3 (Finding #3), Section 22.3.1 (the corrected `select_instrument`), the four-layer bar (`docs/PHASE5_DEFERRED.md` §2.4.1), Section 22.12 (the production universe), Section 22.5-adjacent (the FX bridge, D-147)
+
+### 1. What this increment is, against the four-layer bar
+
+D-146 fixed the bar — **data → reaction function → instruments+FX → cross-country reasoning**. D-145
+closed `gb`, D-148 `eu`, D-149 `de`+`jp`, so the per-country coverage (layers 1–3) was complete for all
+five countries; D-147 shipped the FX spot bridge between them. **Layer 4 — the reasoning layer itself —
+is this increment.** `CROSS_COUNTRY_DIVERGENCE` had returned `BLOCKED_MULTI_COUNTRY_NOT_BUILT`
+unconditionally since D-058; per §22.3 it needs *two* fully-built country systems **and** the FX bridge
+between them. Both conditions were met, so the block was the last leg of the dependency chain rather
+than a wall with no bridge under it.
+
+### 2. WS1 — the divergence model (`models/cross_country.py`, NEW)
+
+`cross_country_divergence(CrossCountryInputs) -> ModelResult`. The primary quantity is the **real-rate
+differential**, because stance asymmetry lives there — *"a 4% policy rate against 5% inflation is looser
+than a 1% rate against zero inflation, even though the nominal level is far higher."*
+
+    real_a = policy_rate_a - inflation_a        # percent
+    real_b = policy_rate_b - inflation_b        # percent
+    divergence_bp = (real_a - real_b) * 100     # signed bp
+    nominal_bp    = (long_rate_a - long_rate_b) * 100
+
+The **nominal** spread is reported BESIDE the verdict, not read by it: it is what the RV trade prices
+but it MIXES expected inflation and the real rate, so it is not on its own a divergence measure. The
+verdict (`MEANINGFUL_DIVERGENCE` / `NO_MEANINGFUL_DIVERGENCE`) reads the real-rate gap against the
+config band. The **long/short legs are DERIVED** from the sign of the differential (long the
+higher-real-rate country) — never a caller flag, which would let a caller name the wrong leg on a
+correct number.
+
+**The two ways a cross-country thesis is WRONG, both refused by the input validator:**
+
+* **Different bases** — same country (a no-op), different tenor (a *curve* trade, `CURVE_SHAPE_GAP`,
+  not a country trade), different horizon, or an un-reconciled cross-currency pair. Each names its own
+  reason, so a reader can tell a tenor error from a horizon error from a currency error.
+* **The un-reconciled cross-currency spread** is the archetypal FAKE spread — the numbers are each real
+  but the difference is not a quantity. `fx_converted` must attest the FX bridge ran, and the model
+  refuses a same-currency pair that claims it did.
+
+The real rate is formed from **realized** inflation (backward-looking), and the model discloses this
+rather than implying it is the expected-inflation differential — a warning, not a silent substitution.
+
+### 3. WS2 — the config (`cross_country:` block + `CrossCountrySettings`)
+
+The noise band (`meaningful_divergence_bp = 25.0`, `fitted_assumption`), the shared horizon
+(`comparable_horizon_quarters = 4.0`, `mechanical_rule`), the per-country `leg_labels`
+(`us: "UST 10y"`, `gb: "gilt 10y"`, `eu`/`de`: `"Bund 10y"`, `jp: "JGB 10y"`) and the
+`instrument_template` (`"UST-style cross-market RV: {long} vs {short}"`). The threshold and horizon are
+leaves, so the boundary check and its consumers read the SAME value (LAW 1).
+
+**The classifier trap, measured.** The production universe's `category_for` is keyword-based:
+`"US 10y vs EU 10y"` classifies as `None` (**refused**), while `"UST 10y vs Bund 10y"` classifies as
+`rates` (**accepted**). So the template's leading `"UST"` token is LOAD-BEARING, not decorative — and
+`label_for(country)` RAISES for a country with no configured leg rather than emitting a placeholder, so
+a pair naming an unnameable country is refused at selection rather than published as an untradeable
+string (§22.12).
+
+### 4. WS3 — the selector branch (`instrument_selection.py`)
+
+`InstrumentSelectionInputs` gained a `cross_country: dict[str, Any] | None` field, with a validator that
+**requires** it for a `CROSS_COUNTRY_DIVERGENCE` thesis and **refuses** it elsewhere — a divergence
+route with no measurement has nothing to express, and routing it to a single-country instrument would be
+the exact substitution §22.3.1 forbids.
+
+The `CROSS_COUNTRY_DIVERGENCE` branch now calls `_select_cross_country_instrument`, which reads the
+divergence record and names the pair via config, or returns a sentinel inside the band (an honest
+non-trade). **`BLOCKED_MULTI_COUNTRY_NOT_BUILT` is RETAINED but NARROWED**: it now means "this specific
+divergence record is malformed", never "no second country exists". The selector does not re-derive the
+divergence — it reads the measured number, so the quantity has ONE implementation (LAW 2).
+
+### 5. WS4 — the builder linkage (`thesis_layer/builder.py`)
+
+`build_us_macro_thesis` gained a keyword-only `cross_country: CrossCountryInputs | None = None`; when
+supplied it calls `cross_country_divergence` ONCE and threads the measurement to `select_instrument`.
+**Additive** — every existing caller is unaffected (`None` is the honest input for every single-country
+thesis). This mirrors how `regime` and `futures_curve` are threaded: the raw inputs enter the builder,
+the builder is the single computation site, and the selector consumes the result.
+
+### 6. THE HONEST BOUNDARY — what is NOT wired
+
+**The two-snapshot orchestration.** The country dispatch (`snapshot_to_thesis_inputs`) is
+**one-snapshot by construction** — one `snapshot.country` selects one derivation. A cross-country thesis
+needs a SECOND country's snapshot, which no route constructs yet. So the reasoning layer is reachable
+through `build_us_macro_thesis(cross_country=...)`, but the path from an HTTP request to a
+cross-country thesis still has one manual joint. This is stated in `docs/PHASE5_DEFERRED.md` §2.4.2
+rather than implied away, because a reader seeing "layer 4 built" must not assume the request-level
+path is closed. It is an **API-layer increment** (a `/thesis/{a}/vs/{b}` route or a batch call), not a
+model one — which is why this increment stops at the model+selector+builder boundary.
+
+### 7. Evidence — hand-derived arithmetic and mutation proofs
+
+Hand-derived (LAW 3, computed on paper before running): US policy 3.88 / CPI 2.60 → real 1.28; EU policy
+2.50 / CPI 2.10 → real 0.40; **divergence = 88bp**, long US / short EU; nominal `(4.20 − 2.30) × 100 =
+190bp`. The selector then emits `"UST-style cross-market RV: UST 10y vs Bund 10y"`, category `rates`,
+`executable=True`.
+
+**The signature mutation proof.** The builder-linkage test asserts with the **AST**, not a text grep.
+Mutant: replace the `cross_country_divergence(cross_country).value if ... else None` expression with a
+literal `None`. A text-grep test **survives** this (the import and the `cross_country=` keyword text both
+remain); the AST test **kills** it (the call is gone, the binding is gone). Verified: mutant → FAIL,
+restore → byte-identical → PASS. This is the §22.5 discharge tripwire's lesson applied pre-emptively —
+assert the mechanism (the call is bound and passed), never its textual trace.
+
+15 new tests in `tests/models/test_cross_country.py`; the existing `test_instrument_selection.py` was
+updated for the narrowed sentinel and the cross-country route.
+
+### 8. Gates
+
+`ruff check` PASS · `ruff format --check` clean · `mypy` clean · suite **1967 passed / 5 deselected**
+(up from 1952 — +15 new tests). `AGENTS.md` byte-identical (`sha256 8295ccf3…`).
+
+**Files:** `src/macro_engine/{config.py,models/cross_country.py,models/instrument_selection.py,
+thesis_layer/builder.py}`, `config/settings.yaml`,
+`tests/models/{test_cross_country.py,test_instrument_selection.py}`,
+`docs/{DECISIONS.md,CHANGELOG.md,CROSS_COUNTRY_DESIGN.md,PHASE5_DEFERRED.md,PROGRESS.md,MODULE_MAPPING.md}`,
+`README.md`.

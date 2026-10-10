@@ -10,13 +10,54 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-150 — the cross-country reasoning layer (layer 4): the divergence model, the duration-neutral RV selector, and the honest wiring boundary (2026-10-10)
+
+Section 22.3's **fourth and last** multi-country capability. `CROSS_COUNTRY_DIVERGENCE` used to return
+`BLOCKED_MULTI_COUNTRY_NOT_BUILT` unconditionally; it now measures a divergence between two COMPLETE
+country systems and names its expression. With D-145/D-148/D-149 having built the per-country coverage
+and D-147 the FX bridge, every dependency was met. Design record: `docs/CROSS_COUNTRY_DESIGN.md`; full
+evidence: `docs/DECISIONS.md` §D-150.
+
+- **Added** `models/cross_country.py` — `cross_country_divergence(CrossCountryInputs) -> ModelResult`.
+  It computes `real_a − real_b` (each `policy_rate − inflation_yoy`, **percent**), publishes
+  `divergence_bp` (signed), `nominal_spread_bp` (reported beside it — it MIXES expected inflation and
+  the real rate, so it is not itself a divergence measure), the two real rates, the verdict
+  (`MEANINGFUL_DIVERGENCE` / `NO_MEANINGFUL_DIVERGENCE` against the config band) and the
+  **derived** long/short legs (long the higher-real-rate country). The input validator refuses
+  four fake-spread classes: same country, different tenor (that is a *curve* trade), different
+  horizon, and an un-reconciled cross-currency pair.
+- **Added** the `cross_country:` config block (`settings.yaml`) + `CrossCountrySettings` (`config.py`):
+  the noise band (`meaningful_divergence_bp`, `fitted_assumption`), the shared horizon
+  (`comparable_horizon_quarters`, `mechanical_rule`), and the per-country `leg_labels` +
+  `instrument_template` that name the pair (`UST 10y`, `gilt 10y`, `Bund 10y`, `JGB 10y`).
+- **Changed** `instrument_selection.py`: the `CROSS_COUNTRY_DIVERGENCE` branch now calls
+  `_select_cross_country_instrument`, which names the pair from config or returns the sentinel inside
+  the band. `BLOCKED_MULTI_COUNTRY_NOT_BUILT` is **retained but narrowed** — it fires only on a
+  malformed divergence record, never for "no second country exists". `InstrumentSelectionInputs` gained
+  a `cross_country` field with a validator requiring it for a cross-country thesis and refusing it
+  elsewhere.
+- **Changed** `thesis_layer/builder.py`: `build_us_macro_thesis` gained a keyword-only
+  `cross_country: CrossCountryInputs | None = None`; when supplied it calls `cross_country_divergence`
+  ONCE and threads the measurement to `select_instrument` (additive — every existing caller unaffected).
+- **Tests:** `tests/models/test_cross_country.py` (15 tests) — hand-derived arithmetic, the sign
+  convention placed on the legs not a caller flag, every input a real mover, the noise-band boundary
+  read from the config leaf, all validator refusals, and the end-to-end layer-4 → instrument path. The
+  builder-linkage test asserts with the **AST** (a text grep survives a mutation that replaces the call
+  with a literal `None` — the §22.5 tripwire's lesson), verified by mutation.
+- **Docs:** `docs/PHASE5_DEFERRED.md` §2.4/§2.4.1/§2.4.2/§4 (layer 4 ✅; the two-snapshot
+  orchestration boundary stated), `README.md`, `docs/PROGRESS.md`, `docs/MODULE_MAPPING.md`.
+- **THE HONEST BOUNDARY (not wired):** the **two-snapshot orchestration** — fetching BOTH countries'
+  snapshots and driving a cross-country thesis from one API request. The country dispatch
+  (`snapshot_to_thesis_inputs`) is one-snapshot by construction, so this is an API-layer increment
+  (a `/thesis/{a}/vs/{b}` route or a batch call), not a model one. Recorded in `PHASE5_DEFERRED.md`
+  §2.4.2 rather than implied away.
+
 ### D-149 — the `de` and `jp` increments: the last two multi-country countries, the two rule sets that are un-fakeable for OPPOSITE reasons, and the seventh FALSE BLOCK (2026-10-10)
 
 The `de` (Germany) and `jp` (Japan) increments completing §22.3's three-workstream bar for the **last
 two** named countries (`us` was built in Phases 0–4, `gb` at D-145, the euro area `eu` at D-148). With
-this change **all five modelled countries are implemented end-to-end**; the only remaining
-multi-country capability is the **cross-country reasoning layer** itself (§2.4.1 layer 4, still
-refused by `BLOCKED_MULTI_COUNTRY_NOT_BUILT`). Each country got its own verified data, its own
+this change **all five modelled countries are implemented end-to-end**; the only other multi-country
+capability — the **cross-country reasoning layer** (§2.4.1 layer 4) — followed in D-150 below. Each country got its own verified data, its own
 genuinely distinct reaction function and its own instrument set, wired so a `de` or `jp` snapshot
 produces a thesis. Design record: `docs/DE_JP_DESIGN.md`; full evidence: `docs/DECISIONS.md` §D-149.
 

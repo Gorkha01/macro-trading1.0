@@ -418,6 +418,67 @@ class CrossMarketRVSettings(BaseModel):
         return float(self.max_abs_hedge_degradation.value)
 
 
+class CrossCountrySettings(BaseModel):
+    """Layer 4 — cross-country reasoning (Section 22.3 / 22.3.1).
+
+    The fourth and last layer of the four-layer multi-country bar. This block
+    carries the REASONING thresholds only; the duration-neutral sizing lives in
+    :class:`CrossMarketRVSettings`, which the layer feeds.
+
+    Every leaf is a judgement about where a *divergence* stops being noise,
+    which is why the band is a ``fitted_assumption`` and the shared horizon is a
+    ``mechanical_rule``. See the ``cross_country:`` block in
+    ``config/settings.yaml`` for the measurement behind each.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    meaningful_divergence_bp: CalibratedValue
+    comparable_horizon_quarters: CalibratedValue
+    leg_labels: dict[str, Any]
+    instrument_template: str
+    rationale: str
+
+    @property
+    def meaningful_divergence(self) -> float:
+        """Minimum absolute real-rate differential, in BASIS POINTS, that counts.
+
+        A gap inside this band is reported as ``NO_MEANINGFUL_DIVERGENCE`` with
+        the measured value beside it — an honest non-trade, never a silent zero.
+        """
+        return float(self.meaningful_divergence_bp.value)
+
+    @property
+    def comparable_horizon(self) -> float:
+        """The single horizon, in QUARTERS, both legs must be compared on."""
+        return float(self.comparable_horizon_quarters.value)
+
+    @property
+    def labels(self) -> dict[str, str]:
+        """Country -> the 10y government-bond desk label for that leg."""
+        raw = self.leg_labels.get("labels", {})
+        if not isinstance(raw, dict):
+            raise ValueError("cross_country.leg_labels.labels must be a mapping.")
+        return {str(k).strip().lower(): str(v) for k, v in raw.items()}
+
+    def label_for(self, country: str) -> str:
+        """The 10y desk label for ``country``, or raise.
+
+        Raised rather than defaulted: a country with no configured leg label
+        has no nameable 10y instrument, and emitting a placeholder would publish
+        an instrument the desk cannot trade.
+        """
+        code = country.strip().lower()
+        labels = self.labels
+        if code not in labels:
+            raise ValueError(
+                f"no cross_country.leg_labels entry for country {code!r}; a "
+                f"cross-country RV leg cannot be named for it. Configured: "
+                f"{sorted(labels)}."
+            )
+        return labels[code]
+
+
 class ScenarioDistributionSettings(BaseModel):
     """Module 12 — the explicit scenario set's numbers (D-064).
 
@@ -8094,6 +8155,7 @@ class Settings(BaseModel):
     instrument_selection: InstrumentSelectionSettings
     curve_trade: CurveTradeSettings
     cross_market_rv: CrossMarketRVSettings
+    cross_country: CrossCountrySettings
     invalidation: InvalidationSettings
     catalyst_calendar: CatalystCalendarSettings
     scenario_distribution: ScenarioDistributionSettings

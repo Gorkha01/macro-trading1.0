@@ -708,9 +708,13 @@ indicted the answerer.
 > outside the gb plan), which is §22.3 working — a *label* cannot be switched
 > without switching the universe, because the universe is what does the
 > refusing. `ProductionUniverse` is now country-aware (a `country` field and
-> per-country plans), and `BLOCKED_MULTI_COUNTRY_NOT_BUILT` now means "a
-> cross-market RV trade needs *two* built countries" rather than "no country but
-> `us` exists" — see §2.4 of `docs/PHASE5_DEFERRED.md`.
+> per-country plans). **D-150 (2026-10-10): the cross-market RV route is now
+> BUILT.** `CROSS_COUNTRY_DIVERGENCE` no longer returns the sentinel for every
+> call — `_select_cross_country_instrument` names a duration-neutral pair from a
+> measured divergence (`models/cross_country.py`).
+> `BLOCKED_MULTI_COUNTRY_NOT_BUILT` is **retained but narrowed**: it now means
+> "this specific divergence record is malformed", never "no second country
+> exists" — see §2.4/§2.4.1/§2.4.2 of `docs/PHASE5_DEFERRED.md`.
 
 **Shipped D-059.** `construct_duration_weighted_curve_trade` met the same
 standard, and the standard caught something different. §15.1b's only defence
@@ -1087,13 +1091,15 @@ the only thing that can see a transport defect.
    each anchor past the shared prefix; the sweep reproduces `31/26/5` exactly.
    **A row added to this table is not the only thing a new function touches** —
    it also re-anchors its file's existing sweeps.
-4. **No function in this table is verified multi-country.** By construction —
-   and **D-058 is the first function to *enforce* that refusal rather than merely
-   be scoped by it**: a non-`us` country returns `BLOCKED_MULTI_COUNTRY_NOT_BUILT`
-   instead of an instrument. The remaining three Tier 4 functions have the same
-   obligation and only one of them (`build_us_macro_thesis`) has an instrument or
-   a `country` parameter at all. **D-062 found the obligation violated in the
-   specification rather than in the code**: §20.12 labels its output
+4. **No function in this table was originally verified multi-country; as of 2026-10-10 the country-aware
+   ones are.** By construction — and **D-058 was the first function to *enforce* that refusal rather than
+   merely be scoped by it**: at the time a non-`us` country returned `BLOCKED_MULTI_COUNTRY_NOT_BUILT`
+   instead of an instrument. **Superseded by D-145/D-148/D-149:** the router now admits `gb`, `eu`, `de`
+   and `jp` end-to-end (each selects its own country's instruments). **And closed by D-150 (2026-10-10):**
+   the cross-country *reasoning layer* itself is now built (`models/cross_country.py` + the
+   `_select_cross_country_instrument` branch), so the sentinel now means only "this specific divergence
+   record is malformed" — never "no country but `us` exists" nor "the reasoning layer is unbuilt". See
+   §2.4/§2.4.2 of `docs/PHASE5_DEFERRED.md`. **D-062 found the obligation violated in the specification rather than in the code**: §20.12 labels its output
    `country="global"` while `ModelResult.country`'s own field description says
    *'"us" only through Phase 4'* — the function now publishes `"us"` and carries a
    mandatory scope warning (**O-64**), but §20.12's text still says `global`, so

@@ -422,8 +422,8 @@ async def stream_thesis_reasoning(country: str) -> StreamingResponse:
 
     The check reads ``settings.country.implemented`` (the same list the snapshot
     builder and ``snapshot_to_thesis_inputs`` gate on) rather than a literal
-    ``"us"``, so a country that has earned the label — gb, added by the first
-    multi-country increment — streams, while de/jp still refuse here.
+    ``"us"``, so every country that has earned the label streams — gb, eu, de and
+    jp all do, as of 2026-10-10.
     """
     if country not in get_settings().country.implemented:
         raise HTTPException(

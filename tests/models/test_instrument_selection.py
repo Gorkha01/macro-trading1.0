@@ -14,8 +14,10 @@ from running the code:
     — the SAME value on the executable and the sentinel branches, because a
       routing decision carries no corroboration either way.
 
-Routes (4): policy_path_gap, curve_shape_gap, inflation_expectations_gap,
-equity_macro. Sentinels (3): cross_country_divergence -> BLOCKED;
+Routes (5): policy_path_gap, curve_shape_gap, inflation_expectations_gap,
+equity_macro, cross_country_divergence (D-150 — routes to a cross-market RV
+pair when a divergence is supplied, or refuses with a NARROWED sentinel when the
+gap is inside the noise band). Sentinels (2 still analytical):
 credit_quality_gap and em_vulnerability -> ANALYTICAL_ONLY.
 """
 
@@ -53,6 +55,26 @@ def sel(
         ),
         UNIVERSE,
     )
+
+
+def _divergence(*, meaningful: bool = True) -> dict[str, Any]:
+    """A well-formed divergence record, as ``cross_country_divergence`` publishes.
+
+    Built here rather than by calling the model so THIS test file stays a test of
+    the selector, not of the divergence arithmetic (which
+    ``tests/models/test_cross_country.py`` owns).
+    """
+    divergence_bp = 88.0 if meaningful else 8.0
+    return {
+        "verdict": "MEANINGFUL_DIVERGENCE" if meaningful else "NO_MEANINGFUL_DIVERGENCE",
+        "divergence_bp": divergence_bp,
+        "nominal_spread_bp": 190.0,
+        "real_rate_a": 1.28,
+        "real_rate_b": 0.40,
+        "long_leg_country": "us",
+        "short_leg_country": "eu",
+        "threshold_bp": 25.0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +121,27 @@ def test_direction_uses_the_slope_word_on_the_curve_route() -> None:
 # Routing
 # ---------------------------------------------------------------------------
 def test_every_thesis_type_routes_without_raising() -> None:
-    """All 7 members: 4 executable, 1 blocked, 2 analytical."""
-    routed = {}
+    """All 7 members route; the cross-country one needs its divergence supplied."""
+    routed: dict[ThesisType, Any] = {}
     for t in ThesisType:
-        res = sel(t)
-        routed[t] = res.value
+        if t is ThesisType.CROSS_COUNTRY_DIVERGENCE:
+            routed[t] = sel(t, cross_country=_divergence()).value
+        else:
+            routed[t] = sel(t).value
     assert len(routed) == 7
 
 
-def test_blocked_multi_country_sentinel() -> None:
-    res = sel(ThesisType.CROSS_COUNTRY_DIVERGENCE)
+def test_blocked_multi_country_sentinel_now_only_on_a_malformed_record() -> None:
+    """D-150: the ``BLOCKED_MULTI_COUNTRY_NOT_BUILT`` sentinel survives, NARROWED.
+
+    Before D-150 this route returned the sentinel for EVERY cross-country call —
+    the sentinel's meaning was "no second country exists". Now the branch is
+    built: a well-formed divergence names an instrument, and the sentinel fires
+    only on a MALFORMED divergence record (one missing the keys the selector
+    reads). The widening/narrowing is the point — the sentinel must not be
+    deleted, because an un-reconcilable pair is still not expressible.
+    """
+    res = sel(ThesisType.CROSS_COUNTRY_DIVERGENCE, cross_country={"not": "a record"})
     assert res.value == BLOCKED_MULTI_COUNTRY_NOT_BUILT
 
 
@@ -128,14 +161,14 @@ def test_sentinel_value_is_a_bare_string_not_a_dict() -> None:
 
 def test_sentinel_confidence_is_computed_not_zero() -> None:
     """A sentinel is a CONFIDENT negative; 0.0 would report it as unknown."""
-    res = sel(ThesisType.CROSS_COUNTRY_DIVERGENCE)
+    res = sel(ThesisType.CREDIT_QUALITY_GAP)
     assert res.confidence == pytest.approx(0.50)
     assert res.confidence > 0.0
 
 
 def test_executable_confidence_matches_the_sentinel_confidence() -> None:
     """Same inputs to compute_confidence, so the same number."""
-    a = sel(ThesisType.CROSS_COUNTRY_DIVERGENCE).confidence
+    a = sel(ThesisType.CROSS_COUNTRY_DIVERGENCE, cross_country=_divergence()).confidence
     b = sel(ThesisType.POLICY_PATH_GAP).confidence
     assert a == pytest.approx(b)
 

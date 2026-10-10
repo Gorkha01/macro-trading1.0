@@ -106,15 +106,14 @@ country:
   # is the Bund / Eurex / ESTR / sovereign-spread block in
   # `thesis_layer.schemas.ProductionUniverse`.
   #
-  # de/jp are NOT listed. A country that is not built must not be enabled —
-  # the honest representation of "planned" is a roadmap entry, not a flag that
-  # silently produces a US-shaped thesis with a foreign label.
-  #
   # NOTE the euro area is enabled as the AGGREGATE ("eu"), not per member state.
-  # A member-state reaction function is not calibrated here (the operator's
-  # choice, 2026-10-10): the ECB sets ONE policy rate for the currency union, so
-  # the honest unit for a euro-area reaction function is the aggregate, not a
-  # member state's.
+  # The ECB sets ONE policy rate for the currency union, so the honest unit for
+  # the euro-area reaction function is the aggregate, not a member state's.
+  # Germany ("de") is a SEPARATE entity and is also enabled (2026-10-10) — but it
+  # is NOT a second euro-area rule: it carries a MEMBER-STATE APPROPRIATENESS rule
+  # (how the single ECB stance maps onto German conditions), which is the opposite
+  # of a member-state reaction function. See the de block's note below.
+  #
   # de/jp (Germany / Japan) were added 2026-10-10 after all three workstreams
   # were built and tested. GERMANY is NOT a relabelled ECB: it has NO central
   # bank of its own (the Bundesbank executes the ECB's single policy), so its
@@ -126,8 +125,9 @@ country:
   # Reifschneider-Williams shadow-rate rule encodes and a plain Taylor rule
   # provably cannot (Hasui & Teranishi 2025). See docs/DE_JP_DESIGN.md.
   #
-  # The euro area remains enabled as the AGGREGATE ("eu"); "de" is its largest
-  # member state (see the de block's note for how the two relate).
+  # All five modelled countries (us/gb/eu/de/jp) are now enabled AND implemented.
+  # The only remaining multi-country capability is the cross-country *reasoning*
+  # layer itself (layer 4 of PHASE5_DEFERRED.md §2.4.1), not country coverage.
   enabled: ["us", "gb", "eu", "de", "jp"]
   implemented: ["us", "gb", "eu", "de", "jp"]
 
@@ -3737,7 +3737,82 @@ cross_market_rv:
       pair. It is a fitted_assumption, not a mechanical_rule, because it is an
       estimate from data rather than a pre-committed rule.
 
-# Module 3 -- the rule-based regime classifier.
+# Layer 4 -- cross-country reasoning (Section 22.3 / 22.3.1).
+#
+# The fourth and last layer of the four-layer multi-country bar.
+# `cross_country_divergence` measures the signed divergence between two fully-
+# built country systems, FX-bridges the two legs into one currency, and decides
+# whether the gap is a real divergence or noise. It FEEDS the already-shipped
+# `construct_cross_market_rv` (Module 15.3), which does the duration-neutral
+# sizing; this block carries only the reasoning thresholds.
+#
+# The canonical structure (quantmemo "Cross-Country Rates Relative Value";
+# Section 22.3.1's own rule table) is a DURATION-NEUTRAL relative-value trade
+# whose payoff is linear in the SPREAD change, not the level. The reasoning the
+# engine owes is the SIGN and SIZE of the divergence, and whether it is inside
+# the noise band. It is NOT "US 10y is 4.3% and Bunds are 2.4%" -- that compares
+# two numbers on different bases.
+cross_country:
+  meaningful_divergence_bp:
+    value: 25.0
+    calibration_status: fitted_assumption
+    note: >
+      The minimum absolute REAL-rate differential, in BASIS POINTS, that counts
+      as a genuine stance divergence rather than noise. Unit is bp (0.01pp), the
+      desk unit for a spread, and the SAME unit `construct_cross_market_rv`
+      works in. 25bp is a fitted_assumption, not a mechanical_rule: it is a
+      judgement about where a real-rate gap stops being measurement noise,
+      chosen below the smallest real-rate gap between any two G10 banks in the
+      reference real-rate matrix (0.40pp = 40bp between the ECB and the Fed) so
+      a real divergence is never dismissed. A gap inside this band is reported
+      as NO_MEANINGFUL_DIVERGENCE with the measured value published beside it --
+      an honest non-trade, never a silent zero.
+
+  comparable_horizon_quarters:
+    value: 4.0
+    calibration_status: mechanical_rule
+    note: >
+      The single horizon, in QUARTERS, on which both countries' policy paths
+      must be compared. Both legs of a cross-country spread must be measured on
+      the SAME basis or the subtraction is meaningless (Section 22.3, the
+      four-layer bar's layer-4 trap). This leaf exists so the shared horizon is
+      STATED ONCE and both legs are validated against it rather than each
+      picking its own. 4 quarters is one year, the conventional macro horizon.
+
+  leg_labels:
+    calibration_status: mechanical_rule
+    note: >
+      Country -> the 10-year government-bond label for that country's leg of a
+      cross-market RV pair. These are the DESK names, one per modelled country,
+      carried as DATA (a config leaf) rather than as a hardcoded if/elif in the
+      selector (LAW 1). A country absent here has no named 10y leg, and a
+      cross-country pair naming it is refused rather than emitted with a
+      placeholder. The labels are classifier-safe: each matches the production
+      universe's rates vocabulary ("ust"/"treasury" for US, "gilt" for gb,
+      "bund"/"government bond" for eu/de, "jgb" for jp), so the emitted
+      instrument passes the universe membership check.
+    labels:
+      us: "UST 10y"
+      gb: "gilt 10y"
+      eu: "Bund 10y"
+      de: "Bund 10y"
+      jp: "JGB 10y"
+
+  # The pair template. `{long}`/`{short}` are the leg labels above. The
+  # leading "UST" token is load-bearing, exactly as for curve_shape_gap: it
+  # is what makes the emitted string keyword-recognised as a rates
+  # instrument by the production universe. A bare "US 10y vs EU 10y" would
+  # classify as None and be refused (measured), which is the same trap
+  # curve_shape_gap's own note records.
+  instrument_template: "UST-style cross-market RV: {long} vs {short}"
+  rationale: >
+    Cross-country policy divergence -> cross-market RV instrument
+    (Section 22.3.1). A duration-neutral long/short 10y pair isolates a view
+    on the RELATIVE policy path of two countries from the level of global
+    rates; the long leg is the higher-real-rate country. Correlation-
+    dependent -- the LTCM tail-risk caveat applies (Section 22.3.1).
+
+  # Module 3 -- the rule-based regime classifier.
 #
 # Section 6.2's sample code writes six literal thresholds and a
 # `else` fallthrough into `early_expansion`. Externalised here so the bands are

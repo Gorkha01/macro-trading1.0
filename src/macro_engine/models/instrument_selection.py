@@ -104,7 +104,10 @@ class ThesisType(str, Enum):
 
     POLICY_PATH_GAP = "policy_path_gap"
     CURVE_SHAPE_GAP = "curve_shape_gap"
-    CROSS_COUNTRY_DIVERGENCE = "cross_country_divergence"  # BLOCKED (US-only, Section 22.3)
+    # Section 22.3 layer 4: BUILT 2026-10-10 (D-150). Routes to
+    # _select_cross_country_instrument, which names a duration-neutral RV pair
+    # from a MEASURED real-rate divergence, or refuses with a narrowed sentinel.
+    CROSS_COUNTRY_DIVERGENCE = "cross_country_divergence"
     INFLATION_EXPECTATIONS_GAP = "inflation_expectations_gap"
     CREDIT_QUALITY_GAP = "credit_quality_gap"  # analytical only, Section 22.12
     EM_VULNERABILITY = "em_vulnerability"  # BLOCKED (US-only, Section 22.3)
@@ -203,6 +206,48 @@ class InstrumentSelectionInputs(BaseModel):
         default=None,
         description='Far leg, desk spelling (e.g. "10y"). None -> configured default.',
     )
+    cross_country: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The measured cross-country divergence (Section 22.3 layer 4), when "
+            "the thesis is CROSS_COUNTRY_DIVERGENCE. It is the ``value`` dict "
+            "produced by ``models/cross_country.cross_country_divergence``, passed "
+            "in rather than re-derived here so the divergence has ONE "
+            "implementation (LAW 2) and this selector reads a number rather than "
+            "recomputing it. Required for the cross-country route; ignored (and "
+            "rejected) by every other route."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _cross_country_block_belongs_only_to_a_cross_country_thesis(
+        self,
+    ) -> InstrumentSelectionInputs:
+        """Require the divergence for a cross-country thesis, forbid it elsewhere.
+
+        Symmetric with the curve-tenor guard below: a field supplied to a route
+        that cannot read it is silently dropped, which is how a caller concludes
+        their input was honoured when it was not (``extra="forbid"``, one level
+        down). And a cross-country thesis without a divergence has nothing to
+        reason over — it must be refused here rather than reaching the route.
+        """
+        is_cross = self.thesis_type is ThesisType.CROSS_COUNTRY_DIVERGENCE
+        if is_cross and self.cross_country is None:
+            raise ValueError(
+                "thesis_type=CROSS_COUNTRY_DIVERGENCE requires the measured "
+                "`cross_country` divergence (the value dict from "
+                "models/cross_country.cross_country_divergence). Without it there "
+                "is no divergence to reason over, and the selector will not invent "
+                "one from the gap direction."
+            )
+        if not is_cross and self.cross_country is not None:
+            raise ValueError(
+                f"`cross_country` supplied for thesis_type="
+                f"{self.thesis_type.value!r}, which has no cross-country legs. The "
+                f"divergence is read only by CROSS_COUNTRY_DIVERGENCE; supplying it "
+                f"to another route would be silently ignored."
+            )
+        return self
 
     @model_validator(mode="after")
     def _tenors_only_belong_to_curve_trades(self) -> InstrumentSelectionInputs:
@@ -315,6 +360,250 @@ def _build_curve_instrument(
     )
 
 
+def _select_cross_country_instrument(
+    inputs: InstrumentSelectionInputs,
+    universe: InstrumentUniverse,
+    *,
+    as_of: datetime,
+    settings: Any,
+) -> ModelResult:
+    """Route a cross-country divergence to a cross-market RV instrument.
+
+    Layer 4 (Section 22.3 / 22.3.1). The divergence was measured by
+    ``models/cross_country.cross_country_divergence`` and arrives on
+    ``inputs.cross_country``; this function only TURNS IT INTO AN INSTRUMENT, so
+    the measurement has one home (LAW 2).
+
+    Three outcomes:
+
+    * **Meaningful divergence** -> an executable dict naming a duration-neutral
+      long/short 10y pair (``"<LONG> 10y vs <SHORT> 10y (cross-market RV)"``),
+      category ``"rates"``. The long leg is the HIGHER-real-rate country, derived
+      by the model from the sign of the differential, not chosen here.
+    * **Not meaningful** (inside the noise band) -> the analytical sentinel with
+      the measured gap published beside the verdict. This is an honest non-trade,
+      not a build block: the pair is fully comparable, there is simply no
+      divergence to express.
+    * **Un-comparable** (a convertible-pair failure the model could not have
+      seen, e.g. a malformed divergence dict) -> ``BLOCKED_MULTI_COUNTRY_NOT_BUILT``
+      with the NARROWED meaning ("this specific pair cannot be reconciled"),
+      never the old "no second country exists".
+    """
+    divergence = inputs.cross_country
+    # The input validator guarantees presence; this is defensive against a
+    # caller that built the model directly, and it names the field rather than
+    # raising a bare KeyError three lines down.
+    if not isinstance(divergence, dict) or "verdict" not in divergence:
+        return _sentinel_result(
+            value=BLOCKED_MULTI_COUNTRY_NOT_BUILT,
+            interpretation=(
+                "A cross-country thesis was routed without a well-formed "
+                "divergence record (the `value` dict from "
+                "cross_country_divergence). No divergence can be expressed from a "
+                "missing measurement."
+            ),
+            context=(
+                "Section 22.3 layer 4: the instrument follows from a MEASURED "
+                "divergence. Absent the measurement there is nothing to express, "
+                "which is this sentinel's narrowed meaning."
+            ),
+            warnings=["Cross-country routing received no divergence record."],
+            as_of=as_of,
+        )
+
+    verdict = str(divergence.get("verdict", ""))
+    long_country = str(divergence.get("long_leg_country", "")).upper()
+    short_country = str(divergence.get("short_leg_country", "")).upper()
+    divergence_bp = divergence.get("divergence_bp")
+    threshold_bp = divergence.get("threshold_bp")
+
+    if verdict != "MEANINGFUL_DIVERGENCE":
+        return _sentinel_result(
+            value=ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT,
+            interpretation=(
+                f"No cross-market RV trade: the measured real-rate divergence "
+                f"({divergence_bp}bp) is inside the noise band ({threshold_bp}bp). "
+                f"This is an honest non-trade — the pair is fully comparable; "
+                f"there is simply no divergence to express."
+            ),
+            context=(
+                "Section 22.3.1: a cross-country RV trade expresses a MEANINGFUL "
+                "policy divergence. A gap inside the configured band is noise, and "
+                "trading noise is the error the band exists to prevent."
+            ),
+            warnings=[
+                f"Divergence {divergence_bp}bp below the {threshold_bp}bp "
+                f"meaningful threshold — reported, not traded."
+            ],
+            as_of=as_of,
+        )
+
+    # A duration-neutral cross-market RV pair: the same tenor (10y) in two
+    # countries, so the parallel-move hedge is real. The leg labels and the pair
+    # template are config leaves (LAW 1); the two country codes select the
+    # labels. cross_country.label_for RAISES for a country with no configured
+    # leg, so a pair naming an unnameable country is refused here rather than
+    # emitted with a placeholder.
+    cc_settings = get_settings().cross_country
+    long_label = cc_settings.label_for(long_country)
+    short_label = cc_settings.label_for(short_country)
+    instrument = cc_settings.instrument_template.format(long=long_label, short=short_label)
+
+    observed_category = universe.category_for(instrument)
+    if observed_category is None or not universe.permits(instrument):
+        # The emitted name is outside the desk's universe. Refuse rather than
+        # publish an untradeable string (Section 22.12).
+        raise ValueError(
+            f"The cross-country route produced {instrument!r}, which is OUTSIDE "
+            f"the production execution universe (Section 22.12). Check the "
+            f"cross_country.instrument_template and leg_labels config."
+        )
+
+    rationale = cc_settings.rationale
+    confidence = compute_confidence(
+        ConfidenceInputs(
+            data_quality_flags_present=False,
+            is_heuristic_not_calibrated=settings.heuristic_not_calibrated,
+            source_independence_count=settings.independence_count,
+            depends_on_unobservable=False,
+        )
+    )
+    return ModelResult(
+        model_name="select_instrument",
+        country=f"{long_country.lower()}-{short_country.lower()}",
+        as_of=as_of,
+        value={
+            "instrument": instrument,
+            "universe_category": observed_category,
+            "executable": True,
+            "rationale": rationale,
+            "direction_word": None,
+        },
+        confidence=confidence,
+        interpretation=(
+            f"Selected: {instrument} — a duration-neutral cross-market RV pair "
+            f"expressing a {divergence_bp}bp real-rate divergence (LONG "
+            f"{long_country} 10y / SHORT {short_country} 10y)."
+        ),
+        context=(
+            f"{rationale} The divergence is {divergence_bp}bp against a "
+            f"{threshold_bp}bp meaningful threshold. Sizing (duration-neutral "
+            f"DV01 weights) is Module 15.3's, not this selector's."
+        ),
+        inputs_used=[
+            "thesis_type",
+            "gap_direction",
+            "cross_country",
+        ],
+        warnings=[
+            "LTCM CAVEAT (Section 22.3.1): the pair is correlation-dependent. In "
+            "stress the two legs break rank and the spread stops behaving like a "
+            "spread. The duration-neutral hedge is neutral to the LEVEL of global "
+            "rates, not to a correlation breakdown.",
+            "The long/short assignment is derived from the measured real-rate "
+            "differential's sign, not supplied by the caller.",
+            "The cross-currency comparability of the two legs is established "
+            "UPSTREAM (the live FX bridge, D-147). This selector consumes the "
+            "already-reconciled divergence record; it does not re-fetch or "
+            "re-verify the FX conversion.",
+        ],
+        # --- Section 3/4: the reasoning object, populated -------------------
+        unit="categorical (a duration-neutral cross-market RV instrument name)",
+        direction=(
+            "TWO-SIDED BY CONSTRUCTION: the pair is LONG the higher-real-rate "
+            "leg and SHORT the lower, with the assignment DERIVED from the sign "
+            "of the measured real-rate differential (never supplied by the "
+            "caller). There is no single slope word — 'steepener'/'flattener' "
+            "name a curve trade, not a cross-market pair — so the two sides are "
+            "published explicitly instead."
+        ),
+        assumptions=[
+            "The two legs are the SAME instrument (same tenor, same bond type) "
+            "in two countries, so a parallel move in global rates moves both "
+            "legs by the same DV01 and cancels. This is what makes the pair a "
+            "RELATIVE-value spread rather than an outright duration bet; it is "
+            "enforced by the input validator, not assumed here.",
+            "The two countries' real-rate levels are COMPARABLE. That requires "
+            "the nominal series to be the same instrument and the currencies to "
+            "be reconciled (the live FX bridge, D-147). A pair assembled without "
+            "that reconciliation would compare quantities in different units.",
+            "The divergence is MEANINGFUL, i.e. outside the configured noise "
+            "band (cross_country.meaningful_divergence_bp). A gap inside the "
+            "band is noise, and this branch is not reached for one.",
+            "The instrument named by the config template and leg labels is the "
+            "correct expression of the divergence. Like every selector route "
+            "this is a CURATED convention, checked for universe membership "
+            "before returning — not an optimisation.",
+        ],
+        data_provenance=[
+            "cross_country — the `value` dict from cross_country_divergence, "
+            "carrying divergence_bp, threshold_bp, the verdict, and the "
+            "long/short leg countries. This selector READS the measurement; it "
+            "does not re-derive it.",
+            "thesis_type — resolved by the orchestrator (CROSS_COUNTRY_DIVERGENCE routes here)",
+            "gap_direction — recorded for provenance though the cross-market "
+            "branch derives its sides from the divergence sign rather than from "
+            "the gap's direction word",
+            "leg_labels / instrument_template / rationale — config leaves "
+            "(settings.cross_country, LAW 1); the two country codes select the "
+            "labels, and label_for RAISES for an unnameable country so a pair "
+            "cannot be emitted with a placeholder",
+            "universe — a ProductionUniverse, validated for membership; the "
+            "observed category is echoed as `universe_category`",
+        ],
+        limitations=[
+            "IT SELECTS AN EXPRESSION, NOT EDGE. A clean, executable RV pair for "
+            "this divergence says nothing about whether the divergence will "
+            "converge, and nothing about whether the trade is worth its cost — "
+            "the significance test (Q6) ran separately.",
+            "THE PAIR IS NOT SIZED. Duration-neutral notional weights are Module "
+            "15.3's (construct_cross_market_rv); a name without weights is not a "
+            "position, and this selector deliberately stops at the name.",
+            "CORRELATION-DEPENDENT (Section 22.3.1). The duration-neutral hedge "
+            "is neutral to the LEVEL of global rates, not to a correlation "
+            "breakdown: in a stress regime the two legs can break rank and the "
+            "spread stops behaving like a spread. This is the LTCM failure mode "
+            "and it is a property of the structure, not a defect of the choice.",
+            "CROSS-CURRENCY COMPARABILITY IS INHERITED. The comparability of the "
+            "two legs rests on the upstream FX reconciliation (D-147); a "
+            "currency risk the FX bridge does not cover would make the legs "
+            "non-comparable in a way this selector cannot detect.",
+            "The confidence is heuristic by construction "
+            "(heuristic_not_calibrated is a config leaf), so it states the "
+            "quality of a lookup rather than of a measurement.",
+            "Points-in-time: the selection is deterministic in its inputs, so it "
+            "carries no vintage risk of its own — but the divergence it consumes "
+            "inherits the revision exposure of the two national series "
+            "(Section 6).",
+        ],
+        decision_relevance=(
+            "Section 16.2's Q9 — the instrument — for a cross-country thesis. "
+            "Its `instrument` value becomes the thesis's `trade_idea.instrument`, "
+            "and it is what makes the layer-4 view (Section 22.3) expressible as "
+            "a trade at all: the reasoning layer MEASURES a divergence, this "
+            "selector NAMES its expression, and Module 15.3 sizes it."
+        ),
+        decision_prohibition=[
+            "MUST NOT be sized from this result alone. The duration-neutral "
+            "notional weights are Module 15.3's (construct_cross_market_rv); a "
+            "name without weights is not a position.",
+            "MUST NOT be read as a recommendation to trade. Instrument selection "
+            "is one gate among many, and the significance test that decides "
+            "whether any trade is warranted has already run separately.",
+            "MUST NOT be treated as evidence about the thesis's correctness: the "
+            "same pair would be selected for the same measured divergence "
+            "regardless of whether the convergence view is right.",
+            "MUST NOT be consumed without the two sides and their countries. The "
+            "instrument name states the legs; which side is LONG and which is "
+            "SHORT is the DERIVED part and is not recoverable from the ticker "
+            "alone.",
+            "MUST NOT be read as neutral to correlation breakdown. The "
+            "duration-neutral construction hedges the level of rates, NOT the "
+            "correlation between the two legs (Section 22.3.1).",
+        ],
+    )
+
+
 def _sentinel_result(
     *,
     value: str,
@@ -370,8 +659,9 @@ def _sentinel_result(
         ),
         assumptions=[
             "THERE IS NO PRODUCTION INSTRUMENT FOR THIS THESIS. The branch is "
-            "reached only by a routing decision — a blocked multi-country thesis "
-            "or an analytical (non-tradable) case — so the absence of an "
+            "reached only by a routing decision — a malformed cross-country "
+            "divergence record, a divergence inside the noise band, or an "
+            "analytical (non-tradable) case — so the absence of an "
             "instrument is a STRUCTURAL FACT about the thesis, not a failure of "
             "this function to find one.",
             "The reason for the absence is correctly attributed. `value` names "
@@ -502,22 +792,13 @@ def select_instrument(
     # the US one; `routes_for` overlays a country's overrides onto it.
     routes = settings.routes_for(country)
 
-    if inputs.thesis_type in (ThesisType.CROSS_COUNTRY_DIVERGENCE,):
-        return _sentinel_result(
-            value=BLOCKED_MULTI_COUNTRY_NOT_BUILT,
-            interpretation=(
-                "Cross-country RV instrument selection requires a second country's "
-                "rates system — not implemented in Phases 0-4."
-            ),
-            context=(
-                "This system is genuinely US-only through Phase 4 (Section 22.3). "
-                "country='us' is a label, not a generalisation."
-            ),
-            warnings=[
-                "Do not fabricate a cross-market RV trade against an unbuilt country system."
-            ],
-            as_of=as_of,
-        )
+    if inputs.thesis_type is ThesisType.CROSS_COUNTRY_DIVERGENCE:
+        # Layer 4 (Section 22.3 / 22.3.1). The divergence has already been
+        # MEASURED by `models/cross_country.cross_country_divergence` and passed
+        # in on `inputs.cross_country` — this branch reads it rather than
+        # recomputing it, so the divergence has one implementation (LAW 2). The
+        # input validator guarantees the dict is present for this thesis type.
+        return _select_cross_country_instrument(inputs, universe, as_of=as_of, settings=settings)
 
     if inputs.thesis_type in (ThesisType.CREDIT_QUALITY_GAP, ThesisType.EM_VULNERABILITY):
         return _sentinel_result(

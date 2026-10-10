@@ -121,11 +121,16 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from macro_engine.config import get_settings
 from macro_engine.data_layer.fed_funds_futures_client import FedFundsFuturesCurve
 from macro_engine.models.contracts import ModelResult, utc_now
 from macro_engine.models.convergence import ConvergenceInputs, classify_convergence
+from macro_engine.models.cross_country import (
+    CrossCountryInputs,
+    cross_country_divergence,
+)
 from macro_engine.models.instrument_selection import (
     GapDirection,
     InstrumentSelectionInputs,
@@ -1046,6 +1051,7 @@ def build_us_macro_thesis(
     jp_inputs: JpRuleInputs | None = None,
     curve_short_tenor: str | None = None,
     curve_long_tenor: str | None = None,
+    cross_country: CrossCountryInputs | None = None,
     short_yield: float,
     short_tenor_term_premium: float | None = None,
     futures_curve: FedFundsFuturesCurve | None = None,
@@ -1102,6 +1108,23 @@ def build_us_macro_thesis(
         use the futures source is explicit at the call site**, not an implicit
         network read inside a builder (D-137's declaration-by-design; §21.0
         rule 3 forbids inventing the curve here).
+    cross_country:
+        Section 22.3 **layer 4**. The two complete country systems a
+        ``CROSS_COUNTRY_DIVERGENCE`` thesis is a statement ABOUT — each leg's
+        already-derived policy rate, inflation and 10-year yield on ONE shared
+        horizon. ``None`` (the default) is the honest input for every
+        single-country thesis, and every existing caller is unaffected. When
+        supplied, ``cross_country_divergence`` is called ONCE here and its
+        measured divergence is threaded to ``select_instrument``, which names
+        the duration-neutral RV pair (or refuses, inside the noise band). The
+        divergence is computed here rather than in the selector so it has ONE
+        implementation (LAW 2) and the selector reads a measured number rather
+        than re-deriving it from levels.
+        A ``CROSS_COUNTRY_DIVERGENCE`` thesis with ``cross_country=None`` is
+        refused by ``InstrumentSelectionInputs`` — a cross-country thesis whose
+        divergence was never measured has nothing to express, and routing it to
+        a single-country instrument would be the exact substitution §22.3.1
+        forbids.
     unattributed:
         Section 21.4's blocked inputs and Section 5.4's flags, forwarded to
         ``collect_all_warnings``. Forwarded because a blocked input is the
@@ -1249,12 +1272,35 @@ def build_us_macro_thesis(
 
     # -- Q9. The instrument. `gap_direction` comes from the gap's own sign and
     #    `thesis_type` from the caller; neither is guessed.
+    #
+    #    Cross-country (Section 22.3 layer 4): a CROSS_COUNTRY_DIVERGENCE thesis
+    #    needs a MEASURED divergence, which two complete country systems and the
+    #    FX bridge can alone produce. It is computed ONCE here from the caller's
+    #    `cross_country` inputs — the builder is the single computation site, so
+    #    the selector reads a number rather than re-deriving it (LAW 2). A
+    #    cross-country thesis with NO inputs is refused by the input validator
+    #    rather than silently routed to a single-country instrument.
+    cross_country_value: dict[str, Any] | None = None
+    if cross_country is not None:
+        measured = cross_country_divergence(cross_country).value
+        # `ModelResult.value` is the deliberately broad union of §22.9.
+        # `cross_country_divergence` publishes a dict by contract; narrow it here
+        # so a future change to that contract fails loudly rather than reaching
+        # the selector as an untyped blob.
+        if not isinstance(measured, dict):
+            raise TypeError(
+                f"cross_country_divergence returned a {type(measured).__name__} "
+                f"for `value`; the selector expects the divergence dict. Its "
+                f"contract (models/cross_country.py) is to publish a dict."
+            )
+        cross_country_value = measured
     selection = select_instrument(
         InstrumentSelectionInputs(
             thesis_type=thesis_type,
             gap_direction=_gap_direction(gap),
             curve_short_tenor=curve_short_tenor,
             curve_long_tenor=curve_long_tenor,
+            cross_country=cross_country_value,
         ),
         universe,
         country=country,

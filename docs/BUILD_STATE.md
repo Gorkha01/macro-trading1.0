@@ -6107,13 +6107,15 @@ and never trades.
 
 Three outcome families, in this order of precedence:
 
-1. **Blocked** — a `CROSS_COUNTRY_DIVERGENCE` thesis returns
-   `BLOCKED_MULTI_COUNTRY_NOT_BUILT`: a cross-*market* RV trade needs **two** fully-built
-   country rates systems **and the FX bridge between them**. `us`, `gb` and the euro area `eu`
-   each have one now (2026-10-10) and `fx_spot` is live, so this block is no longer a
-   *coverage* statement — it now reflects only that the cross-country **reasoning** layer
-   itself is not yet built (§22.3, §22.3.1). A single-country `gb` or `eu` thesis **is**
-   admitted end-to-end (2026-10-10) and selects that country's instruments.
+1. **Blocked (NARROWED, 2026-10-10 D-150)** — a `CROSS_COUNTRY_DIVERGENCE` thesis used to return
+   `BLOCKED_MULTI_COUNTRY_NOT_BUILT` unconditionally: a cross-*market* RV trade needs **two**
+   fully-built country rates systems **and the FX bridge between them**. `us`, `gb`, the euro area
+   `eu`, `de` and `jp` each have one now (2026-10-10) and `fx_spot` is live, so the reasoning layer
+   was built (D-150): `models/cross_country.py` measures the divergence and
+   `_select_cross_country_instrument` names the pair. The sentinel is **retained but narrowed** — it
+   now fires only on a MALFORMED divergence record, never for "no second country exists". A
+   single-country `gb`/`eu`/`de`/`jp` thesis **is** admitted end-to-end and selects that country's
+   instruments. (The two-snapshot *orchestration* remains unwired — `docs/PHASE5_DEFERRED.md` §2.4.2.)
 2. **Sentinel** — a route in the configured table whose entry names a
    non-production universe (credit, EM, commodity) returns
    `ANALYTICAL_ONLY_NO_PRODUCTION_INSTRUMENT`. §22.12's rule.
