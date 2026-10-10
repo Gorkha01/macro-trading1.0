@@ -47,6 +47,7 @@ from macro_engine.data_layer.alfred_client import (
     VintageUnavailableError,
     fetch_vintage_observations,
 )
+from macro_engine.data_layer.fx_client import FX_PAIRS, FxReadError, fetch_fx_spot
 from macro_engine.data_layer.openbb_client import OpenBBClient, OpenBBFetchError
 from macro_engine.data_layer.publication_dates import (
     PublicationDateError,
@@ -83,6 +84,16 @@ logger = logging.getLogger(__name__)
 # Curve-shaped fields, identified structurally (the entry declares `tenors`)
 # rather than by name, so a new curve added to config needs no code change.
 CURVE_FIELDS: frozenset[str] = frozenset({"yield_curve", "tips_yields"})
+
+#: Mapping-shaped fields the per-registry-entry loop can NEVER fill, whatever
+#: config says: ``commodity_spot`` and ``equity_index`` have no fetch step of
+#: their own, so an empty dict for them is structural rather than a data result.
+#:
+#: ``fx_spot`` is deliberately ABSENT. It is the same *shape* (a dict of series)
+#: but it now HAS its own fetch step (:func:`_fetch_fx_spot_map`), so its
+#: emptiness is a data result again. Keeping it in this set would re-introduce
+#: exactly the un-re-measured claim the FX increment removed — the D-043 class.
+FX_UNWIRED_ALWAYS: frozenset[str] = frozenset({"commodity_spot", "equity_index"})
 
 
 class SnapshotBuildReport:
@@ -827,6 +838,89 @@ def _resolve_release_index(report: SnapshotBuildReport) -> ReleaseDateIndex | No
     return None
 
 
+def _fetch_fx_spot_map(
+    client: OpenBBClient,
+    report: SnapshotBuildReport,
+    *,
+    start: str,
+) -> dict[str, list[ObservationPoint]]:
+    """Fetch every configured FX pair into one ``{symbol: points}`` mapping.
+
+    **Why this is a separate step and not part of the per-field loop.** The loop
+    above sets one attribute per registry entry, and ``fx_spot`` is a *dict of
+    series*. That structural mismatch is the entire reason the field has been
+    declared on the schema and empty in every build (recorded as
+    ``declared_not_wired`` immediately above). Providing the mapping here is what
+    turns that disclosure into a fetch.
+
+    Contract, chosen to match the loop it sits beside:
+
+    * A **pair not in the catalogue** and a **fetch that failed** are different
+      facts and are reported differently: the first appends to ``failed`` with a
+      message naming the catalogue, the second with the resolved pair's error.
+      Neither aborts the build — one pair failing must not cost every other pair,
+      exactly as one scalar series failing does not cost the snapshot.
+    * An **empty result is impossible**: ``fetch_fx_spot`` raises rather than
+      returning an empty list, so there is no path by which a pair lands in the
+      mapping with zero points. That is deliberate — a key present with an empty
+      list would read downstream as "this pair was fetched and has no data",
+      which is the ambiguity the module exists to remove.
+    * A **disabled (empty) list** returns ``{}`` without a request. That is a
+      configuration choice, not a failure, so nothing is appended to ``failed``.
+
+    Returns
+    -------
+    dict[str, list[ObservationPoint]]
+        ``{symbol: series}`` for the pairs that fetched, ready to assign to
+        ``snapshot.fx_spot``.
+    """
+    settings = get_settings()
+    configured = list(settings.fx_pairs.enabled)
+    if not configured:
+        return {}
+
+    readings: dict[str, list[ObservationPoint]] = {}
+    for symbol in configured:
+        key = symbol.strip().upper().replace("/", "").replace("-", "")
+        if key not in FX_PAIRS:
+            # Named in config but absent from the catalogue. Reported rather than
+            # derived as a cross: a chained leg carries a bid/ask and timing
+            # convention the caller did not supply.
+            report.failed[f"fx_spot.{key}"] = (
+                f"not in the FX pair catalogue ({sorted(FX_PAIRS)}); a pair must be "
+                "registered in fx_client.FX_PAIRS before a build can fetch it, "
+                "and it is not derived as a cross"
+            )
+            logger.error("FX pair '%s' is not in the catalogue; skipping", key)
+            continue
+        try:
+            reading = fetch_fx_spot(key, client=client, start_date=date.fromisoformat(start))
+        except FxReadError as exc:
+            report.failed[f"fx_spot.{key}"] = str(exc)[:200]
+            logger.error("failed to fetch FX pair '%s': %s", key, exc)
+            continue
+        except Exception as exc:
+            # Broad on purpose, and the same contract the per-field loop uses: a
+            # bug in ONE pair must not cost every other pair or the snapshot. An
+            # unexpected fault in an OPTIONAL enrichment still lands in `failed`
+            # rather than escaping build_snapshot.
+            report.failed[f"fx_spot.{key}"] = f"{type(exc).__name__}: {exc}"[:200]
+            logger.exception("unexpected error fetching FX pair '%s'", key)
+            continue
+        if reading is None:  # pragma: no cover - guarded by the catalogue check above
+            report.failed[f"fx_spot.{key}"] = "unregistered pair returned no reading"
+            continue
+        readings[reading.pair.symbol] = reading.pair.series
+        report.observation_counts[f"fx_spot.{reading.pair.symbol}"] = reading.observation_count
+        logger.info(
+            "FX spot %s: %d observation(s) from %s",
+            reading.pair.symbol,
+            reading.observation_count,
+            reading.source,
+        )
+    return readings
+
+
 def build_snapshot(
     country: str = "us",
     *,
@@ -886,18 +980,27 @@ def build_snapshot(
     report = SnapshotBuildReport()
     report.requested = list(requested)
 
-    # D3 — the DECLARED-BUT-UNWIRED mapping fields. ``fx_spot``,
-    # ``commodity_spot`` and ``equity_index`` are declared on the schema, are
-    # validated, and round-trip through persistence, but they are DICTS OF
-    # SERIES rather than series, so this loop — which sets one attribute per
-    # registry entry — can never fill them. Nothing is asked for and nothing
-    # fails, so without this they are invisible: an empty dict reads the same as
-    # "no data this run". The ``gdi`` omission was the same class (declared
-    # everywhere, absent from the one list the builder iterates) and cost a
-    # series its data path for a whole phase. Named here so it cannot recur
-    # silently.
+    # D3 — the DECLARED-BUT-UNWIRED mapping fields. ``commodity_spot`` and
+    # ``equity_index`` are declared on the schema, are validated, and round-trip
+    # through persistence, but they are DICTS OF SERIES rather than series, so
+    # the loop below — which sets one attribute per registry entry — can never
+    # fill them. Nothing is asked for and nothing fails, so without this they are
+    # invisible: an empty dict reads the same as "no data this run". The ``gdi``
+    # omission was the same class (declared everywhere, absent from the one list
+    # the builder iterates) and cost a series its data path for a whole phase.
+    # Named here so it cannot recur silently.
+    #
+    # ``fx_spot`` LEFT this disclosure on 2026-10-10, when the FX layer landed.
+    # It is the same *shape* as the other two, but it now has its own fetch step
+    # (:func:`_fetch_fx_spot_map`) precisely BECAUSE the loop cannot reach it, so
+    # disposing of the defect meant adding the step, not relabelling the field.
+    # ``FX_UNWIRED_ALWAYS`` is the canonical list of the ones still unreachable;
+    # the intersection with ``MAPPING_SERIES_FIELDS`` keeps the two declarations
+    # from drifting (LAW 2).
     report.declared_not_wired = sorted(
-        f for f in persistence_module.MAPPING_SERIES_FIELDS if f not in requested
+        f
+        for f in persistence_module.MAPPING_SERIES_FIELDS
+        if f in FX_UNWIRED_ALWAYS and f not in requested
     )
 
     # Section 6: resolve release timing ONCE, before any series fetch, so every
@@ -969,6 +1072,19 @@ def build_snapshot(
         except Exception as exc:
             report.failed[field_name] = f"{type(exc).__name__}: {exc}"[:200]
             logger.exception("unexpected error fetching '%s'", field_name)
+
+    # Section 22.3's FX layer. ``fx_spot`` is a MAPPING of series, so the loop
+    # above cannot reach it — the structural reason it was declared-but-empty for
+    # the project's whole life. It is fetched here, after the scalars, because it
+    # is not a registry field and follows a different contract (its own pair
+    # catalogue, its own error type). This is the step that converts the D-137
+    # disclosure into a fetch, which is why ``declared_not_wired`` above now
+    # excludes it.
+    fx_map = _fetch_fx_spot_map(client, report, start=start)
+    if fx_map:
+        snapshot.fx_spot = fx_map
+        for symbol in fx_map:
+            snapshot.field_sources[f"fx_spot.{symbol}"] = "openbb:currency.price.historical"
 
     # Validation flags are already merged by _apply_validation (attach_flags
     # returns a copy); only the build-report flags remain to add. Appending

@@ -47,6 +47,15 @@ mutation-proved), not that a less comparable country is straightforward.
 
 No function may claim country-genericity it has not earned.
 
+**The FX layer landed 2026-10-10** — the bridge between two countries' rates systems. `fx_spot` had
+been declared on the schema and empty in every build since Phase 1; it was recorded as a *data*
+block and re-measured as a *wiring* gap (the sixth FALSE BLOCK). Now `data_layer/fx_client.py`
+fetches the configured G10 pairs, `build_snapshot` fills `snapshot.fx_spot`, and
+`models/fx_conversion.py` converts between currencies with the direction derived from the codes
+rather than assumed. **Spot only:** FX forwards remain unavailable on this installation (no
+`forward`/`swap`/`basis` route; D-108), so `cip_check`'s live check stays unavailable and no forward
+is ever synthesised from a spot value.
+
 ## Phase status
 
 | Phase | Scope | Status |
@@ -56,7 +65,7 @@ No function may claim country-genericity it has not earned.
 | 2 | Core models (policy rules, regime, inflation, labor, GDP, curve) | **101/101** — Tiers 1–4 complete (23/23 · 29/29 · 15/15 · 11/11) plus **Tier 5 = 23/23** |
 | 3 | Thesis builder + API layer | **complete** — 2/2; `build_us_macro_thesis` runs end to end; the service exposes five surfaces |
 | 4 | Risk basics (VaR) + risk-budget hook | **complete** — 4/4 (closed at D-073) |
-| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: multi-country** (per country, its *own* data registry, reaction function and instrument set) **and FX-forward data coverage.** GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
+| 5+ | Tier-5 upgrades: Markov regime, GARCH volatility, joint-draw VaR, econometric tooling, FX carry/parity, commodities, multi-country | **Tier 5 = 23/23 COMPLETE (D-092 … D-125)** — every §21.3 name has a `def`, one function per increment, each with tests, a mutation sweep and a live check. **Not a tier of new work: an UPGRADE PASS (D-096)** — Phases 0–4 built the simple version of each deferred item and Phase 5+ builds the sophisticated one, **deleting nothing**. **Remaining Phase-5 work: multi-country** (per country, its *own* data registry, reaction function and instrument set) **and FX-forward data coverage** (spot shipped 2026-10-10; the forward is still a hard data block). GARCH and the whole crisis-shock engine — factor set, engine, simulation half and the four-scenario library — closed 2026-10-09 (`docs/PHASE5_DEFERRED.md` §2.2/§2.3) |
 
 > **The `98` this row used to carry implied a 20-name Tier 5, and §21.3's list has 23.**
 > Resolved 2026-09-26 against the authority: **23** is the work list (the project has recorded

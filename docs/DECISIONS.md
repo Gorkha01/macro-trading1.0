@@ -23206,3 +23206,222 @@ four still-open defects and the incomplete line-by-line scope, not a broken gate
 `src/macro_engine/data_layer/validation.py`,
 `src/macro_engine/config.py`, `config/settings.yaml`, `REVIEW_REPORT.md`,
 `.review-evidence/*`.
+
+---
+
+## D-145 — §22.3 multi-country, country 1: `gb` wired end-to-end, and the three US-only guards that turned out to be correct boundaries
+
+### 1. What was built
+
+`gb` is the first non-US country, and the increment that made the pattern real rather than
+declared. Three workstreams per §22.3, then the wiring:
+
+**WS1 — data.** Seven `gb_*` series added to `config/series_registry.yaml` (headline/core CPI,
+unemployment, GDP q/q, Bank Rate, 3m short rate, 10y gilt). Registered in
+`persistence.SCALAR_SERIES_FIELDS` in the *same* change, because the failure this class causes is
+silent: a field declared, fetched and populated, then erased from every persisted snapshot.
+
+**WS2 — the reaction function.** The Bank of England's three *published* Annex 1 rules —
+contemporaneous, forward-looking, first-difference — in `models/policy_rules.py`, with their own
+input groups (`BoeContemporaneousInputs`, `BoeForwardLookingInputs`, `BoeFirstDifferenceInputs`).
+**This is the layer that cannot be faked:** §22.3's failure mode is "the Fed's Taylor rule with a
+foreign label", and the BoE's rules are genuinely different logic (an energy/non-energy CPI split, a
+5-quarter horizon, a first-difference form), not a re-parameterisation.
+
+**WS3 — instruments.** A UK `ProductionUniverse`: gilts, index-linked gilts, short-sterling
+futures, SONIA OIS, FTSE 100.
+
+**Wiring.** `snapshot_to_thesis_inputs`'s us-only guard became per-country branching; the UK
+derivation legs (CPI, activity, gilt curve, BoE rule inputs) were added; `build_us_macro_thesis` and
+its model calls take `country`; `new_thesis_id` and `MacroThesis.country` stopped hardcoding `"us"`;
+`/thesis/gb` runs end to end.
+
+### 2. The four mutations, and the one that proved the second test was necessary
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M1 | the guard reverts to a `"us"` literal | the `de`-refused test |
+| M2 / M2b | gb dispatch disabled | the dispatch tests |
+| M3 | `select_instrument` given `country="us"` | **only the tradable-path test** |
+| M4 | thesis-id prefix hardcoded | the id-prefix test |
+
+**M3 is the finding.** The stand-down test *survives* it, because a thesis that stands down at Q6
+never reaches instrument selection. Had only the stand-down test existed, the mutation would have
+been recorded as an equivalent and a real dispatch defect would have shipped. That is why there are
+two route tests, and it is the concrete form of "a test asserting the headline number is not a test
+of the structure beside it".
+
+### 3. Three US-only guards left alone, because they are CORRECT boundaries
+
+Found while hunting for remaining `"us"` hardcodes; each was examined and kept:
+
+* `gdp_nowcast.output_gap_from_snapshot` — reads the US CBO `GDPPOT` series. `gb` uses a disclosed
+  estimate instead of borrowing it, which is the honest reading.
+* `regime.check_trilemma_tension` — `_gb_thesis_inputs` sets `regime=None`; the trilemma needs the
+  reserve/peg structure `gb` does not model.
+* `snapshot_builder` — already config-driven; no change needed.
+
+Not every `"us"` is a defect. The judgement recorded here is which ones are.
+
+### 4. The `_gb_snapshot` fixture, and refusing to tune an input to manufacture a result
+
+The first route test asserted `ThesisStatus.DRAFT` and failed. The synthetic snapshot's policy gap
+(0.13 pp) sits *inside* the rules' dispersion (0.18 pp), so the thesis correctly **stands down** at
+Q6 — `WATCH`, `trade_idea=None`. That is a legitimate §17.4 outcome. The test was rewritten to
+assert the stand-down **and** a second test was added that forces the tradable path by genuinely
+lowering the 3m rate. **The input was not tuned to produce `DRAFT`** — manufacturing the status the
+test wanted would have made the test assert the fixture, not the code.
+
+### 5. Gates
+
+`ruff check` PASS · `ruff format --check` 183 clean · bare `mypy` 183 clean · suite
+**1846 passed / 5 deselected**. Tree restored byte-identical after every mutation.
+Commits `9299c29` (WS3), `986d181` (the wiring).
+
+**Files:** `src/macro_engine/{config.py,data_layer/persistence.py,models/policy_rules.py,
+thesis_layer/{builder.py,schemas.py},api_layer/orchestration.py}`,
+`config/{settings.yaml,series_registry.yaml}`, `tests/{api_layer/test_orchestration.py,
+api_layer/test_routes_thesis.py,thesis_layer/test_builder.py}`, `docs/{PHASE5_DEFERRED.md,
+BUILD_STATE.md,MODULE_MAPPING.md}`, `README.md`.
+
+
+---
+
+## D-146 — what "multi-country" actually means: the four-layer bar, recorded because the answer was nowhere in the repo
+
+### 1. Why this is a decision and not a memo
+
+The operator asked, in one line: *"What is Multi-country? This one is very important."* §22.3 names
+the three *per-country* workstreams — data, reaction function, instruments — but **nothing in the
+repo stated what the *engine* must become.** A specification that cannot say what "done" looks like
+for its own headline capability is a specification with a hole in it. So the bar was written down
+and the repo measured against it.
+
+### 2. The bar
+
+Four capabilities, each real only if the one below it is:
+
+| # | Capability | Trap if faked |
+|---|---|---|
+| 1 | Country-specific **data** | A series fetched, never cross-checked against the country's own conventions |
+| 2 | Country-specific **reaction function** | **The Fed's Taylor rule with a foreign label** — the single most common fake |
+| 3 | Country-specific **instruments + FX** | Comparing two countries' yields without converting — meaningless |
+| 4 | **Cross-country reasoning** | A "spread" between two numbers measured on different bases |
+
+**Layers 1, 3 and 4 are carry work. Layer 2 is where a system either understands a foreign central
+bank or merely relabels the Fed.**
+
+### 3. The measured verdict (2026-10-10)
+
+US and `gb`: layers 1–3 each. `de` / `jp`: none. **The FX bridge: missing.** Cross-country:
+refused (`BLOCKED_MULTI_COUNTRY_NOT_BUILT`).
+
+**What the repo could honestly say that day:** *"Two countries are modelled end-to-end on their own
+data, their own central-bank rules and their own instruments; a cross-country comparison is not yet
+expressible because the FX bridge is missing."* Defensible, and a long way short of the engine
+described.
+
+### 4. The dependency order this fixed
+
+Because the bar is layered, the work order is no longer a judgement call: **multi-country data →
+FX layer → cross-country reasoning.** The operator ratified exactly this order on 2026-10-10
+(*"so ok we need to do from multi country and fx layer then cross ok then proceed with"*).
+Without the bar, "do multi-country next" would have been ambiguous between "another country" and
+"the cross-country layer", and the wrong choice — the visible one — would have produced a
+comparison with no bridge under it.
+
+### 5. Gates
+
+Documentation-only increment. `docs/PHASE5_DEFERRED.md` §2.4.1 added; §2.4 re-measured (gb closed
+end-to-end; de/jp open). No `src/` change, no config leaf, no new OpenBB command.
+Commit `cf45711`.
+
+
+---
+
+## D-147 — the FX layer: `fx_spot` was never a data block, it was an unwired field (the sixth FALSE BLOCK), and the quote convention is the whole ballgame
+
+### 1. The disposition that was half wrong
+
+D-137 closed `fx_spot` (with `commodity_spot` and `equity_index`) as *"a disclosure, not a fetch"*,
+on the reading that the data was **unavailable**. The 2026-10-09 increment made the absence
+visible — `SnapshotBuildReport.declared_not_wired` plus a `DECLARED_NOT_WIRED:<field>` flag — which
+was a real fix, because an empty dict had read identically to "no data this run".
+
+**Measured 2026-10-10, the reading was half right and half wrong: the field WAS unwired (true) and
+the SPOT data WAS reachable (false).** `currency.price.historical` returns a daily series per pair
+through this installation's OpenBB service — ~1501 observations for `EURUSD`, `GBPUSD`, `USDJPY`,
+with `EURUSD` 2026-10-09 = 1.1206. **This is the sixth FALSE BLOCK of the D-043 class** (after
+`ppp_implied_rate`, `commodities_client`, `fx_reserves`, the two EM legs, and the §22.5 futures
+curve): a sourcing claim recorded once and never re-measured, which then reads like a measured
+constraint.
+
+**The method note that should have caught it was already in the repo.** §2.5 warned that *"a probe's
+deliverable is a verdict derived from a call"* — and the D-137 disposition was a verdict derived
+from **enumeration** (no route is *named* `fx_spot`), the same class of error the §22.5 probe made.
+
+### 2. What shipped
+
+* **`data_layer/fx_client.py`** — `FX_PAIRS` (G10 crosses → `(base, quote)`), `fetch_fx_spot`,
+  `parse_ecb_reference_rate`, and `SeriesClient`, a narrow `Protocol` so a stub satisfies it without
+  a cast.
+* **`snapshot_builder._fetch_fx_spot_map`** + a call in `build_snapshot` — **the step that turns the
+  disclosure into a fetch.** `fx_spot` is a *dict of series*; the per-registry-entry loop
+  structurally cannot fill it, which is why a separate step was required rather than a relabelling.
+  `FX_UNWIRED_ALWAYS` now holds only `commodity_spot` / `equity_index`.
+* **`models/fx_conversion.py`** — `FxRate` (validated) and `convert`, with the direction **derived
+  from the currency codes**, never a flag.
+* **`config/settings.yaml` → `fx_pairs`** — the enabled list, with `FxPairsSettings` in `config.py`.
+
+### 3. The probe that corrected the code before it shipped
+
+`_frame_to_points` was first written to parse the shape the **route advertises** — an OHLC index and
+a `close` column. Measured live, `OpenBBClient.fetch_series` normalises every route (including an
+OHLC one) to a tidy 5-column frame (`date`/`value`/`series_id`/`source`/`retrieved_at`). **The
+original parser would have returned `[]` on every real call** — reporting "no data" for data that
+was present, which is precisely the defect this increment exists to remove. Rewritten against the
+measured shape, and the module docstring's "OHLC close" claim corrected with it.
+
+**A second live-measured refusal:** the forward. The route inventory carries 278 routes and **none**
+matches `forward`/`swap`/`basis` under `currency` or `fixedincome`. So the module supplies **spot
+only** and says so; `cip_check`'s live check stays unavailable, and no forward is ever synthesised
+from a spot value.
+
+### 4. The quote convention is the whole ballgame
+
+`EURUSD = 1.12` means *1.12 USD per 1 EUR*. A direction error here produces a perfectly plausible
+number meaning the opposite of the truth — `CIPInputs`'s own docstring warns of exactly this. So:
+the pair stores `(base, quote)` rather than a six-letter ticker, `convert` **derives** the direction
+and refuses a same-currency call, a cross (`EUR→JPY` with an `EURUSD` rate) is refused rather than
+chained, and the test asserts the round trip rather than trusting it — a reciprocal on the wrong
+side passes a one-directional test and fails the round trip.
+
+### 5. The four mutations
+
+| # | Mutation | Killed by |
+|---|---|---|
+| M5 | the FX fetch call removed from `build_snapshot` (client exists, caller does not) | `test_build_snapshot_populates_the_fx_spot_mapping` |
+| M6 | `fx_spot` restored to `FX_UNWIRED_ALWAYS` (disclosure contradicts the fetch) | the two disclosure tests |
+| M7 | an unregistered pair silently skipped instead of reported | `test_an_unregistered_configured_pair_is_reported_not_fetched` |
+| M8 | the configured pair list truncated to one | the fetch tests + the "one pair failing spares the rest" test |
+
+Tree restored byte-identical (`sha256 812a92b3…`) after every mutation.
+
+### 6. Gates
+
+`ruff check` PASS · `ruff format --check` **187** clean · bare `mypy` **187** clean · suite
+**1884 passed / 5 deselected** (up from 1846 — +38 new tests).
+
+**One gate the increment tripped, correctly.** `fx_pairs.calibration_status` / `note` were first
+declared as `CalibratedValue` envelopes, which put two non-numeric leaves on the `scalar()` path and
+failed `test_infrastructure.py::test_the_non_numeric_envelopes_are_exactly_the_disclosed_set`. The
+gate did its job — *a new non-numeric envelope must be a deliberate, disclosed edit*. Neither field
+is a tunable (one is a provenance label, the other is prose), so both became plain `str`, following
+the `api.host_value` CHOICE pattern, rather than joining the disclosed list.
+
+**Files:** `src/macro_engine/data_layer/fx_client.py` (NEW),
+`src/macro_engine/models/fx_conversion.py` (NEW),
+`src/macro_engine/data_layer/snapshot_builder.py`, `src/macro_engine/config.py`,
+`config/settings.yaml`, `tests/data_layer/test_fx_client.py` (NEW),
+`tests/models/test_fx_conversion.py` (NEW), `tests/data_layer/test_phase1_data_layer.py`,
+`docs/{PHASE5_DEFERRED.md,BUILD_STATE.md,OPENBB_ENDPOINT_RECONCILIATION.md}`, `README.md`.

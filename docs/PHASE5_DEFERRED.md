@@ -278,16 +278,20 @@ gb runs the BoE's *published* Annex 1 rules, not a Taylor rule with a British ac
 | 1 · Data | ✅ | ✅ 7 `gb_*` series | ❌ | — |
 | 2 · Reaction function | ✅ Fed trio | ✅ 3 BoE rules | ❌ | — |
 | 3 · Instruments | ✅ | ✅ gilt / short-sterling / SONIA / FTSE | ❌ | — |
-| **FX (the bridge)** | ⚠️ `fx_spot` declared, **never fetched** | — | — | ❌ |
+| **FX (the bridge)** | ✅ **`fx_spot` fetched since 2026-10-10** (spot; forwards still blocked) | — | — | ⚠️ convertible |
 | 4 · Cross-country reasoning | — | — | — | ❌ **`BLOCKED_MULTI_COUNTRY_NOT_BUILT`** |
 
 **The three things genuinely missing for the engine the operator described** (Fed-vs-ECB,
 US-vs-EU inflation, USD-vs-EUR), in dependency order:
 
-1. **An FX layer.** `fx_spot` is a declared-but-unwired schema field (`snapshot_builder.py:889`); no
-   FX forward or cross-currency basis exists at all. **Without this, two countries cannot be compared
-   on a common basis — it is the bridge between layers 3 and 4.** This is the §2.5 data block (D-108:
-   no source on this install, 3 probes).
+1. ~~**An FX layer.**~~ **CLOSED 2026-10-10.** The FX *spot* layer is now fetched end-to-end:
+   `data_layer/fx_client.py` fetches the configured pairs (`config/settings.yaml` → `fx_pairs.enabled`)
+   and `build_snapshot` populates `snapshot.fx_spot`; `models/fx_conversion.py` converts between two
+   currencies with the direction **derived from the codes**. `fx_spot` therefore left
+   `declared_not_wired`. **What remains blocked is only the FORWARD**: no forward/swap/basis route
+   exists on this installation (D-108), so `cip_check`'s live check stays unavailable. See §2.5 item 3
+   for the corrected record — the field was unwired AND the *spot* data was thought absent; only the
+   first was true.
 2. **A second country next to `gb`.** Europe (ECB) is the obvious pair: it makes *Fed vs ECB* and
    *Bund vs UST* expressible. It is a full three-workstream increment of its own, and harder than gb
    (the ECB has no single labour market and a 20-country inflation aggregate).
@@ -297,9 +301,11 @@ US-vs-EU inflation, USD-vs-EUR), in dependency order:
    than a wall.
 
 **What the repo CAN honestly say today:** *"Two countries are modelled end-to-end on their own data,
-their own central-bank rules and their own instruments; a cross-country comparison is not yet
-expressible because the FX bridge is missing."* That is a real, defensible statement — and it is a
-long way short of the multi-country engine described in this subsection.
+their own central-bank rules and their own instruments; an FX spot layer now converts between
+currencies, so a cross-country comparison is expressible in principle — but a second non-US country
+for the *rates* comparison (Europe) is not yet built, so the cross-country reasoning layer is still
+refused."* That is a real, defensible statement — and it is a long way short of the multi-country
+engine described in this subsection.
 
 
 ### 2.5 Market / price data — **partially implemented; the gap is source availability**
@@ -329,14 +335,16 @@ Three dedicated clients back this: `openbb_client.py` (35 KB), `commodities_clie
 `fetch_opec_spare_capacity`), plus `alfred_client.py` (vintages), `world_bank_client.py`,
 `reserves_client.py`, `release_calendar.py`.
 
-**Two things are genuinely broken or missing** (a third — the unwired spot fields — was closed
-2026-10-09 by DISCLOSING the gap rather than by fetching the data; see item 3 below and §2.5.1):
+**Two things are genuinely broken or missing** (a third — the unwired spot fields — was first closed
+2026-10-09 by DISCLOSING the gap, and then **half-fetched 2026-10-10**: `fx_spot` was re-measured as
+reachable and wired, while `commodity_spot`/`equity_index` keep the disclosure; see item 3 below and
+§2.5.1):
 
 | # | Gap | Evidence | Nature |
 |---|---|---|---|
 | 1 | **FX forward points / cross-currency basis — HARD BLOCKED** | `config/series_registry.yaml:1908` — `blocked: fx_forward_rate`. Measured **2026-09-25 (D-108)** with three independent probes: (1) the OpenBB route inventory walks to **443 routes and none matches forward/swap/basis** under `currency` or `fixedincome`; (2) CME futures proxies `6E=F` / `6J=F` / `6B=F` all return `EmptyDataError` via yfinance; (3) FRED's H.10 family (`DEXUSEU`, `DEXJPUS`, …) is **spot only** — the release carries no forwards. **Consequence: `cip_check` takes `forward` as an INPUT and its arithmetic is complete, but its LIVE check cannot run, so the market's own CIP deviation cannot be measured on this build.** | Data block — no source on this install |
 | 2 | **Four more blocked registry items** | Active `blocked:` entries are **5 in total** (with `fx_forward_rate`): `iron_ore_change_pct` (L1832), `supercore_direction` (L1844), `conference_board_lei` (L1861), `inflation_surprise_bp` (L1876), `fx_forward_rate` (L1909). A sixth, `ppp_implied_rate` (L1841), is **commented out**, not active. These are the **§21.4 Loophole Ledger** — the system returns `"unavailable"` rather than a plausible number, which is the intended behaviour, not a defect. | Loophole Ledger — by design |
-| 3 | ~~**`fx_spot` / `commodity_spot` / `equity_index` declared but never filled**~~ | **CLOSED 2026-10-09 as a DISCLOSURE, and the honest disposition is that the *fetch* was never the right fix.** `schemas.py:337-339` declares all three; `snapshot_builder.py` still does not assign them — deliberately (D-137: the declaration is by design). What changed is that the absence is now **visible**: `SnapshotBuildReport.declared_not_wired` plus a `DECLARED_NOT_WIRED:<field>` data-quality flag distinguish "declared but unwired" from "no data this run". Tests: `test_phase1_data_layer.py:2303`, `:2363`. **Corrected 2026-10-10** — this row still read "Actionable" after the fix landed. | Done — disclosure, not fetch |
+| 3 | **`fx_spot` / `commodity_spot` / `equity_index` declared but never filled** | **PARTLY CLOSED 2026-10-09 as a DISCLOSURE; `fx_spot` then WIRED 2026-10-10.** The 2026-10-09 disposition made the absence **visible** (`SnapshotBuildReport.declared_not_wired` + a `DECLARED_NOT_WIRED:<field>` flag) on the reading that the data was unavailable. **Re-measured 2026-10-10: that reading was half wrong — the field was unwired (true) and the SPOT data was reachable (false).** `currency.price.historical` returns ~1501 daily observations per G10 pair through this installation's OpenBB service, so `fx_client.fetch_fx_spot` was written and `build_snapshot` now fills `snapshot.fx_spot`; `fx_spot` left `declared_not_wired`. **This is the sixth FALSE BLOCK of the D-043 class.** `commodity_spot` / `equity_index` remain declared-but-unwired (no fetch step; not re-probed). Tests: `test_fx_client.py` (20), `test_phase1_data_layer.py::test_the_builder_itself_records_the_unwired_mapping_fields`. | **`fx_spot` done — fetched. Others: disclosure retained** |
 
 **⚠️ A caution about probe (1) above, added 2026-10-10.** The D-108 inventory walk is cited as
 evidence that no forwards route exists, and it searched for `forward|swap|basis`. **It never searched
@@ -366,14 +374,25 @@ Only item 1 is a plan; the other two are a decision and an omission respectively
 |---|---|---|
 | 1 | Re-probe FX forwards on a schedule (the block is recorded precisely so it *can* be re-probed). Candidate sources already identified in the registry note: any provider publishing forward points or a cross-currency basis — a licensed source, or CME settlement data via a credentialed provider (`fmp` / `polygon`). **The registry records that both currently fail on MISSING CREDENTIALS rather than a missing product** — i.e. this is potentially a *config* fix, not a code fix. **Search the route inventory for the ECONOMIC CONCEPT, not only the instrument name** — see the caution above. | Credentials / licensed feed |
 | 2 | No action — leave as `blocked:` so the block remains re-probeable. Any attempt to populate these would violate §21.0 rule 3 (*"no input may be invented"*). | None (intentional) |
-| 3 | ~~Populate two of the three now~~ **No action — CLOSED 2026-10-09.** The fix was a **disclosure**, not a fetch, and that was the correct disposition: the three fields are declared by design (D-137), and the defect was that their absence was *invisible*. `SnapshotBuildReport.declared_not_wired` + a `DECLARED_NOT_WIRED:<field>` flag now make an empty mapping distinguishable from "no data this run". | Done |
+| 3 | ~~Populate two of the three now~~ **CLOSED 2026-10-09 as a DISCLOSURE, then WIRED 2026-10-10.** The 2026-10-09 step was correct as far as it went — the invisibility *was* a real defect and the disclosure fixed it — but it accepted a second claim it never measured: that the data was unavailable. It is not. `fx_spot` is now fetched (spot only; forwards remain item 1) and no longer appears in `declared_not_wired`. `commodity_spot` / `equity_index` keep the disclosure. | Done |
 
 **Note on item 3 (updated 2026-10-10):** this used to say it was "the only one currently invisible to
 any test — an empty dict looks the same as 'no data this run'." That was the defect, and it is now
 fixed: the invisibility was the bug, and it is asserted by `test_phase1_data_layer.py:2303` and
 `:2363`. The original framing — *"decide whether `snapshot_builder` should assign the two reachable
-fields"* — was the wrong question: assigning them would publish two spot levels under a report that
-declares three, which is a different mis-description. **Disclosing the gap was the fix.**
+fields"* — turned out to be the RIGHT question, but it was answered in the wrong direction: it
+concluded the fields were unreachable and settled for disclosing them. **`fx_spot` was reachable all
+along.** The 2026-10-10 increment split the three: `fx_spot` got a fetch step
+(`_fetch_fx_spot_map`), the other two kept the disclosure, and the disclosure is now scoped to the
+fields that genuinely have no fetch step (`FX_UNWIRED_ALWAYS`) instead of all three.
+
+**The reusable lesson (the sixth instance of it, so it is now a named pattern rather than an
+incident).** *A disposition recorded as "the data is unavailable" must be re-measured like any other
+claim.* The first probe's own method note (§2.5, above) already warned that *"a probe's deliverable
+is a verdict derived from a call"* — and the D-137 disposition was a verdict derived from
+**enumeration** (*no route is named `fx_spot`*), which is the same class of error. The repository now
+carries six FALSE BLOCKs: `ppp_implied_rate`, `commodities_client`, `fx_reserves`, the two EM legs,
+the §22.5 futures curve, and this one.
 
 ### 2.6 "Conditional" forecasting — what the word means here
 
@@ -520,7 +539,8 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | Multi-country — **`gb`** | **CLOSED 2026-10-10 for `gb`** — the first multi-country increment (§2.4), wired end-to-end, 4 mutation proofs on the dispatch | `de`/`jp` still need their own series set + reaction function + instrument set (§22.3: three tasks per country) |
 | Multi-country — **`de`, `jp`** | **Deferred — genuine gap** (guards in place; `BLOCKED_MULTI_COUNTRY_NOT_BUILT`) | per-country series set + reaction function (§22.3: three tasks per country) |
 | FX forward points / cross-currency basis | **Blocked — data unavailability**, not a plan | no source on this install (3 probes, D-108) |
-| `fx_spot` / `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them |
+| **FX spot (`fx_spot`, the layer-3→4 bridge)** | **CLOSED 2026-10-10 — fetched** | `data_layer/fx_client.py` + `snapshot_builder._fetch_fx_spot_map` + `models/fx_conversion.py`; `fx_spot` left `declared_not_wired`. Spot only — the forward is the row above |
+| `commodity_spot` / `equity_index` as snapshot fields | **Plumbing exists, fetch does not** | `snapshot_builder.py` never populates them (`FX_UNWIRED_ALWAYS`) |
 | 4 further Loophole-Ledger blocks (`iron_ore_change_pct`, `supercore_direction`, `conference_board_lei`, `inflation_surprise_bp`) | **By design — returns "unavailable"** | §21.4 — no source, and inventing one is forbidden |
 | §22.5 Fed-funds-futures-implied policy path | **DISCHARGED 2026-10-10 — live fetch shipped, fail-safe to proxy** (§5.1) | the SOURCE exists; the reader + builder chain + live fetch are wired; marker `"discharged"` |
 | `bayesian.likelihoods.table` (data) | Deferred | historical evidence-vs-outcome data |
@@ -528,10 +548,12 @@ earlier count in this review; the distinction is recorded here so it is not repe
 | `models/monetary.py`, `models/volatility.py` (paths) | Doc-only divergence for `monetary.py`; **`volatility.py` path reconciled** | — |
 
 **Two genuine capability gaps remain: multi-country (`de`/`jp`; `gb` closed 2026-10-10), and
-FX-forward coverage** (a data block, not a plan). Two closures landed 2026-10-09 and this table said
-four until 2026-10-10 — GARCH (§2.2) and the crisis-shock engine (§2.3.1) were both built, and the
-count was not decremented. The multi-country row was likewise left whole until 2026-10-10, when the
-`gb` increment closed one of its three countries.
+FX-forward coverage** (a data block, not a plan). **The FX SPOT layer closed 2026-10-10** — it was
+recorded as a data block and re-measured as an unwired field (the sixth FALSE BLOCK). Three closures
+now landed 2026-10-09/10, and this table said four until 2026-10-10 — GARCH (§2.2) and the
+crisis-shock engine (§2.3.1) were both built, and the count was not decremented. The multi-country
+row was likewise left whole until 2026-10-10, when the `gb` increment closed one of its three
+countries.
 Everything else the spec defers is either an `extensions/` backend gated on an uninstalled package,
 a Loophole-Ledger data block, or a documentation path that drifted from the code.
 

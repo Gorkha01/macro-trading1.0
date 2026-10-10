@@ -63,10 +63,17 @@ excluded, per the inventory test.)
 | `currency.search` | currency | discovery |
 
 This is the real answer to your USDJPY question: `currency.price.historical` is the
-command that would populate `fx_spot`. The registry currently contains **no FX-rate
-field** (`series_registry.yaml:1915` names FRED's `DEXJPUS` and declines it because
-H.10 has no forwards), so the gap is a **registry + fetcher** gap, not a
-**provider** gap. The provider has FX; the engine does not subscribe.
+command that populates `fx_spot`. **The gap closed 2026-10-10** — `data_layer/fx_client.py`
+fetches it and `build_snapshot` fills `snapshot.fx_spot`, so the engine now DOES subscribe
+to the provider's FX. Measured live: ~1501 daily observations per G10 pair; EURUSD
+2026-10-09 = 1.1206.
+
+The history is worth keeping because it is the repository's sixth FALSE BLOCK: the gap was
+diagnosed correctly (*"the provider has FX; the engine does not subscribe"*) and then closed
+in the wrong direction — it was recorded as a **data** gap and disclosed, when it was a
+**wiring** gap that needed a fetcher. `series_registry.yaml:1915` still names FRED's `DEXJPUS`
+and declines it, correctly, because **H.10 has no forwards** — that refusal is about the
+*forward* (still blocked, D-108), not the spot, and the two were conflated.
 
 ### Gap B — **Cross-country macro**
 

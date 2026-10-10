@@ -5135,6 +5135,54 @@ class CountrySettings(BaseModel):
         return self
 
 
+class FxPairsSettings(BaseModel):
+    """Section 22.3's FX layer — which spot pairs a build fetches.
+
+    **Why this is a separate surface rather than more ``snapshot_fields``.** The
+    registry loop sets ONE attribute per registry entry, and ``snapshot_fields``
+    maps a country to those entries. ``fx_spot`` is a *dict of series*
+    (``dict[str, list[ObservationPoint]]``), so that loop can never fill it — the
+    structural reason it has been declared on the schema and empty in every
+    build. A pair therefore needs its own list, consumed by a separate step that
+    calls ``fx_client.fetch_fx_spot`` and writes into the dict.
+
+    **It is ``enabled``, not ``implemented``.** ``CountrySettings`` carries both
+    because a country's *capability* is a claim that must be earned; an FX pair
+    carries only ``enabled``, because a pair whose fetch fails is reported in the
+    build report like any other series — there is no "silently produces a
+    US-shaped answer with a foreign label" failure mode to forbid here. Adding an
+    ``implemented`` list would be ceremony without a hazard behind it.
+
+    **Where the catalogue lives.** ``fx_client.FX_PAIRS`` is the *catalogue*
+    (symbol -> ``(base, quote)``) and is deliberately in code because it encodes a
+    quote convention, not a policy choice. This block chooses *which* of those a
+    build fetches. A pair named here but absent from the catalogue is skipped with
+    a report entry rather than derived as a cross — chaining two unrelated legs is
+    a third convention (bid/ask, timing) the caller did not ask for.
+
+    **Forward points are NOT here, and cannot be added.** Measured 2026-10-10:
+    the live OpenBB spec carries 278 routes and none matches
+    ``forward``/``swap``/``basis`` under ``currency`` or ``fixedincome``, so FX
+    forwards remain unavailable (D-108) and ``cip_check``'s live check stays
+    blocked. This block is SPOT ONLY; a forward entry here would have no route
+    behind it and would be a fabricated input (Section 21.0 rule 3).
+
+    ``calibration_status`` and ``note`` are plain ``str``, NOT ``CalibratedValue``
+    envelopes. The envelope exists to force a *tunable* to declare its
+    calibration; neither of these is a tunable — one is a provenance label for
+    the block and the other is prose. Shipping them as envelopes would put two
+    non-numeric leaves on the ``scalar()`` path and require disclosing them in
+    ``test_infrastructure``'s non-numeric list, which is exactly the friction the
+    plain-``str`` CHOICE pattern (``api.host_value`` and friends) avoids.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    calibration_status: str
+    note: str
+    enabled: list[str]
+
+
 class OpenBBSettings(BaseModel):
     """OpenBB transport settings.
 
@@ -7574,6 +7622,7 @@ class Settings(BaseModel):
     metals_complex: MetalsComplexSettings
     equity_macro: EquityMacroSettings
     api: ApiSettings
+    fx_pairs: FxPairsSettings
     snapshot_fields: dict[str, list[str]]
 
     @model_validator(mode="after")

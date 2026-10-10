@@ -6036,3 +6036,46 @@ snapshot_fields:
     - gb_bank_rate
     - gb_gilt_10y_yield
     - gb_short_rate_3m
+
+# ---------------------------------------------------------------------------
+# fx_pairs — Section 22.3's FX layer (the bridge between two countries)
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS A SEPARATE SURFACE, NOT MORE ENTRIES IN `snapshot_fields`.
+# `snapshot_fields` maps a country to REGISTRY KEYS, and `build_snapshot` fetches
+# each key onto a *scalar* attribute. `fx_spot` is a DICT OF SERIES
+# (`dict[str, list[ObservationPoint]]`), so the registry loop can never fill it —
+# that is the structural reason it has always been declared and always been empty
+# (measured: `snapshot_builder.py` never assigns it). A pair therefore needs its
+# own list, fetched by `fx_client.fetch_fx_spot` and written into the dict.
+#
+# WHY IT IS NOT BLOCKED. The D-137 disposition closed `fx_spot` as "a disclosure,
+# not a fetch" on the reading that the data was unavailable. Measured 2026-10-10
+# that reading was HALF WRONG: the *field* was unwired (true) AND the data was
+# thought to be absent (false). `currency.price.historical` returns 1501 daily
+# observations per pair through this installation's OpenBB service. This is the
+# sixth FALSE BLOCK of the D-043 class.
+#
+# WHAT IS STILL BLOCKED. FX FORWARD points remain unavailable — the live spec has
+# 278 routes and none matches forward/swap/basis under currency or fixedincome.
+# `cip_check` therefore still cannot be live-checked, and this list carries SPOT
+# ONLY. Do not add a forward here; there is no route behind it.
+#
+# The pairs are G10 crosses: the majors the two built countries (us, gb) and the
+# next one (eu) need. `fx_client.FX_PAIRS` is the catalogue and the quote
+# convention; this list chooses WHICH of them a build fetches. A pair not in the
+# catalogue is skipped with a report entry rather than derived as a cross.
+fx_pairs:
+  calibration_status: institutional_fact
+  note: >
+    Spot only. FX forwards are unavailable on this installation (D-108), so
+    `cip_check`'s live check stays blocked; the spot leg is what a cross-country
+    yield comparison needs (both legs in one currency) and is what this fetches.
+  enabled:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCHF
+    - EURGBP
+    - AUDUSD
+

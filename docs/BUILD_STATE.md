@@ -751,7 +751,7 @@ live execution as non-substitutable.
 | Consensus estimates unavailable                                                     | economic-surprise calculation      | O-8                |
 | ~~`api_layer/` is empty~~ — **BUILT in D-070** (8 modules, Phase 3 complete)        | —                                  | D-070              |
 | `models/` contains only `contracts.py`                                              | Phase 2                            | —                  |
-| FX spot / commodity / equity mappings are declared but unpopulated                  | Phase 2 Modules 9–11               | —                  |
+| ~~FX spot / commodity / equity mappings are declared but unpopulated~~ — **`fx_spot` FETCHED since 2026-10-10** (`data_layer/fx_client.py` + `snapshot_builder._fetch_fx_spot_map` + `models/fx_conversion.py`); `commodity_spot` / `equity_index` remain unpopulated (`FX_UNWIRED_ALWAYS`) | `fx_spot`: Phase 2 Modules 9–11 (done). Others: still open | — |
 
 
 ---

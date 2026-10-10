@@ -2371,6 +2371,12 @@ def test_the_builder_itself_records_the_unwired_mapping_fields() -> None:
     real builder with an injected client (no network needed: the field list is
     computed BEFORE the fetch loop, so a client that cannot fetch still proves
     the population ran).
+
+    **``fx_spot`` is deliberately NOT expected here any more.** It left this list
+    on 2026-10-10 when the FX layer landed: it has its own fetch step
+    (``_fetch_fx_spot_map``), so a build that fetches it must not also be told it
+    is unreachable. The remaining two — ``commodity_spot`` and ``equity_index`` —
+    stay, because the loop structurally still cannot reach them.
     """
     from macro_engine.data_layer import persistence
     from macro_engine.data_layer.release_calendar import ReleaseDateIndex
@@ -2396,7 +2402,10 @@ def test_the_builder_itself_records_the_unwired_mapping_fields() -> None:
         client=cast("OpenBBClient", _NoNetwork()),
         release_index=ReleaseDateIndex(),
     )
-    assert report.declared_not_wired == sorted(persistence.MAPPING_SERIES_FIELDS)
+    assert report.declared_not_wired == sorted(
+        f for f in persistence.MAPPING_SERIES_FIELDS if f != "fx_spot"
+    )
+    assert "fx_spot" not in report.declared_not_wired
 
 
 def test_the_unwired_fields_do_not_make_a_build_incomplete() -> None:
@@ -2415,3 +2424,40 @@ def test_the_unwired_fields_do_not_make_a_build_incomplete() -> None:
     report.declared_not_wired = ["fx_spot"]
     assert report.is_complete is True
     assert any(f.startswith("DECLARED_NOT_WIRED:fx_spot:") for f in report.as_flags())
+
+
+def test_fx_spot_is_no_longer_reported_as_declared_but_unwired() -> None:
+    """The FX layer's whole point: the disclosure became a FETCH.
+
+    ``fx_spot`` was on ``MAPPING_SERIES_FIELDS`` and appeared in
+    ``declared_not_wired`` for the project's life, because the per-registry-entry
+    loop cannot fill a dict of series. On 2026-10-10 it gained its own step, so
+    reporting it as unreachable would now be FALSE — and a stale "can never
+    populate it" flag is precisely the kind of un-re-measured claim (the D-043
+    class) this repository keeps catching.
+
+    This test pins the *disposition*, not the mechanism: it fails if someone
+    re-adds ``fx_spot`` to the unwired list without removing the fetch step, and
+    it fails if the fetch step is removed without restoring the disclosure.
+    """
+    import ast
+    import inspect
+    import pathlib
+
+    from macro_engine.data_layer import snapshot_builder as sb
+
+    # The fetch step exists and is CALLED from build_snapshot — asserted on the
+    # AST, because a defined-but-uncalled helper (or a call hidden behind a name)
+    # is the failure mode a text scan would miss.
+    tree = ast.parse(pathlib.Path(inspect.getfile(sb)).read_text(encoding="utf-8"))
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_fetch_fx_spot_map" in called
+
+    # And the field is no longer in the canonical "structurally unreachable" set.
+    assert "fx_spot" not in sb.FX_UNWIRED_ALWAYS
+    # ...while the two that genuinely have no fetch step stay.
+    assert {"commodity_spot", "equity_index"} <= sb.FX_UNWIRED_ALWAYS
