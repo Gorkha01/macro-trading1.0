@@ -5810,7 +5810,6 @@ class ValidationSettings(BaseModel):
     max_plausible_yield_pct: CalibratedValue
     zero_yield_permitted_tenors: CalibratedValue
     implausible_long_end_inversion_bp: CalibratedValue
-    scenario_probability_tolerance: CalibratedValue
     fed_total_assets_min_millions: CalibratedValue
     reserve_balances_min_millions: CalibratedValue
     on_rrp_volume_max_billions: CalibratedValue
@@ -5857,10 +5856,6 @@ class ValidationSettings(BaseModel):
         if isinstance(raw, str):
             return frozenset({raw})
         return frozenset(str(item) for item in raw)
-
-    @property
-    def prob_tolerance(self) -> float:
-        return float(self.scenario_probability_tolerance.value)
 
 
 class ConfidenceSettings(BaseModel):

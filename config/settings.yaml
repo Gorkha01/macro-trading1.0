@@ -6777,10 +6777,6 @@ validation:
       30yr vs 10yr. A slight long-end inversion can be genuine; one this deep
       indicates a mis-parsed row (Section 5.4's "inverted-looking value that's
       actually a data error").
-  scenario_probability_tolerance:
-    value: 0.01
-    calibration_status: conventional
-    note: Allowed absolute deviation of scenario probabilities from 1.0.
 
   # Module 4.1's unit guards (D-085). The balance-sheet leg combines three series
   # whose UNITS differ by 1000x (WALCL/WRESBAL in millions, RRPONTSYD in

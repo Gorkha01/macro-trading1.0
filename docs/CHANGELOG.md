@@ -10,6 +10,32 @@ Entry dates are the date of the change, not the release.
 
 ## [Unreleased]
 
+### D-152 — F-TSC-007: the orphaned duplicate config leaf DELETED (2026-10-10)
+
+The last open *deletion-shaped* ledger item. F-TSC-004 pointed the scenario-sum gate at the leaf its
+consumer reads (`probability.probability_sum_tolerance`), which left
+`ValidationSettings.scenario_probability_tolerance` / `prob_tolerance` **orphaned**. It was recorded
+rather than removed because deleting a config leaf is a config-surface change. Recounted before
+acting: the property had **zero callers** in `src/`, the leaf was read by **no** `settings.`
+expression, and `ValidationSettings` is `extra="forbid"` so no working override could name it —
+**the deletion is a measured no-op.** Files: `src/macro_engine/config.py` (leaf + property removed;
+`ValidationSettings` declaration and getters now agree), `config/settings.yaml` (leaf removed),
+`src/macro_engine/thesis_layer/schemas.py` (comment records the closure),
+`tests/thesis_layer/test_schemas.py` (stub re-cast — see below). Full evidence: `docs/DECISIONS.md`
+§D-152.
+
+- **Mutation-proved, and the proof is STRONGER than before.** The F-TSC-004 test made the two leaves
+  *disagree* so that reading the wrong one was visible; with the duplicate gone that disagreement
+  cannot be constructed, so the test now discriminates on the **absence** of the leaf. Recreating the
+  original defect (re-add the leaf + property, repoint the gate at `validation.prob_tolerance`) turns
+  `test_the_scenario_sum_gate_reads_the_consumers_tolerance_leaf` **RED** with
+  `AttributeError: 'SimpleNamespace' object has no attribute 'validation'`; restore → byte-identical
+  → GREEN.
+- **The invariant it buys:** the F-TSC-004 class can no longer recur without first re-adding the
+  leaf, which the test will not silently tolerate.
+- **Gates:** ruff + `ruff format --check` + `mypy` clean · suite **1992 passed / 5 deselected** ·
+  `AGENTS.md` byte-identical (`8295ccf3…`).
+
 ### D-151 — the FX-forward block RE-MEASURED (the seventh false-block check), and the CME rolling future shipped as a future (2026-10-10)
 
 `PHASE5_DEFERRED.md` §2.5 item 1 (the one real capability gap) was re-measured by **CALLING the

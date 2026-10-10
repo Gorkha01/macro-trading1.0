@@ -24072,3 +24072,81 @@ envelope leaves absorbed into `test_infrastructure`'s disclosed set). `AGENTS.md
 `scripts/{probe_fx_forward.py,mutation_fx_futures.py}` (new),
 `docs/{DECISIONS.md,CHANGELOG.md,PHASE5_DEFERRED.md,PROGRESS.md,MODULE_MAPPING.md,OPEN_ISSUES.md,UNWIRED_FUNCTIONS.md,BUILD_STATE.md}`,
 `README.md`.
+
+---
+
+## D-152 — F-TSC-007: the orphaned duplicate config leaf is DELETED, not merely unused — and the deletion itself is what makes the F-TSC-004 class unable to recur
+
+**Date:** 2026-10-10. **A config-surface increment**, closing the last open *deletion-shaped* ledger
+item. Files: `src/macro_engine/config.py`, `config/settings.yaml`,
+`src/macro_engine/thesis_layer/schemas.py` (comment only), `tests/thesis_layer/test_schemas.py`.
+
+### 1. The disposition, and why it was left open
+
+F-TSC-004 (SEV-2) found that `MacroThesis._enforce_scenario_probabilities` read
+`settings.validation.prob_tolerance` while the function it gates — `expected_value`
+(`models/probability.py:342`) — and `risk_budget` (`portfolio/risk_budget.py:1146`) both read
+`settings.probability.probability_sum_tolerance`. Two independent `CalibratedValue` leaves with the
+same meaning and a *different* `calibration_status` (`conventional` vs
+`uncalibrated_illustrative`). The fix pointed the validator at the consumer's leaf. That fix left
+the duplicate **orphaned** — referenced by nothing — and it was recorded as F-TSC-007 rather than
+deleted, with the reasoning *"deleting a config leaf is a config-surface change … it belongs with the
+operator's call, not a review increment."*
+
+That reasoning was correct as far as it went, and it is why the item sat in the ledger. What was
+missing was a **recount** at the moment the operator's call was actually being taken.
+
+### 2. The recount — the deletion is genuinely a no-op
+
+- **The property:** `ValidationSettings.prob_tolerance` — zero callers in `src/`. Its only
+  references were the test stub and the F-TSC-004 prose comment.
+- **The leaf:** `validation.scenario_probability_tolerance` — read by no `settings.` expression
+  anywhere in `src/`. Verified by exhaustive grep over `src/ tests/ config/ tools/`.
+- **`extra="forbid"`** on `ValidationSettings` means a deployment override naming the leaf would
+  already have been *rejected*, so no working configuration can be relying on it.
+
+So the change is zero-behaviour-change by measurement, not by assertion. What it buys is the
+invariant F-TSC-004's own comment depends on: with one copy gone, the two *cannot* drift apart.
+
+### 3. The mutation proof — and why it is the STRONGER form
+
+The F-TSC-004 test made the two leaves **disagree** (one stub wide, one narrow) so that reading the
+wrong one was visible. With the duplicate deleted that disagreement is no longer constructible, so
+the stub had to be re-cast — and the re-cast is strictly stronger.
+
+**Mutant applied (three coordinated edits, the reversal of this decision):** reintroduce
+`scenario_probability_tolerance: CalibratedValue` + the `prob_tolerance` property in `config.py`,
+reintroduce the leaf in `settings.yaml`, and point the validator back at
+`settings.validation.prob_tolerance` — i.e. recreate the original F-TSC-004 defect exactly.
+
+**Result:** `test_the_scenario_sum_gate_reads_the_consumers_tolerance_leaf` goes RED with
+`AttributeError: 'SimpleNamespace' object has no attribute 'validation'`. Restore → byte-identical
+(sha256 on all three files) → GREEN. Gates on the restored tree: **1992 passed / 5 deselected**;
+ruff, `ruff format --check`, and `mypy` all clean; `AGENTS.md` byte-identical
+(`8295ccf3340c5fd36cc9cb4921ff382ed0bd24aa7ea652f146ae869e987505e0`).
+
+**The test now discriminates on the ABSENCE of the leaf rather than on a disagreement between two
+present leaves.** That is the point: the failure mode F-TSC-004 recorded cannot be re-entered without
+first re-adding the leaf, which the test will not silently tolerate.
+
+### 4. What this does NOT close
+
+`F-MOD-001/003/004` remain OPEN as *historical records* — their titles describe gaps
+(GARCH, the shock engine, multi-country, the `fx_forward_rate` block) that have since CLOSED through
+D-091…D-151 while the records were never re-dispositioned. Their **bodies** are the finding that
+matters now: `F-MOD-004`'s guard list (`orchestration.py:1764`, `gdp_nowcast.py:571`,
+`regime.py:1234`, `snapshot_builder.py:846`, `instrument_selection.py:121`) plus
+`country.implemented: ["us"]` was the *measurement* that made the multi-country increment possible,
+and `implemented` now reads `["us","gb","eu","de","jp"]`. **A stale disposition on a correct
+measurement is a documentation defect, not an open engineering gap** — but until the register says
+so, a reader cannot tell those apart.
+
+### 5. The generalisable lesson
+
+**F-TSC-007 is the ledger's only item that was left open for a *deferral* reason
+("that is the operator's call") rather than a *technical* one — and when the call was finally taken
+the whole job was one exhaustive grep.** The distinction that kept it open was real (it is a
+config-surface change) but it was never re-checked against the cost of doing it. That is the same
+shape as the D-043 false-block class one layer over: **an obstacle recorded once, then read
+afterwards like a measured constraint.** The remedy is the same — re-measure before deferring for
+the second time.

@@ -1212,6 +1212,10 @@ class MacroThesis(BaseModel):
         # broken — but recalibrating either one alone would split the gate from
         # the function it gates, letting a distribution pass here and be refused
         # there (or the reverse). One leaf, one boundary (F-TSC-004).
+        #
+        # The duplicate leaf is now DELETED rather than merely unused
+        # (F-TSC-007, closed 2026-10-10): with one copy gone the two can no
+        # longer drift apart, which is the invariant this line depends on.
         tolerance = get_settings().probability.probability_sum_tolerance
         if abs(total - 1.0) > tolerance:
             raise ValueError(

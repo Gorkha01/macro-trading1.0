@@ -27,6 +27,8 @@ The defects, all MEASURED rather than argued:
     consumer ``expected_value`` (and ``risk_budget``) read
     ``probability.probability_sum_tolerance`` — two independent ``CalibratedValue``
     leaves with the same meaning and different ``calibration_status``.
+    (F-TSC-007, closed 2026-10-10) The orphaned duplicate leaf was then deleted
+    outright, so the two copies can no longer drift apart.
 """
 
 from __future__ import annotations
@@ -275,18 +277,24 @@ def test_the_scenario_sum_gate_reads_the_consumers_tolerance_leaf(
 ) -> None:
     """(F-TSC-004) The validator must read the leaf ``expected_value`` reads.
 
-    The stub makes the two leaves DISAGREE, so reading the wrong one is visible
-    rather than coincidentally identical (both are 0.01 in the shipped config).
-    A distribution summing to 1.2 is inside the probability leaf's 0.5 and far
-    outside the validation leaf's 0.0, so the two stubs must give opposite
-    verdicts — which also proves the stub is discriminating at all.
+    The stub makes the leaf WIDE, so reading the wrong one is visible rather
+    than coincidentally identical (both copies read 0.01 in the shipped config).
+    A distribution summing to 1.2 is inside the 0.5 stub and far outside the
+    real 0.01, so accepting it proves the gate read the stub at all.
+
+    F-TSC-007 (CLOSED): the stub used to carry a SECOND leaf
+    (``validation.prob_tolerance``) and set the two to disagree, because the
+    defect was reading the wrong one. That duplicate leaf has now been deleted
+    from ``settings.yaml`` and ``ValidationSettings``, so the disagreement
+    cannot be constructed — and, more to the point, it cannot recur: there is
+    only one leaf left to read. What this test still pins is that the gate
+    consults *config* rather than a literal.
     """
     monkeypatch.setattr(
         schemas,
         "get_settings",
         lambda: SimpleNamespace(
             probability=SimpleNamespace(probability_sum_tolerance=0.5),
-            validation=SimpleNamespace(prob_tolerance=0.0),
         ),
     )
     accepted = _thesis(
@@ -300,7 +308,6 @@ def test_the_scenario_sum_gate_reads_the_consumers_tolerance_leaf(
         "get_settings",
         lambda: SimpleNamespace(
             probability=SimpleNamespace(probability_sum_tolerance=0.0),
-            validation=SimpleNamespace(prob_tolerance=0.5),
         ),
     )
     with pytest.raises(ValidationError, match=r"must sum to 1\.0"):
