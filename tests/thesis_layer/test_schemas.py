@@ -389,3 +389,193 @@ def test_the_confirmation_family_note_names_a_consumer_that_can_see_it() -> None
     # field: signals.py carries it through from the ModelResult.
     producer = Path(inspect.getfile(signals_module)).read_text(encoding="utf-8")
     assert "source_family=_family_of(result)" in producer
+
+
+# ---------------------------------------------------------------------------
+# Section 22.3 — the GB instrument plan (Workstream 3 of the multi-country
+# increment). A country's instrument set must be its OWN, not the US set with a
+# different label. These tests assert the plan is genuinely distinct in BOTH
+# directions — the UK admits UK instruments the US refuses, and the US admits US
+# instruments the UK refuses — because a one-directional test would pass on a
+# union (which is the relabel the section rejects).
+# ---------------------------------------------------------------------------
+
+
+def test_the_gb_universe_lists_uk_instruments_not_us_ones() -> None:
+    """(§22.3) ``country='gb'`` names gilts / short sterling / SONIA / FTSE 100.
+
+    The literal lists are asserted, not just "differs from us": a plan that
+    differed by omission (empty) would pass a naive inequality and fail the
+    point, which is that the UK has its OWN tradable set.
+    """
+    gb = ProductionUniverse(country="gb")
+    joined = " ".join(gb.all_instruments).lower()
+    for token in ("gilt", "sterling", "sonia", "ftse"):
+        assert token in joined, f"the gb plan omits {token!r}: {gb.all_instruments}"
+    # ...and no US instrument leaks into the UK plan.
+    for token in ("ust", "sofr", "fed funds", "tips", "s&p", "nasdaq"):
+        assert token not in joined, f"the gb plan relabels a US instrument: {token!r}"
+
+
+def test_the_gb_and_us_plans_admit_their_own_and_refuse_each_others() -> None:
+    """(§22.3) both directions: US refuses gilt, GB refuses UST.
+
+    This is the anti-relabel test. A universe that admitted BOTH countries'
+    instruments would let a gb thesis name a UST (serving US data to a UK
+    trade), and vice versa — the failure the section names explicitly.
+
+    The cases below are the **disjoint** ones only, measured rather than
+    assumed. The shared *shape* words (``swap``, ``ois``, and the generic
+    ``index futures``/``equity index``) are deliberately common to the plans, so
+    a string built on them is admitted by both — measured:
+    ``us.category_for("SONIA OIS swap") == "rates"``. Asserting the US refused
+    SONIA would be false and would fail. The disjoint vocabulary is where the
+    anti-relabel claim actually lives: ``ust``/``sofr``/``fed funds``/``tips``
+    are US-only, ``gilt``/``sonia``/``short sterling`` are UK-only.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+
+    # Each admits its own, on its DISJOINT vocabulary.
+    assert us.category_for("UST futures") == "rates"
+    assert us.category_for("SOFR futures") == "rates"
+    assert gb.category_for("10yr gilt futures") == "rates"
+    assert gb.category_for("SONIA swap") == "rates"
+    assert gb.category_for("short sterling futures") == "rates"
+    assert gb.category_for("FTSE 100 index futures") == "equity"
+
+    # Each refuses the other's disjoint vocabulary.
+    assert gb.category_for("UST futures") is None
+    assert gb.category_for("SOFR futures") is None
+    assert gb.category_for("Fed funds futures") is None
+    assert us.category_for("10yr gilt futures") is None
+    assert us.category_for("short sterling futures") is None
+
+
+def test_the_gb_universe_rejects_a_us_only_rates_instrument() -> None:
+    """(§22.3) the UK plan's RATES vocabulary is the UK's, not a superset.
+
+    RATES is the sharp case, and the reason is structural rather than
+    stylistic: a UST and a gilt are different instruments backed by different
+    sovereigns, so admitting a UST into a gb thesis would serve US data to a UK
+    trade. ``ust``/``sofr``/``fed funds``/``tips`` are therefore deliberately
+    absent from ``_GB_RATES_KEYWORDS`` and a gb universe must refuse them.
+
+    EQUITY is deliberately NOT asserted the same way, and the asymmetry is
+    MEASURED rather than assumed: ``index futures`` and ``equity index`` are
+    shared generic shape admissions, so BOTH plans admit any *named* index
+    (measured: ``gb.category_for("S&P 500 index futures") == "equity"`` and
+    ``us.category_for("FTSE 100 index futures") == "equity"``). That is the
+    pre-existing, uniform behaviour of the matcher — it admits an equity SHAPE
+    and leaves the country to the plan's named list (``gb.equity == ["FTSE 100
+    index futures"]``). An earlier draft of this test asserted the UK refused
+    the S&P, which was simply false: the refusal lives in the named list and the
+    country-specific keyword vocabulary, not in the generic phrase.
+    """
+    gb = ProductionUniverse(country="gb")
+    assert gb.category_for("UST futures") is None
+    assert gb.category_for("SOFR futures") is None
+    assert gb.category_for("Fed funds futures") is None
+    assert gb.category_for("TIPS breakevens") is None
+    # ...and the UK's own rates vocabulary IS admitted.
+    assert gb.category_for("10yr gilt futures") == "rates"
+    assert gb.category_for("SONIA OIS swap") == "rates"
+
+
+def test_an_unimplemented_country_is_rejected_not_defaulted_to_us() -> None:
+    """(§22.3) a country without a plan must raise, not silently borrow the US one.
+
+    The dangerous alternative — falling back to the US plan — produces an
+    internally consistent universe that serves US instruments to another
+    country's thesis, invisibly. Raising makes "no instrument set" a loud fact.
+    """
+    for code in ("de", "jp", "fr", ""):
+        with pytest.raises(ValidationError):
+            ProductionUniverse(country=code)
+
+
+def test_the_us_plan_is_unchanged_by_the_country_field() -> None:
+    """(backwards compatibility) the default country still yields the US plan.
+
+    The country field was added defaulting to "us" precisely so that every
+    existing ``ProductionUniverse()`` construction — 6 in ``src/``, 5 in tests —
+    keeps its exact prior behaviour.
+    """
+    us = ProductionUniverse()
+    assert us.country == "us"
+    assert us.rates[0] == "UST cash (2yr, 5yr, 10yr, 30yr)"
+    assert us.equity == ["Broad equity indices (ES, NQ, RTY)"]
+    # The US plan's rates/equity are identical to a default-constructed universe.
+    assert ProductionUniverse(country="us").all_instruments == us.all_instruments
+
+
+def test_the_two_plans_share_only_fx() -> None:
+    """(§22.3) ``fx`` is shared by design; ``rates`` and ``equity`` are not.
+
+    The asymmetry is the section's point: a category that genuinely differs
+    must not be faked by relabelling. G10 FX is one market, so its instruments
+    are the same tradeable objects either way.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    assert us.fx == gb.fx, "G10 FX is one market and must be shared"
+    assert us.rates != gb.rates, "the rates sets differ (this is the whole section)"
+    assert us.equity != gb.equity, "the equity sets differ"
+
+
+def test_every_country_plan_is_internally_consistent() -> None:
+    """(§22.3) each plan permits every instrument it declares.
+
+    The registry-driven companion to ``..._permits_its_own_declared_instruments``:
+    the US universe happened to pass that test while the gb list did not exist.
+    Iterating the PLANS (not the one default) means a future country cannot be
+    added with lists its own matcher would reject.
+    """
+    for country in ("us", "gb"):
+        universe = ProductionUniverse(country=country)
+        assert universe.all_instruments, f"{country} declared no instruments"
+        for instrument in universe.all_instruments:
+            assert universe.permits(instrument), f"{country} rejects its own {instrument!r}"
+
+
+def test_the_bare_ticker_table_is_country_aware() -> None:
+    """(§22.3, mutation-killed) a UK ticker is not a US ticker.
+
+    The bare-ticker roots are market-specific and must be selected by country:
+    ``GL`` is the generic gilt-futures root and ``TU`` the US 2yr-note root.
+    A gb universe that read the US table would admit ``"TU futures"`` into a UK
+    thesis; a us universe that read the UK table would admit ``"GL futures"``.
+
+    Asserted through the public matcher with a shape that carries NO generic
+    keyword (so the ticker is the only admissible path): ``"GL futures"`` and
+    ``"TU futures"`` reach the country plan, not the shared shape vocabulary.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    assert gb.category_for("GL futures") == "rates"
+    assert us.category_for("GL futures") is None
+    assert us.category_for("TU futures") == "rates"
+    assert gb.category_for("TU futures") is None
+
+
+def test_the_equity_keyword_vocabulary_is_country_aware() -> None:
+    """(§22.3, mutation-killed) the UK equity vocabulary is not the US one.
+
+    Asserted on the selected keyword SETS, because ``category_for`` cannot
+    distinguish them: the shared generic phrases (``index futures``, ``equity
+    index``) admit any named index in both plans, so a string test is masked.
+    The discriminating claim is structural — the gb plan must read the UK set,
+    and the two sets must not be identical. A mutant that made ``_equity_keywords``
+    return the US set unconditionally would leave every string test green while
+    silently dropping ``ftse`` from the UK plan's own vocabulary.
+    """
+    us = ProductionUniverse()
+    gb = ProductionUniverse(country="gb")
+    assert us._equity_keywords is us._EQUITY_KEYWORDS
+    assert gb._equity_keywords is gb._GB_EQUITY_KEYWORDS
+    assert set(us._equity_keywords) != set(gb._equity_keywords)
+    # The country-specific terms are where the claim lives.
+    assert "ftse" in gb._equity_keywords
+    assert "ftse" not in us._equity_keywords
+    assert "nasdaq" in us._equity_keywords
+    assert "nasdaq" not in gb._equity_keywords

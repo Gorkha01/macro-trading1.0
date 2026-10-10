@@ -220,30 +220,102 @@ class ProductionUniverse(BaseModel):
     full strings) and accepts illegitimate ones (any description mentioning
     "cash"). Keywords are checked per category so that a rejection can say
     *which* category was consulted.
+
+    **Country (§22.3, added 2026-10-10).** Section 22.3 requires each
+    multi-country increment to have *its own instrument set*, and names the
+    failure it rejects: a country's set must not be the US set with a different
+    label. ``country`` therefore selects a **separate plan** — its own
+    instrument lists AND its own keyword sets — rather than filtering the US
+    lists. The two plans genuinely differ:
+
+    * **US** — USTs (cash + TU/FV/TY/US futures), SOFR futures, Fed funds
+      futures, TIPS/breakevens; equity expressed through ES/NQ/RTY.
+    * **GB** — gilts (conventional cash + futures), index-linked gilts (the UK
+      analogue of TIPS), **short-sterling futures** (the LSEG/ICE contract
+      whose underlying is the SONIA-compounded 3-month rate — the UK's own
+      short-rate instrument, distinct from SOFR), SONIA OIS, and the FTSE 100.
+      The keyword vocabulary is the UK's: ``gilt``, ``gilt-edged``, ``sonia``,
+      ``short sterling``, ``short-sterling``, ``ftse``, ``boe`` — none of which
+      appears in the US plan.
+
+    ``fx`` is **shared** between the plans and deliberately so: G10 FX is one
+    market, and a GBP/USD instrument is the same tradeable object whichever
+    country's thesis names it. Only ``rates`` and ``equity`` are country
+    plans, because only those are genuinely different instruments in the two
+    markets. This is the asymmetry Section 22.3 turns on — the point is not
+    that *every* category differ, it is that a category which DOES differ must
+    not be faked by relabelling.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    country: str = Field(
+        default="us",
+        description=(
+            "ISO-3166 alpha-2 lowercase. Selects the instrument plan (Section "
+            "22.3). 'us' through Phase 4; 'gb' added by the first multi-country "
+            "increment. An unknown code is rejected at construction rather than "
+            "silently falling back to the US plan — a fallback would serve US "
+            "instruments to another country's thesis, the exact relabel Section "
+            "22.3 rejects."
+        ),
+    )
+
+    # The three lists are filled from the country plan by the model validator
+    # below. They are declared with an explicit empty default (rather than as
+    # ``default_factory`` lambdas reading ``self.country`` — which a field
+    # default cannot do, since defaults are evaluated before the model exists)
+    # and populated in one place, so the plan is the single source of truth for
+    # both the lists AND the keyword sets that must agree with them.
     rates: list[str] = Field(
-        default_factory=lambda: [
+        default_factory=list,
+        description=(
+            "Country-plan rates instruments (Section 22.3). Populated from the "
+            "plan selected by ``country``; do not pass a US list to a gb universe."
+        ),
+    )
+    fx: list[str] = Field(
+        default_factory=list,
+        description="G10 FX spot/forwards. Shared across country plans by design.",
+    )
+    equity: list[str] = Field(
+        default_factory=list,
+        description="Country-plan equity instruments (Section 22.3).",
+    )
+
+    # PLANS ------------------------------------------------------------------
+    # One entry per implemented country. ``rates``/``equity`` differ per plan
+    # (the instruments are genuinely different); ``fx`` is shared because G10 FX
+    # is one market. Order of the tuples is the order instruments are published
+    # in, which the tests read.
+    _US_PLAN: dict[str, tuple[str, ...]] = {
+        "rates": (
             "UST cash (2yr, 5yr, 10yr, 30yr)",
             "UST futures (TU, FV, TY, US)",
             "SOFR futures",
             "Fed funds futures",
             "TIPS cash and breakevens",
-        ]
-    )
-    fx: list[str] = Field(
-        default_factory=lambda: [
-            "G10 FX spot",
-            "G10 FX forwards",
-        ]
-    )
-    equity: list[str] = Field(
-        default_factory=lambda: [
-            "Broad equity indices (ES, NQ, RTY)",
-        ]
-    )
+        ),
+        "fx": ("G10 FX spot", "G10 FX forwards"),
+        "equity": ("Broad equity indices (ES, NQ, RTY)",),
+    }
+    #: The UK plan. Every rates/equity entry names an instrument that trades in
+    #: London and has no US equivalent: gilts are not USTs, short sterling is
+    #: not SOFR, and the FTSE 100 is not the S&P. Section 22.3's test is exactly
+    #: whether this list would read as wrong if the label said "us" — it does.
+    _GB_PLAN: dict[str, tuple[str, ...]] = {
+        "rates": (
+            "Conventional gilts (2yr, 5yr, 10yr, 30yr)",
+            "Gilt futures (short sterling, long gilt)",
+            "Index-linked gilts",
+            "Short-sterling futures",
+            "SONIA OIS swaps",
+        ),
+        "fx": ("G10 FX spot", "G10 FX forwards"),
+        "equity": ("FTSE 100 index futures",),
+    }
+    #: Country code -> plan. A code absent here is rejected by the validator.
+    _PLANS: dict[str, dict[str, tuple[str, ...]]] = {}
 
     # Keyword sets per category. A candidate instrument must match at least one
     # keyword from exactly one category to be permitted.
@@ -281,6 +353,37 @@ class ProductionUniverse(BaseModel):
         "butterfly",
         "curve",
     )
+    #: The UK rates vocabulary. Kept SEPARATE from the US set and selected by
+    #: country, so that a gb thesis cannot be admitted on the strength of a US
+    #: keyword (and vice versa). Note what is deliberately ABSENT: ``ust``,
+    #: ``sofr``, ``tips``, ``tnote``. A gb universe that accepted "UST futures"
+    #: would be the relabel Section 22.3 rejects.
+    _GB_RATES_KEYWORDS: tuple[str, ...] = (
+        "gilt",
+        "gilts",
+        "gilt-edged",
+        "sonia",
+        "short sterling",
+        "short-sterling",
+        "short stg",
+        "index-linked",
+        "index linked",
+        "linker",
+        "long gilt",
+        "boe",
+        "bank of england",
+        # Curve-shape vocabulary is market-neutral and shared, so a
+        # duration-weighted steepener is recognised in both plans.
+        "steepener",
+        "flattener",
+        "steepening",
+        "flattening",
+        "duration-weighted",
+        "butterfly",
+        "curve",
+        "swap",
+        "ois",
+    )
     _FX_KEYWORDS: tuple[str, ...] = (
         "fx",
         "currency",
@@ -308,6 +411,22 @@ class ProductionUniverse(BaseModel):
         "dax",
         "euro stoxx",
         "nikkei",
+    )
+    #: The UK equity vocabulary. The US-only words (``s&p``, ``spx``,
+    #: ``nasdaq``, ``russell``) are deliberately ABSENT, so a gb thesis naming
+    #: the S&P 500 is rejected rather than silently permitted as "equity". The
+    #: generic "equity index"/"index futures" phrases are shared, because a
+    #: broad-index expression is the same *kind* of instrument in both markets
+    #: and the country plan supplies the actual index.
+    _GB_EQUITY_KEYWORDS: tuple[str, ...] = (
+        "equity index",
+        "equity indices",
+        "index futures",
+        "ftse",
+        "ftse 100",
+        "ftse 250",
+        "uk equity",
+        "london equity",
     )
     # Bare exchange tickers, matched only as a standalone token or as the token
     # immediately preceding "futures"/"options". These are unambiguous enough
@@ -350,6 +469,60 @@ class ProductionUniverse(BaseModel):
     @property
     def all_instruments(self) -> list[str]:
         return [*self.rates, *self.fx, *self.equity]
+
+    @model_validator(mode="after")
+    def _populate_from_country_plan(self) -> ProductionUniverse:
+        """Fill the instrument lists from the plan ``country`` selects.
+
+        A single place where ``country`` becomes lists, so the plan is the only
+        source of truth and a new country cannot be half-added (lists without
+        keywords, or a keyword set that admits the wrong market's instruments).
+
+        **An unknown country is rejected, not defaulted.** Falling back to the
+        US plan would serve USTs and SOFR to, say, a ``de`` thesis — the exact
+        relabel Section 22.3 rejects — and the failure would be invisible,
+        because the resulting universe is internally consistent. Raising here
+        makes "this country has no instrument set" a loud, testable fact, which
+        is also what ``CountrySettings._no_false_genericity_claim`` enforces one
+        layer up.
+        """
+        plans = {"us": self._US_PLAN, "gb": self._GB_PLAN}
+        if self.country not in plans:
+            raise ValueError(
+                f"ProductionUniverse.country={self.country!r} has no instrument "
+                f"plan (Section 22.3). Implemented: {sorted(plans)}. A country "
+                f"without its own instrument set must not borrow another's — "
+                f"that is the relabelled-universe failure 22.3 rejects."
+            )
+        plan = plans[self.country]
+        # Only fill a list the caller left empty, so an explicit override (a
+        # narrower universe for a specific run) is preserved rather than
+        # clobbered. An explicit US list on a gb universe is the caller's
+        # stated choice, not this validator's to silently correct.
+        if not self.rates:
+            self.rates = list(plan["rates"])
+        if not self.fx:
+            self.fx = list(plan["fx"])
+        if not self.equity:
+            self.equity = list(plan["equity"])
+        return self
+
+    @property
+    def _rates_keywords(self) -> tuple[str, ...]:
+        """The rates vocabulary for THIS country's plan.
+
+        The US and UK sets are disjoint in their market-specific terms (no
+        ``ust``/``sofr`` in the UK set; no ``gilt``/``sonia`` in the US set), so
+        a country's thesis cannot be admitted by another country's instrument
+        vocabulary. The shared curve-shape words are the deliberate exception —
+        a steepener is a steepener in either market.
+        """
+        return self._GB_RATES_KEYWORDS if self.country == "gb" else self._RATES_KEYWORDS
+
+    @property
+    def _equity_keywords(self) -> tuple[str, ...]:
+        """The equity vocabulary for THIS country's plan (see above)."""
+        return self._GB_EQUITY_KEYWORDS if self.country == "gb" else self._EQUITY_KEYWORDS
 
     def permits(self, instrument: str) -> bool:
         """Whether an instrument string names something in the universe.
@@ -405,14 +578,30 @@ class ProductionUniverse(BaseModel):
         ticker_category = self._bare_ticker_category(needle)
         if ticker_category:
             return ticker_category
+        # Country-aware keyword sets (Section 22.3): a gb universe reads the UK
+        # rates/equity vocabulary, so a US-only instrument ("SOFR futures") is
+        # not admitted into a UK thesis and vice versa.
         for category, keywords in (
-            ("rates", self._RATES_KEYWORDS),
+            ("rates", self._rates_keywords),
             ("fx", self._FX_KEYWORDS),
-            ("equity", self._EQUITY_KEYWORDS),
+            ("equity", self._equity_keywords),
         ):
             if any(_keyword_match(keyword, needle) for keyword in keywords):
                 return category
         return None
+
+    #: The UK bare-ticker vocabulary. ``G``/``long gilt`` for the 10y+ gilt
+    #: future; ``short sterling`` is a phrase handled in the keyword set, not
+    #: here. Deliberately does NOT include ``us`` (a US long-bond root and also
+    #: the country code), ``es``/``nq``/``rty``/``ym`` (US equity roots), or any
+    #: of ``tu``/``fv``/``ty`` — so a gb universe cannot be entered by a US
+    #: ticker.
+    _GB_BARE_TICKERS: dict[str, str] = {
+        "g": "rates",
+        "gl": "rates",
+        "ftse": "equity",
+        "z": "equity",
+    }
 
     def _bare_ticker_category(self, needle: str) -> str | None:
         """Match a bare futures ticker as a standalone token.
@@ -421,15 +610,25 @@ class ProductionUniverse(BaseModel):
         followed by a contract noun ("TU futures", "ES options"). Anything
         looser would let "US HY credit index" through on the strength of the
         word "US".
+
+        **Country-aware (§22.3).** The ticker table is selected by ``country``,
+        because the roots are market-specific: ``us`` is both the US long-bond
+        root and the country code, so a gb universe must not read the US table
+        (it would admit "US futures" into a UK thesis). Bare single letters are
+        kept only where they are the actual exchange root AND are not a
+        substring risk — the two-token form ("gl futures") is the shape a desk
+        uses, so the single-letter form is admitted only alongside a contract
+        noun.
         """
         tokens = [t.strip(",;:()[]") for t in needle.split()]
         if not tokens:
             return None
+        table = self._GB_BARE_TICKERS if self.country == "gb" else self._BARE_TICKERS
         contract_nouns = {"futures", "future", "options", "option", "contract", "contracts"}
-        if len(tokens) == 1 and tokens[0] in self._BARE_TICKERS:
-            return self._BARE_TICKERS[tokens[0]]
-        if len(tokens) == 2 and tokens[1] in contract_nouns and tokens[0] in self._BARE_TICKERS:
-            return self._BARE_TICKERS[tokens[0]]
+        if len(tokens) == 1 and tokens[0] in table:
+            return table[tokens[0]]
+        if len(tokens) == 2 and tokens[1] in contract_nouns and tokens[0] in table:
+            return table[tokens[0]]
         return None
 
 
